@@ -396,6 +396,9 @@ func (s *AntigravityGatewayService) consumeAntigravityCompatSuccess(
 	if call.request.protocol == antigravityCompatChatCompletions {
 		return s.handleChatCompletionsNonStreamingFromAntigravity(c, resp, call.request.startTime, call.request.originalModel)
 	}
+	if call.request.clientToolMap == nil {
+		return s.handleResponsesNonStreamingFromAntigravity(c, resp, call.request.startTime, call.request.originalModel)
+	}
 	return s.handleResponsesNonStreamingFromAntigravityWithClientTools(
 		c,
 		resp,

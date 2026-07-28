@@ -86,7 +86,7 @@ func TestAdminPaymentRoutesUsePanelRateLimiter(t *testing.T) {
 
 	const userID int64 = 42
 	redisKey := "rate_limit:panel:global:user:42"
-	redisServer.Set(redisKey, "1")
+	require.NoError(t, redisServer.Set(redisKey, "1"))
 	redisServer.SetTTL(redisKey, time.Minute)
 
 	router := gin.New()
