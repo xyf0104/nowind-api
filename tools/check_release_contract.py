@@ -344,12 +344,39 @@ def check_compose_branding(errors: list[str]) -> None:
         if content.count(f"XIASS_WATCHTOWER_TOKEN={token_default}") < 2:
             errors.append(f"{relative} 未同时向应用与 Watchtower 传入 XIASS 更新令牌")
 
+    standalone_compose = read("deploy/docker-compose.standalone.yml")
     require_all(
         "deploy/docker-compose.standalone.yml",
-        read("deploy/docker-compose.standalone.yml"),
-        ["image: ghcr.io/xyf0104/xiass-api:latest", "container_name: xiass-api"],
+        standalone_compose,
+        [
+            "image: ghcr.io/xyf0104/xiass-api:latest",
+            "container_name: xiass-api",
+            "container_name: xiass-api-watchtower",
+            "command: --http-api-update xiass-api",
+            f"XIASS_WATCHTOWER_TOKEN={token_default}",
+            f"NOWIND_WATCHTOWER_TOKEN={token_default}",
+            f"WATCHTOWER_HTTP_API_TOKEN={token_default}",
+            "DOCKER_API_VERSION=${DOCKER_API_VERSION:-1.40}",
+        ],
         errors,
     )
+    if standalone_compose.count(f"XIASS_WATCHTOWER_TOKEN={token_default}") < 2:
+        errors.append("deploy/docker-compose.standalone.yml 未同时向应用与 Watchtower 传入 XIASS 更新令牌")
+
+    alipay_mobile_setting = (
+        "ALIPAY_MOBILE_PRECREATE_DEEP_LINK=${ALIPAY_MOBILE_PRECREATE_DEEP_LINK:-}"
+    )
+    for relative in [
+        "deploy/docker-compose.yml",
+        "deploy/docker-compose.local.yml",
+        "deploy/docker-compose.standalone.yml",
+        "deploy/docker-compose.dev.yml",
+    ]:
+        if alipay_mobile_setting not in read(relative):
+            errors.append(f"{relative} 缺少支付宝移动端当面付配置透传")
+
+    if "ADMIN_EMAIL=admin@nowind.local" in read("deploy/.env.example"):
+        errors.append("deploy/.env.example 仍使用旧 NoWind 管理员邮箱默认值")
     require_all(
         "deploy/docker-compose.dev.yml",
         read("deploy/docker-compose.dev.yml"),

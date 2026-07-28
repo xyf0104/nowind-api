@@ -25,6 +25,7 @@ jobs:
         run: |
           bash -n deploy/xiass-update.sh
           tools/test_xiass_update_origin.sh
+          /bin/sh deploy/test-caddyfile-cache.sh
 
   test:
     runs-on: ubuntu-latest

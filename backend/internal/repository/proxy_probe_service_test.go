@@ -93,6 +93,26 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_PlainIPFallback() {
 	require.Equal(s.T(), "5.6.7.8", info.IP)
 }
 
+func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPifyFallback() {
+	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.RequestURI, "ip-api.com") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if strings.Contains(r.RequestURI, "api64.ipify.org") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ip":"2001:db8::1"}`)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+
+	info, latencyMs, err := s.prober.ProbeProxy(s.ctx, s.proxySrv.URL)
+	require.NoError(s.T(), err, "ProbeProxy should fallback to dual-stack ipify")
+	require.GreaterOrEqual(s.T(), latencyMs, int64(0), "unexpected latency")
+	require.Equal(s.T(), "2001:db8::1", info.IP)
+}
+
 func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_HTTPBinFallback() {
 	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.RequestURI, "ip-api.com") ||
@@ -187,6 +207,21 @@ func (s *ProxyProbeServiceSuite) TestParseHTTPBin_Success() {
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), int64(50), latencyMs)
 	require.Equal(s.T(), "9.8.7.6", info.IP)
+}
+
+func (s *ProxyProbeServiceSuite) TestParseIPify_Success() {
+	body := []byte(`{"ip":"2001:db8::1"}`)
+	info, latencyMs, err := s.prober.parseIPify(body, 50)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), int64(50), latencyMs)
+	require.Equal(s.T(), "2001:db8::1", info.IP)
+}
+
+func (s *ProxyProbeServiceSuite) TestParseIPify_NoIP() {
+	body := []byte(`{"ip":""}`)
+	_, _, err := s.prober.parseIPify(body, 50)
+	require.Error(s.T(), err)
+	require.ErrorContains(s.T(), err, "no IP found")
 }
 
 func (s *ProxyProbeServiceSuite) TestParsePlainIP_Success() {

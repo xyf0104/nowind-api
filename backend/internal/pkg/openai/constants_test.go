@@ -33,3 +33,8 @@ func TestDefaultAccountTestModelsOnlyIncludeCurrentRunnableModels(t *testing.T) 
 	require.NotContains(t, ids, "gpt-image-1")
 	require.NotContains(t, ids, "gpt-image-1.5")
 }
+
+func TestDefaultModelsPreferConcreteGPT56SolForAccountTests(t *testing.T) {
+	require.NotEmpty(t, DefaultModels)
+	require.Equal(t, "gpt-5.6-sol", DefaultModels[0].ID)
+}

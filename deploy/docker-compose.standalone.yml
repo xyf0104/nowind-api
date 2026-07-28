@@ -11,6 +11,23 @@
 # =============================================================================
 
 services:
+  # ==========================================================================
+  # Watchtower (For Auto-Updates)
+  # ==========================================================================
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: xiass-api-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --http-api-update xiass-api
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - DOCKER_API_VERSION=${DOCKER_API_VERSION:-1.40}
+      - XIASS_WATCHTOWER_TOKEN=${XIASS_WATCHTOWER_TOKEN:-${NOWIND_WATCHTOWER_TOKEN:-sub2api-update-token}}
+      - NOWIND_WATCHTOWER_TOKEN=${XIASS_WATCHTOWER_TOKEN:-${NOWIND_WATCHTOWER_TOKEN:-sub2api-update-token}}
+      - WATCHTOWER_HTTP_API_TOKEN=${XIASS_WATCHTOWER_TOKEN:-${NOWIND_WATCHTOWER_TOKEN:-sub2api-update-token}}
+
   xiass-api:
     image: ghcr.io/xyf0104/xiass-api:latest
     container_name: xiass-api
@@ -35,6 +52,7 @@ services:
       # Auto Setup
       # =======================================================================
       - AUTO_SETUP=true
+      - CONFIG_FILE=${CONFIG_FILE:-}
 
       # =======================================================================
       # System Update Configuration
@@ -55,6 +73,7 @@ services:
       - RUN_MODE=${RUN_MODE:-standard}
       - SOFT_ROUTER_PROXY_PUBLIC_PORT_RANGE=${SOFT_ROUTER_PROXY_PUBLIC_PORT_RANGE:-1101-1120}
       - SOFT_ROUTER_PROXY_RAW_PORT_RANGE=${SOFT_ROUTER_PROXY_RAW_PORT_RANGE:-12083-12150}
+      - ALIPAY_MOBILE_PRECREATE_DEEP_LINK=${ALIPAY_MOBILE_PRECREATE_DEEP_LINK:-}
 
       # =======================================================================
       # Database Configuration (PostgreSQL) - Required
@@ -75,6 +94,7 @@ services:
       # =======================================================================
       - REDIS_HOST=${REDIS_HOST:?REDIS_HOST is required}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_USERNAME=${REDIS_USERNAME:-}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_DB=${REDIS_DB:-0}
       - REDIS_POOL_SIZE=${REDIS_POOL_SIZE:-1024}
@@ -91,7 +111,7 @@ services:
       # JWT Configuration
       # =======================================================================
       - JWT_SECRET=${JWT_SECRET:-}
-      - JWT_EXPIRE_HOUR=${JWT_EXPIRE_HOUR:-24}
+      - JWT_EXPIRE_HOUR=${JWT_EXPIRE_HOUR:-168}
 
       # =======================================================================
       # Setup Configuration
@@ -127,6 +147,9 @@ services:
       - GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=${GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD:-2}
       - GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS:-60}
       - GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS:-600}
+      - GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_FAILURE_THRESHOLD=${GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_FAILURE_THRESHOLD:-2}
+      - GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_WINDOW_SECONDS=${GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_WINDOW_SECONDS:-60}
+      - GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_TTL_SECONDS=${GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_TTL_SECONDS:-600}
       - GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=${GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT:-900}
       - GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=${GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL:-10}
       - GATEWAY_IMAGE_CONCURRENCY_ENABLED=${GATEWAY_IMAGE_CONCURRENCY_ENABLED:-false}

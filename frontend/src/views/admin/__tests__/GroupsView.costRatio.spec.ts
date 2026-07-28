@@ -10,6 +10,8 @@ const {
   getModelsListCandidates,
   getUsageSummary,
   getCapacitySummary,
+  getLiveCapability,
+  listCompositeRoutes,
   createGroupAPI,
   updateGroupAPI,
   listAccounts,
@@ -24,6 +26,8 @@ const {
   getModelsListCandidates: vi.fn(),
   getUsageSummary: vi.fn(),
   getCapacitySummary: vi.fn(),
+  getLiveCapability: vi.fn(),
+  listCompositeRoutes: vi.fn(),
   createGroupAPI: vi.fn(),
   updateGroupAPI: vi.fn(),
   listAccounts: vi.fn(),
@@ -42,6 +46,12 @@ vi.mock("@/api/admin", () => ({
       getModelsListCandidates,
       getUsageSummary,
       getCapacitySummary,
+      getLiveCapability,
+      listCompositeRoutes,
+      createCompositeRoute: vi.fn(),
+      updateCompositeRoute: vi.fn(),
+      deleteCompositeRoute: vi.fn(),
+      previewCompositeRoute: vi.fn(),
       create: createGroupAPI,
       update: updateGroupAPI,
       delete: vi.fn(),
@@ -210,6 +220,8 @@ describe("admin GroupsView cost_ratio persistence payloads", () => {
     getModelsListCandidates.mockResolvedValue([]);
     getUsageSummary.mockResolvedValue([]);
     getCapacitySummary.mockResolvedValue([]);
+    getLiveCapability.mockResolvedValue({ supported: false });
+    listCompositeRoutes.mockResolvedValue([]);
     createGroupAPI.mockResolvedValue(testGroup());
     updateGroupAPI.mockResolvedValue(testGroup());
     listAccounts.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 0 });
@@ -277,5 +289,64 @@ describe("admin GroupsView cost_ratio persistence payloads", () => {
       1,
       expect.objectContaining({ cost_ratio: 0 }),
     );
+  });
+
+  it("enables Live after a successful capability check and persists the flag", async () => {
+    listGroups.mockResolvedValue({
+      items: [testGroup({ platform: "openai", allow_live: false })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    });
+    getLiveCapability.mockResolvedValue({ supported: true });
+
+    await mountView();
+    await openEditDialog();
+    await wrapper!.get('[data-test="edit-allow-live"]').trigger("click");
+    await flushPromises();
+    await wrapper!.get("#edit-group-form").trigger("submit");
+    await flushPromises();
+
+    expect(getLiveCapability).toHaveBeenCalledTimes(1);
+    expect(updateGroupAPI).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ allow_live: true }),
+    );
+  });
+
+  it("opens the composite route editor and loads the group's routes", async () => {
+    listGroups.mockResolvedValue({
+      items: [testGroup({ platform: "composite" })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    });
+    listCompositeRoutes.mockResolvedValue([
+      {
+        id: 8,
+        group_id: 1,
+        public_model: "gpt-*",
+        match_type: "prefix",
+        target_platform: "openai",
+        upstream_model: "gpt-5.6",
+        endpoint: "responses",
+        priority: 10,
+        enabled: true,
+        notes: "",
+      },
+    ]);
+
+    await mountView();
+    const routesButton = wrapper!
+      .findAll("button")
+      .find((button) => button.text().includes("admin.groups.compositeRoutes.action"));
+    expect(routesButton).toBeTruthy();
+    await routesButton!.trigger("click");
+    await flushPromises();
+
+    expect(listCompositeRoutes).toHaveBeenCalledWith(1);
+    expect(wrapper!.text()).toContain("gpt-*");
   });
 });

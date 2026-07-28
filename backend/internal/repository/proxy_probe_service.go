@@ -48,9 +48,10 @@ const (
 // 某些 AI API 专用代理只允许访问特定域名，因此需要多个备选
 var probeURLs = []struct {
 	url    string
-	parser string // "ip-api", "plain-ip" or "httpbin"
+	parser string // "ip-api", "ipify", "plain-ip" or "httpbin"
 }{
 	{"http://ip-api.com/json/?lang=zh-CN", "ip-api"},
+	{"http://api64.ipify.org?format=json", "ipify"},
 	{"https://api.ipify.org", "plain-ip"},
 	{"https://ifconfig.me/ip", "plain-ip"},
 	{"https://ipinfo.io/ip", "plain-ip"},
@@ -125,6 +126,8 @@ func (s *proxyProbeService) probeWithURL(ctx context.Context, client *http.Clien
 	switch parser {
 	case "ip-api":
 		return s.parseIPAPI(body, latencyMs)
+	case "ipify":
+		return s.parseIPify(body, latencyMs)
 	case "plain-ip":
 		return s.parsePlainIP(body, latencyMs)
 	case "httpbin":
@@ -173,8 +176,22 @@ func (s *proxyProbeService) parseIPAPI(body []byte, latencyMs int64) (*service.P
 	}, latencyMs, nil
 }
 
+func (s *proxyProbeService) parseIPify(body []byte, latencyMs int64) (*service.ProxyExitInfo, int64, error) {
+	var result struct {
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, latencyMs, fmt.Errorf("failed to parse ipify response: %w", err)
+	}
+	if result.IP == "" {
+		return nil, latencyMs, fmt.Errorf("ipify: no IP found in response")
+	}
+	return &service.ProxyExitInfo{
+		IP: result.IP,
+	}, latencyMs, nil
+}
+
 func (s *proxyProbeService) parseHTTPBin(body []byte, latencyMs int64) (*service.ProxyExitInfo, int64, error) {
-	// httpbin.org/ip 返回格式: {"origin": "1.2.3.4"}
 	var result struct {
 		Origin string `json:"origin"`
 	}
@@ -184,9 +201,7 @@ func (s *proxyProbeService) parseHTTPBin(body []byte, latencyMs int64) (*service
 	if result.Origin == "" {
 		return nil, latencyMs, fmt.Errorf("httpbin: no IP found in response")
 	}
-	return &service.ProxyExitInfo{
-		IP: result.Origin,
-	}, latencyMs, nil
+	return &service.ProxyExitInfo{IP: result.Origin}, latencyMs, nil
 }
 
 func (s *proxyProbeService) parsePlainIP(body []byte, latencyMs int64) (*service.ProxyExitInfo, int64, error) {

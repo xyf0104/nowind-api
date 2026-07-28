@@ -15,7 +15,6 @@ import {
   isGrokCustomBaseUrlEnabled,
   isCustomGrokBaseUrl,
   isHeaderOverrideCapable,
-  isHeaderOverridePlatform,
   planTypeDisplayLabel,
   parseHeaderOverridesJson,
   readPlanType,

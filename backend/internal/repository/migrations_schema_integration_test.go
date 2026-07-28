@@ -42,9 +42,10 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_migrations").Scan(&applied))
 	require.GreaterOrEqual(t, applied, 7, "expected schema_migrations to contain applied migrations")
 
-	// users: columns required by repository queries
+	// users: columns and indexes required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)
+	requireIndex(t, tx, "users", "idx_users_email_dot_stripped")
 
 	// accounts: schedulable and rate-limit fields
 	requireColumn(t, tx, "accounts", "notes", "text", 0, true)
@@ -54,6 +55,19 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "accounts", "overload_until", "timestamp with time zone", 0, true)
 	requireColumn(t, tx, "accounts", "session_window_status", "character varying", 20, true)
 	requireIndex(t, tx, "accounts", "idx_accounts_autopause_expiry_due")
+
+	// groups: XIASS cost controls coexist with upstream reasoning and Live policies.
+	requireColumn(t, tx, "groups", "cost_ratio", "numeric", 0, true)
+	requireColumn(t, tx, "groups", "max_reasoning_effort", "character varying", 20, false)
+	requireColumn(t, tx, "groups", "reasoning_effort_mappings", "jsonb", 0, false)
+	requireColumn(t, tx, "groups", "allow_live", "boolean", 0, false)
+
+	// composite_model_routes: upstream composite routing is installed without replacing XIASS groups.
+	requireColumn(t, tx, "composite_model_routes", "group_id", "bigint", 0, false)
+	requireColumn(t, tx, "composite_model_routes", "public_model", "character varying", 200, false)
+	requireColumn(t, tx, "composite_model_routes", "target_platform", "character varying", 50, false)
+	requireIndex(t, tx, "composite_model_routes", "idx_composite_model_routes_unique_active")
+	requireIndex(t, tx, "composite_model_routes", "idx_composite_model_routes_group_enabled")
 
 	// api_keys: key length should be 128
 	requireColumn(t, tx, "api_keys", "key", "character varying", 128, false)
@@ -73,6 +87,8 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "video_count", "integer", 0, false)
 	requireColumn(t, tx, "usage_logs", "video_resolution", "character varying", 10, true)
 	requireColumn(t, tx, "usage_logs", "video_duration_seconds", "integer", 0, true)
+	requireColumn(t, tx, "usage_logs", "session_id", "character varying", 255, true)
+	requireColumn(t, tx, "batch_image_jobs", "session_id", "character varying", 255, true)
 	requireConstraintDefinitionContains(
 		t,
 		tx,
