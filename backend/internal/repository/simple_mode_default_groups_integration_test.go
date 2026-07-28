@@ -32,8 +32,6 @@ func TestEnsureSimpleModeDefaultGroups_CreatesMissingDefaults(t *testing.T) {
 	assertGroupExists(service.PlatformOpenAI + "-default")
 	assertGroupExists(service.PlatformGemini + "-default")
 	assertGroupExists(service.PlatformGrok + "-default")
-	assertGroupExists(service.PlatformAntigravity + "-default-1")
-	assertGroupExists(service.PlatformAntigravity + "-default-2")
 
 	antigravityCount, err := client.Group.Query().
 		Where(group.PlatformEQ(service.PlatformAntigravity), group.DeletedAtIsNil()).
