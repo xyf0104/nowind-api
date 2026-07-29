@@ -323,7 +323,7 @@ export default {
     topup: {
       promoBadge: '限时加赠',
       promoTitle: '多充多送，充值越高赠送越多',
-      promoDesc: '选择更高档位可获得额外赠送余额，最高赠送 ¥49.90。',
+      promoDesc: '选择更高档位可获得额外赠送余额，最高赠送 ¥50.00。',
       getCredit: '获得',
       creditUnit: '额度',
       rechargeNow: '立即充值',

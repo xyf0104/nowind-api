@@ -358,8 +358,8 @@ describe('PaymentView recharge confirmation amounts', () => {
     await checkoutButton?.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain(formatPaymentAmount(84, 'JPY'))
-    expect(wrapper.text()).not.toContain(formatPaymentAmount(83, 'JPY'))
+    expect(wrapper.find('.text-4xl').text()).toBe(formatPaymentAmount(84, 'JPY'))
+    expect(wrapper.text()).toContain('payment.creditedBalance ¥83.99')
     wrapper.unmount()
   })
 })

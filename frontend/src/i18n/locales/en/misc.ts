@@ -299,7 +299,7 @@ export default {
     topup: {
       promoBadge: 'Limited-time bonus',
       promoTitle: 'Top up more and receive a larger bonus',
-      promoDesc: 'Choose a higher tier to receive up to ¥49.90 in bonus balance.',
+      promoDesc: 'Choose a higher tier to receive up to ¥50.00 in bonus balance.',
       getCredit: 'Get',
       creditUnit: 'credit',
       rechargeNow: 'Top up now',

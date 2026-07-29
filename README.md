@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.0.89-0ea5e9" alt="当前版本 v1.0.89" />
+    <img src="https://img.shields.io/badge/当前版本-v1.0.90-0ea5e9" alt="当前版本 v1.0.90" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.0.89
+> 当前版本：v1.0.90
 
-v1.0.89 以 v1.0.88 为完整二开基线，累计融合上游 v0.1.163 至 v0.1.166：新增分组级 OpenAI 推理策略、Redis ACL、组合分组与模型路由、Ollama Cloud 用量同步、支付宝移动端拉起、ChatGPT Live、Claude Opus 5、会话标识、公告预览和面板 API 限流；同步 Grok、Codex/Anthropic、Antigravity、Gemini、WebSocket 多轮计费、最终上游模型统计、Caddy SSE、注册、支付与安全依赖等完整修复。XIASS 品牌与深浅主题、刷新无白底、人民币价格及图片尺寸计费、批量导入与批量 API Key、FRP/软路由/SOCKS、7 天登录、缓存统计、在线更新和 Codex 配置助手均保持原有行为；数据库迁移只向前追加，现有数据卷、密钥和历史安装路径继续兼容。
+v1.0.90 以 v1.0.89 为完整二开基线，统一调整余额充值赠送规则：充值 ¥50 赠 ¥2.99、¥100 赠 ¥8、¥200 赠 ¥18、¥500 及以上赠 ¥50，并移除 ¥1000 预设档位；自选充值金额按同一区间计算赠送，小数金额同样适用。赠送仅增加到账余额，实付金额、支付二维码、手续费、退款和订阅购买逻辑保持不变。XIASS 品牌与深浅主题、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径均未改变，现有安装可无损升级。
 
 XIASS API 是本项目唯一的公开源码仓库与正式发布源。仓库包含完整前后端源码、Docker 镜像构建、数据库迁移、一键安装、在线更新、备份恢复和软路由代理节点功能。
 

@@ -25,9 +25,28 @@ func normalizeSubscriptionUSDToCNYRate(rate float64) float64 {
 	return rate
 }
 
+func calculateBalanceRechargeBonus(paymentAmount float64) float64 {
+	if math.IsNaN(paymentAmount) || math.IsInf(paymentAmount, 0) || paymentAmount < 50 {
+		return 0
+	}
+	switch {
+	case paymentAmount < 100:
+		return 2.99
+	case paymentAmount < 200:
+		return 8
+	case paymentAmount < 500:
+		return 18
+	default:
+		return 50
+	}
+}
+
 func calculateCreditedBalance(paymentAmount, multiplier float64) float64 {
-	return decimal.NewFromFloat(paymentAmount).
+	baseAmount := decimal.NewFromFloat(paymentAmount).
 		Mul(decimal.NewFromFloat(normalizeBalanceRechargeMultiplier(multiplier))).
+		Round(2)
+	return baseAmount.
+		Add(decimal.NewFromFloat(calculateBalanceRechargeBonus(paymentAmount))).
 		Round(2).
 		InexactFloat64()
 }

@@ -255,7 +255,7 @@
                 {{ formatSelectedPaymentAmount(totalAmount) }}
               </div>
               <div class="text-gray-500 dark:text-gray-400 text-sm flex justify-between items-center">
-                <span>{{ t('payment.creditedBalance', '到账余额') }} ¥{{ (selectedTier ? (selectedTier.creditUSD + selectedTier.bonusUSD) : creditedAmount).toFixed(2) }}</span>
+                <span>{{ t('payment.creditedBalance', '到账余额') }} ¥{{ creditedAmount.toFixed(2) }}</span>
                 <span v-if="feeRate > 0" class="text-xs">含手续费: {{ formatSelectedPaymentAmount(feeAmount) }}</span>
               </div>
             </div>
@@ -306,7 +306,7 @@ import { hasPeakRate, formatPeakRateWindow, serverTimezoneLabel, type PeakRateFi
 import type { SubscriptionPlan, CheckoutInfoResponse, CreateOrderResult, OrderType } from '@/types/payment'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TopupTiers from '@/components/payment/TopupTiers.vue'
-import type { PricingTier } from '@/config/pricingTiers'
+import { calculateTopupCreditedAmount, type PricingTier } from '@/config/pricingTiers'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector.vue'
 import { METHOD_ORDER, getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
 import {
@@ -576,7 +576,7 @@ const subscriptionUsdToCnyRate = computed(() => {
   const rate = checkout.value.subscription_usd_to_cny_rate
   return Number.isFinite(rate) && rate > 0 ? rate : 0
 })
-const creditedAmount = computed(() => Math.round((validAmount.value * balanceRechargeMultiplier.value) * 100) / 100)
+const creditedAmount = computed(() => calculateTopupCreditedAmount(validAmount.value, balanceRechargeMultiplier.value))
 
 // Adaptive grid: center single card, 2-col for 2 plans, 3-col for 3+
 const planGridClass = computed(() => {
