@@ -124,7 +124,7 @@
         />
       </form>
 
-      <div v-if="showOAuthLogin" class="space-y-3 pt-6">
+      <div v-if="showPasskeyLogin || showOAuthLogin" class="space-y-3 pt-6">
         <div class="flex items-center gap-3">
           <div class="h-px flex-1 bg-white/10"></div>
           <span class="text-xs text-gray-500">
@@ -132,6 +132,17 @@
           </span>
           <div class="h-px flex-1 bg-white/10"></div>
         </div>
+
+        <button
+          v-if="showPasskeyLogin"
+          type="button"
+          class="flex h-11 w-full items-center justify-center rounded-xl border border-white/15 bg-white/10 font-medium text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="authActionDisabled"
+          @click="handlePasskeyLogin"
+        >
+          <Icon name="key" size="md" class="mr-2" />
+          {{ passkeyLoading ? t('auth.passkeySigningIn') : t('auth.passkeySignIn') }}
+        </button>
 
         <EmailOAuthButtons
           :disabled="authActionDisabled"
@@ -203,6 +214,7 @@ import WechatOAuthSection from '@/components/auth/WechatOAuthSection.vue'
 import EmailOAuthButtons from '@/components/auth/EmailOAuthButtons.vue'
 import LoginAgreementPrompt from '@/components/auth/LoginAgreementPrompt.vue'
 import TotpLoginModal from '@/components/auth/TotpLoginModal.vue'
+import Icon from '@/components/icons/Icon.vue'
 import TurnstileWidget from '@/components/TurnstileWidget.vue'
 import { getPublicSettings, isTotp2FARequired, isWeChatWebOAuthEnabled } from '@/api/auth'
 import type { LoginAgreementDocument, TotpLoginResponse } from '@/types'
@@ -221,6 +233,7 @@ const authInteraction = useAuthInteractionStore()
 // ==================== State ====================
 
 const isLoading = ref<boolean>(false)
+const passkeyLoading = ref<boolean>(false)
 const errorMessage = ref<string>('')
 const showPassword = ref<boolean>(false)
 const publicSettingsLoaded = ref<boolean>(false)
@@ -237,6 +250,7 @@ const oidcOAuthProviderName = ref<string>('OIDC')
 const githubOAuthEnabled = ref<boolean>(false)
 const googleOAuthEnabled = ref<boolean>(false)
 const passwordResetEnabled = ref<boolean>(false)
+const passkeyEnabled = ref<boolean>(false)
 const loginAgreementEnabled = ref<boolean>(false)
 
 const showOAuthLogin = computed(() => {
@@ -296,7 +310,11 @@ const agreementGateActive = computed(
 )
 
 const authActionDisabled = computed(
-  () => isLoading.value || !publicSettingsLoaded.value || agreementGateActive.value
+  () => isLoading.value || passkeyLoading.value || !publicSettingsLoaded.value || agreementGateActive.value
+)
+
+const showPasskeyLogin = computed(
+  () => passkeyEnabled.value && typeof window.PublicKeyCredential !== 'undefined'
 )
 
 
@@ -331,6 +349,7 @@ onMounted(async () => {
     googleOAuthEnabled.value = settings.google_oauth_enabled
     backendModeEnabled.value = settings.backend_mode_enabled
     passwordResetEnabled.value = settings.password_reset_enabled
+    passkeyEnabled.value = settings.passkey_enabled === true
     applyLoginAgreementSettings(settings)
   } catch (error) {
     console.error('Failed to load public settings:', error)
@@ -516,6 +535,33 @@ async function handleLogin(): Promise<void> {
     appStore.showError(errorMessage.value)
   } finally {
     isLoading.value = false
+  }
+}
+
+async function handlePasskeyLogin(): Promise<void> {
+  if (agreementGateActive.value) {
+    appStore.showWarning(t('legal.loginAgreementPrompt.loginRequiredWarning'))
+    if (loginAgreementMode.value !== 'checkbox') {
+      showAgreementModal.value = true
+    }
+    return
+  }
+
+  passkeyLoading.value = true
+  try {
+    await authStore.loginWithPasskey()
+    clearAllAffiliateReferralCodes()
+    appStore.showSuccess(t('auth.loginSuccess'))
+    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
+    await router.push(redirectTo)
+  } catch (error: unknown) {
+    const fallback = error instanceof DOMException && error.name === 'NotAllowedError'
+      ? t('auth.passkeyCancelled')
+      : t('auth.passkeyFailed')
+    errorMessage.value = extractI18nErrorMessage(error, t, 'auth.errors', fallback)
+    appStore.showError(errorMessage.value)
+  } finally {
+    passkeyLoading.value = false
   }
 }
 

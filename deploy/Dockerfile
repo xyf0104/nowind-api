@@ -103,8 +103,9 @@ RUN addgroup -g 1000 xiass && \
 # Set working directory
 WORKDIR /app
 
-# Copy binary from builder
+# Copy the XIASS binary and runtime fallback pricing resources from the builder.
 COPY --from=backend-builder --chown=xiass:xiass /app/xiass-api /app/xiass-api
+COPY --from=backend-builder --chown=xiass:xiass /app/backend/resources /app/resources
 RUN ln -s /app/xiass-api /app/nowind-api && ln -s /app/xiass-api /app/sub2api
 
 # Create data directory
