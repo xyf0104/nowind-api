@@ -351,7 +351,7 @@ export default {
       },
       upstreamBillingProbe: {
         title: 'Upstream Rate Auto Detection',
-        description: 'Periodically retrieve billing rates declared by compatible upstream gateways connected to OpenAI API keys.',
+        description: 'Periodically retrieve billing rates declared by compatible upstream gateways for API Key accounts. Account rates change only when the separate sync switch is enabled.',
         enabled: 'Enable global auto detection',
         enabledHint: 'When enabled, scheduled detection runs only for accounts that also enable automatic detection. Disabling stops all scheduled detection; manual detection remains available.',
         intervalMinutes: 'Detection interval (minutes)',
