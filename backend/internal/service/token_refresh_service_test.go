@@ -856,7 +856,7 @@ func TestTokenRefreshService_RefreshWithRetry_ClearsTempUnschedulable(t *testing
 	require.Equal(t, 1, tempCache.deleteCalls) // Redis 缓存也应清除
 }
 
-func TestTokenRefreshService_RefreshWithRetry_PreservesUpstreamSuspensionCooldown(t *testing.T) {
+func TestTokenRefreshService_RefreshWithRetry_PreservesNonAuthCooldown(t *testing.T) {
 	repo := &tokenRefreshAccountRepo{}
 	invalidator := &tokenCacheInvalidatorStub{}
 	tempCache := &tempUnschedCacheStub{}
@@ -873,7 +873,7 @@ func TestTokenRefreshService_RefreshWithRetry_PreservesUpstreamSuspensionCooldow
 		Platform:                PlatformAnthropic,
 		Type:                    AccountTypeOAuth,
 		TempUnschedulableUntil:  &until,
-		TempUnschedulableReason: poolModeSuspendedAccountReason,
+		TempUnschedulableReason: "operator maintenance",
 	}
 	refresher := &tokenRefresherStub{
 		credentials: map[string]any{

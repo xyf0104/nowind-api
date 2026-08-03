@@ -94,7 +94,7 @@ func TestRateLimitService_HandleUpstreamError_PoolModeModelNotFoundUsesModelRate
 	require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), call.resetAt, 5*time.Second)
 }
 
-func TestRateLimitService_HandleUpstreamError_PoolModeSuspendedAccountTemporarilyStopsScheduling(t *testing.T) {
+func TestRateLimitService_HandleUpstreamError_PoolModeTemporaryForbiddenUsesModelCooldown(t *testing.T) {
 	repo := &modelNotFoundAccountRepoStub{}
 	svc := &RateLimitService{accountRepo: repo}
 	account := openAIModelNotFoundTempAccount()
@@ -110,8 +110,13 @@ func TestRateLimitService_HandleUpstreamError_PoolModeSuspendedAccountTemporaril
 	)
 
 	require.True(t, handled)
-	require.Equal(t, 1, repo.tempCalls)
-	require.Empty(t, repo.modelRateLimitCalls)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	call := repo.modelRateLimitCalls[0]
+	require.Equal(t, account.ID, call.accountID)
+	require.Equal(t, "gpt-5.4", call.scope)
+	require.Equal(t, poolModeTemporaryForbiddenReason, call.reason)
+	require.WithinDuration(t, time.Now().Add(poolModeTransientGatewayCooldown), call.resetAt, 5*time.Second)
 }
 
 func TestRateLimitService_HandleUpstreamError_PoolModeInsufficientBalanceKeepsSchedulingState(t *testing.T) {

@@ -2040,10 +2040,9 @@ const upstreamModelNotFoundCooldown = 30 * time.Minute
 const upstreamModelNotFoundReason = "upstream_404_model_not_found"
 const upstreamCodexPlanGatedModelCooldown = 30 * time.Minute
 const upstreamCodexPlanGatedModelReason = "upstream_400_codex_plan_gated_model"
-const poolModeSuspendedAccountCooldown = 6 * time.Hour
-const poolModeSuspendedAccountReason = "upstream_403_account_suspended"
 const poolModeTransientGatewayCooldown = 2 * time.Minute
 const poolModeTransientGatewayReason = "upstream_pool_transient_gateway"
+const poolModeTemporaryForbiddenReason = "upstream_pool_403_temporary"
 const tempUnschedBodyMaxBytes = 64 << 10
 const tempUnschedMessageMaxBytes = 2048
 
@@ -2060,36 +2059,31 @@ func (s *RateLimitService) handlePoolModeAutomaticExclusions(ctx context.Context
 	if model != "" && s.HandleUpstreamModelNotFound(ctx, account, model, statusCode, responseBody) {
 		return true
 	}
-	if s.handlePoolModeSuspendedAccount(ctx, account, statusCode, responseBody) {
+	if model != "" && s.handlePoolModeTemporaryForbidden(ctx, account, model, statusCode, responseBody) {
 		return true
 	}
 	return model != "" && s.handlePoolModeTransientGatewayFailure(ctx, account, model, statusCode)
 }
 
-func (s *RateLimitService) handlePoolModeSuspendedAccount(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+func (s *RateLimitService) handlePoolModeTemporaryForbidden(ctx context.Context, account *Account, requestedModel string, statusCode int, responseBody []byte) bool {
 	if !isUpstreamPoolAccountSuspendedError(statusCode, responseBody) {
 		return false
 	}
 
-	until := time.Now().Add(poolModeSuspendedAccountCooldown)
-	s.notifyAccountSchedulingBlocked(account, until, poolModeSuspendedAccountReason)
-	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, poolModeSuspendedAccountReason); err != nil {
-		slog.Warn("pool_mode_suspended_account_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+	modelKey := modelRateLimitKeyForUpstreamFailure(ctx, account, requestedModel)
+	if modelKey == "" {
+		return false
+	}
+
+	// A 403 from an upstream can be a transient balance, entitlement, or
+	// configuration issue. Skip only this account/model pair briefly and let
+	// every other model remain schedulable.
+	until := time.Now().Add(poolModeTransientGatewayCooldown)
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, until, poolModeTemporaryForbiddenReason); err != nil {
+		slog.Warn("pool_mode_temporary_forbidden_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "error", err)
 		return true
 	}
-	if s.tempUnschedCache != nil {
-		state := &TempUnschedState{
-			UntilUnix:       until.Unix(),
-			TriggeredAtUnix: time.Now().Unix(),
-			StatusCode:      statusCode,
-			MatchedKeyword:  "account_suspended",
-			ErrorMessage:    poolModeSuspendedAccountReason,
-		}
-		if err := s.tempUnschedCache.SetTempUnsched(ctx, account.ID, state); err != nil {
-			slog.Warn("pool_mode_suspended_account_cache_set_failed", "account_id", account.ID, "error", err)
-		}
-	}
-	slog.Info("pool_mode_suspended_account_temp_unscheduled", "account_id", account.ID, "until", until)
+	slog.Info("pool_mode_temporary_forbidden_model_rate_limited", "account_id", account.ID, "model", modelKey, "until", until)
 	return true
 }
 
