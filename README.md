@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.0.92-0ea5e9" alt="当前版本 v1.0.92" />
+    <img src="https://img.shields.io/badge/当前版本-v1.0.93-0ea5e9" alt="当前版本 v1.0.93" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.0.92
+> 当前版本：v1.0.93
 
-v1.0.92 以 v1.0.91 为完整二开基线，融合上游 v0.1.170 的分组利润控制、跨平台上游计费倍率探测与可选自动同步、内容审核代理和安全审计范围等能力，并纳入 Anthropic 流式漏计费、OpenAI WebSocket/流式重试、Codex 工具与 instructions、Responses 图片桥接、Grok 冷却与计费事件、订阅周期、支付设置、图片任务和 SMTP 等修复。分组利润控制与账号倍率自动同步均默认关闭；按 XIASS 产品规划继续排除模型广场、精简首页和上游品牌内容。XIASS 品牌与深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径均保持不变，现有安装可无损升级。
+v1.0.93 修复池模式账号的不可恢复上游故障调度：模型不存在时仅对对应模型临时隔离并立即切换；账号被上游风控锁定时临时停止整账号调度；502/503/504 上游网关故障短暂绕开对应模型。余额不足类响应保持原有行为，不会自动停用账号。XIASS 品牌与深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径均保持不变，现有安装可无损升级。
 
 XIASS API 是本项目唯一的公开源码仓库与正式发布源。仓库包含完整前后端源码、Docker 镜像构建、数据库迁移、一键安装、在线更新、备份恢复和软路由代理节点功能。
 
