@@ -1158,6 +1158,7 @@ func (s *TokenRefreshService) retryBackoff(accountID int64, attempt int) time.Du
 
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
+	clearTempUnschedulable := shouldClearTempUnschedulableAfterRefresh(account)
 	s.clearAntigravityForceTokenRefresh(ctx, account, "success")
 
 	// Antigravity 账户：如果之前是因为缺少 project_id 而标记为 error，现在成功获取到了，清除错误状态
@@ -1174,8 +1175,12 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 			s.notifyAccountSchedulingBlockCleared(account.ID)
 		}
 	}
-	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）
-	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
+	// A refreshed token can only recover an auth/refresh failure. Do not let a
+	// successful refresh silently re-enable an account that another upstream has
+	// suspended or locked.
+	if account.TempUnschedulableUntil != nil &&
+		time.Now().Before(*account.TempUnschedulableUntil) &&
+		clearTempUnschedulable {
 		if clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); clearErr != nil {
 			slog.Warn("token_refresh.clear_temp_unschedulable_failed",
 				"account_id", account.ID,
@@ -1200,6 +1205,23 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	s.ensureOpenAIPrivacy(ctx, account)
 	// Antigravity OAuth: 刷新成功后，检查是否已设置 privacy_mode，未设置则调用 setUserSettings
 	s.ensureAntigravityPrivacy(ctx, account)
+}
+
+func shouldClearTempUnschedulableAfterRefresh(account *Account) bool {
+	if account == nil {
+		return false
+	}
+
+	reason := strings.ToLower(strings.TrimSpace(account.TempUnschedulableReason))
+	if strings.HasPrefix(reason, "oauth 401") ||
+		strings.HasPrefix(reason, "authentication failed (401)") ||
+		strings.HasPrefix(reason, "token refresh retry exhausted") {
+		return true
+	}
+
+	// Antigravity stores the reason in extra while forcing an immediate token
+	// refresh, so keep its established recovery path intact.
+	return account.Platform == PlatformAntigravity && account.getExtraBool(antigravityForceTokenRefreshExtraKey)
 }
 
 func (s *TokenRefreshService) postRefreshStateSyncWithCleanup(parent context.Context, account *Account) {
