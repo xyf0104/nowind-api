@@ -69,6 +69,96 @@ func TestRateLimitService_HandleUpstreamError_ModelNotFoundUsesModelRateLimit(t 
 	require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), call.resetAt, 5*time.Second)
 }
 
+func TestRateLimitService_HandleUpstreamError_PoolModeModelNotFoundUsesModelRateLimit(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusNotFound,
+		http.Header{},
+		[]byte(`{"error":{"code":"model_not_found","message":"model not found"}}`),
+		"gpt-5.4",
+	)
+
+	require.True(t, handled)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	call := repo.modelRateLimitCalls[0]
+	require.Equal(t, account.ID, call.accountID)
+	require.Equal(t, "gpt-5.4", call.scope)
+	require.Equal(t, upstreamModelNotFoundReason, call.reason)
+	require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), call.resetAt, 5*time.Second)
+}
+
+func TestRateLimitService_HandleUpstreamError_PoolModeSuspendedAccountTemporarilyStopsScheduling(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusForbidden,
+		http.Header{},
+		[]byte(`{"message":"Your User ID temporarily is suspended. We've locked your account as a security precaution."}`),
+		"gpt-5.4",
+	)
+
+	require.True(t, handled)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Empty(t, repo.modelRateLimitCalls)
+}
+
+func TestRateLimitService_HandleUpstreamError_PoolModeInsufficientBalanceKeepsSchedulingState(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusForbidden,
+		http.Header{},
+		[]byte(`{"message":"Insufficient account balance"}`),
+		"gpt-5.4",
+	)
+
+	require.False(t, handled)
+	require.Zero(t, repo.tempCalls)
+	require.Empty(t, repo.modelRateLimitCalls)
+}
+
+func TestRateLimitService_HandleUpstreamError_PoolModeGatewayFailureUsesModelCooldown(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusBadGateway,
+		http.Header{},
+		[]byte(`The origin web server returned an invalid or incomplete response to Cloudflare.`),
+		"gpt-5.4",
+	)
+
+	require.True(t, handled)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	call := repo.modelRateLimitCalls[0]
+	require.Equal(t, account.ID, call.accountID)
+	require.Equal(t, "gpt-5.4", call.scope)
+	require.Equal(t, poolModeTransientGatewayReason, call.reason)
+	require.WithinDuration(t, time.Now().Add(poolModeTransientGatewayCooldown), call.resetAt, 5*time.Second)
+}
+
 func TestRateLimitService_HandleUpstreamError_ModelNotFoundWriteFailureDoesNotTempUnschedule(t *testing.T) {
 	repo := &modelNotFoundAccountRepoStub{modelRateLimitErr: errors.New("write failed")}
 	svc := &RateLimitService{accountRepo: repo}

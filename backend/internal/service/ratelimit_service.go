@@ -160,6 +160,9 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 		return ErrorPolicySkipped
 	}
 	if account.IsPoolMode() {
+		if s.handlePoolModeAutomaticExclusions(ctx, account, statusCode, responseBody, requestedModel...) {
+			return ErrorPolicyTempUnscheduled
+		}
 		// 池模式只跳过默认账号状态处理；管理员显式配置的临时不可调度规则仍应生效。
 		// 401 保留现有认证错误语义，避免改变重复 401 的升级行为。
 		if statusCode != http.StatusUnauthorized && s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
@@ -182,6 +185,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// 池模式默认不标记本地账号状态；但管理员显式配置的临时不可调度规则优先。
 	// 401 保留现有认证错误语义，不在这里改变池模式的认证处理。
 	if account.IsPoolMode() && !customErrorCodesEnabled {
+		if s.handlePoolModeAutomaticExclusions(ctx, account, statusCode, responseBody, requestedModel...) {
+			return true
+		}
 		if statusCode != http.StatusUnauthorized && s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
 			return true
 		}
@@ -2034,8 +2040,124 @@ const upstreamModelNotFoundCooldown = 30 * time.Minute
 const upstreamModelNotFoundReason = "upstream_404_model_not_found"
 const upstreamCodexPlanGatedModelCooldown = 30 * time.Minute
 const upstreamCodexPlanGatedModelReason = "upstream_400_codex_plan_gated_model"
+const poolModeSuspendedAccountCooldown = 6 * time.Hour
+const poolModeSuspendedAccountReason = "upstream_403_account_suspended"
+const poolModeTransientGatewayCooldown = 2 * time.Minute
+const poolModeTransientGatewayReason = "upstream_pool_transient_gateway"
 const tempUnschedBodyMaxBytes = 64 << 10
 const tempUnschedMessageMaxBytes = 2048
+
+// handlePoolModeAutomaticExclusions handles deterministic failures that a
+// pool-mode account cannot recover from by simply retrying the same upstream.
+// Balance exhaustion is explicitly excluded: it remains an operator decision
+// and must not change the account's scheduling state automatically.
+func (s *RateLimitService) handlePoolModeAutomaticExclusions(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) bool {
+	if s == nil || account == nil || s.accountRepo == nil {
+		return false
+	}
+
+	model := firstRequestedModel(requestedModel)
+	if model != "" && s.HandleUpstreamModelNotFound(ctx, account, model, statusCode, responseBody) {
+		return true
+	}
+	if s.handlePoolModeSuspendedAccount(ctx, account, statusCode, responseBody) {
+		return true
+	}
+	return model != "" && s.handlePoolModeTransientGatewayFailure(ctx, account, model, statusCode)
+}
+
+func (s *RateLimitService) handlePoolModeSuspendedAccount(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+	if !isUpstreamPoolAccountSuspendedError(statusCode, responseBody) {
+		return false
+	}
+
+	until := time.Now().Add(poolModeSuspendedAccountCooldown)
+	s.notifyAccountSchedulingBlocked(account, until, poolModeSuspendedAccountReason)
+	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, poolModeSuspendedAccountReason); err != nil {
+		slog.Warn("pool_mode_suspended_account_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		return true
+	}
+	if s.tempUnschedCache != nil {
+		state := &TempUnschedState{
+			UntilUnix:       until.Unix(),
+			TriggeredAtUnix: time.Now().Unix(),
+			StatusCode:      statusCode,
+			MatchedKeyword:  "account_suspended",
+			ErrorMessage:    poolModeSuspendedAccountReason,
+		}
+		if err := s.tempUnschedCache.SetTempUnsched(ctx, account.ID, state); err != nil {
+			slog.Warn("pool_mode_suspended_account_cache_set_failed", "account_id", account.ID, "error", err)
+		}
+	}
+	slog.Info("pool_mode_suspended_account_temp_unscheduled", "account_id", account.ID, "until", until)
+	return true
+}
+
+func (s *RateLimitService) handlePoolModeTransientGatewayFailure(ctx context.Context, account *Account, requestedModel string, statusCode int) bool {
+	if statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable && statusCode != http.StatusGatewayTimeout {
+		return false
+	}
+	modelKey := modelRateLimitKeyForUpstreamFailure(ctx, account, requestedModel)
+	if modelKey == "" {
+		return false
+	}
+	until := time.Now().Add(poolModeTransientGatewayCooldown)
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, until, poolModeTransientGatewayReason); err != nil {
+		slog.Warn("pool_mode_transient_gateway_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "error", err)
+		return true
+	}
+	slog.Info("pool_mode_transient_gateway_model_rate_limited", "account_id", account.ID, "model", modelKey, "until", until)
+	return true
+}
+
+func isUpstreamPoolAccountSuspendedError(statusCode int, responseBody []byte) bool {
+	if statusCode != http.StatusForbidden || isUpstreamInsufficientBalanceError(responseBody) {
+		return false
+	}
+	text := upstreamFailureText(responseBody)
+	for _, marker := range []string{
+		"temporarily is suspended",
+		"temporarily suspended",
+		"locked your account",
+		"account has been locked",
+		"account is suspended",
+		"all credentials are disabled",
+		"all credentials have been disabled",
+		"\u6240\u6709\u51ed\u636e\u5747\u5df2\u7981\u7528",
+		"\u6240\u6709\u51ed\u636e\u5df2\u7981\u7528",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUpstreamInsufficientBalanceError(responseBody []byte) bool {
+	text := upstreamFailureText(responseBody)
+	for _, marker := range []string{
+		"insufficient account balance",
+		"insufficient balance",
+		"insufficient credit balance",
+		"not enough credits",
+		"credits exhausted",
+		"\u4f59\u989d\u4e0d\u8db3",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func upstreamFailureText(responseBody []byte) string {
+	const maxBytes = 8 << 10
+	if len(responseBody) > maxBytes {
+		responseBody = responseBody[:maxBytes]
+	}
+	message := extractUpstreamErrorMessage(responseBody)
+	return strings.ToLower(strings.TrimSpace(message + " " + string(responseBody)))
+}
 
 // HandleUpstreamModelNotFound marks the requested model as temporarily
 // unavailable on the account when the upstream deterministically reports it
@@ -2062,7 +2184,7 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	default:
 		return false
 	}
-	modelKey := modelRateLimitKeyForUpstreamModelNotFound(ctx, account, requestedModel)
+	modelKey := modelRateLimitKeyForUpstreamFailure(ctx, account, requestedModel)
 	if modelKey == "" {
 		return false
 	}
@@ -2075,7 +2197,7 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	return true
 }
 
-func modelRateLimitKeyForUpstreamModelNotFound(ctx context.Context, account *Account, requestedModel string) string {
+func modelRateLimitKeyForUpstreamFailure(ctx context.Context, account *Account, requestedModel string) string {
 	modelKey := strings.TrimSpace(requestedModel)
 	if account == nil || modelKey == "" {
 		return modelKey
