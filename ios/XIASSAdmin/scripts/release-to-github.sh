@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Codex/Xcode command-line environments can have Command Line Tools selected
+# even when the full Xcode app is installed. IPA export requires full Xcode.
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
+
 if [ "$#" -ne 3 ]; then
   echo "Usage: $0 <version> <team-id> <bundle-id>"
   echo "Example: $0 1.0.1 ABCDE12345 com.example.xiassadmin"
