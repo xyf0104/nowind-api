@@ -29,7 +29,7 @@ describe('codexHelper', () => {
     const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4)
     const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(padded), char => char.charCodeAt(0))))
     expect(decoded).toEqual({
-      base_url: 'https://gateway.example.com',
+      base_url: 'https://gateway.example.com/v1',
       api_key: 'sk-secret-value',
       key_name: '我的 Codex 密钥'
     })

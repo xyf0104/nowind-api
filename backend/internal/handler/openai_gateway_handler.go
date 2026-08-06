@@ -333,18 +333,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.String("previous_response_id_kind", previousResponseIDKind),
 			zap.Int("previous_response_id_len", len(previousResponseID)),
 		)
-		if previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
+		if shouldRejectOpenAIHTTPPreviousResponseID(previousResponseIDKind) {
 			reqLog.Warn("openai.request_validation_failed",
 				zap.String("reason", "previous_response_id_looks_like_message_id"),
 			)
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id must be a response.id (resp_*), not a message id")
 			return
 		}
-		reqLog.Warn("openai.request_validation_failed",
-			zap.String("reason", "previous_response_id_requires_wsv2"),
-		)
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id is only supported on Responses WebSocket v2")
-		return
+		// HTTP Responses clients can legitimately send a response id from a
+		// previous turn. The forwarding layer retains it for WS v2 accounts and
+		// strips it for HTTP-only upstreams, where the client-supplied input is
+		// used to rebuild the request. Rejecting it here made every follow-up
+		// request fail before that compatibility path could run.
+		reqLog.Debug("openai.http_previous_response_id_received")
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream)
@@ -1329,6 +1330,10 @@ func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponse(c *gin.Context, stre
 	}
 	h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
 	return true
+}
+
+func shouldRejectOpenAIHTTPPreviousResponseID(kind string) bool {
+	return kind == service.OpenAIPreviousResponseIDKindMessageID
 }
 
 func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context, body []byte, reqLog *zap.Logger) bool {

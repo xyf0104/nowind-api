@@ -106,6 +106,7 @@ func TestApplyAndRestorePreservesOriginalConfig(t *testing.T) {
 func TestNormalizeApplyConfigSupportsHTTPSAndLoopbackHTTP(t *testing.T) {
 	tests := map[string]string{
 		"https":                   "https://gateway.example.com/v1",
+		"https root":              "https://gateway.example.com",
 		"localhost":               "http://localhost:54843/v1",
 		"loopback IPv4":           "http://127.0.0.1:54843/V1",
 		"loopback IPv4 no scheme": "127.0.0.1:54843/V1",
@@ -113,6 +114,7 @@ func TestNormalizeApplyConfigSupportsHTTPSAndLoopbackHTTP(t *testing.T) {
 	}
 	wants := map[string]string{
 		"https":                   "https://gateway.example.com/v1",
+		"https root":              "https://gateway.example.com/v1",
 		"localhost":               "http://localhost:54843/v1",
 		"loopback IPv4":           "http://127.0.0.1:54843/V1",
 		"loopback IPv4 no scheme": "http://127.0.0.1:54843/V1",

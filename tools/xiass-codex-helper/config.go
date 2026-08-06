@@ -426,6 +426,9 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	if !strings.EqualFold(parsed.Path[strings.LastIndex(parsed.Path, "/")+1:], "v1") {
+		parsed.Path += "/v1"
+	}
 	input.BaseURL = strings.TrimRight(parsed.String(), "/")
 	return input, nil
 }

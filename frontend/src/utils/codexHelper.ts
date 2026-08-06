@@ -71,10 +71,11 @@ function normalizeBaseUrl(value: string): string {
   if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password) {
     throw new Error('XIASS API 地址无效')
   }
-  parsed.search = ''
-  parsed.hash = ''
-  parsed.pathname = parsed.pathname.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
-  return parsed.toString().replace(/\/$/, '')
+	parsed.search = ''
+	parsed.hash = ''
+	const path = parsed.pathname.replace(/\/+$/, '')
+	parsed.pathname = /\/v1$/i.test(path) ? path : `${path}/v1`
+	return parsed.toString().replace(/\/$/, '')
 }
 
 function encodeBase64Url(value: string): string {
