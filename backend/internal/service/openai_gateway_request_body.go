@@ -280,14 +280,16 @@ func isOpenAIEncryptedReasoningInputItem(item any) bool {
 }
 
 // stripOpenAIInvalidMessageInputIDs removes message IDs which do not satisfy
-// the upstream Responses input schema. It is intentionally used only after an
-// HTTP passthrough continuation anchor has been removed: older Codex clients
-// can replay response output IDs such as resp_..._msg as input message IDs,
-// while the ChatGPT endpoint accepts only msg_ message identifiers. Message IDs
-// are optional in input history, so dropping the invalid ID preserves the
-// conversation content without sending an invalid reference upstream.
+// the upstream Responses input schema. Older Codex clients can replay response
+// output IDs such as resp_..._msg as input message IDs, while the ChatGPT
+// endpoint accepts only msg_ message identifiers. Message IDs are optional in
+// input history, so dropping the invalid ID preserves the conversation content
+// without sending an invalid reference upstream.
 func stripOpenAIInvalidMessageInputIDs(body []byte) (sanitized []byte, changed bool, err error) {
 	if len(body) == 0 || !gjson.GetBytes(body, "input").Exists() {
+		return body, false, nil
+	}
+	if !hasOpenAIInvalidMessageInputID(body) {
 		return body, false, nil
 	}
 
@@ -305,6 +307,31 @@ func stripOpenAIInvalidMessageInputIDs(body []byte) (sanitized []byte, changed b
 		return body, false, fmt.Errorf("serialize passthrough continuation body: %w", marshalErr)
 	}
 	return out, true, nil
+}
+
+func hasOpenAIInvalidMessageInputID(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	if !input.Exists() {
+		return false
+	}
+	containsInvalidID := false
+	inspect := func(item gjson.Result) bool {
+		if item.Get("type").String() != "message" {
+			return true
+		}
+		id := strings.TrimSpace(item.Get("id").String())
+		if id != "" && !strings.HasPrefix(id, "msg_") {
+			containsInvalidID = true
+			return false
+		}
+		return true
+	}
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool { return inspect(item) })
+		return containsInvalidID
+	}
+	inspect(input)
+	return containsInvalidID
 }
 
 func stripOpenAIInvalidMessageInputIDsFromBody(reqBody map[string]any) bool {
@@ -794,9 +821,8 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	// clients still send previous_response_id together with the full input history,
 	// so retaining it turns an otherwise valid follow-up into an immediate 400.
 	// Once that anchor is removed, its encrypted continuation items are no longer
-	// verifiable by the upstream; drop those coupled items and strip invalid
-	// response-output message IDs while retaining the remaining conversation
-	// history.
+	// verifiable by the upstream; drop those coupled items while retaining the
+	// remaining conversation history.
 	if previousResponseID := gjson.GetBytes(normalized, "previous_response_id"); previousResponseID.Exists() {
 		next, err := sjson.DeleteBytes(normalized, "previous_response_id")
 		if err != nil {
@@ -813,13 +839,19 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 			normalized = next
 		}
 
-		next, removedInvalidMessageIDs, err := stripOpenAIInvalidMessageInputIDs(normalized)
-		if err != nil {
-			return body, false, fmt.Errorf("normalize passthrough body strip invalid message IDs: %w", err)
-		}
-		if removedInvalidMessageIDs {
-			normalized = next
-		}
+	}
+
+	// Some Codex history replays include a response output ID as a message ID
+	// even when they omit previous_response_id. That is not valid on the HTTP
+	// passthrough endpoint, so normalize this narrow invalid shape independently
+	// of continuation-anchor presence.
+	next, removedInvalidMessageIDs, err := stripOpenAIInvalidMessageInputIDs(normalized)
+	if err != nil {
+		return body, false, fmt.Errorf("normalize passthrough body strip invalid message IDs: %w", err)
+	}
+	if removedInvalidMessageIDs {
+		normalized = next
+		changed = true
 	}
 
 	if inputResult := gjson.GetBytes(normalized, "input"); inputResult.Exists() {

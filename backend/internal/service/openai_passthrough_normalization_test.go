@@ -134,13 +134,14 @@ func TestNormalizeOpenAIPassthroughOAuthBody_StripsLegacyResponseMessageIDsWithP
 	require.Equal(t, "call_valid", gjson.GetBytes(normalized, "input.2.id").String(), "tool-call IDs must be preserved")
 }
 
-func TestNormalizeOpenAIPassthroughOAuthBody_PreservesLegacyMessageIDsWithoutPreviousResponseID(t *testing.T) {
+func TestNormalizeOpenAIPassthroughOAuthBody_StripsLegacyMessageIDsWithoutPreviousResponseID(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","id":"resp_legacy_msg","role":"assistant","content":"do not rewrite independent requests"}]}`)
 
 	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false)
 	require.NoError(t, err)
-	require.True(t, changed, "standard passthrough normalization may add stream/store fields")
-	require.Equal(t, "resp_legacy_msg", gjson.GetBytes(normalized, "input.0.id").String())
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "input.0.id").Exists())
+	require.Equal(t, "do not rewrite independent requests", gjson.GetBytes(normalized, "input.0.content").String())
 }
 
 func TestDetectOpenAIPassthroughInstructionsRejectReason(t *testing.T) {
