@@ -201,11 +201,11 @@ func SanitizeOpenAICrossModeFailoverReasoning(body []byte) (sanitized []byte, ch
 	return out, true, nil
 }
 
-// dropOpenAIEncryptedReasoningInputItems removes reasoning input items that carry
-// provider-specific encrypted_content in full — including their coupled id and
-// summary — and reports whether anything changed. Contrast with
-// trimOpenAIEncryptedReasoningItems, which only strips fields while keeping the
-// reasoning item skeleton.
+// dropOpenAIEncryptedReasoningInputItems removes encrypted continuation input
+// items in full — reasoning, compaction, and compaction_summary — including their
+// coupled id and summary shape, and reports whether anything changed. Contrast
+// with trimOpenAIEncryptedReasoningItems, which only strips fields while keeping
+// the reasoning item skeleton.
 func dropOpenAIEncryptedReasoningInputItems(reqBody map[string]any) bool {
 	if len(reqBody) == 0 {
 		return false
@@ -269,7 +269,10 @@ func isOpenAIEncryptedReasoningInputItem(item any) bool {
 	if !ok {
 		return false
 	}
-	if itemType, _ := inputItem["type"].(string); strings.TrimSpace(itemType) != "reasoning" {
+	itemType, _ := inputItem["type"].(string)
+	switch strings.TrimSpace(itemType) {
+	case "reasoning", "compaction", "compaction_summary":
+	default:
 		return false
 	}
 	_, has := inputItem["encrypted_content"]

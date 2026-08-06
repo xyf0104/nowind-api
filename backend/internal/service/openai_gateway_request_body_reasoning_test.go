@@ -158,6 +158,23 @@ func TestSanitizeOpenAICrossModeFailoverReasoning_DropsWholeEncryptedItem(t *tes
 	require.Equal(t, int64(2), gjson.GetBytes(sanitized, "input.#").Int())
 }
 
+func TestSanitizeOpenAICrossModeFailoverReasoning_DropsEncryptedCompactionItems(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","input":[` +
+		`{"type":"compaction","id":"cmp_stale","encrypted_content":"ENC"},` +
+		`{"type":"compaction_summary","id":"cmp_summary_stale","encrypted_content":"ENC"},` +
+		`{"type":"message","role":"user","content":"continue normally"}` +
+		`]}`)
+
+	sanitized, changed, err := SanitizeOpenAICrossModeFailoverReasoning(body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, int64(1), gjson.GetBytes(sanitized, "input.#").Int())
+	require.Equal(t, "message", gjson.GetBytes(sanitized, "input.0.type").String())
+	require.Equal(t, "continue normally", gjson.GetBytes(sanitized, "input.0.content").String())
+	require.NotContains(t, string(sanitized), "compaction")
+	require.NotContains(t, string(sanitized), "encrypted_content")
+}
+
 func TestSanitizeOpenAICrossModeFailoverReasoning_NoEncryptedIsNoop(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.1","input":[{"type":"reasoning","summary":[{"type":"summary_text","text":"t"}]}]}`)
 	sanitized, changed, err := SanitizeOpenAICrossModeFailoverReasoning(body)
