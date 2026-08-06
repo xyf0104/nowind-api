@@ -279,6 +279,76 @@ func isOpenAIEncryptedReasoningInputItem(item any) bool {
 	return has
 }
 
+// stripOpenAIInvalidMessageInputIDs removes message IDs which do not satisfy
+// the upstream Responses input schema. It is intentionally used only after an
+// HTTP passthrough continuation anchor has been removed: older Codex clients
+// can replay response output IDs such as resp_..._msg as input message IDs,
+// while the ChatGPT endpoint accepts only msg_ message identifiers. Message IDs
+// are optional in input history, so dropping the invalid ID preserves the
+// conversation content without sending an invalid reference upstream.
+func stripOpenAIInvalidMessageInputIDs(body []byte) (sanitized []byte, changed bool, err error) {
+	if len(body) == 0 || !gjson.GetBytes(body, "input").Exists() {
+		return body, false, nil
+	}
+
+	var decoded map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return body, false, fmt.Errorf("decode passthrough continuation body: %w", err)
+	}
+	if !stripOpenAIInvalidMessageInputIDsFromBody(decoded) {
+		return body, false, nil
+	}
+	out, marshalErr := marshalOpenAIUpstreamJSON(decoded)
+	if marshalErr != nil {
+		return body, false, fmt.Errorf("serialize passthrough continuation body: %w", marshalErr)
+	}
+	return out, true, nil
+}
+
+func stripOpenAIInvalidMessageInputIDsFromBody(reqBody map[string]any) bool {
+	if len(reqBody) == 0 {
+		return false
+	}
+	inputValue, has := reqBody["input"]
+	if !has {
+		return false
+	}
+
+	changed := false
+	strip := func(item any) {
+		inputItem, ok := item.(map[string]any)
+		if !ok {
+			return
+		}
+		itemType, _ := inputItem["type"].(string)
+		if strings.TrimSpace(itemType) != "message" {
+			return
+		}
+		id, ok := inputItem["id"].(string)
+		if !ok || strings.HasPrefix(strings.TrimSpace(id), "msg_") {
+			return
+		}
+		delete(inputItem, "id")
+		changed = true
+	}
+
+	switch input := inputValue.(type) {
+	case []any:
+		for _, item := range input {
+			strip(item)
+		}
+	case []map[string]any:
+		for _, item := range input {
+			strip(item)
+		}
+	case map[string]any:
+		strip(input)
+	}
+	return changed
+}
+
 func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
 	return isOpenAIResponsesCompactPath(c)
 }
@@ -723,9 +793,10 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	// ChatGPT internal HTTP Responses endpoint rejects continuation IDs. Older Codex
 	// clients still send previous_response_id together with the full input history,
 	// so retaining it turns an otherwise valid follow-up into an immediate 400.
-	// Once that anchor is removed, its encrypted reasoning items are no longer
-	// verifiable by the upstream either; drop only those coupled items and retain
-	// the remaining conversation history.
+	// Once that anchor is removed, its encrypted continuation items are no longer
+	// verifiable by the upstream; drop those coupled items and strip invalid
+	// response-output message IDs while retaining the remaining conversation
+	// history.
 	if previousResponseID := gjson.GetBytes(normalized, "previous_response_id"); previousResponseID.Exists() {
 		next, err := sjson.DeleteBytes(normalized, "previous_response_id")
 		if err != nil {
@@ -739,6 +810,14 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 			return body, false, fmt.Errorf("normalize passthrough body drop encrypted reasoning: %w", err)
 		}
 		if removedEncryptedReasoning {
+			normalized = next
+		}
+
+		next, removedInvalidMessageIDs, err := stripOpenAIInvalidMessageInputIDs(normalized)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body strip invalid message IDs: %w", err)
+		}
+		if removedInvalidMessageIDs {
 			normalized = next
 		}
 	}

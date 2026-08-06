@@ -121,6 +121,28 @@ func TestNormalizeOpenAIPassthroughOAuthBody_RemovesEncryptedCompactionWithPrevi
 	require.NotContains(t, string(normalized), "compaction")
 }
 
+func TestNormalizeOpenAIPassthroughOAuthBody_StripsLegacyResponseMessageIDsWithPreviousResponseID(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","previous_response_id":"resp_previous","input":[{"type":"message","id":"resp_legacy_msg","role":"assistant","content":"retain assistant history"},{"type":"message","id":"msg_valid","role":"user","content":"retain user history"},{"type":"function_call","id":"call_valid","name":"lookup","arguments":"{}"}]}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(normalized, "input.0.id").Exists(), "legacy response output ID must not be sent as an input message ID")
+	require.Equal(t, "retain assistant history", gjson.GetBytes(normalized, "input.0.content").String())
+	require.Equal(t, "msg_valid", gjson.GetBytes(normalized, "input.1.id").String(), "valid message IDs must be preserved")
+	require.Equal(t, "call_valid", gjson.GetBytes(normalized, "input.2.id").String(), "tool-call IDs must be preserved")
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_PreservesLegacyMessageIDsWithoutPreviousResponseID(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","id":"resp_legacy_msg","role":"assistant","content":"do not rewrite independent requests"}]}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false)
+	require.NoError(t, err)
+	require.True(t, changed, "standard passthrough normalization may add stream/store fields")
+	require.Equal(t, "resp_legacy_msg", gjson.GetBytes(normalized, "input.0.id").String())
+}
+
 func TestDetectOpenAIPassthroughInstructionsRejectReason(t *testing.T) {
 	for _, tt := range []struct {
 		name string
