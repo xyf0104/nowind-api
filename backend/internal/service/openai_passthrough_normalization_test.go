@@ -86,6 +86,28 @@ func TestNormalizeOpenAIPassthroughOAuthBody_ArrayInputUnchanged(t *testing.T) {
 	require.Equal(t, "message", input.Array()[0].Get("type").String())
 }
 
+func TestNormalizeOpenAIPassthroughOAuthBody_RemovesPreviousResponseID(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","previous_response_id":"resp_previous","input":[{"type":"message","role":"user","content":"follow up"}]}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
+	require.True(t, gjson.GetBytes(normalized, "input").IsArray())
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_RemovesEncryptedReasoningWithPreviousResponseID(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","previous_response_id":"resp_previous","input":[{"type":"reasoning","id":"rs_previous","encrypted_content":"ciphertext","summary":[{"type":"summary_text","text":"discarded with its invalid anchor"}]},{"type":"message","role":"user","content":"keep this follow up"}]}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
+	require.Len(t, gjson.GetBytes(normalized, "input").Array(), 1)
+	require.Equal(t, "message", gjson.GetBytes(normalized, "input.0.type").String())
+	require.Equal(t, "keep this follow up", gjson.GetBytes(normalized, "input.0.content").String())
+}
+
 func TestDetectOpenAIPassthroughInstructionsRejectReason(t *testing.T) {
 	for _, tt := range []struct {
 		name string

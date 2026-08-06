@@ -696,6 +696,7 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 // normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
 // 1) 删除 ChatGPT internal API 不支持的顶层 Responses 参数
 // 2) store=false 3) 非 compact 保持 stream=true；compact 强制 stream=false
+// 4) HTTP 透传不支持 previous_response_id，客户端已随 input 带完整对话历史时移除该续接锚点。
 func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
@@ -714,6 +715,29 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		}
 		normalized = next
 		changed = true
+	}
+
+	// ChatGPT internal HTTP Responses endpoint rejects continuation IDs. Older Codex
+	// clients still send previous_response_id together with the full input history,
+	// so retaining it turns an otherwise valid follow-up into an immediate 400.
+	// Once that anchor is removed, its encrypted reasoning items are no longer
+	// verifiable by the upstream either; drop only those coupled items and retain
+	// the remaining conversation history.
+	if previousResponseID := gjson.GetBytes(normalized, "previous_response_id"); previousResponseID.Exists() {
+		next, err := sjson.DeleteBytes(normalized, "previous_response_id")
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body delete previous_response_id: %w", err)
+		}
+		normalized = next
+		changed = true
+
+		next, removedEncryptedReasoning, err := SanitizeOpenAICrossModeFailoverReasoning(normalized)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body drop encrypted reasoning: %w", err)
+		}
+		if removedEncryptedReasoning {
+			normalized = next
+		}
 	}
 
 	if inputResult := gjson.GetBytes(normalized, "input"); inputResult.Exists() {
