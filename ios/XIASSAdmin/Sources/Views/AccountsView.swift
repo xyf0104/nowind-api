@@ -211,6 +211,7 @@ struct AccountDetailView: View {
     @State private var message: ErrorMessage?
     @State private var showEditor = false
     @State private var showTest = false
+    @State private var showReauthorization = false
     @State private var showDeleteConfirmation = false
 
     init(account: AdminAccount) {
@@ -244,6 +245,11 @@ struct AccountDetailView: View {
             Section("常用操作") {
                 Button { showTest = true } label: {
                     Label("测试账号", systemImage: "bolt.horizontal.circle")
+                }
+                if reauthorizationPlatform != nil {
+                    Button { showReauthorization = true } label: {
+                        Label("重新授权", systemImage: "arrow.triangle.2.circlepath.circle")
+                    }
                 }
                 Button { showEditor = true } label: {
                     Label("编辑账号与凭证", systemImage: "pencil")
@@ -290,6 +296,13 @@ struct AccountDetailView: View {
         .sheet(isPresented: $showEditor) {
             AccountEditorView(account: current, onSaved: { Task { await reload() } })
         }
+        .sheet(isPresented: $showReauthorization) {
+            if let platform = reauthorizationPlatform {
+                NavigationStack {
+                    OAuthAccountFlow(platform: platform, existingAccount: current, onSaved: { Task { await reload() } })
+                }
+            }
+        }
         .sheet(isPresented: $showTest) { AccountTestSheet(account: current) }
         .confirmationDialog("确定删除此账号吗？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
             Button("删除账号", role: .destructive) { deleteAccount() }
@@ -298,6 +311,11 @@ struct AccountDetailView: View {
             Text("删除后无法恢复，已绑定的分组关系也会移除。")
         }
         .requestError($message)
+    }
+
+    private var reauthorizationPlatform: PlatformOption? {
+        guard current.type == "oauth" || current.type == "setup-token" else { return nil }
+        return PlatformOption(rawValue: current.platform.lowercased())
     }
 
     private func reload(notify: Bool = false) async {

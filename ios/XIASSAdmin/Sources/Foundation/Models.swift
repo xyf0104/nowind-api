@@ -65,6 +65,11 @@ enum JSONValue: Codable, Hashable, Sendable {
         guard case .bool(let value) = self else { return nil }
         return value
     }
+
+    var objectValue: [String: JSONValue]? {
+        guard case .object(let value) = self else { return nil }
+        return value
+    }
 }
 
 struct EmptyResponse: Codable {}
@@ -573,6 +578,8 @@ struct OAuthTokenInfo: Decodable {
         // locally after account creation.
         rawPayload.filter { !["name", "extra", "message"].contains($0.key) }
     }
+
+    var extra: [String: JSONValue]? { rawPayload["extra"]?.objectValue }
 }
 
 struct VersionInfo: Codable {

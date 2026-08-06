@@ -37,7 +37,7 @@ App 的“更新中心”会扫描 GitHub 最近 30 个 Release，并只识别�
 首次配置好 Apple Developer Team、Ad Hoc provisioning profile 和已注册设备后，可以在仓库根目录运行：
 
 ```bash
-./ios/XIASSAdmin/scripts/release-to-github.sh 1.0.3 YOUR_TEAM_ID com.yourcompany.xiassadmin
+./ios/XIASSAdmin/scripts/release-to-github.sh 1.0.4 YOUR_TEAM_ID com.yourcompany.xiassadmin
 ```
 
 脚本会归档、导出 IPA、生成 OTA manifest，并上传到 `xyf0104/xiass-api` 的 GitHub Release。它不保存 Team ID、证书、设备 UDID 或 API 密钥。
