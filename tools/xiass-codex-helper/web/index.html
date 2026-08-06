@@ -291,9 +291,11 @@
       }
     });
 	document.getElementById('repair-history-button').addEventListener('click', async () => {
-	  if (!confirm('修复期间 Codex 会先退出，校验完成后自动重新启动。会先创建可恢复备份。确定继续吗？')) return;
 	  const button = document.getElementById('repair-history-button');
 	  button.disabled = true;
+	  document.getElementById('history-result').textContent = '正在创建备份并扫描历史会话，请不要关闭此页面...';
+	  showMessage('正在安全备份并修复历史会话。会话较多时需要约 1-3 分钟，完成后 Codex 会自动重新启动。', 'success');
+	  await new Promise(requestAnimationFrame);
 	  try {
 		const data = await request('/api/repair-history', { method: 'POST', body: '{}' });
 		const history = data.history || {};

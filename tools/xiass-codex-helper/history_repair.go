@@ -234,11 +234,11 @@ func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool
 		appliedSessions := make([]historySessionPlan, 0, len(plan.Sessions))
 		var updatedRows int64
 		applyErr := func() error {
-			for _, session := range plan.Sessions {
-				if err := replaceSessionMetadataLine(session, session.OriginalLine, session.UpdatedLine); err != nil {
+			for _, sessions := range groupHistorySessionPlans(plan.Sessions) {
+				if err := replaceHistorySessionLines(sessions, false); err != nil {
 					return err
 				}
-				appliedSessions = append(appliedSessions, session)
+				appliedSessions = append(appliedSessions, sessions...)
 			}
 			for _, database := range plan.Databases {
 				rows, err := updateDatabaseProvider(database, targetProvider, plan.SourceProviders)
@@ -586,8 +586,8 @@ func (r *HistoryRepairer) verifyPlan(plan historyRepairPlan) error {
 	if len(rollouts) != plan.ScannedFiles || historyPathSetSHA256(r.CodexHome, rollouts) != plan.RolloutFilesSHA256 {
 		return errors.New("rollout file set changed during history repair")
 	}
-	for _, session := range plan.Sessions {
-		if err := verifySessionRepairPlan(session, plan.TargetProvider); err != nil {
+	for _, sessions := range groupHistorySessionPlans(plan.Sessions) {
+		if err := verifyHistorySessionPlans(sessions, plan.TargetProvider); err != nil {
 			return err
 		}
 	}
@@ -620,6 +620,46 @@ func verifySessionRepairPlan(plan historySessionPlan, targetProvider string) err
 	if err != nil {
 		return err
 	}
+	return verifySessionRepairRecord(plan, raw, targetProvider)
+}
+
+func verifyHistorySessionPlans(plans []historySessionPlan, targetProvider string) error {
+	if len(plans) == 0 {
+		return nil
+	}
+	path := plans[0].Path
+	byLine := make(map[int]historySessionPlan, len(plans))
+	for _, plan := range plans {
+		if plan.Path != path {
+			return errors.New("session repair plans contain multiple files")
+		}
+		if _, duplicate := byLine[plan.LineIndex]; duplicate {
+			return fmt.Errorf("session repair plans contain duplicate line %d: %s", plan.LineIndex, plan.RelativePath)
+		}
+		byLine[plan.LineIndex] = plan
+	}
+	verified := 0
+	err := scanHistoryLines(path, func(lineIndex int, raw []byte) error {
+		plan, ok := byLine[lineIndex]
+		if !ok {
+			return nil
+		}
+		if err := verifySessionRepairRecord(plan, raw, targetProvider); err != nil {
+			return err
+		}
+		verified++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if verified != len(plans) {
+		return fmt.Errorf("session repair verification lost %d records: %s", len(plans)-verified, plans[0].RelativePath)
+	}
+	return nil
+}
+
+func verifySessionRepairRecord(plan historySessionPlan, raw []byte, targetProvider string) error {
 	switch plan.Action {
 	case historySessionActionProvider:
 		var record map[string]any
@@ -661,9 +701,9 @@ func (r *HistoryRepairer) rollback(manifest historyBackupManifest, sessions []hi
 		return err
 	}
 	var failures []string
-	for index := len(sessions) - 1; index >= 0; index-- {
-		session := sessions[index]
-		if err := replaceSessionMetadataLine(session, session.UpdatedLine, session.OriginalLine); err != nil {
+	groups := groupHistorySessionPlans(sessions)
+	for index := len(groups) - 1; index >= 0; index-- {
+		if err := replaceHistorySessionLines(groups[index], true); err != nil {
 			failures = append(failures, err.Error())
 		}
 	}
@@ -1180,19 +1220,67 @@ func splitLineEnding(line []byte) ([]byte, []byte) {
 }
 
 func replaceSessionMetadataLine(plan historySessionPlan, expected, replacement []byte) (err error) {
-	info, err := os.Lstat(plan.Path)
+	plan.OriginalLine = append([]byte(nil), expected...)
+	plan.UpdatedLine = append([]byte(nil), replacement...)
+	return replaceHistorySessionLines([]historySessionPlan{plan}, false)
+}
+
+func groupHistorySessionPlans(plans []historySessionPlan) [][]historySessionPlan {
+	if len(plans) == 0 {
+		return nil
+	}
+	sorted := append([]historySessionPlan(nil), plans...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Path == sorted[j].Path {
+			return sorted[i].LineIndex < sorted[j].LineIndex
+		}
+		return sorted[i].Path < sorted[j].Path
+	})
+	groups := make([][]historySessionPlan, 0, len(sorted))
+	for _, plan := range sorted {
+		if len(groups) == 0 || groups[len(groups)-1][0].Path != plan.Path {
+			groups = append(groups, []historySessionPlan{plan})
+			continue
+		}
+		groups[len(groups)-1] = append(groups[len(groups)-1], plan)
+	}
+	return groups
+}
+
+// replaceHistorySessionLines applies all planned edits for one rollout in a
+// single atomic rewrite. Compatibility repairs often touch many reasoning
+// records in a long conversation; rewriting the entire file per record makes
+// a correct repair look stalled on customer machines.
+func replaceHistorySessionLines(plans []historySessionPlan, reverse bool) (err error) {
+	if len(plans) == 0 {
+		return nil
+	}
+	path := plans[0].Path
+	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("rollout changed into a non-regular file: %s", plan.Path)
+		return fmt.Errorf("rollout changed into a non-regular file: %s", path)
 	}
-	input, err := os.Open(plan.Path)
+
+	byLine := make(map[int]historySessionPlan, len(plans))
+	for _, plan := range plans {
+		if plan.Path != path {
+			return errors.New("session repair plans contain multiple files")
+		}
+		if _, duplicate := byLine[plan.LineIndex]; duplicate {
+			return fmt.Errorf("session repair plans contain duplicate line %d: %s", plan.LineIndex, plan.RelativePath)
+		}
+		byLine[plan.LineIndex] = plan
+	}
+
+	input, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer input.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(plan.Path), ".xiass-history-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".xiass-history-*")
 	if err != nil {
 		return err
 	}
@@ -1201,69 +1289,88 @@ func replaceSessionMetadataLine(plan historySessionPlan, expected, replacement [
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 	}()
-	if err := tmp.Chmod(fs.FileMode(plan.Mode)); err != nil {
+	if err := tmp.Chmod(fs.FileMode(plans[0].Mode)); err != nil {
 		return err
 	}
 
 	reader := bufio.NewReaderSize(input, 64*1024)
-	replaced := false
+	replaced := 0
 	lineIndex := 0
-rewriteLoop:
 	for {
-		if lineIndex == plan.LineIndex {
-			line := make([]byte, 0, 64*1024)
+		plan, needsReplacement := byLine[lineIndex]
+		if !needsReplacement {
+			var readErr error
 			for {
-				fragment, readErr := reader.ReadSlice('\n')
-				if len(line)+len(fragment) > historyMetadataMax {
-					return fmt.Errorf("session metadata line is unexpectedly large: %s", plan.RelativePath)
+				fragment, nextErr := reader.ReadSlice('\n')
+				if len(fragment) > 0 {
+					if _, err := tmp.Write(fragment); err != nil {
+						return err
+					}
 				}
-				line = append(line, fragment...)
-				if errors.Is(readErr, bufio.ErrBufferFull) {
+				if errors.Is(nextErr, bufio.ErrBufferFull) {
 					continue
 				}
-				if readErr != nil && !errors.Is(readErr, io.EOF) {
-					return readErr
-				}
+				readErr = nextErr
 				break
 			}
-			raw, ending := splitLineEnding(line)
-			if bytes.Equal(raw, replacement) {
-				return nil
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return readErr
 			}
-			if !bytes.Equal(raw, expected) {
-				return fmt.Errorf("session changed while repair was running: %s", plan.RelativePath)
+			lineIndex++
+			if errors.Is(readErr, io.EOF) {
+				break
 			}
-			if _, err := tmp.Write(replacement); err != nil {
+			continue
+		}
+
+		line := make([]byte, 0, 64*1024)
+		var readErr error
+		for {
+			fragment, nextErr := reader.ReadSlice('\n')
+			if len(line)+len(fragment) > historyMetadataMax {
+				return fmt.Errorf("session record line is unexpectedly large: %s", plans[0].RelativePath)
+			}
+			line = append(line, fragment...)
+			if errors.Is(nextErr, bufio.ErrBufferFull) {
+				continue
+			}
+			readErr = nextErr
+			break
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		raw, ending := splitLineEnding(line)
+		{
+			expected, replacement := plan.OriginalLine, plan.UpdatedLine
+			if reverse {
+				expected, replacement = replacement, expected
+			}
+			if !bytes.Equal(raw, replacement) {
+				if !bytes.Equal(raw, expected) {
+					return fmt.Errorf("session changed while repair was running: %s", plan.RelativePath)
+				}
+				if _, err := tmp.Write(replacement); err != nil {
+					return err
+				}
+			} else if _, err := tmp.Write(raw); err != nil {
 				return err
 			}
+			replaced++
 			if _, err := tmp.Write(ending); err != nil {
 				return err
 			}
-			replaced = true
-			if _, err := io.Copy(tmp, reader); err != nil {
-				return err
-			}
-			break rewriteLoop
 		}
-		fragment, readErr := reader.ReadSlice('\n')
-		if len(fragment) > 0 {
-			if _, err := tmp.Write(fragment); err != nil {
-				return err
-			}
-		}
-		if errors.Is(readErr, bufio.ErrBufferFull) {
-			continue
-		}
+		lineIndex++
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
-		if readErr != nil {
-			return readErr
-		}
-		lineIndex++
 	}
-	if !replaced {
-		return fmt.Errorf("session metadata line disappeared: %s", plan.RelativePath)
+	if replaced != len(plans) {
+		return fmt.Errorf("session repair records disappeared: %s", plans[0].RelativePath)
 	}
 	if err := input.Close(); err != nil {
 		return err
@@ -1274,10 +1381,10 @@ rewriteLoop:
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := replaceFile(tmpPath, plan.Path); err != nil {
+	if err := replaceFile(tmpPath, path); err != nil {
 		return fmt.Errorf("replace session atomically: %w", err)
 	}
-	_ = os.Chtimes(plan.Path, plan.ModifiedAt, plan.ModifiedAt)
+	_ = os.Chtimes(path, plans[0].ModifiedAt, plans[0].ModifiedAt)
 	return nil
 }
 

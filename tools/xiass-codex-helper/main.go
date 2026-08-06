@@ -78,7 +78,7 @@ func newLocalHTTPServer(handler http.Handler) *http.Server {
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		// History snapshots and verified rollback can take longer on large Codex homes.
-		WriteTimeout: 3 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
 		IdleTimeout:  2 * time.Minute,
 	}
 }
