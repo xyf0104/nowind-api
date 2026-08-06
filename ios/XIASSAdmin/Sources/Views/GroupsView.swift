@@ -1,0 +1,331 @@
+import SwiftUI
+
+struct GroupsView: View {
+    @EnvironmentObject private var session: AppSession
+    @State private var groups: [AdminGroup] = []
+    @State private var isLoading = false
+    @State private var showCreate = false
+    @State private var error: ErrorMessage?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                if isLoading && groups.isEmpty {
+                    ProgressView("正在读取分组…")
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                }
+                if !isLoading && groups.isEmpty {
+                    EmptyState(title: "暂无分组", systemImage: "square.stack.3d.up", detail: "创建分组后，即可把上游账号和用户接入对应平台。")
+                }
+                ForEach(groups) { group in
+                    NavigationLink { GroupDetailView(group: group) } label: {
+                        GlassCard(tint: group.status == "active" ? groupTint(group.platform) : .orange) {
+                            GroupRow(group: group)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 72)
+        }
+        .navigationTitle("分组管理")
+        .appScreenStyle()
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showCreate = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("创建分组")
+            }
+        }
+        .sheet(isPresented: $showCreate) { GroupEditorView(onSaved: { Task { await load() } }) }
+        .task { await load() }
+        .refreshable { await load() }
+        .requestError($error)
+    }
+
+    private func load() async {
+        guard let api = session.api else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let page: Page<AdminGroup> = try await api.request(method: .get, path: "admin/groups", query: [URLQueryItem(name: "page_size", value: "100")])
+            groups = page.items
+        } catch { self.error = ErrorMessage(error, title: "无法读取分组") }
+    }
+
+    private func groupTint(_ platform: String) -> Color {
+        switch platform {
+        case "anthropic": return .orange
+        case "gemini": return .mint
+        case "antigravity": return .indigo
+        case "grok": return .red
+        default: return AppTheme.primary
+        }
+    }
+}
+
+private struct GroupRow: View {
+    let group: AdminGroup
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(group.name).font(.headline).lineLimit(1)
+                Spacer(minLength: 8)
+                StatusPill(text: group.status)
+            }
+            HStack(spacing: 8) {
+                Text(group.platform.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.blue)
+                Text("\(group.activeAccountCount ?? 0)/\(group.accountCount ?? 0) 个账号")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let rpm = group.rpmLimit, rpm > 0 {
+                    Text("\(rpm) RPM").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let description = group.description, !description.isEmpty {
+                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct GroupDetailView: View {
+    @EnvironmentObject private var session: AppSession
+    @Environment(\.dismiss) private var dismiss
+    @State private var current: AdminGroup
+    @State private var showEditor = false
+    @State private var showDeleteConfirmation = false
+    @State private var error: ErrorMessage?
+
+    init(group: AdminGroup) {
+        _current = State(initialValue: group)
+    }
+
+    var body: some View {
+        List {
+            Section("分组信息") {
+                LabeledContent("平台", value: current.platform.uppercased())
+                LabeledContent("账号", value: "\(current.activeAccountCount ?? 0) / \(current.accountCount ?? 0)")
+                LabeledContent("费率倍率", value: DisplayFormat.decimal(current.rateMultiplier))
+                LabeledContent("RPM 上限", value: (current.rpmLimit ?? 0) == 0 ? "不限制" : String(current.rpmLimit ?? 0))
+                LabeledContent("独占分组", value: current.isExclusive == true ? "是" : "否")
+                LabeledContent("状态") { StatusPill(text: current.status) }
+                if let description = current.description, !description.isEmpty { LabeledContent("说明", value: description) }
+            }
+
+            Section("操作") {
+                Button { showEditor = true } label: { Label("编辑分组", systemImage: "pencil") }
+                Button(current.status == "active" ? "停用分组" : "启用分组") { toggleStatus() }
+                Button(role: .destructive) { showDeleteConfirmation = true } label: { Label("删除分组", systemImage: "trash") }
+            }
+        }
+        .navigationTitle(current.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .appScreenStyle()
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showEditor = true } label: { Image(systemName: "pencil") }
+                    .accessibilityLabel("编辑分组")
+                Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
+                    .accessibilityLabel("刷新分组信息")
+            }
+        }
+        .task { await reload() }
+        .sheet(isPresented: $showEditor) {
+            GroupEditorView(group: current, onSaved: { Task { await reload() } })
+        }
+        .confirmationDialog("确定删除此分组吗？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除分组", role: .destructive) { deleteGroup() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("已绑定的账号或 API Key 可能需要重新分配。")
+        }
+        .requestError($error)
+    }
+
+    private func reload() async {
+        guard let api = session.api else { return }
+        do { current = try await api.request(method: .get, path: "admin/groups/\(current.id)") }
+        catch { self.error = ErrorMessage(error, title: "无法读取分组详情") }
+    }
+
+    private func toggleStatus() {
+        Task {
+            do {
+                guard let api = session.api else { throw APIError(message: "登录已失效，请重新登录。") }
+                let request = GroupUpdateRequest(name: nil, description: nil, platform: nil, rateMultiplier: nil, rpmLimit: nil, isExclusive: nil, status: current.status == "active" ? "inactive" : "active", costRatio: nil, maxReasoningEffort: nil)
+                current = try await api.request(method: .put, path: "admin/groups/\(current.id)", body: request)
+            } catch { self.error = ErrorMessage(error, title: "分组状态更新失败") }
+        }
+    }
+
+    private func deleteGroup() {
+        Task {
+            do {
+                guard let api = session.api else { throw APIError(message: "登录已失效，请重新登录。") }
+                let _: EmptyResponse = try await api.request(method: .delete, path: "admin/groups/\(current.id)")
+                dismiss()
+            } catch { self.error = ErrorMessage(error, title: "删除分组失败") }
+        }
+    }
+}
+
+struct GroupEditorView: View {
+    @EnvironmentObject private var session: AppSession
+    @Environment(\.dismiss) private var dismiss
+
+    let group: AdminGroup?
+    let onSaved: () -> Void
+
+    @State private var name: String
+    @State private var description: String
+    @State private var platform: String
+    @State private var multiplier: Double
+    @State private var rpmLimit: Int
+    @State private var exclusive: Bool
+    @State private var status: String
+    @State private var costRatio: Double
+    @State private var maxReasoningEffort: String
+    @State private var advancedJSON = "{\n  \n}"
+    @State private var editAdvanced = false
+    @State private var isSaving = false
+    @State private var error: ErrorMessage?
+
+    init(group: AdminGroup? = nil, onSaved: @escaping () -> Void) {
+        self.group = group
+        self.onSaved = onSaved
+        _name = State(initialValue: group?.name ?? "")
+        _description = State(initialValue: group?.description ?? "")
+        _platform = State(initialValue: group?.platform ?? "openai")
+        _multiplier = State(initialValue: group?.rateMultiplier ?? 1)
+        _rpmLimit = State(initialValue: group?.rpmLimit ?? 0)
+        _exclusive = State(initialValue: group?.isExclusive ?? false)
+        _status = State(initialValue: group?.status ?? "active")
+        _costRatio = State(initialValue: group?.costRatio ?? 0)
+        _maxReasoningEffort = State(initialValue: group?.maxReasoningEffort ?? "")
+    }
+
+    private var isEditing: Bool { group != nil }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("基本信息") {
+                    TextField("分组名称", text: $name)
+                    TextField("分组说明（可选）", text: $description, axis: .vertical)
+                        .lineLimit(2...4)
+                    Picker("平台", selection: $platform) {
+                        ForEach(GroupPlatformOption.allCases) { option in
+                            Text(option.title).tag(option.rawValue)
+                        }
+                    }
+                    if isEditing {
+                        Picker("状态", selection: $status) {
+                            Text("启用").tag("active")
+                            Text("停用").tag("inactive")
+                        }
+                    }
+                }
+
+                Section("调度与限制") {
+                    Stepper("费率倍率：\(DisplayFormat.decimal(multiplier))", value: $multiplier, in: 0.05...100, step: 0.05)
+                    Stepper("RPM 上限：\(rpmLimit == 0 ? "不限制" : String(rpmLimit))", value: $rpmLimit, in: 0...100_000, step: 10)
+                    Toggle("独占分组", isOn: $exclusive)
+                    if platform == "openai" || platform == "anthropic" {
+                        Stepper("成本比例：\(costRatio == 0 ? "未设置" : DisplayFormat.decimal(costRatio))", value: $costRatio, in: 0...10, step: 0.05)
+                    }
+                    if platform == "openai" {
+                        Picker("推理强度上限", selection: $maxReasoningEffort) {
+                            Text("不限制").tag("")
+                            Text("低").tag("low")
+                            Text("中").tag("medium")
+                            Text("高").tag("high")
+                            Text("超高").tag("xhigh")
+                        }
+                    }
+                }
+
+                Section {
+                    Toggle("编辑网页端高级字段 JSON", isOn: $editAdvanced)
+                    if editAdvanced {
+                        JSONTextEditor(text: $advancedJSON, minHeight: 180)
+                    }
+                } header: {
+                    Text("高级配置")
+                } footer: {
+                    Text("模型路由、图像计费、峰值倍率等不常用字段可在此填写，或从 App 内完整控制台维护。")
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .dismissKeyboardOnTap()
+            .appScreenStyle()
+            .navigationTitle(isEditing ? "编辑分组" : "创建分组")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSaving ? "正在保存…" : "保存") { save() }
+                        .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .requestError($error)
+    }
+
+    private func payload() throws -> [String: JSONValue] {
+        var value = group?.rawPayload ?? [:]
+        value.merge([
+            "name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "description": .string(description.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "platform": .string(platform),
+            "rate_multiplier": .number(multiplier),
+            "rpm_limit": .number(Double(rpmLimit)),
+            "is_exclusive": .bool(exclusive),
+            "max_reasoning_effort": .string(maxReasoningEffort)
+        ]) { _, replacement in replacement }
+        if costRatio > 0 { value["cost_ratio"] = .number(costRatio) }
+        else { value.removeValue(forKey: "cost_ratio") }
+        if isEditing { value["status"] = .string(status) }
+        for key in ["daily_limit_usd", "weekly_limit_usd", "monthly_limit_usd"] {
+            if value[key] == .null { value.removeValue(forKey: key) }
+        }
+        if editAdvanced {
+            value.merge(try JSONValue.object(from: advancedJSON)) { _, advanced in advanced }
+        }
+        return value
+    }
+
+    private func save() {
+        Task {
+            isSaving = true
+            defer { isSaving = false }
+            do {
+                guard let api = session.api else { throw APIError(message: "登录已失效，请重新登录。") }
+                let body = try payload()
+                if let group {
+                    let _: AdminGroup = try await api.request(method: .put, path: "admin/groups/\(group.id)", body: body)
+                } else {
+                    let _: AdminGroup = try await api.request(method: .post, path: "admin/groups", body: body)
+                }
+                onSaved()
+                dismiss()
+            } catch { self.error = ErrorMessage(error, title: isEditing ? "分组保存失败" : "分组创建失败") }
+        }
+    }
+}
+
+private enum GroupPlatformOption: String, CaseIterable, Identifiable {
+    case openai, anthropic, gemini, antigravity, grok, composite
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .openai: return "OpenAI"
+        case .anthropic: return "Anthropic"
+        case .gemini: return "Gemini"
+        case .antigravity: return "Antigravity"
+        case .grok: return "Grok"
+        case .composite: return "组合分组"
+        }
+    }
+}
