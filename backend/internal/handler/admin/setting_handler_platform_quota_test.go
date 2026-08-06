@@ -64,6 +64,23 @@ func TestDiffSettings_NoChangeWhenEqual(t *testing.T) {
 	}
 }
 
+func TestSettingsAuditRequestDoesNotInheritStoredTencentSecrets(t *testing.T) {
+	req := UpdateSettingsRequest{
+		TencentCaptchaAppSecretKey:   "  ",
+		TencentCaptchaCloudSecretID:  "\t",
+		TencentCaptchaCloudSecretKey: "\n",
+	}
+
+	auditReq := settingsAuditRequest(req)
+	req.TencentCaptchaAppSecretKey = "stored-app-secret"
+	req.TencentCaptchaCloudSecretID = "stored-secret-id"
+	req.TencentCaptchaCloudSecretKey = "stored-secret-key"
+
+	require.Empty(t, auditReq.TencentCaptchaAppSecretKey)
+	require.Empty(t, auditReq.TencentCaptchaCloudSecretID)
+	require.Empty(t, auditReq.TencentCaptchaCloudSecretKey)
+}
+
 func TestEqualNullableFloat(t *testing.T) {
 	five := 5.0
 	five2 := 5.0
