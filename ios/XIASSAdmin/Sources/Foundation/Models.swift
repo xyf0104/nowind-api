@@ -80,6 +80,18 @@ struct Page<Item: Decodable>: Decodable {
         case items, total, page, pages
         case pageSize = "page_size"
     }
+
+    // Some admin endpoints intentionally omit pagination metadata when the
+    // response is small. Keeping defaults here prevents a valid list from
+    // making an entire native screen appear unavailable.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        items = try container.decodeIfPresent([Item].self, forKey: .items) ?? []
+        total = try container.decodeIfPresent(Int.self, forKey: .total) ?? items.count
+        page = try container.decodeIfPresent(Int.self, forKey: .page) ?? 1
+        pageSize = try container.decodeIfPresent(Int.self, forKey: .pageSize) ?? max(items.count, 1)
+        pages = try container.decodeIfPresent(Int.self, forKey: .pages) ?? (items.isEmpty ? 0 : 1)
+    }
 }
 
 struct UserProfile: Codable, Identifiable, Hashable {
@@ -407,6 +419,19 @@ struct UsageLog: Codable, Identifiable, Hashable {
     let actualCost: Double?
     let statusCode: Int?
     let createdAt: String?
+    let reasoningEffort: String?
+    let inboundEndpoint: String?
+    let upstreamEndpoint: String?
+    let durationMS: Int?
+    let firstTokenMS: Int?
+    let requestType: String?
+    let stream: Bool?
+    let serviceTier: String?
+    let modelMappingChain: String?
+    let accountRateMultiplier: Double?
+    let user: UsageActor?
+    let group: UsageGroupSummary?
+    let account: UsageAccountSummary?
 
     enum CodingKeys: String, CodingKey {
         case id, model
@@ -419,9 +444,135 @@ struct UsageLog: Codable, Identifiable, Hashable {
         case actualCost = "actual_cost"
         case statusCode = "status_code"
         case createdAt = "created_at"
+        case reasoningEffort = "reasoning_effort"
+        case inboundEndpoint = "inbound_endpoint"
+        case upstreamEndpoint = "upstream_endpoint"
+        case durationMS = "duration_ms"
+        case firstTokenMS = "first_token_ms"
+        case requestType = "request_type"
+        case stream
+        case serviceTier = "service_tier"
+        case modelMappingChain = "model_mapping_chain"
+        case accountRateMultiplier = "account_rate_multiplier"
+        case user, group, account
     }
 
-    var stableID: String { "\(id ?? -1)-\(requestID ?? UUID().uuidString)" }
+    var stableID: String { "\(id ?? -1)-\(requestID ?? createdAt ?? model ?? "unknown")" }
+
+    var displayUser: String {
+        userEmail ?? user?.email ?? user?.username ?? "匿名用户"
+    }
+
+    var displayGroup: String {
+        groupName ?? group?.name ?? "未分组"
+    }
+
+    var displayAccount: String {
+        accountName ?? account?.name ?? "自动路由"
+    }
+}
+
+struct UsageActor: Codable, Hashable {
+    let id: Int?
+    let email: String?
+    let username: String?
+}
+
+struct UsageGroupSummary: Codable, Hashable {
+    let id: Int?
+    let name: String?
+    let platform: String?
+}
+
+struct UsageAccountSummary: Codable, Hashable {
+    let id: Int?
+    let name: String?
+}
+
+struct AdminProxy: Codable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let protocolName: String?
+    let host: String?
+    let port: Int?
+    let username: String?
+    let status: String?
+    let accountCount: Int?
+    let latencyMS: Int?
+    let latencyStatus: String?
+    let latencyMessage: String?
+    let country: String?
+    let city: String?
+    let qualityStatus: String?
+    let qualityScore: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, host, port, username, status, country, city
+        case protocolName = "protocol"
+        case accountCount = "account_count"
+        case latencyMS = "latency_ms"
+        case latencyStatus = "latency_status"
+        case latencyMessage = "latency_message"
+        case qualityStatus = "quality_status"
+        case qualityScore = "quality_score"
+    }
+}
+
+struct ProxyWriteRequest: Encodable {
+    let name: String
+    let protocolName: String
+    let host: String
+    let port: Int
+    let username: String
+    let password: String
+    let status: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, host, port, username, password, status
+        case protocolName = "protocol"
+    }
+}
+
+struct OAuthAuthorization: Decodable {
+    let authURL: String
+    let sessionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case authURL = "auth_url"
+        case sessionID = "session_id"
+    }
+
+    var state: String? {
+        URLComponents(string: authURL)?.queryItems?.first(where: { $0.name == "state" })?.value
+    }
+}
+
+struct OAuthTokenInfo: Decodable {
+    let rawPayload: [String: JSONValue]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        rawPayload = try container.decode([String: JSONValue].self)
+    }
+
+    private func string(_ key: String) -> String? { rawPayload[key]?.stringValue }
+    private func int(_ key: String) -> Int? { rawPayload[key]?.intValue }
+
+    var accessToken: String? { string("access_token") }
+    var refreshToken: String? { string("refresh_token") }
+    var idToken: String? { string("id_token") }
+    var email: String? { string("email") ?? string("email_address") }
+    var name: String? { string("name") }
+    var expiresAt: Int? { int("expires_at") }
+    var clientID: String? { string("client_id") }
+
+    var credentials: [String: JSONValue] {
+        // Keep every provider-defined token field returned by the trusted
+        // XIASS API exchange endpoint. This preserves provider-specific
+        // fields such as project_id and organization_id without storing them
+        // locally after account creation.
+        rawPayload.filter { !["name", "extra", "message"].contains($0.key) }
+    }
 }
 
 struct VersionInfo: Codable {

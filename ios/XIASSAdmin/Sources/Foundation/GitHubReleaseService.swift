@@ -41,12 +41,10 @@ struct GitHubRelease: Decodable, Hashable {
         }
     }
 
-    var sourceAsset: GitHubReleaseAsset? {
-        assets.first { $0.name.lowercased().contains("xiass-admin") && $0.name.lowercased().hasSuffix(".zip") }
-    }
-
-    var hasIOSDistributionAsset: Bool {
-        otaManifestAsset != nil || installerAsset != nil || sourceAsset != nil
+    var hasInstallableIOSDistribution: Bool {
+        // An OTA installation requires both the signed IPA and its manifest.
+        // Source ZIPs are useful to developers, but they cannot update an app.
+        otaManifestAsset != nil && installerAsset != nil
     }
 
     var otaInstallURL: URL? {
@@ -74,7 +72,7 @@ enum GitHubReleaseService {
             throw APIError(message: "无法读取 GitHub 最新发布信息。")
         }
         let releases = try JSONDecoder().decode([GitHubRelease].self, from: data)
-        return releases.first { !$0.draft && $0.hasIOSDistributionAsset }
+        return releases.first { !$0.draft && $0.hasInstallableIOSDistribution }
     }
 
     static var currentVersion: String {

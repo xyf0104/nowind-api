@@ -2,7 +2,9 @@ import SwiftUI
 
 struct GroupsView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @State private var groups: [AdminGroup] = []
+    @State private var platform = "all"
     @State private var isLoading = false
     @State private var showCreate = false
     @State private var error: ErrorMessage?
@@ -17,13 +19,24 @@ struct GroupsView: View {
                 if !isLoading && groups.isEmpty {
                     EmptyState(title: "暂无分组", systemImage: "square.stack.3d.up", detail: "创建分组后，即可把上游账号和用户接入对应平台。")
                 }
-                ForEach(groups) { group in
-                    NavigationLink { GroupDetailView(group: group) } label: {
-                        GlassCard(tint: group.status == "active" ? groupTint(group.platform) : .orange) {
-                            GroupRow(group: group)
-                        }
+                ForEach(platformSections, id: \.platform) { section in
+                    HStack(spacing: 8) {
+                        PlatformBadge(platform: section.platform)
+                        Text("\(section.groups.count) 个分组")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 4)
+                    ForEach(section.groups) { group in
+                        NavigationLink { GroupDetailView(group: group) } label: {
+                            GlassCard(tint: group.status == "active" ? groupTint(group.platform) : .orange) {
+                                GroupRow(group: group)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .padding(16)
@@ -32,35 +45,61 @@ struct GroupsView: View {
         .navigationTitle("分组管理")
         .appScreenStyle()
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Menu {
+                    Button { platform = "all" } label: { Label("全部平台", systemImage: platform == "all" ? "checkmark" : "circle") }
+                    ForEach(GroupPlatformOption.allCases) { option in
+                        Button { platform = option.rawValue } label: {
+                            Label(option.title, systemImage: platform == option.rawValue ? "checkmark" : PlatformStyle.icon(for: option.rawValue))
+                        }
+                    }
+                } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                    .accessibilityLabel("分组平台分类")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showCreate = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("创建分组")
             }
         }
         .sheet(isPresented: $showCreate) { GroupEditorView(onSaved: { Task { await load() } }) }
-        .task { await load() }
-        .refreshable { await load() }
+        .task(id: platform) { await load() }
+        .refreshable { await load(notify: true) }
         .requestError($error)
     }
 
-    private func load() async {
+    private func load(notify: Bool = false) async {
         guard let api = session.api else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            let page: Page<AdminGroup> = try await api.request(method: .get, path: "admin/groups", query: [URLQueryItem(name: "page_size", value: "100")])
+            var query = [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "page_size", value: "100"), URLQueryItem(name: "sort_by", value: "rate_multiplier"), URLQueryItem(name: "sort_order", value: "asc")]
+            if platform != "all" { query.append(URLQueryItem(name: "platform", value: platform)) }
+            let page: Page<AdminGroup> = try await api.request(method: .get, path: "admin/groups", query: query)
+            guard !Task.isCancelled else { return }
             groups = page.items
-        } catch { self.error = ErrorMessage(error, title: "无法读取分组") }
+            if notify { feedback.success("分组列表已刷新", detail: "已同步 \(groups.count) 个分组。") }
+        } catch {
+            // Platform filter changes cancel the obsolete request.
+            guard !Task.isCancelled, !isExpectedCancellation(error) else { return }
+            self.error = ErrorMessage(error, title: "无法读取分组")
+        }
+    }
+
+    private var platformSections: [(platform: String, groups: [AdminGroup])] {
+        let grouped = Dictionary(grouping: groups) { $0.platform.lowercased() }
+        let order = ["openai", "anthropic", "gemini", "antigravity", "grok", "composite"]
+        return grouped.keys.sorted { (order.firstIndex(of: $0) ?? order.count) < (order.firstIndex(of: $1) ?? order.count) }.map { platform in
+            let sorted = (grouped[platform] ?? []).sorted {
+                let left = $0.rateMultiplier ?? 1
+                let right = $1.rateMultiplier ?? 1
+                return left == right ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : left < right
+            }
+            return (platform, sorted)
+        }
     }
 
     private func groupTint(_ platform: String) -> Color {
-        switch platform {
-        case "anthropic": return .orange
-        case "gemini": return .mint
-        case "antigravity": return .indigo
-        case "grok": return .red
-        default: return AppTheme.primary
-        }
+        PlatformStyle.color(for: platform)
     }
 }
 
@@ -75,9 +114,11 @@ private struct GroupRow: View {
                 StatusPill(text: group.status)
             }
             HStack(spacing: 8) {
-                Text(group.platform.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.blue)
+                PlatformBadge(platform: group.platform)
                 Text("\(group.activeAccountCount ?? 0)/\(group.accountCount ?? 0) 个账号")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("倍率 \(DisplayFormat.decimal(group.rateMultiplier ?? 1))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 if let rpm = group.rpmLimit, rpm > 0 {
                     Text("\(rpm) RPM").font(.caption).foregroundStyle(.secondary)
                 }
@@ -92,6 +133,7 @@ private struct GroupRow: View {
 
 struct GroupDetailView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @Environment(\.dismiss) private var dismiss
     @State private var current: AdminGroup
     @State private var showEditor = false
@@ -127,7 +169,7 @@ struct GroupDetailView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { showEditor = true } label: { Image(systemName: "pencil") }
                     .accessibilityLabel("编辑分组")
-                Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
+                Button { Task { await reload(notify: true) } } label: { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("刷新分组信息")
             }
         }
@@ -144,9 +186,12 @@ struct GroupDetailView: View {
         .requestError($error)
     }
 
-    private func reload() async {
+    private func reload(notify: Bool = false) async {
         guard let api = session.api else { return }
-        do { current = try await api.request(method: .get, path: "admin/groups/\(current.id)") }
+        do {
+            current = try await api.request(method: .get, path: "admin/groups/\(current.id)")
+            if notify { feedback.success("分组信息已刷新", detail: "已同步分组配置与账号状态。") }
+        }
         catch { self.error = ErrorMessage(error, title: "无法读取分组详情") }
     }
 
@@ -156,6 +201,7 @@ struct GroupDetailView: View {
                 guard let api = session.api else { throw APIError(message: "登录已失效，请重新登录。") }
                 let request = GroupUpdateRequest(name: nil, description: nil, platform: nil, rateMultiplier: nil, rpmLimit: nil, isExclusive: nil, status: current.status == "active" ? "inactive" : "active", costRatio: nil, maxReasoningEffort: nil)
                 current = try await api.request(method: .put, path: "admin/groups/\(current.id)", body: request)
+                feedback.success(current.status == "active" ? "分组已启用" : "分组已停用", detail: "新的调度状态已立即生效。")
             } catch { self.error = ErrorMessage(error, title: "分组状态更新失败") }
         }
     }
@@ -165,6 +211,7 @@ struct GroupDetailView: View {
             do {
                 guard let api = session.api else { throw APIError(message: "登录已失效，请重新登录。") }
                 let _: EmptyResponse = try await api.request(method: .delete, path: "admin/groups/\(current.id)")
+                feedback.success("分组已删除", detail: "分组与关联调度配置已移除。")
                 dismiss()
             } catch { self.error = ErrorMessage(error, title: "删除分组失败") }
         }
@@ -173,6 +220,7 @@ struct GroupDetailView: View {
 
 struct GroupEditorView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @Environment(\.dismiss) private var dismiss
 
     let group: AdminGroup?
@@ -229,11 +277,11 @@ struct GroupEditorView: View {
                 }
 
                 Section("调度与限制") {
-                    Stepper("费率倍率：\(DisplayFormat.decimal(multiplier))", value: $multiplier, in: 0.05...100, step: 0.05)
-                    Stepper("RPM 上限：\(rpmLimit == 0 ? "不限制" : String(rpmLimit))", value: $rpmLimit, in: 0...100_000, step: 10)
+                    DecimalInput(label: "费率倍率", value: $multiplier, range: 0.05...100, step: 0.05, suffix: "x")
+                    IntegerInput(label: "RPM 上限", value: $rpmLimit, range: 0...100_000, step: 10, zeroLabel: "不限制", suffix: "RPM")
                     Toggle("独占分组", isOn: $exclusive)
                     if platform == "openai" || platform == "anthropic" {
-                        Stepper("成本比例：\(costRatio == 0 ? "未设置" : DisplayFormat.decimal(costRatio))", value: $costRatio, in: 0...10, step: 0.05)
+                        DecimalInput(label: "成本比例", value: $costRatio, range: 0...10, step: 0.05, suffix: "x")
                     }
                     if platform == "openai" {
                         Picker("推理强度上限", selection: $maxReasoningEffort) {
@@ -254,7 +302,7 @@ struct GroupEditorView: View {
                 } header: {
                     Text("高级配置")
                 } footer: {
-                    Text("模型路由、图像计费、峰值倍率等不常用字段可在此填写，或从 App 内完整控制台维护。")
+                    Text("模型路由、图像计费、峰值倍率等可直接编辑 JSON；不会再跳转网页后台。")
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -308,6 +356,7 @@ struct GroupEditorView: View {
                 } else {
                     let _: AdminGroup = try await api.request(method: .post, path: "admin/groups", body: body)
                 }
+                feedback.success(isEditing ? "分组已保存" : "分组已创建", detail: "平台、倍率、限制与高级字段已同步。")
                 onSaved()
                 dismiss()
             } catch { self.error = ErrorMessage(error, title: isEditing ? "分组保存失败" : "分组创建失败") }

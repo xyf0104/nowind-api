@@ -14,8 +14,9 @@
 		46329EC721CD95336C42AA38 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CC5922E2319C178DECC98C2A /* Assets.xcassets */; };
 		4819C32817B860B75C0C44B7 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DD616B19ECD3D13E528EC /* APIClient.swift */; };
 		4913B5AEF58CDAA804332B47 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 616DEA624CDDEC6AD9E27D9F /* LoginView.swift */; };
-		4CD7176AD639759BF4066A9D /* FullConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB3A77E5E7BC49E99C29D57 /* FullConsoleView.swift */; };
 		5898662465B7E80E2FB0E91F /* OperationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B9566EAD7A522CF84E6FD57 /* OperationsView.swift */; };
+		66CAADEC2651ADC56F66D0C8 /* NativeAdminFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD8CDAB7F28367B84680446 /* NativeAdminFeatures.swift */; };
+		75D5C23CA1674DA43C0FCA21 /* AccountOAuthViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE727F001700F704E6DF469 /* AccountOAuthViews.swift */; };
 		91EF2C15E0468DED5F53CB64 /* SecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 979212DA423BE2D711F32944 /* SecureStore.swift */; };
 		AE95026EC5F75E6304DE4FFF /* XIASSAdminApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E642B798C17F55867AAB467C /* XIASSAdminApp.swift */; };
 		BC62BE8D6F10A1E2C762AC38 /* QuickAddAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8311AAB0703A2AB17133180 /* QuickAddAccountView.swift */; };
@@ -25,20 +26,23 @@
 		F558351C150D03C00D3699D3 /* ViewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 668EDDD8E96D920F559D9ACF /* ViewSupport.swift */; };
 		F60074A4D7D4E8C5F5C20387 /* BillingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 144916F476D148670009AA6C /* BillingViews.swift */; };
 		F71E2F1DD8DB188D2F9107A8 /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D44EECCAE2A3AB10BEA36CDD /* AppSession.swift */; };
+		FCA04521FF1D0B6D1F6A1D55 /* UsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05485AB0B11468D179A7FE5 /* UsageViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		05CABB5B43D949B71EDBC384 /* UsersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsersView.swift; sourceTree = "<group>"; };
+		0B2CE4F67FC14B9EE20A2565 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0B9566EAD7A522CF84E6FD57 /* OperationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OperationsView.swift; sourceTree = "<group>"; };
 		0C76B6FAE9B61D49E39875AA /* GitHubReleaseService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubReleaseService.swift; sourceTree = "<group>"; };
 		144916F476D148670009AA6C /* BillingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillingViews.swift; sourceTree = "<group>"; };
 		1B98F5FE2F30BDF3D7AE150C /* XIASS 管理端.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "XIASS 管理端.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		3CC7DE540621D9C36407F3BD /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		4211AB6C9352BB80C0A5F531 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		5AE727F001700F704E6DF469 /* AccountOAuthViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountOAuthViews.swift; sourceTree = "<group>"; };
 		616DEA624CDDEC6AD9E27D9F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		668EDDD8E96D920F559D9ACF /* ViewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewSupport.swift; sourceTree = "<group>"; };
-		6DB3A77E5E7BC49E99C29D57 /* FullConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullConsoleView.swift; sourceTree = "<group>"; };
 		979212DA423BE2D711F32944 /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
+		C05485AB0B11468D179A7FE5 /* UsageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageViews.swift; sourceTree = "<group>"; };
 		C6D33C77809AF70F7E7ABE49 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		CC5922E2319C178DECC98C2A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D44EECCAE2A3AB10BEA36CDD /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSession.swift; sourceTree = "<group>"; };
@@ -47,6 +51,7 @@
 		F8311AAB0703A2AB17133180 /* QuickAddAccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAddAccountView.swift; sourceTree = "<group>"; };
 		FACAFAC18F51A039C759D9CA /* GroupsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupsView.swift; sourceTree = "<group>"; };
 		FBC63F2E1E5AD1A3632AC6CB /* AccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountsView.swift; sourceTree = "<group>"; };
+		FFD8CDAB7F28367B84680446 /* NativeAdminFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAdminFeatures.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -64,6 +69,7 @@
 			isa = PBXGroup;
 			children = (
 				CC5922E2319C178DECC98C2A /* Assets.xcassets */,
+				0B2CE4F67FC14B9EE20A2565 /* Info.plist */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -100,15 +106,17 @@
 		E14446900580E6884430F9D8 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				5AE727F001700F704E6DF469 /* AccountOAuthViews.swift */,
 				FBC63F2E1E5AD1A3632AC6CB /* AccountsView.swift */,
 				144916F476D148670009AA6C /* BillingViews.swift */,
 				C6D33C77809AF70F7E7ABE49 /* DashboardView.swift */,
-				6DB3A77E5E7BC49E99C29D57 /* FullConsoleView.swift */,
 				FACAFAC18F51A039C759D9CA /* GroupsView.swift */,
 				616DEA624CDDEC6AD9E27D9F /* LoginView.swift */,
+				FFD8CDAB7F28367B84680446 /* NativeAdminFeatures.swift */,
 				0B9566EAD7A522CF84E6FD57 /* OperationsView.swift */,
 				F8311AAB0703A2AB17133180 /* QuickAddAccountView.swift */,
 				4211AB6C9352BB80C0A5F531 /* RootView.swift */,
+				C05485AB0B11468D179A7FE5 /* UsageViews.swift */,
 				05CABB5B43D949B71EDBC384 /* UsersView.swift */,
 				668EDDD8E96D920F559D9ACF /* ViewSupport.swift */,
 			);
@@ -186,19 +194,21 @@
 			buildActionMask = 2147483647;
 			files = (
 				4819C32817B860B75C0C44B7 /* APIClient.swift in Sources */,
+				75D5C23CA1674DA43C0FCA21 /* AccountOAuthViews.swift in Sources */,
 				3950A3AD8FE9429DA3B10F7B /* AccountsView.swift in Sources */,
 				F71E2F1DD8DB188D2F9107A8 /* AppSession.swift in Sources */,
 				F60074A4D7D4E8C5F5C20387 /* BillingViews.swift in Sources */,
 				42EAE86DD2B898F897D21627 /* DashboardView.swift in Sources */,
-				4CD7176AD639759BF4066A9D /* FullConsoleView.swift in Sources */,
 				04B6742B397C5802399896ED /* GitHubReleaseService.swift in Sources */,
 				D961281B82DE838236096025 /* GroupsView.swift in Sources */,
 				4913B5AEF58CDAA804332B47 /* LoginView.swift in Sources */,
 				31BE8B45D05FD099FE16109E /* Models.swift in Sources */,
+				66CAADEC2651ADC56F66D0C8 /* NativeAdminFeatures.swift in Sources */,
 				5898662465B7E80E2FB0E91F /* OperationsView.swift in Sources */,
 				BC62BE8D6F10A1E2C762AC38 /* QuickAddAccountView.swift in Sources */,
 				D559981B62F022B9D9962A86 /* RootView.swift in Sources */,
 				91EF2C15E0468DED5F53CB64 /* SecureStore.swift in Sources */,
+				FCA04521FF1D0B6D1F6A1D55 /* UsageViews.swift in Sources */,
 				D4A527F217E69451929B16B3 /* UsersView.swift in Sources */,
 				F558351C150D03C00D3699D3 /* ViewSupport.swift in Sources */,
 				AE95026EC5F75E6304DE4FFF /* XIASSAdminApp.swift in Sources */,
@@ -338,20 +348,20 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 6L5U43WRFL;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "XIASS 管理端";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "XIASS Admin uses Face ID to protect administrator access.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiass.admin;
 				PRODUCT_NAME = "XIASS 管理端";
 				SDKROOT = iphoneos;
@@ -364,20 +374,20 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 6L5U43WRFL;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "XIASS 管理端";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "XIASS Admin uses Face ID to protect administrator access.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiass.admin;
 				PRODUCT_NAME = "XIASS 管理端";
 				SDKROOT = iphoneos;

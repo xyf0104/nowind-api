@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
 
     var body: some View {
         AppScreen {
@@ -15,6 +16,13 @@ struct RootView: View {
             case .signedIn:
                 AdminTabView()
             }
+        }
+        .alert(item: $feedback.message) { message in
+            Alert(
+                title: Text(message.title),
+                message: Text(message.detail),
+                dismissButton: .default(Text("知道了"))
+            )
         }
     }
 }
@@ -35,7 +43,7 @@ struct AdminTabView: View {
                 .tabItem { Label("用户", systemImage: "person.2.fill") }
 
             NavigationStack { OperationsView() }
-                .tabItem { Label("更多", systemImage: "ellipsis.circle.fill") }
+                .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }
         .tint(AppTheme.primary)
         .background(AppBackdrop())
@@ -51,6 +59,32 @@ struct ErrorMessage: Identifiable {
     init(_ error: Error, title: String = "请求失败") {
         self.title = title
         self.detail = error.localizedDescription
+    }
+}
+
+struct FeedbackMessage: Identifiable {
+    enum Tone { case success, failure, notice }
+
+    let id = UUID()
+    let tone: Tone
+    let title: String
+    let detail: String
+}
+
+@MainActor
+final class FeedbackCenter: ObservableObject {
+    @Published var message: FeedbackMessage?
+
+    func success(_ title: String = "操作成功", detail: String = "已完成并同步到 XIASS API。") {
+        message = FeedbackMessage(tone: .success, title: title, detail: detail)
+    }
+
+    func failure(_ error: Error, title: String = "操作失败") {
+        message = FeedbackMessage(tone: .failure, title: title, detail: error.localizedDescription)
+    }
+
+    func notice(_ title: String, detail: String) {
+        message = FeedbackMessage(tone: .notice, title: title, detail: detail)
     }
 }
 

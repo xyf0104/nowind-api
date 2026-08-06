@@ -1,8 +1,10 @@
 import SwiftUI
 import UIKit
+import AuthenticationServices
 
 struct AccountEditorView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @Environment(\.dismiss) private var dismiss
 
     let account: AdminAccount?
@@ -111,10 +113,10 @@ struct AccountEditorView: View {
                 }
 
                 Section("调度与计费") {
-                    Stepper("并发数：\(concurrency)", value: $concurrency, in: 1...100)
-                    Stepper("优先级：\(priority)", value: $priority, in: 0...100)
-                    Stepper("费率倍率：\(DisplayFormat.decimal(rateMultiplier))", value: $rateMultiplier, in: 0...100, step: 0.05)
-                    Stepper("负载权重：\(loadFactor == 0 ? "默认" : String(loadFactor))", value: $loadFactor, in: 0...10_000, step: 10)
+                    IntegerInput(label: "并发数", value: $concurrency, range: 1...100, step: 1)
+                    IntegerInput(label: "优先级", value: $priority, range: 0...100, step: 1)
+                    DecimalInput(label: "费率倍率", value: $rateMultiplier, range: 0...100, step: 0.05, suffix: "x")
+                    IntegerInput(label: "负载权重", value: $loadFactor, range: 0...10_000, step: 10, zeroLabel: "默认")
                 }
 
                 Section("绑定分组") {
@@ -129,11 +131,13 @@ struct AccountEditorView: View {
                                     else { selectedGroupIDs.remove(group.id) }
                                 }
                             )) {
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: 3) {
                                     Text(group.name)
-                                    Text(group.platform.uppercased())
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: 7) {
+                                        PlatformBadge(platform: group.platform)
+                                        Text("倍率 \(DisplayFormat.decimal(group.rateMultiplier ?? 1))")
+                                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
@@ -148,7 +152,7 @@ struct AccountEditorView: View {
                 } header: {
                     Text("高级参数")
                 } footer: {
-                    Text("与网页端的扩展参数对应。仅在明确需要时修改，避免覆盖运行时设置。")
+                    Text("与 XIASS API 高级参数对应。仅在明确需要时修改，避免覆盖运行时设置。")
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -255,6 +259,7 @@ struct AccountEditorView: View {
                     let _: AdminAccount = try await api.request(method: .post, path: "admin/accounts", body: request)
                 }
                 credentialValue = ""
+                feedback.success(isEditing ? "账号已保存" : "账号已添加", detail: "凭证、调度和分组已同步到 XIASS API。")
                 onSaved()
                 dismiss()
             } catch {
@@ -275,6 +280,7 @@ struct AccountEditorView: View {
 
 struct AccountTestSheet: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @Environment(\.dismiss) private var dismiss
     let account: AdminAccount
 
@@ -285,18 +291,24 @@ struct AccountTestSheet: View {
     @State private var isLoadingModels = false
     @State private var isTesting = false
     @State private var result: AccountTestResult?
+    @State private var showModelPicker = false
     @State private var error: ErrorMessage?
 
     var body: some View {
         NavigationStack {
             List {
                 Section("测试设置") {
-                    Picker("测试模型", selection: $model) {
-                        Text("自动选择（推荐）").tag("")
-                        ForEach(models) { item in
-                            Text(item.label).tag(item.id)
+                    Button { showModelPicker = true } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("测试模型").foregroundStyle(.primary)
+                                Text(selectedModelTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down").foregroundStyle(AppTheme.primary)
                         }
                     }
+                    .buttonStyle(.plain)
                     if isLoadingModels {
                         ProgressView("正在读取可用模型…")
                     } else if models.isEmpty {
@@ -354,6 +366,14 @@ struct AccountTestSheet: View {
             .task { await loadModels() }
         }
         .requestError($error)
+        .sheet(isPresented: $showModelPicker) {
+            ModelSelectionSheet(models: models, selectedModel: $model)
+        }
+    }
+
+    private var selectedModelTitle: String {
+        guard !model.isEmpty else { return "自动选择（推荐）" }
+        return models.first(where: { $0.id == model })?.label ?? model
     }
 
     private func test() {
@@ -364,6 +384,8 @@ struct AccountTestSheet: View {
             do {
                 guard let api = session.api else { throw APIError(message: "登录已失效，请重新登录。") }
                 result = try await api.testAccount(id: account.id, modelID: model, prompt: prompt, mode: mode)
+                let testedModel = result?.model ?? (model.isEmpty ? "已由服务器自动选择模型" : model)
+                feedback.success(result?.succeeded == true ? "账号连接成功" : "账号测试已完成", detail: testedModel)
             } catch {
                 self.error = ErrorMessage(error, title: "账号测试失败")
             }

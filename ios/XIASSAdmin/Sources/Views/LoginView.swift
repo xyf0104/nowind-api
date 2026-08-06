@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @State private var address = SecureStore.baseURL ?? "https://api.xiass.com"
     @State private var email = ""
     @State private var password = ""
@@ -112,6 +113,11 @@ struct LoginView: View {
             do {
                 try await session.signIn(address: address, email: email, password: password)
                 password = ""
+                if session.pendingTwoFactorToken == nil {
+                    feedback.success("登录成功", detail: "已连接 XIASS API 管理端。")
+                } else {
+                    feedback.notice("需要双重验证", detail: "请输入验证器中的动态码以完成登录。")
+                }
             } catch {
                 self.error = ErrorMessage(error, title: "登录失败")
             }
@@ -125,6 +131,7 @@ struct LoginView: View {
             do {
                 try await session.completeTwoFactor(code: twoFactorCode)
                 twoFactorCode = ""
+                feedback.success("验证成功", detail: "已连接 XIASS API 管理端。")
             } catch {
                 self.error = ErrorMessage(error, title: "验证失败")
             }

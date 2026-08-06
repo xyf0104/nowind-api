@@ -2,6 +2,7 @@ import SwiftUI
 
 struct UserAPIKeysView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     let user: UserProfile
     @State private var keys: [APIKeyRecord]
     @State private var isLoading = false
@@ -55,15 +56,15 @@ struct UserAPIKeysView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+                Button { Task { await load(notify: true) } } label: { Image(systemName: "arrow.clockwise") }
             }
         }
         .task { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(notify: true) }
         .requestError($error)
     }
 
-    private func load() async {
+    private func load(notify: Bool = false) async {
         guard let api = session.api else { return }
         isLoading = true
         defer { isLoading = false }
@@ -74,6 +75,7 @@ struct UserAPIKeysView: View {
                 query: [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "page_size", value: "100")]
             )
             keys = page.items
+            if notify { feedback.success("API 密钥已刷新", detail: "已同步 \(keys.count) 个 API 密钥。") }
         } catch {
             self.error = ErrorMessage(error, title: "无法读取 API 密钥")
         }
@@ -82,6 +84,7 @@ struct UserAPIKeysView: View {
 
 struct APIKeyDetailView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     @Environment(\.dismiss) private var dismiss
     let key: APIKeyRecord
     @State private var groups: [AdminGroup] = []
@@ -156,6 +159,7 @@ struct APIKeyDetailView: View {
                     body: AdminAPIKeyUpdateRequest(groupID: groupID, resetRateLimitUsage: nil)
                 )
                 isEditing = false
+                feedback.success("API 密钥已保存", detail: "绑定分组已同步到 XIASS API。")
             } catch { self.error = ErrorMessage(error, title: "API 密钥保存失败") }
         }
     }
@@ -222,6 +226,7 @@ struct BalanceHistoryView: View {
 
 struct PaymentOrdersView: View {
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
     let userID: Int?
     let title: String
     @State private var orders: [PaymentOrder] = []
@@ -255,15 +260,15 @@ struct PaymentOrdersView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+                Button { Task { await load(notify: true) } } label: { Image(systemName: "arrow.clockwise") }
             }
         }
         .task { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(notify: true) }
         .requestError($error)
     }
 
-    private func load() async {
+    private func load(notify: Bool = false) async {
         guard let api = session.api else { return }
         isLoading = true
         defer { isLoading = false }
@@ -272,6 +277,7 @@ struct PaymentOrdersView: View {
             if let userID { query.append(URLQueryItem(name: "user_id", value: String(userID))) }
             let page: Page<PaymentOrder> = try await api.request(method: .get, path: "admin/payment/orders", query: query)
             orders = page.items
+            if notify { feedback.success("充值记录已刷新", detail: "已加载 \(orders.count) 条充值记录。") }
         } catch { self.error = ErrorMessage(error, title: "无法读取充值订单") }
     }
 }

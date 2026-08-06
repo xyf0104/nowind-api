@@ -36,6 +36,7 @@ command -v gh >/dev/null || {
 sed "s/__TEAM_ID__/${TEAM_ID}/g" "$PROJECT_DIR/Release/ExportOptions.template.plist" > "$EXPORT_OPTIONS"
 
 xcodebuild \
+  -allowProvisioningUpdates \
   -project "$PROJECT" \
   -scheme XIASSAdmin \
   -configuration Release \
@@ -47,6 +48,7 @@ xcodebuild \
   archive
 
 xcodebuild -exportArchive \
+  -allowProvisioningUpdates \
   -archivePath "$ARCHIVE_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS" \
   -exportPath "$EXPORT_DIR"
