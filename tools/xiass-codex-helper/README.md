@@ -23,32 +23,38 @@ Before applying a configuration, the helper:
    archived rollouts plus compatible `threads.model_provider` columns is
    synchronized to the active provider so every conversation remains visible
    after switching providers.
-8. Validates project paths and `rootPaths`, repairs malformed macOS workspace
+8. The explicit history-repair action also removes only incompatible internal
+   Responses continuation records (encrypted reasoning/compaction entries and
+   invalid message IDs) when the active provider is external. It keeps visible
+   user and assistant messages, attachments, tool calls, and tool output; the
+   first-party `openai` provider is left untouched.
+9. Validates project paths and `rootPaths`, repairs malformed macOS workspace
    mappings that can hide intact conversations from the sidebar, and leaves
    valid Windows paths unchanged.
-9. Preserves unrelated MCP, plugin, project, desktop, and reasoning settings.
-10. Uses atomic file replacement and SQLite transactions, then verifies database
+10. Preserves unrelated MCP, plugin, project, desktop, and reasoning settings.
+11. Uses atomic file replacement and SQLite transactions, then verifies database
    integrity, provider consistency, the exact thread-ID sets, the rollout file
    set, and workspace mappings.
-11. Records durable repair states, recovers interrupted operations on the next
+12. Records durable repair states, recovers interrupted operations on the next
     run, rolls back configuration/history on failure, and starts Codex only
     after every verification succeeds.
-12. On Windows, Microsoft Store/WindowsApps installations are launched through
+13. On Windows, Microsoft Store/WindowsApps installations are launched through
     their registered `shell:AppsFolder` target instead of executing the
     protected package binary directly. Optional SQLite files that cannot be
     confirmed as thread-provider databases are skipped; `state_*` databases
     remain strictly validated.
-13. Windows process polling uses native Toolhelp APIs. Remaining PowerShell and
+14. Windows process polling uses native Toolhelp APIs. Remaining PowerShell and
     task-control commands run with no-window flags, preventing repeated console
     flashes during shutdown and launch verification.
-14. SQLite file URIs normalize Windows drive letters and percent-encode Unicode
+15. SQLite file URIs normalize Windows drive letters and percent-encode Unicode
     profile paths, including Codex homes under non-ASCII Windows user names.
 
 Restore operations validate the selected backup and create another safety
 backup before replacing the current configuration. The local page also exposes
-an immediate history-repair action. Every restart initiated by this helper runs
-history verification first; later normal Codex launches retain the synchronized
-provider metadata.
+an immediate history-repair action. Compatibility-repair backups are listed
+separately and can be restored only while no newer local conversation data has
+been written. Every restart initiated by this helper runs history verification
+first; later normal Codex launches retain the synchronized provider metadata.
 
 The repair behavior was cross-checked against public provider-sync approaches
 and the [Codex cross-provider history issue](https://github.com/openai/codex/issues/15494).

@@ -100,9 +100,17 @@
 	  <h2>历史会话修复</h2>
 	  <div class="row"><span class="label">上次结果</span><span id="history-result" class="value">尚未在本次运行中执行</span></div>
 	  <div class="actions">
-		<button id="repair-history-button" type="button">立即修复历史会话并重启 Codex</button>
+		<button id="repair-history-button" type="button">修复历史会话兼容性并重启 Codex</button>
 	  </div>
-	  <p class="hint">用于切换 provider 后历史对话不显示的情况。助手会把普通会话、归档会话和数据库索引统一到当前 provider，让全部对话重新可见。修改前会创建包含 WAL 已提交数据的 SQLite 一致性快照并备份原始会话元数据；失败或意外中断会自动恢复。</p>
+	  <p class="hint">用于切换 provider 后历史对话不显示，或旧会话在第三方 API 下无法继续的情况。助手会同步普通会话、归档会话和数据库索引到当前 provider，并移除无法被第三方 Responses API 验证的内部续接记录；用户消息、助手正文、附件引用与工具结果均保留。官方 OpenAI provider 不会改动这些续接记录。修改前会创建包含 WAL 已提交数据的 SQLite 一致性快照并备份原始会话元数据；失败或意外中断会自动恢复。</p>
+	  <div class="row">
+		<label class="label" for="history-backup-select">兼容性备份</label>
+		<select id="history-backup-select"><option value="">正在读取备份...</option></select>
+	  </div>
+	  <div class="actions">
+		<button id="restore-history-button" type="button" class="danger">恢复所选历史会话备份</button>
+	  </div>
+	  <p class="hint">只有尚未产生新会话内容的备份可以恢复；若 Codex 已写入后续内容，助手会拒绝覆盖。</p>
 	</section>
 
     <section class="panel">
@@ -185,8 +193,30 @@
       document.getElementById('restore-button').disabled = false;
     }
 
+    async function loadHistoryBackups() {
+      const data = await request('/api/history-backups');
+      const select = document.getElementById('history-backup-select');
+      select.innerHTML = '';
+      if (!data.items.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '暂无可恢复的历史会话备份';
+        select.append(option);
+        document.getElementById('restore-history-button').disabled = true;
+        return;
+      }
+      for (const item of data.items) {
+        const option = document.createElement('option');
+        option.value = item.id;
+        const compatibility = item.sanitized_records ? ` · 清理 ${item.sanitized_records} 条内部记录` : '';
+        option.textContent = `${new Date(item.created_at).toLocaleString()} · ${item.target_provider}${compatibility}`;
+        select.append(option);
+      }
+      document.getElementById('restore-history-button').disabled = false;
+    }
+
     async function refresh() {
-      try { await Promise.all([loadStatus(), loadBackups()]); }
+      try { await Promise.all([loadStatus(), loadBackups(), loadHistoryBackups()]); }
       catch (error) { showMessage(error.message, 'error'); }
     }
 
@@ -261,15 +291,30 @@
       }
     });
 	document.getElementById('repair-history-button').addEventListener('click', async () => {
-	  if (!confirm('修复期间 Codex 会先退出，校验完成后自动重新启动。确定继续吗？')) return;
+	  if (!confirm('修复期间 Codex 会先退出，校验完成后自动重新启动。会先创建可恢复备份。确定继续吗？')) return;
 	  const button = document.getElementById('repair-history-button');
 	  button.disabled = true;
 	  try {
 		const data = await request('/api/repair-history', { method: 'POST', body: '{}' });
 		const history = data.history || {};
-		const summary = `扫描 ${history.scanned_session_files || 0} 个会话文件、${history.scanned_databases || 0} 个数据库；修复 ${history.updated_session_files || 0} 个会话文件和 ${history.updated_database_rows || 0} 行索引。`;
+		const summary = `扫描 ${history.scanned_session_files || 0} 个会话文件、${history.scanned_databases || 0} 个数据库；修复 ${history.updated_session_files || 0} 个会话文件、${history.updated_database_rows || 0} 行索引，并清理 ${history.sanitized_records || 0} 条不兼容内部记录。`;
 		document.getElementById('history-result').textContent = summary;
 		showMessage(`${data.message} ${summary}`, 'success');
+	  } catch (error) {
+		showMessage(error.message, 'error');
+	  } finally {
+		button.disabled = false;
+	  }
+	});
+	document.getElementById('restore-history-button').addEventListener('click', async () => {
+	  const backupID = document.getElementById('history-backup-select').value;
+	  if (!backupID || !confirm('确定恢复所选历史会话备份并重启 Codex 吗？若会话已有新内容，助手会安全拒绝覆盖。')) return;
+	  const button = document.getElementById('restore-history-button');
+	  button.disabled = true;
+	  try {
+		const data = await request('/api/restore-history', { method: 'POST', body: JSON.stringify({ backup_id: backupID }) });
+		showMessage(data.message, 'success');
+		await refresh();
 	  } catch (error) {
 		showMessage(error.message, 'error');
 	  } finally {

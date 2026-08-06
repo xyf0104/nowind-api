@@ -182,6 +182,120 @@ func TestHistoryRepairNeverMigratesStableProviderBackToLegacyXIASS(t *testing.T)
 	assertHistoryDatabase(t, databasePath, 1, "codex_local_access")
 }
 
+func TestHistoryRepairSanitizesIncompatibleResponsesForXIASSProvider(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfig(t, home, providerID)
+	session := writeHistoryRollout(t, home, "sessions/rollout-compatibility.jsonl", providerID, "thread-compatibility")
+	appendHistoryRecords(t, session,
+		map[string]any{"type": "response_item", "payload": map[string]any{
+			"type": "reasoning", "id": "rsn_legacy", "encrypted_content": "opaque", "summary": []any{},
+		}},
+		map[string]any{"type": "response_item", "payload": map[string]any{
+			"type": "compaction", "id": "cmp_legacy", "encrypted_content": "opaque",
+		}},
+		map[string]any{"type": "response_item", "payload": map[string]any{
+			"type": "message", "id": "resp_legacy_msg", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "visible answer"}},
+		}},
+		map[string]any{"type": "response_item", "payload": map[string]any{
+			"type": "message", "id": "msg_valid", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "visible question"}},
+		}},
+		map[string]any{"type": "response_item", "payload": map[string]any{
+			"type": "function_call_output", "call_id": "call_visible", "output": "tool result",
+		}},
+	)
+	before, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), map[string]string{"thread-compatibility": providerID})
+
+	repairer := NewHistoryRepairer(home)
+	result, err := repairer.RepairCurrentProviderCompatibility()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpdatedSessionFiles != 1 || result.SanitizedRecords != 3 || result.BackupID == "" {
+		t.Fatalf("unexpected compatibility repair result: %+v", result)
+	}
+	after, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Count(after, historySanitizedRecord) != 2 {
+		t.Fatalf("sanitized record count = %d, want 2", bytes.Count(after, historySanitizedRecord))
+	}
+	if bytes.Contains(after, []byte("resp_legacy_msg")) || bytes.Contains(after, []byte("encrypted_content")) {
+		t.Fatalf("incompatible Responses continuation data remained: %s", after)
+	}
+	for _, visible := range []string{"visible answer", "visible question", "tool result", "msg_valid"} {
+		if !bytes.Contains(after, []byte(visible)) {
+			t.Fatalf("visible conversation data %q was removed", visible)
+		}
+	}
+	backups, err := repairer.ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 || backups[0].ID != result.BackupID || backups[0].SanitizedRecords != 3 {
+		t.Fatalf("compatibility backups = %+v", backups)
+	}
+
+	second, err := repairer.RepairCurrentProviderCompatibility()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.UpdatedSessionFiles != 0 || second.SanitizedRecords != 0 || second.BackupID != "" {
+		t.Fatalf("compatibility repair was not idempotent: %+v", second)
+	}
+
+	if err := repairer.RestoreBackup(result.BackupID); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, before) {
+		t.Fatal("history backup did not restore the original conversation records")
+	}
+	backups, err = repairer.ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("restored compatibility backup was still offered: %+v", backups)
+	}
+}
+
+func TestHistoryRepairCompatibilityLeavesOfficialProviderContinuationUntouched(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfig(t, home, "openai")
+	session := writeHistoryRollout(t, home, "sessions/rollout-official.jsonl", "openai", "thread-official")
+	appendHistoryRecords(t, session, map[string]any{"type": "response_item", "payload": map[string]any{
+		"type": "reasoning", "id": "rsn_official", "encrypted_content": "official-payload", "summary": []any{},
+	}})
+	before, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), map[string]string{"thread-official": "openai"})
+
+	result, err := NewHistoryRepairer(home).RepairCurrentProviderCompatibility()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpdatedSessionFiles != 0 || result.SanitizedRecords != 0 || result.BackupID != "" {
+		t.Fatalf("official provider history was unexpectedly changed: %+v", result)
+	}
+	after, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("official provider continuation was changed")
+	}
+}
+
 func TestHistoryRepairRollsBackSessionAndDatabaseAfterWriteFailure(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, "codex_local_access")
@@ -530,6 +644,24 @@ func writeHistoryRollout(t *testing.T, home, relative, provider, threadID string
 		t.Fatal(err)
 	}
 	return path
+}
+
+func appendHistoryRecords(t *testing.T, path string, records ...map[string]any) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(append(line, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func createHistoryDatabase(t *testing.T, path string, providers map[string]string) {

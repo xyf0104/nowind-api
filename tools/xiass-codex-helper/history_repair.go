@@ -23,18 +23,23 @@ import (
 )
 
 const (
-	historyBackupVersion        = 2
-	historyMetadataMax          = 2 << 20
-	historyMetadataLines        = 64
-	historyBackupDirName        = "history-backups"
-	historyOperationLock        = "history-operation.lock"
-	historyManagedBy            = "XIASS Codex Helper history repair"
-	historyStatusPrepared       = "prepared"
-	historyStatusApplying       = "applying"
-	historyStatusCommitted      = "committed"
-	historyStatusRolledBack     = "rolled_back"
-	historyStatusRollbackFailed = "rollback_failed"
+	historyBackupVersion         = 2
+	historyMetadataMax           = 2 << 20
+	historyMetadataLines         = 64
+	historyBackupDirName         = "history-backups"
+	historyOperationLock         = "history-operation.lock"
+	historyManagedBy             = "XIASS Codex Helper history repair"
+	historyStatusPrepared        = "prepared"
+	historyStatusApplying        = "applying"
+	historyStatusCommitted       = "committed"
+	historyStatusRolledBack      = "rolled_back"
+	historyStatusRollbackFailed  = "rollback_failed"
+	historySessionActionProvider = "provider"
+	historySessionActionDropItem = "drop_incompatible_response_item"
+	historySessionActionStripID  = "strip_invalid_message_id"
 )
+
+var historySanitizedRecord = []byte(`{}`)
 
 var allowImmutableHistoryReadForTests bool
 
@@ -49,11 +54,19 @@ type HistoryRepairResult struct {
 	SourceProviders     []string                    `json:"source_providers,omitempty"`
 	ScannedSessionFiles int                         `json:"scanned_session_files"`
 	UpdatedSessionFiles int                         `json:"updated_session_files"`
+	SanitizedRecords    int                         `json:"sanitized_records"`
 	ScannedDatabases    int                         `json:"scanned_databases"`
 	UpdatedDatabaseRows int64                       `json:"updated_database_rows"`
 	ThreadCount         int64                       `json:"thread_count"`
 	BackupID            string                      `json:"backup_id,omitempty"`
 	WorkspaceState      *WorkspaceStateRepairResult `json:"workspace_state,omitempty"`
+}
+
+type HistoryBackupInfo struct {
+	ID               string    `json:"id"`
+	CreatedAt        time.Time `json:"created_at"`
+	TargetProvider   string    `json:"target_provider"`
+	SanitizedRecords int       `json:"sanitized_records"`
 }
 
 type HistoryRepairApplyError struct {
@@ -79,6 +92,7 @@ type historyRepairPlan struct {
 	Databases          []historyDatabasePlan
 	ScannedFiles       int
 	ThreadCount        int64
+	SanitizedRecords   int
 	RolloutFilesSHA256 string
 }
 
@@ -90,6 +104,7 @@ type historySessionPlan struct {
 	UpdatedLine  []byte    `json:"updated_line"`
 	Mode         uint32    `json:"mode"`
 	ModifiedAt   time.Time `json:"modified_at"`
+	Action       string    `json:"action"`
 }
 
 type historyDatabasePlan struct {
@@ -143,7 +158,23 @@ func (r *HistoryRepairer) RepairCurrentProvider() (HistoryRepairResult, error) {
 	return r.Repair(target)
 }
 
+func (r *HistoryRepairer) RepairCurrentProviderCompatibility() (HistoryRepairResult, error) {
+	target, err := readCurrentProvider(filepath.Join(r.CodexHome, "config.toml"))
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	return r.RepairWithCompatibility(target)
+}
+
 func (r *HistoryRepairer) Repair(targetProvider string) (HistoryRepairResult, error) {
+	return r.repair(targetProvider, false)
+}
+
+func (r *HistoryRepairer) RepairWithCompatibility(targetProvider string) (HistoryRepairResult, error) {
+	return r.repair(targetProvider, true)
+}
+
+func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool) (HistoryRepairResult, error) {
 	targetProvider = strings.TrimSpace(targetProvider)
 	if !validHistoryProviderID(targetProvider) {
 		return HistoryRepairResult{}, errors.New("invalid model provider for history repair")
@@ -166,7 +197,7 @@ func (r *HistoryRepairer) Repair(targetProvider string) (HistoryRepairResult, er
 				return err
 			}
 		}
-		plan, err := r.buildPlan(targetProvider, sourceProviders)
+		plan, err := r.buildPlanWithCompatibility(targetProvider, sourceProviders, repairCompatibility)
 		if err != nil {
 			return err
 		}
@@ -176,6 +207,7 @@ func (r *HistoryRepairer) Repair(targetProvider string) (HistoryRepairResult, er
 			ScannedSessionFiles: plan.ScannedFiles,
 			ScannedDatabases:    len(plan.Databases),
 			ThreadCount:         plan.ThreadCount,
+			SanitizedRecords:    plan.SanitizedRecords,
 			WorkspaceState:      &workspaceState,
 		}
 		needsDatabaseUpdate := false
@@ -249,6 +281,10 @@ func (r *HistoryRepairer) Repair(targetProvider string) (HistoryRepairResult, er
 }
 
 func (r *HistoryRepairer) buildPlan(targetProvider string, sourceProviders []string) (historyRepairPlan, error) {
+	return r.buildPlanWithCompatibility(targetProvider, sourceProviders, false)
+}
+
+func (r *HistoryRepairer) buildPlanWithCompatibility(targetProvider string, sourceProviders []string, repairCompatibility bool) (historyRepairPlan, error) {
 	plan := historyRepairPlan{TargetProvider: targetProvider, SourceProviders: append([]string(nil), sourceProviders...)}
 	databasePaths, err := discoverHistoryDatabases(r.CodexHome)
 	if err != nil {
@@ -264,7 +300,7 @@ func (r *HistoryRepairer) buildPlan(targetProvider string, sourceProviders []str
 			plan.ThreadCount += database.ThreadCount
 		}
 	}
-	fullSessionScan := len(sourceProviders) > 0
+	fullSessionScan := len(sourceProviders) > 0 || (repairCompatibility && shouldSanitizeSessionReplay(targetProvider))
 
 	rollouts, err := discoverRolloutFiles(r.CodexHome)
 	if err != nil {
@@ -278,11 +314,16 @@ func (r *HistoryRepairer) buildPlan(targetProvider string, sourceProviders []str
 			return plan, err
 		}
 		if fullSessionScan || needsUpdate {
-			sessions, err := inspectAllSessionMetadata(r.CodexHome, path, targetProvider, sourceProviders)
+			sessions, err := inspectAllSessionMetadata(r.CodexHome, path, targetProvider, sourceProviders, repairCompatibility)
 			if err != nil {
 				return plan, err
 			}
 			plan.Sessions = append(plan.Sessions, sessions...)
+			for _, session := range sessions {
+				if session.Action == historySessionActionDropItem || session.Action == historySessionActionStripID {
+					plan.SanitizedRecords++
+				}
+			}
 		}
 	}
 	return plan, nil
@@ -472,6 +513,45 @@ func (r *HistoryRepairer) RestoreBackup(backupID string) error {
 	})
 }
 
+func (r *HistoryRepairer) ListBackups() ([]HistoryBackupInfo, error) {
+	entries, err := os.ReadDir(r.BackupRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items := make([]HistoryBackupInfo, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(r.BackupRoot, entry.Name(), "manifest.json"))
+		if err != nil {
+			continue
+		}
+		var manifest historyBackupManifest
+		if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version != historyBackupVersion ||
+			manifest.ManagedBy != historyManagedBy || manifest.ID != entry.Name() || manifest.Status != historyStatusCommitted {
+			continue
+		}
+		sanitized := 0
+		for _, session := range manifest.SessionChanges {
+			if session.Action == historySessionActionDropItem || session.Action == historySessionActionStripID {
+				sanitized++
+			}
+		}
+		items = append(items, HistoryBackupInfo{
+			ID:               manifest.ID,
+			CreatedAt:        manifest.CreatedAt,
+			TargetProvider:   manifest.TargetProvider,
+			SanitizedRecords: sanitized,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	return items, nil
+}
+
 func (r *HistoryRepairer) validateBackupManifest(manifest historyBackupManifest) error {
 	if filepath.Clean(manifest.CodexHome) != filepath.Clean(r.CodexHome) {
 		return errors.New("history backup belongs to a different Codex home")
@@ -507,12 +587,8 @@ func (r *HistoryRepairer) verifyPlan(plan historyRepairPlan) error {
 		return errors.New("rollout file set changed during history repair")
 	}
 	for _, session := range plan.Sessions {
-		provider, err := sessionProviderAtLine(session.Path, session.LineIndex)
-		if err != nil {
+		if err := verifySessionRepairPlan(session, plan.TargetProvider); err != nil {
 			return err
-		}
-		if provider != plan.TargetProvider {
-			return fmt.Errorf("session provider verification failed: %s", session.RelativePath)
 		}
 	}
 	for _, expected := range plan.Databases {
@@ -535,6 +611,47 @@ func (r *HistoryRepairer) verifyPlan(plan historyRepairPlan) error {
 		if len(remaining) > 0 {
 			return fmt.Errorf("history provider verification found %d unsynchronized provider markers", len(remaining))
 		}
+	}
+	return nil
+}
+
+func verifySessionRepairPlan(plan historySessionPlan, targetProvider string) error {
+	raw, err := sessionRecordAtLine(plan.Path, plan.LineIndex)
+	if err != nil {
+		return err
+	}
+	switch plan.Action {
+	case historySessionActionProvider:
+		var record map[string]any
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return fmt.Errorf("session provider verification read invalid record: %s", plan.RelativePath)
+		}
+		payload, _ := record["payload"].(map[string]any)
+		provider, _ := payload["model_provider"].(string)
+		if provider != targetProvider {
+			return fmt.Errorf("session provider verification failed: %s", plan.RelativePath)
+		}
+	case historySessionActionDropItem:
+		if !bytes.Equal(bytes.TrimSpace(raw), historySanitizedRecord) {
+			return fmt.Errorf("session compatibility record was not removed: %s", plan.RelativePath)
+		}
+	case historySessionActionStripID:
+		var record map[string]any
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return fmt.Errorf("session message ID verification read invalid record: %s", plan.RelativePath)
+		}
+		payload, _ := record["payload"].(map[string]any)
+		if payload["type"] != "message" {
+			return fmt.Errorf("session message ID verification found wrong record: %s", plan.RelativePath)
+		}
+		if id, hasID := payload["id"]; hasID {
+			idString, ok := id.(string)
+			if !ok || !strings.HasPrefix(strings.TrimSpace(idString), "msg_") {
+				return fmt.Errorf("session message ID verification failed: %s", plan.RelativePath)
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported session repair action: %s", plan.Action)
 	}
 	return nil
 }
@@ -833,7 +950,7 @@ func inspectSessionMetadata(codexHome, path, targetProvider string, sourceProvid
 
 var errStopHistoryLineScan = errors.New("stop history line scan")
 
-func inspectAllSessionMetadata(codexHome, path, targetProvider string, sourceProviders []string) ([]historySessionPlan, error) {
+func inspectAllSessionMetadata(codexHome, path, targetProvider string, sourceProviders []string, repairCompatibility bool) ([]historySessionPlan, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -850,34 +967,95 @@ func inspectAllSessionMetadata(codexHome, path, targetProvider string, sourcePro
 		var record map[string]any
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
-		if decoder.Decode(&record) != nil || record["type"] != "session_meta" {
+		if decoder.Decode(&record) != nil {
 			return nil
 		}
-		payload, ok := record["payload"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("session metadata payload is invalid: %s", path)
-		}
-		current, _ := payload["model_provider"].(string)
-		if current == targetProvider || !containsHistoryProvider(sourceProviders, current) {
+
+		if record["type"] == "session_meta" {
+			payload, ok := record["payload"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("session metadata payload is invalid: %s", path)
+			}
+			current, _ := payload["model_provider"].(string)
+			if current != targetProvider && containsHistoryProvider(sourceProviders, current) {
+				payload["model_provider"] = targetProvider
+				updated, err := json.Marshal(record)
+				if err != nil {
+					return err
+				}
+				plans = append(plans, newHistorySessionPlan(path, relative, lineIndex, raw, updated, info, historySessionActionProvider))
+			}
 			return nil
 		}
-		payload["model_provider"] = targetProvider
-		updated, err := json.Marshal(record)
+
+		if !repairCompatibility || !shouldSanitizeSessionReplay(targetProvider) {
+			return nil
+		}
+		updated, action, changed, err := sanitizeSessionReplayRecord(record)
 		if err != nil {
-			return err
+			return fmt.Errorf("sanitize session replay record: %w", err)
 		}
-		plans = append(plans, historySessionPlan{
-			Path:         path,
-			RelativePath: filepath.ToSlash(relative),
-			LineIndex:    lineIndex,
-			OriginalLine: append([]byte(nil), raw...),
-			UpdatedLine:  updated,
-			Mode:         uint32(info.Mode().Perm()),
-			ModifiedAt:   info.ModTime(),
-		})
+		if changed {
+			plans = append(plans, newHistorySessionPlan(path, relative, lineIndex, raw, updated, info, action))
+		}
 		return nil
 	})
 	return plans, err
+}
+
+func shouldSanitizeSessionReplay(targetProvider string) bool {
+	// OpenAI's first-party provider can verify its own continuation payloads.
+	// Any configured external provider (including a manually entered compatible
+	// API) must instead replay portable message/tool history without those
+	// provider-bound encrypted records.
+	return !strings.EqualFold(strings.TrimSpace(targetProvider), "openai")
+}
+
+func newHistorySessionPlan(path, relative string, lineIndex int, original, updated []byte, info fs.FileInfo, action string) historySessionPlan {
+	return historySessionPlan{
+		Path:         path,
+		RelativePath: filepath.ToSlash(relative),
+		LineIndex:    lineIndex,
+		OriginalLine: append([]byte(nil), original...),
+		UpdatedLine:  append([]byte(nil), updated...),
+		Mode:         uint32(info.Mode().Perm()),
+		ModifiedAt:   info.ModTime(),
+		Action:       action,
+	}
+}
+
+// sanitizeSessionReplayRecord removes only protocol-internal continuation
+// records that a third-party Responses endpoint cannot verify. The visible
+// user/assistant messages and all tool output records remain intact.
+func sanitizeSessionReplayRecord(record map[string]any) (updated []byte, action string, changed bool, err error) {
+	if record["type"] != "response_item" {
+		return nil, "", false, nil
+	}
+	payload, ok := record["payload"].(map[string]any)
+	if !ok {
+		return nil, "", false, nil
+	}
+
+	itemType, _ := payload["type"].(string)
+	switch strings.TrimSpace(itemType) {
+	case "reasoning", "compaction", "compaction_summary":
+		if _, hasEncryptedContent := payload["encrypted_content"]; hasEncryptedContent {
+			return append([]byte(nil), historySanitizedRecord...), historySessionActionDropItem, true, nil
+		}
+	case "message":
+		if rawID, hasID := payload["id"]; hasID {
+			id, validStringID := rawID.(string)
+			if !validStringID || !strings.HasPrefix(strings.TrimSpace(id), "msg_") {
+				delete(payload, "id")
+				updated, err = json.Marshal(record)
+				if err != nil {
+					return nil, "", false, err
+				}
+				return updated, historySessionActionStripID, true, nil
+			}
+		}
+	}
+	return nil, "", false, nil
 }
 
 func sessionProviderAtLine(path string, targetLine int) (string, error) {
@@ -908,6 +1086,26 @@ func sessionProviderAtLine(path string, targetLine int) (string, error) {
 		return "", fmt.Errorf("session metadata line disappeared: %s", path)
 	}
 	return provider, nil
+}
+
+func sessionRecordAtLine(path string, targetLine int) ([]byte, error) {
+	var record []byte
+	found := false
+	err := scanHistoryLines(path, func(lineIndex int, raw []byte) error {
+		if lineIndex != targetLine {
+			return nil
+		}
+		record = append([]byte(nil), raw...)
+		found = true
+		return errStopHistoryLineScan
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("session record disappeared: %s", path)
+	}
+	return record, nil
 }
 
 func scanHistoryLines(path string, visit func(lineIndex int, raw []byte) error) error {

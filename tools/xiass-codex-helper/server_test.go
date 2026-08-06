@@ -231,6 +231,9 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	if !strings.Contains(body, `id="manual-base-url"`) || !strings.Contains(body, `id="manual-api-key"`) {
 		t.Fatal("helper index does not expose manual API configuration")
 	}
+	if !strings.Contains(body, `id="repair-history-button"`) || !strings.Contains(body, `id="history-backup-select"`) {
+		t.Fatal("helper index does not expose history compatibility repair and recovery controls")
+	}
 	if strings.Contains(strings.ToLower(body), "codex++") {
 		t.Fatal("helper index contains an unrelated product name")
 	}
@@ -240,6 +243,13 @@ func TestHelperManualHistoryRepairStopsRepairsAndStarts(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, "codex_local_access")
 	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "xiass", "thread-a")
+	appendHistoryRecords(t, session, map[string]any{"type": "response_item", "payload": map[string]any{
+		"type": "reasoning", "encrypted_content": "opaque", "summary": []any{},
+	}})
+	before, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
 	createHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), map[string]string{"thread-a": "xiass"})
 	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
@@ -259,8 +269,32 @@ func TestHelperManualHistoryRepairStopsRepairsAndStarts(t *testing.T) {
 	if stopped.Load() != 1 || started.Load() != 1 {
 		t.Fatalf("lifecycle counts = stop %d, start %d", stopped.Load(), started.Load())
 	}
+	history, _ := response["history"].(map[string]any)
+	backupID, _ := history["backup_id"].(string)
+	if backupID == "" {
+		t.Fatalf("repair did not return a restorable history backup: %+v", response)
+	}
+	if repaired, err := os.ReadFile(session); err != nil || bytes.Contains(repaired, []byte("encrypted_content")) {
+		t.Fatalf("incompatible continuation was not removed: %v", err)
+	}
 	assertHistoryRolloutProvider(t, session, "codex_local_access")
 	assertHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), 1, "codex_local_access")
+
+	restoreBody, _ := json.Marshal(map[string]string{"backup_id": backupID})
+	restore := postHelperJSON(t, helper.routes(), "/api/restore-history", helper.state, restoreBody, http.StatusOK)
+	if ok, _ := restore["ok"].(bool); !ok {
+		t.Fatalf("history restore response = %+v", restore)
+	}
+	if stopped.Load() != 2 || started.Load() != 2 {
+		t.Fatalf("lifecycle counts after restore = stop %d, start %d", stopped.Load(), started.Load())
+	}
+	restored, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, before) {
+		t.Fatal("HTTP history restore did not restore the original conversation records")
+	}
 }
 
 func TestHelperApplyRollsBackConfigWhenHistoryValidationFails(t *testing.T) {
@@ -535,7 +569,7 @@ func TestHelperDoesNotStartCodexAfterHistoryRollbackFailure(t *testing.T) {
 		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
 	}
 	helper.stop = func(CodexInstallation) error { return nil }
-	helper.repairHistory = func() (HistoryRepairResult, error) {
+	helper.repairCompatibilityHistory = func() (HistoryRepairResult, error) {
 		return HistoryRepairResult{}, &HistoryRepairApplyError{
 			Cause:       errors.New("forced repair failure"),
 			RollbackErr: errors.New("forced rollback failure"),

@@ -22,26 +22,28 @@ import (
 var webFiles embed.FS
 
 type helperServer struct {
-	manager        *ConfigManager
-	applyConfig    func(ApplyConfig) (ApplyResult, error)
-	restoreConfig  func(string) (RestoreResult, error)
-	repairHistory  func() (HistoryRepairResult, error)
-	restoreHistory func(string) error
-	state          string
-	operationMu    sync.Mutex
-	siteMu         sync.RWMutex
-	siteURL        *url.URL
-	codexMu        sync.RWMutex
-	selectedCodex  *CodexInstallation
-	index          *template.Template
-	callback       []byte
-	shutdown       chan struct{}
-	shutdownOnce   sync.Once
-	detect         func() CodexInstallation
-	selectApp      func() (CodexInstallation, error)
-	prepare        func() error
-	stop           func(CodexInstallation) error
-	start          func(CodexInstallation) error
+	manager                    *ConfigManager
+	applyConfig                func(ApplyConfig) (ApplyResult, error)
+	restoreConfig              func(string) (RestoreResult, error)
+	repairHistory              func() (HistoryRepairResult, error)
+	repairCompatibilityHistory func() (HistoryRepairResult, error)
+	restoreHistory             func(string) error
+	listHistoryBackups         func() ([]HistoryBackupInfo, error)
+	state                      string
+	operationMu                sync.Mutex
+	siteMu                     sync.RWMutex
+	siteURL                    *url.URL
+	codexMu                    sync.RWMutex
+	selectedCodex              *CodexInstallation
+	index                      *template.Template
+	callback                   []byte
+	shutdown                   chan struct{}
+	shutdownOnce               sync.Once
+	detect                     func() CodexInstallation
+	selectApp                  func() (CodexInstallation, error)
+	prepare                    func() error
+	stop                       func(CodexInstallation) error
+	start                      func(CodexInstallation) error
 }
 
 type statusResponse struct {
@@ -61,6 +63,10 @@ type operationResponse struct {
 	Restarted      bool                 `json:"restarted"`
 	ConfigVerified bool                 `json:"config_verified"`
 	History        *HistoryRepairResult `json:"history,omitempty"`
+}
+
+type historyBackupsResponse struct {
+	Items []HistoryBackupInfo `json:"items"`
 }
 
 func newHelperServer(manager *ConfigManager, site string, state string) (*helperServer, error) {
@@ -86,21 +92,23 @@ func newHelperServer(manager *ConfigManager, site string, state string) (*helper
 	}
 	repairer := NewHistoryRepairer(filepath.Dir(manager.ConfigPath))
 	return &helperServer{
-		manager:        manager,
-		applyConfig:    manager.Apply,
-		restoreConfig:  manager.Restore,
-		repairHistory:  repairer.RepairCurrentProvider,
-		restoreHistory: repairer.RestoreBackup,
-		state:          state,
-		siteURL:        parsedSite,
-		index:          index,
-		callback:       callback,
-		shutdown:       make(chan struct{}),
-		detect:         detectCodexInstallation,
-		selectApp:      selectCodexInstallation,
-		prepare:        prepareCodexOperation,
-		stop:           stopCodex,
-		start:          startCodex,
+		manager:                    manager,
+		applyConfig:                manager.Apply,
+		restoreConfig:              manager.Restore,
+		repairHistory:              repairer.RepairCurrentProvider,
+		repairCompatibilityHistory: repairer.RepairCurrentProviderCompatibility,
+		restoreHistory:             repairer.RestoreBackup,
+		listHistoryBackups:         repairer.ListBackups,
+		state:                      state,
+		siteURL:                    parsedSite,
+		index:                      index,
+		callback:                   callback,
+		shutdown:                   make(chan struct{}),
+		detect:                     detectCodexInstallation,
+		selectApp:                  selectCodexInstallation,
+		prepare:                    prepareCodexOperation,
+		stop:                       stopCodex,
+		start:                      startCodex,
 	}, nil
 }
 
@@ -110,12 +118,14 @@ func (s *helperServer) routes() http.Handler {
 	mux.HandleFunc("GET /callback", s.handleCallback)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/backups", s.handleBackups)
+	mux.HandleFunc("GET /api/history-backups", s.handleHistoryBackups)
 	mux.HandleFunc("POST /api/site", s.handleSite)
 	mux.HandleFunc("POST /api/select-app", s.handleSelectApp)
 	mux.HandleFunc("POST /api/apply", s.handleApply)
 	mux.HandleFunc("POST /api/apply-manual", s.handleManualApply)
 	mux.HandleFunc("POST /api/restore", s.handleRestore)
 	mux.HandleFunc("POST /api/repair-history", s.handleRepairHistory)
+	mux.HandleFunc("POST /api/restore-history", s.handleRestoreHistory)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
 	return s.localOnly(s.securityHeaders(mux))
 }
@@ -215,6 +225,19 @@ func (s *helperServer) handleBackups(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": backups})
+}
+
+func (s *helperServer) handleHistoryBackups(w http.ResponseWriter, r *http.Request) {
+	if !s.validState(r) {
+		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
+		return
+	}
+	backups, err := s.listHistoryBackups()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, historyBackupsResponse{Items: backups})
 }
 
 func (s *helperServer) handleApply(w http.ResponseWriter, r *http.Request) {
@@ -578,7 +601,7 @@ func (s *helperServer) handleRepairHistory(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("Codex could not be stopped safely; no conversation data was changed: %w", err))
 		return
 	}
-	history, err := s.repairHistory()
+	history, err := s.repairCompatibilityHistory()
 	if err != nil {
 		if historyRollbackFailed(err) {
 			writeJSON(w, http.StatusInternalServerError, operationResponse{
@@ -624,6 +647,63 @@ func (s *helperServer) handleRepairHistory(w http.ResponseWriter, r *http.Reques
 		Message:   historySummary(history) + " Codex 已重新启动。",
 		Restarted: true,
 		History:   &history,
+	})
+}
+
+func (s *helperServer) handleRestoreHistory(w http.ResponseWriter, r *http.Request) {
+	if !s.validState(r) {
+		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
+		return
+	}
+	var request struct {
+		BackupID string `json:"backup_id"`
+	}
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(request.BackupID) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("select a history repair backup first"))
+		return
+	}
+	if !s.beginOperation(w) {
+		return
+	}
+	defer s.operationMu.Unlock()
+	releaseLifecycle, err := acquireLifecycleLock(filepath.Dir(s.manager.ConfigPath))
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	defer releaseLifecycle()
+
+	if err := s.prepare(); err != nil {
+		writeError(w, http.StatusConflict, fmt.Errorf("无法安全退出会改写会话索引的第三方管理工具：%w", err))
+		return
+	}
+	installation := s.codexInstallation()
+	if err := s.stop(installation); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("Codex could not be stopped safely; no conversation data was restored: %w", err))
+		return
+	}
+	if err := s.restoreHistory(request.BackupID); err != nil {
+		startErr := s.startWithRetry(installation)
+		writeError(w, http.StatusInternalServerError, operationFailure("conversation history was not restored", err, startErr))
+		return
+	}
+	if err := s.startWithRetry(installation); err != nil {
+		writeJSON(w, http.StatusInternalServerError, operationResponse{
+			OK:        false,
+			Message:   fmt.Sprintf("历史会话已恢复，但 Codex 未能自动重新启动：%v。请手动启动 Codex。", err),
+			Restarted: false,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, operationResponse{
+		OK:        true,
+		Message:   "已恢复所选历史会话备份，Codex 已重新启动。",
+		BackupID:  request.BackupID,
+		Restarted: true,
 	})
 }
 
@@ -673,9 +753,14 @@ func historySummary(result HistoryRepairResult) string {
 	if result.WorkspaceState != nil && result.WorkspaceState.Updated {
 		workspaceSummary = fmt.Sprintf("已修复 %d 个项目的路径映射；", result.WorkspaceState.ProjectCount)
 	}
+	compatibilitySummary := ""
+	if result.SanitizedRecords > 0 {
+		compatibilitySummary = fmt.Sprintf("已清理 %d 条无法续接的内部协议记录；", result.SanitizedRecords)
+	}
 	return fmt.Sprintf(
-		"%s已扫描 %d 个会话文件和 %d 个会话数据库，校验 %d 行会话索引，修复 %d 个文件和 %d 行索引；会话数量未减少。",
+		"%s%s已扫描 %d 个会话文件和 %d 个会话数据库，校验 %d 行会话索引，修复 %d 个文件和 %d 行索引；可见会话和正文未删除。",
 		workspaceSummary,
+		compatibilitySummary,
 		result.ScannedSessionFiles,
 		result.ScannedDatabases,
 		result.ThreadCount,
