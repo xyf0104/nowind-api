@@ -84,7 +84,7 @@
                 <Icon v-else name="creditCard" size="sm" />
                 {{ submitting ? '正在创建订单…' : `去支付 ${formatMoney(amount)}` }}
               </button>
-              <p class="sms-recharge-note">最低充值 ¥10.00。支付订单、到账和回调均由 XIASS API 原有支付系统处理。</p>
+              <p class="sms-recharge-note">最低充值金额10元，该余额同时支持XIASS API中转站使用</p>
             </template>
           </template>
         </section>

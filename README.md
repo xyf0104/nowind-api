@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.0.108-0ea5e9" alt="当前版本 v1.0.108" />
+    <img src="https://img.shields.io/badge/当前版本-v1.0.109-0ea5e9" alt="当前版本 v1.0.109" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.0.108
+> 当前版本：v1.0.109
 
-v1.0.108 调整独立 Codex 授权接码工作台的账户操作布局：已登录用户的“退出登录”移至右上角账户入口，与访客态的“登录 / 注册”位置一致；左侧仅保留接码服务连接状态与刷新操作。保留原 OAuth 授权流程、iOS 管理端接码 UI、XIASS 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径。
+v1.0.109 更新独立 Codex 授权接码工作台的充值提示：明确最低充值金额为 10 元，且充值后的余额可同时用于 XIASS API 中转站。保留原 OAuth 授权流程、iOS 管理端接码 UI、XIASS 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径。
 
 XIASS API 是本项目唯一的公开源码仓库与正式发布源。仓库包含完整前后端源码、Docker 镜像构建、数据库迁移、一键安装、在线更新、备份恢复和软路由代理节点功能。
 
