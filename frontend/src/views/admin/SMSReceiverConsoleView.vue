@@ -8,69 +8,69 @@
       </div>
 
       <section class="sms-intro" aria-labelledby="sms-page-title">
-        <div>
+        <div class="sms-intro__content">
           <p class="sms-eyebrow">XIASS API OPERATIONS</p>
           <h1 id="sms-page-title">Codex 授权接码工作台</h1>
           <p class="sms-intro__summary">领取临时号码，实时接收 OAuth 验证码。</p>
           <p class="sms-intro__purpose"><Icon name="shield" size="xs" />仅限 Codex 登录接码使用</p>
-          <div class="sms-workbench-actions" aria-label="接码工作台操作">
+          <div v-if="authStore.isAuthenticated" class="sms-workbench-actions" aria-label="接码工作台操作">
             <span class="sms-connection" :class="connectionClass">
               <span class="sms-connection__dot" aria-hidden="true"></span>
               {{ connectionLabel }}
             </span>
-            <template v-if="authStore.isAuthenticated">
-              <button
-                type="button"
-                class="sms-header-button"
-                title="刷新接码服务状态"
-                :disabled="isLoadingStatus"
-                @click="loadStatus"
-              >
-                <Icon name="refresh" size="sm" :class="{ 'animate-spin': isLoadingStatus }" />
-                <span>刷新状态</span>
-              </button>
-              <button
-                type="button"
-                class="sms-icon-button"
-                title="退出登录"
-                aria-label="退出登录"
-                @click="logout"
-              >
-                <Icon name="login" size="sm" />
-              </button>
-            </template>
-            <template v-else>
-              <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
-                <Icon name="login" size="sm" />
-                <span>登录</span>
-              </button>
-              <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
-                <Icon name="userPlus" size="sm" />
-                <span>注册</span>
-              </button>
-            </template>
+            <button
+              type="button"
+              class="sms-header-button"
+              title="刷新接码服务状态"
+              :disabled="isLoadingStatus"
+              @click="loadStatus"
+            >
+              <Icon name="refresh" size="sm" :class="{ 'animate-spin': isLoadingStatus }" />
+              <span>刷新状态</span>
+            </button>
+            <button
+              type="button"
+              class="sms-icon-button"
+              title="退出登录"
+              aria-label="退出登录"
+              @click="logout"
+            >
+              <Icon name="login" size="sm" />
+            </button>
           </div>
         </div>
-        <div v-if="isAdmin" class="sms-overview" aria-label="接码服务概览">
-          <div class="sms-overview__item">
-            <span>待用卡密</span>
-            <strong>{{ queuedKeyCount }}</strong>
+        <div class="sms-intro__side">
+          <div v-if="!authStore.isAuthenticated" class="sms-intro-auth" aria-label="账户入口">
+            <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
+              <Icon name="login" size="sm" />
+              <span>登录</span>
+            </button>
+            <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
+              <Icon name="userPlus" size="sm" />
+              <span>注册</span>
+            </button>
           </div>
-          <div class="sms-overview__divider" aria-hidden="true"></div>
-          <div class="sms-overview__item">
-            <span>监听中</span>
-            <strong>{{ activeCount }}</strong>
+          <div v-if="isAdmin" class="sms-overview" aria-label="接码服务概览">
+            <div class="sms-overview__item">
+              <span>待用卡密</span>
+              <strong>{{ queuedKeyCount }}</strong>
+            </div>
+            <div class="sms-overview__divider" aria-hidden="true"></div>
+            <div class="sms-overview__item">
+              <span>监听中</span>
+              <strong>{{ activeCount }}</strong>
+            </div>
           </div>
-        </div>
-        <div v-else class="sms-overview sms-overview--member" aria-label="接码费用与余额">
-          <div class="sms-overview__item">
-            <span>当前余额</span>
-            <strong>{{ formatMoney(memberBalance) }}</strong>
-          </div>
-          <div class="sms-overview__divider" aria-hidden="true"></div>
-          <div class="sms-overview__item">
-            <span>接码费用</span>
-            <strong>{{ formatMoney(currentFeeAmount) }}<small>/ 次</small></strong>
+          <div v-else class="sms-overview sms-overview--member" aria-label="接码费用与余额">
+            <div class="sms-overview__item">
+              <span>当前余额</span>
+              <strong>{{ formatMoney(memberBalance) }}</strong>
+            </div>
+            <div class="sms-overview__divider" aria-hidden="true"></div>
+            <div class="sms-overview__item">
+              <span>接码费用</span>
+              <strong>{{ formatMoney(currentFeeAmount) }}<small>/ 次</small></strong>
+            </div>
           </div>
         </div>
       </section>
@@ -849,13 +849,16 @@ onBeforeUnmount(() => {
 .sms-console__body { padding: 42px 0 50px; }
 .sms-preview-banner { gap: 8px; margin-bottom: 22px; padding: 10px 13px; border: 1px solid rgba(167, 139, 250, .36); border-radius: 8px; color: #dcd2ff; background: rgba(100, 77, 164, .18); font-size: 13px; }
 
-.sms-intro { display: flex; align-items: end; justify-content: space-between; gap: 30px; margin-bottom: 27px; }
+.sms-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; margin-bottom: 27px; }
+.sms-intro__content { min-width: 0; }
+.sms-intro__side { display: flex; align-items: flex-end; flex-direction: column; flex: 0 0 auto; gap: 12px; }
 .sms-eyebrow { margin: 0 0 9px; color: #54c7ff; font-size: 11px; font-weight: 750; letter-spacing: .16em; }
 .sms-intro h1 { margin: 0; color: #f5fbff; font-size: 32px; line-height: 1.12; letter-spacing: 0; }
 .sms-intro__summary { max-width: 625px; margin: 11px 0 0; color: #9fb1c8; font-size: 14px; line-height: 1.7; }
 .sms-intro__purpose { display: inline-flex; align-items: center; gap: 6px; margin: 13px 0 0; padding: 6px 9px; border: 1px solid rgba(76, 218, 180, .42); border-radius: 6px; color: #9cf0d5; background: rgba(16, 121, 101, .18); font-size: 11px; font-weight: 750; letter-spacing: .02em; }
 .sms-intro__purpose svg { color: #58e0ba; }
 .sms-workbench-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; width: fit-content; margin-top: 17px; padding: 8px 9px; border: 1px solid rgba(95, 156, 208, .23); border-radius: 8px; background: rgba(6, 26, 45, .56); box-shadow: inset 0 1px rgba(255, 255, 255, .025); }
+.sms-intro-auth { display: flex; align-items: center; gap: 9px; min-height: 34px; }
 
 .sms-overview { display: flex; align-items: stretch; min-width: 214px; padding: 12px 16px; border: 1px solid rgba(94, 148, 200, .24); border-radius: 8px; background: rgba(9, 31, 54, .74); box-shadow: inset 0 1px rgba(255, 255, 255, .03); }
 .sms-overview__item { min-width: 74px; }
@@ -999,7 +1002,9 @@ onBeforeUnmount(() => {
 @media (max-width: 660px) {
   .sms-console__body { width: min(100% - 28px, 1180px); }
   .sms-console__body { padding: 25px 0 32px; }
-  .sms-intro { align-items: flex-start; flex-direction: column; gap: 17px; margin-bottom: 19px; }
+  .sms-intro { align-items: stretch; flex-direction: column; gap: 17px; margin-bottom: 19px; }
+  .sms-intro__side { align-items: stretch; width: 100%; }
+  .sms-intro-auth { justify-content: flex-end; }
   .sms-intro h1 { font-size: 27px; }
   .sms-intro__summary { font-size: 13px; line-height: 1.6; }
   .sms-workbench-actions { width: 100%; box-sizing: border-box; }
