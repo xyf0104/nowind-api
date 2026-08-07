@@ -183,7 +183,7 @@ onMounted(async () => {
   // Check if setup is needed
   try {
     const status = await getSetupStatus()
-    if (status.needs_setup && route.path !== '/setup') {
+    if (status.needs_setup && route.path !== '/setup' && !isStandaloneSMSHost) {
       router.replace('/setup')
       return
     }

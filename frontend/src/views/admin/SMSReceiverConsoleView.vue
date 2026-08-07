@@ -39,39 +39,15 @@
             </button>
           </div>
         </div>
-        <div class="sms-intro__side">
-          <div v-if="!authStore.isAuthenticated" class="sms-intro-auth" aria-label="账户入口">
-            <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
-              <Icon name="login" size="sm" />
-              <span>登录</span>
-            </button>
-            <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
-              <Icon name="userPlus" size="sm" />
-              <span>注册</span>
-            </button>
-          </div>
-          <div v-if="isAdmin" class="sms-overview" aria-label="接码服务概览">
-            <div class="sms-overview__item">
-              <span>待用卡密</span>
-              <strong>{{ queuedKeyCount }}</strong>
-            </div>
-            <div class="sms-overview__divider" aria-hidden="true"></div>
-            <div class="sms-overview__item">
-              <span>监听中</span>
-              <strong>{{ activeCount }}</strong>
-            </div>
-          </div>
-          <div v-else class="sms-overview sms-overview--member" aria-label="接码费用与余额">
-            <div class="sms-overview__item">
-              <span>当前余额</span>
-              <strong>{{ formatMoney(memberBalance) }}</strong>
-            </div>
-            <div class="sms-overview__divider" aria-hidden="true"></div>
-            <div class="sms-overview__item">
-              <span>接码费用</span>
-              <strong>{{ formatMoney(currentFeeAmount) }}<small>/ 次</small></strong>
-            </div>
-          </div>
+        <div v-if="!authStore.isAuthenticated" class="sms-intro-auth" aria-label="账户入口">
+          <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
+            <Icon name="login" size="sm" />
+            <span>登录</span>
+          </button>
+          <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
+            <Icon name="userPlus" size="sm" />
+            <span>注册</span>
+          </button>
         </div>
       </section>
 
@@ -206,6 +182,30 @@
             <span class="sms-brand-promo__visit">访问官网 <Icon name="arrowRight" size="sm" /></span>
           </a>
         </article>
+
+        <div class="sms-workspace__side">
+          <div v-if="isAdmin" class="sms-overview" aria-label="接码服务概览">
+            <div class="sms-overview__item">
+              <span>待用卡密</span>
+              <strong>{{ queuedKeyCount }}</strong>
+            </div>
+            <div class="sms-overview__divider" aria-hidden="true"></div>
+            <div class="sms-overview__item">
+              <span>监听中</span>
+              <strong>{{ activeCount }}</strong>
+            </div>
+          </div>
+          <div v-else class="sms-overview sms-overview--member" aria-label="接码费用与余额">
+            <div class="sms-overview__item">
+              <span>当前余额</span>
+              <strong>{{ formatMoney(memberBalance) }}</strong>
+            </div>
+            <div class="sms-overview__divider" aria-hidden="true"></div>
+            <div class="sms-overview__item">
+              <span>接码费用</span>
+              <strong>{{ formatMoney(currentFeeAmount) }}<small>/ 次</small></strong>
+            </div>
+          </div>
 
         <aside v-if="isAdmin" class="sms-panel sms-panel--queue">
           <div class="sms-panel__head">
@@ -343,6 +343,7 @@
           </button>
           <p class="sms-recharge-note">充值、支付和到账回调均使用 XIASS API 原有支付链路。</p>
         </aside>
+        </div>
       </section>
 
       <section class="sms-flow" aria-label="接码流程说明">
@@ -851,16 +852,15 @@ onBeforeUnmount(() => {
 
 .sms-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; margin-bottom: 27px; }
 .sms-intro__content { min-width: 0; }
-.sms-intro__side { display: flex; align-items: flex-end; flex-direction: column; flex: 0 0 auto; gap: 12px; }
 .sms-eyebrow { margin: 0 0 9px; color: #54c7ff; font-size: 11px; font-weight: 750; letter-spacing: .16em; }
 .sms-intro h1 { margin: 0; color: #f5fbff; font-size: 32px; line-height: 1.12; letter-spacing: 0; }
 .sms-intro__summary { max-width: 625px; margin: 11px 0 0; color: #9fb1c8; font-size: 14px; line-height: 1.7; }
-.sms-intro__purpose { display: inline-flex; align-items: center; gap: 6px; margin: 13px 0 0; padding: 6px 9px; border: 1px solid rgba(76, 218, 180, .42); border-radius: 6px; color: #9cf0d5; background: rgba(16, 121, 101, .18); font-size: 11px; font-weight: 750; letter-spacing: .02em; }
+.sms-intro__purpose { display: inline-flex; align-items: center; gap: 7px; margin: 13px 0 0; padding: 7px 11px; border: 1px solid rgba(76, 218, 180, .42); border-radius: 6px; color: #9cf0d5; background: rgba(16, 121, 101, .18); font-size: 13px; font-weight: 750; letter-spacing: .02em; }
 .sms-intro__purpose svg { color: #58e0ba; }
 .sms-workbench-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; width: fit-content; margin-top: 17px; padding: 8px 9px; border: 1px solid rgba(95, 156, 208, .23); border-radius: 8px; background: rgba(6, 26, 45, .56); box-shadow: inset 0 1px rgba(255, 255, 255, .025); }
 .sms-intro-auth { display: flex; align-items: center; gap: 9px; min-height: 34px; }
 
-.sms-overview { display: flex; align-items: stretch; min-width: 214px; padding: 12px 16px; border: 1px solid rgba(94, 148, 200, .24); border-radius: 8px; background: rgba(9, 31, 54, .74); box-shadow: inset 0 1px rgba(255, 255, 255, .03); }
+.sms-overview { display: flex; align-items: stretch; min-width: 214px; padding: 12px 16px; border: 1px solid rgba(94, 148, 200, .24); border-radius: 8px; background: rgba(9, 31, 54, .9); box-shadow: inset 0 1px rgba(255, 255, 255, .03), 0 12px 28px rgba(0, 0, 0, .14); }
 .sms-overview__item { min-width: 74px; }
 .sms-overview__item span { display: block; color: #90a4bf; font-size: 11px; }
 .sms-overview__item strong { display: block; margin-top: 2px; color: #ecf8ff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 23px; line-height: 1; }
@@ -868,6 +868,8 @@ onBeforeUnmount(() => {
 .sms-overview__divider { width: 1px; margin: 0 17px; background: rgba(124, 160, 197, .25); }
 
 .sms-workspace { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, .92fr); gap: 20px; }
+.sms-workspace__side { position: relative; min-width: 0; }
+.sms-workspace__side > .sms-overview { position: absolute; z-index: 2; left: 50%; bottom: calc(100% + 14px); transform: translateX(-50%); }
 .sms-panel, .sms-flow { border: 1px solid rgba(97, 151, 205, .26); border-radius: 9px; background: rgba(8, 27, 48, .82); box-shadow: 0 22px 55px rgba(0, 0, 0, .16), inset 0 1px rgba(255, 255, 255, .027); }
 .sms-panel { overflow: hidden; }
 .sms-panel__head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 19px 21px; border-bottom: 1px solid rgba(100, 147, 194, .2); background: rgba(13, 39, 67, .5); }
@@ -994,6 +996,7 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .sms-workspace { grid-template-columns: 1fr; }
   .sms-panel--queue { min-height: 0; }
+  .sms-workspace__side > .sms-overview { position: static; width: 100%; box-sizing: border-box; margin-bottom: 12px; transform: none; }
   .sms-security-note { margin-top: 0; }
   .sms-flow { align-items: flex-start; flex-direction: column; gap: 14px; }
   .sms-flow__steps { width: 100%; }
@@ -1003,7 +1006,6 @@ onBeforeUnmount(() => {
   .sms-console__body { width: min(100% - 28px, 1180px); }
   .sms-console__body { padding: 25px 0 32px; }
   .sms-intro { align-items: stretch; flex-direction: column; gap: 17px; margin-bottom: 19px; }
-  .sms-intro__side { align-items: stretch; width: 100%; }
   .sms-intro-auth { justify-content: flex-end; }
   .sms-intro h1 { font-size: 27px; }
   .sms-intro__summary { font-size: 13px; line-height: 1.6; }

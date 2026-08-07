@@ -782,6 +782,32 @@ const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/wechat/payment/callback',
 ]
 const BACKEND_MODE_PENDING_AUTH_PATHS = ['/register', '/email-verify']
+const STANDALONE_SMS_AUTH_PATHS = [
+  '/login',
+  '/register',
+  '/email-verify',
+  '/forgot-password',
+  '/reset-password',
+  '/auth/callback',
+  '/auth/linuxdo/callback',
+  '/auth/dingtalk/callback',
+  '/auth/dingtalk/email-completion',
+  '/auth/oidc/callback',
+  '/auth/wechat/callback',
+  '/auth/wechat/payment/callback',
+  '/payment/result',
+]
+
+function isStandaloneSMSHost(): boolean {
+  return window.location.hostname.split('.')[0]?.toLowerCase() === 'sms'
+}
+
+function isStandaloneSMSPathAllowed(path: string): boolean {
+  if (path === '/sms' || path.startsWith('/sms/')) return true
+  return STANDALONE_SMS_AUTH_PATHS.some((allowedPath) => (
+    path === allowedPath || path.startsWith(`${allowedPath}/`)
+  ))
+}
 
 function isBackendModePublicRouteAllowed(path: string, hasPendingAuthSession: boolean): boolean {
   if (BACKEND_MODE_ALLOWED_PATHS.some((allowedPath) => path === allowedPath || path.startsWith(allowedPath))) {
@@ -804,11 +830,18 @@ router.beforeEach(async (to, _from, next) => {
   navigationLoading.startNavigation()
 
   const authStore = useAuthStore()
-  const isStandaloneSMSHost = window.location.hostname.split('.')[0]?.toLowerCase() === 'sms'
+  const isSMSHost = isStandaloneSMSHost()
 
   // The SMS subdomain is intentionally a focused entry point. This also
   // handles stale links or an old reverse-proxy rewrite to /home.
-  if (isStandaloneSMSHost && (to.path === '/' || to.path === '/home')) {
+  if (isSMSHost && (to.path === '/' || to.path === '/home')) {
+    next({ path: '/sms', query: to.query })
+    return
+  }
+
+  // The SMS subdomain reuses only the authentication and payment callback
+  // screens; the normal user/admin application remains on the API domain.
+  if (isSMSHost && !isStandaloneSMSPathAllowed(to.path)) {
     next({ path: '/sms', query: to.query })
     return
   }
@@ -859,6 +892,10 @@ router.beforeEach(async (to, _from, next) => {
   if (!requiresAuth) {
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
     if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
+      if (isSMSHost) {
+        next({ path: '/sms', query: to.query })
+        return
+      }
       // In backend mode, non-admin users should NOT be redirected away from login
       // (they are blocked from all protected routes, so redirecting would cause a loop)
       if (appStore.backendModeEnabled && !authStore.isAdmin) {
