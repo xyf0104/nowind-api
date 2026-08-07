@@ -201,9 +201,10 @@ struct StatusPill: View {
 
     private var color: Color {
         switch text.lowercased() {
-        case "active", "normal", "healthy", "success", "paid", "completed": return .green
-        case "error", "failed", "disabled", "cancelled", "expired": return .red
-        case "paused", "inactive", "rate limited", "overloaded", "pending", "recharging", "refunding": return .orange
+        case "active", "normal", "healthy", "success", "paid", "completed", "接收成功": return .green
+        case "error", "failed", "disabled", "cancelled", "expired", "连接失败", "已超时": return .red
+        case "paused", "inactive", "rate limited", "overloaded", "pending", "recharging", "refunding", "暂无卡密": return .orange
+        case "实时监听", "正在取号": return AppTheme.primary
         default: return .secondary
         }
     }

@@ -84,7 +84,9 @@ sed \
 plutil -lint "$MANIFEST_PATH"
 
 if ! gh release view "$TAG" --repo xyf0104/xiass-api >/dev/null 2>&1; then
-  gh release create "$TAG" --repo xyf0104/xiass-api --title "XIASS 管理端 ${VERSION}" --notes "iOS 管理端发布包。"
+  # The service release must remain GitHub's Latest because XIASS API's web
+  # updater reads that channel. iOS packages use their own independent tag.
+  gh release create "$TAG" --repo xyf0104/xiass-api --title "XIASS 管理端 ${VERSION}" --notes "iOS 管理端发布包。" --latest=false
 fi
 
 gh release upload "$TAG" --repo xyf0104/xiass-api \

@@ -113,6 +113,42 @@ actor APIClient {
         return AccountTestResult(events: events)
     }
 
+    func smsReceiverStatus() async throws -> SMSReceiverQueueStatus {
+        try await request(method: .get, path: "admin/settings/sms-receiver")
+    }
+
+    func addSMSReceiverCardKeys(_ rawKeys: String) async throws -> SMSReceiverAddResult {
+        try await request(
+            method: .post,
+            path: "admin/settings/sms-receiver/card-keys",
+            body: SMSReceiverCardKeysRequest(cardKeys: rawKeys)
+        )
+    }
+
+    func clearSMSReceiverCardKeys() async throws -> SMSReceiverClearResult {
+        try await request(method: .delete, path: "admin/settings/sms-receiver/card-keys")
+    }
+
+    func redeemSMSReceiverNumber() async throws -> SMSReceiverSession {
+        try await request(method: .post, path: "admin/settings/sms-receiver/redeem", body: EmptyResponse())
+    }
+
+    func resumeSMSReceiverNumber(sessionID: String) async throws -> SMSReceiverSession {
+        try await request(method: .post, path: "admin/settings/sms-receiver/sessions/\(sessionID)/resume", body: EmptyResponse())
+    }
+
+    func checkSMSReceiverNumber(sessionID: String) async throws -> SMSReceiverSession {
+        try await request(method: .post, path: "admin/settings/sms-receiver/sessions/\(sessionID)/check", body: EmptyResponse())
+    }
+
+    func changeSMSReceiverNumber(sessionID: String) async throws -> SMSReceiverSession {
+        try await request(method: .post, path: "admin/settings/sms-receiver/sessions/\(sessionID)/change", body: EmptyResponse())
+    }
+
+    func cancelSMSReceiverNumber(sessionID: String) async throws -> SMSReceiverSession {
+        try await request(method: .post, path: "admin/settings/sms-receiver/sessions/\(sessionID)/cancel", body: EmptyResponse())
+    }
+
     func request<Response: Decodable>(
         method: HTTPMethod,
         path: String,

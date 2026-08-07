@@ -49,6 +49,12 @@ struct OperationsView: View {
                 }
             }
 
+            Section("授权辅助") {
+                NavigationLink { SMSCardKeyQueueView() } label: {
+                    GlassActionRow("接码卡密", detail: "服务器加密队列，OpenAI 授权时自动取号", icon: "number.square.fill", tint: .mint)
+                }
+            }
+
             Section("更新") {
                 NavigationLink { UpdateCenterView() } label: {
                     GlassActionRow("更新中心", detail: "XIASS API 服务端与 GitHub 管理端安装包", icon: "arrow.triangle.2.circlepath.circle.fill", tint: AppTheme.primary)
@@ -68,6 +74,137 @@ struct OperationsView: View {
         }
         .navigationTitle("设置")
         .appScreenStyle()
+    }
+}
+
+struct SMSCardKeyQueueView: View {
+    @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var feedback: FeedbackCenter
+    @State private var pastedKeys = ""
+    @State private var status: SMSReceiverQueueStatus?
+    @State private var isLoading = false
+    @State private var isAdding = false
+    @State private var isClearing = false
+    @State private var showClearConfirmation = false
+    @State private var error: ErrorMessage?
+
+    var body: some View {
+        List {
+            Section {
+                LabeledContent("服务器待用卡密", value: "\(status?.queuedCount ?? 0) 张")
+                LabeledContent("进行中的号码", value: "\(status?.activeCount ?? 0) 个")
+            } header: {
+                Text("XIASS API 接码队列")
+            } footer: {
+                Text("原始卡密仅加密保存于 XIASS API 服务器，手机只保存不透明会话标识。只有实际收到验证码时，服务端才会彻底删除对应卡密。")
+            }
+
+            Section {
+                TextEditor(text: $pastedKeys)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .font(.body.monospaced())
+                    .frame(minHeight: 132)
+                    .padding(8)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: AppTheme.compactRadius, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: AppTheme.compactRadius, style: .continuous)
+                            .stroke(.secondary.opacity(0.24), lineWidth: 0.8)
+                    }
+
+                Button {
+                    Task { await addKeys() }
+                } label: {
+                    Label(isAdding ? "正在加密保存…" : "加入服务器队列", systemImage: "plus.circle.fill")
+                }
+                .disabled(isAdding || pastedKeys.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } header: {
+                Text("批量加入")
+            } footer: {
+                Text("可一次粘贴多张卡密，支持换行、空格、逗号或分号分隔。重复卡密会自动跳过；提交后会立即加密，原文不会回显、不会保存在手机或请求审计日志中。")
+            }
+
+            if (status?.queuedCount ?? 0) > 0 {
+                Section {
+                    Button(role: .destructive) { showClearConfirmation = true } label: {
+                        Label(isClearing ? "正在清空…" : "清空服务器待用卡密", systemImage: "trash")
+                    }
+                    .disabled(isClearing)
+                } footer: {
+                    Text("只清除尚未使用的待用队列，不会中断当前正在接收验证码的手机号。")
+                }
+            }
+        }
+        .appScreenStyle()
+        .navigationTitle("接码卡密")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await reloadStatus() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(isLoading)
+                .accessibilityLabel("刷新接码队列")
+            }
+        }
+        .task { await reloadStatus() }
+        .alert("清空待用卡密？", isPresented: $showClearConfirmation) {
+            Button("清空", role: .destructive) { Task { await clearQueuedKeys() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("仅清除服务器中尚未取号的卡密，当前接码会话不会受影响。已收到验证码的卡密不会保留。")
+        }
+        .requestError($error)
+    }
+
+    private func addKeys() async {
+        guard let api = session.api else {
+            error = ErrorMessage(APIError(message: "登录已失效，请重新登录。"), title: "保存接码卡密失败")
+            return
+        }
+        isAdding = true
+        defer { isAdding = false }
+        do {
+            let result = try await api.addSMSReceiverCardKeys(pastedKeys)
+            pastedKeys = ""
+            status = try await api.smsReceiverStatus()
+            if result.addedCount == 0 {
+                feedback.notice("没有新增卡密", detail: "粘贴内容为空，或其中的卡密已经在待用队列中。")
+            } else {
+                feedback.success("卡密已加入服务器队列", detail: "已加密保存 \(result.addedCount) 张；OpenAI 授权时会自动取号。")
+            }
+        } catch {
+            self.error = ErrorMessage(error, title: "保存接码卡密失败")
+        }
+    }
+
+    private func clearQueuedKeys() async {
+        guard let api = session.api else {
+            error = ErrorMessage(APIError(message: "登录已失效，请重新登录。"), title: "清空接码卡密失败")
+            return
+        }
+        isClearing = true
+        defer { isClearing = false }
+        do {
+            let result = try await api.clearSMSReceiverCardKeys()
+            status = try await api.smsReceiverStatus()
+            feedback.success("服务器待用卡密已清空", detail: "已清除 \(result.deletedCount) 张；当前接码会话仍可继续刷新、换号或取消。")
+        } catch {
+            self.error = ErrorMessage(error, title: "清空接码卡密失败")
+        }
+    }
+
+    private func reloadStatus() async {
+        guard let api = session.api else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            status = try await api.smsReceiverStatus()
+        } catch {
+            self.error = ErrorMessage(error, title: "读取接码队列失败")
+        }
     }
 }
 

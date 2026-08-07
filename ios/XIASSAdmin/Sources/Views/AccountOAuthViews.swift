@@ -93,6 +93,466 @@ private struct OAuthAuthorizationResult: Identifiable {
     let detail: String
 }
 
+private enum SMSReceiveOutcome {
+    case waiting
+    case received
+    case expired
+    case unavailable
+}
+
+@MainActor
+private final class SMSReceiveAssistant: ObservableObject {
+    enum Phase: Equatable {
+        case idle
+        case activating
+        case waiting
+        case received
+        case expired
+        case unavailable
+        case failed
+    }
+
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var numberDisplay = "--"
+    @Published private(set) var numberForCopy = ""
+    @Published private(set) var regionDisplay = "--"
+    @Published private(set) var codeDisplay = "--"
+    @Published private(set) var queuedKeyCount = 0
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var isChangingNumber = false
+    @Published private(set) var isCancelling = false
+
+    private var api: APIClient?
+    private var activeSessionID: String?
+    private var pollingTask: Task<Void, Never>?
+
+    var statusText: String {
+        switch phase {
+        case .idle: return "等待取号"
+        case .activating: return "正在取号"
+        case .waiting: return "实时监听"
+        case .received: return "接收成功"
+        case .expired: return "已超时"
+        case .unavailable: return "暂无卡密"
+        case .failed: return "连接失败"
+        }
+    }
+
+    var statusColor: Color {
+        switch phase {
+        case .received: return .green
+        case .expired, .failed: return .red
+        case .unavailable: return .orange
+        case .waiting, .activating: return AppTheme.primary
+        case .idle: return .secondary
+        }
+    }
+
+    var canRefresh: Bool {
+        activeSessionID != nil && !isRefreshing && !isChangingNumber && !isCancelling && phase != .activating && phase != .received && phase != .expired
+    }
+
+    var canChangeNumber: Bool {
+        activeSessionID != nil && !isRefreshing && !isChangingNumber && !isCancelling && phase != .activating && phase != .received
+    }
+
+    var canCancel: Bool {
+        activeSessionID != nil && !isRefreshing && !isChangingNumber && !isCancelling && phase != .activating && phase != .received
+    }
+
+    func begin(using api: APIClient) async throws -> SMSReceiveOutcome {
+        self.api = api
+        if let sessionID = activeSessionID ?? SecureStore.activeSMSSessionID() {
+            activeSessionID = sessionID
+            return try await resume(sessionID: sessionID, using: api)
+        }
+
+        let queue = try await refreshQueueStatus(using: api)
+        guard queue.queuedCount > 0 else {
+            resetDisplay(phase: .unavailable)
+            return .unavailable
+        }
+
+        phase = .activating
+        numberDisplay = "正在获取…"
+        regionDisplay = "--"
+        codeDisplay = "--"
+        do {
+            return try adopt(try await api.redeemSMSReceiverNumber())
+        } catch {
+            phase = .failed
+            throw error
+        }
+    }
+
+    func refresh(using api: APIClient) async throws -> SMSReceiveOutcome {
+        self.api = api
+        guard let sessionID = activeSessionID ?? SecureStore.activeSMSSessionID() else {
+            _ = try await refreshQueueStatus(using: api)
+            resetDisplay(phase: .unavailable)
+            return .unavailable
+        }
+        activeSessionID = sessionID
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        do {
+            let response = if phase == .failed || phase == .activating {
+                try await api.resumeSMSReceiverNumber(sessionID: sessionID)
+            } else {
+                try await api.checkSMSReceiverNumber(sessionID: sessionID)
+            }
+            return try adopt(response)
+        } catch {
+            phase = .failed
+            throw error
+        }
+    }
+
+    func changeNumber(using api: APIClient) async throws -> SMSReceiveOutcome {
+        self.api = api
+        guard let sessionID = activeSessionID ?? SecureStore.activeSMSSessionID() else {
+            throw APIError(message: "当前没有可更换的手机号。")
+        }
+        isChangingNumber = true
+        stopPolling()
+        defer {
+            isChangingNumber = false
+            if phase == .waiting { startPolling() }
+        }
+
+        do {
+            return try adopt(try await api.changeSMSReceiverNumber(sessionID: sessionID))
+        } catch {
+            if phase == .waiting { startPolling() }
+            throw error
+        }
+    }
+
+    func cancel(using api: APIClient) async throws {
+        self.api = api
+        guard let sessionID = activeSessionID ?? SecureStore.activeSMSSessionID() else {
+            resetDisplay(phase: .idle)
+            return
+        }
+        isCancelling = true
+        stopPolling()
+        defer { isCancelling = false }
+
+        do {
+            let response = try await api.cancelSMSReceiverNumber(sessionID: sessionID)
+            queuedKeyCount = response.queuedCount
+            clearActiveSession()
+            resetDisplay(phase: .idle)
+        } catch {
+            if phase == .waiting { startPolling() }
+            throw error
+        }
+    }
+
+    func resumePollingIfNeeded(using api: APIClient) {
+        self.api = api
+        guard phase == .waiting else { return }
+        startPolling()
+    }
+
+    func stopPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
+    private func resume(sessionID: String, using api: APIClient) async throws -> SMSReceiveOutcome {
+        phase = .activating
+        do {
+            return try adopt(try await api.resumeSMSReceiverNumber(sessionID: sessionID))
+        } catch {
+            phase = .failed
+            throw error
+        }
+    }
+
+    private func adopt(_ response: SMSReceiverSession) throws -> SMSReceiveOutcome {
+        queuedKeyCount = response.queuedCount
+        if let number = response.number?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty {
+            applyPhone(number, reportedRegion: response.country)
+        }
+
+        let status = response.status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if let code = response.code?.trimmingCharacters(in: .whitespacesAndNewlines), !code.isEmpty, code != "--" {
+            codeDisplay = code
+            clearActiveSession()
+            phase = .received
+            return .received
+        }
+
+        if ["EXPIRED", "TIMEOUT", "CANCELLED", "CANCELED", "FAILED", "ERROR", "RECEIVED", "COMPLETED", "USED"].contains(status) {
+            clearActiveSession()
+            phase = .expired
+            codeDisplay = "--"
+            return .expired
+        }
+
+        guard let sessionID = response.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionID.isEmpty else {
+            clearActiveSession()
+            resetDisplay(phase: .unavailable)
+            return .unavailable
+        }
+
+        activeSessionID = sessionID
+        try SecureStore.saveActiveSMSSessionID(sessionID)
+        phase = .waiting
+        startPolling()
+        return .waiting
+    }
+
+    private func startPolling() {
+        stopPolling()
+        guard activeSessionID != nil, let api else { return }
+        pollingTask = Task { [weak self, api] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled, let self, self.phase == .waiting else { return }
+                _ = try? await self.refresh(using: api)
+            }
+        }
+    }
+
+    private func clearActiveSession() {
+        stopPolling()
+        activeSessionID = nil
+        SecureStore.clearActiveSMSSessionID()
+    }
+
+    private func resetDisplay(phase: Phase) {
+        stopPolling()
+        self.phase = phase
+        numberDisplay = phase == .unavailable ? "暂无待用卡密" : "--"
+        numberForCopy = ""
+        regionDisplay = "--"
+        codeDisplay = "--"
+    }
+
+    @discardableResult
+    private func refreshQueueStatus(using api: APIClient) async throws -> SMSReceiverQueueStatus {
+        let status = try await api.smsReceiverStatus()
+        queuedKeyCount = status.queuedCount
+        return status
+    }
+
+    private func applyPhone(_ number: String, reportedRegion: String?) {
+        let digits = number.filter(\.isNumber)
+        guard !digits.isEmpty else { return }
+        let trimmedReportedRegion = reportedRegion?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suppliedRegion = trimmedReportedRegion?.isEmpty == false ? trimmedReportedRegion : nil
+
+        if let callingCode = Self.callingCodes.first(where: { digits.hasPrefix($0.code) && digits.count > $0.code.count }) {
+            numberDisplay = "+\(callingCode.code) \(digits.dropFirst(callingCode.code.count))"
+            numberForCopy = String(digits.dropFirst(callingCode.code.count))
+            regionDisplay = suppliedRegion ?? callingCode.region
+        } else {
+            numberDisplay = "+\(digits)"
+            numberForCopy = digits
+            regionDisplay = suppliedRegion ?? "自动识别"
+        }
+    }
+
+    private static let callingCodes: [(code: String, region: String)] = [
+        ("1", "美国/加拿大"), ("7", "俄罗斯/哈萨克斯坦"), ("20", "埃及"), ("27", "南非"),
+        ("30", "希腊"), ("31", "荷兰"), ("32", "比利时"), ("33", "法国"),
+        ("34", "西班牙"), ("39", "意大利"), ("44", "英国"), ("49", "德国"),
+        ("52", "墨西哥"), ("55", "巴西"), ("60", "马来西亚"), ("61", "澳大利亚"),
+        ("62", "印度尼西亚"), ("63", "菲律宾"), ("65", "新加坡"), ("66", "泰国"),
+        ("81", "日本"), ("82", "韩国"), ("84", "越南"), ("86", "中国"),
+        ("90", "土耳其"), ("91", "印度"), ("92", "巴基斯坦"), ("93", "阿富汗"),
+        ("94", "斯里兰卡"), ("95", "缅甸"), ("98", "伊朗"), ("212", "摩洛哥"),
+        ("351", "葡萄牙"), ("352", "卢森堡"), ("353", "爱尔兰"), ("354", "冰岛"),
+        ("358", "芬兰"), ("380", "乌克兰"), ("420", "捷克"), ("852", "香港"),
+        ("853", "澳门"), ("855", "柬埔寨"), ("856", "老挝"), ("880", "孟加拉国"),
+        ("886", "台湾"), ("960", "马尔代夫"), ("961", "黎巴嫩"), ("971", "阿联酋")
+    ].sorted { $0.code.count > $1.code.count }
+}
+
+private struct SMSReceiveAssistantCard: View {
+    enum Confirmation: Identifiable {
+        case changeNumber
+        case cancel
+
+        var id: String {
+            switch self {
+            case .changeNumber: return "change-number"
+            case .cancel: return "cancel"
+            }
+        }
+    }
+
+    let api: APIClient
+    @ObservedObject var receiver: SMSReceiveAssistant
+    @EnvironmentObject private var feedback: FeedbackCenter
+    @State private var confirmation: Confirmation?
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                field("手机号") {
+                    Button {
+                        copy(receiver.numberForCopy, title: "手机号已复制", detail: "已复制不含国家区号的号码，可直接粘贴。")
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(receiver.numberDisplay)
+                            if !receiver.numberForCopy.isEmpty {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.caption.weight(.semibold))
+                            }
+                        }
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(receiver.numberForCopy.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(receiver.numberForCopy.isEmpty)
+                }
+
+                Spacer(minLength: 4)
+
+                field("地区") {
+                    Text(receiver.regionDisplay)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                StatusPill(text: receiver.statusText)
+                    .foregroundStyle(receiver.statusColor)
+            }
+
+            Divider()
+
+            HStack(spacing: 12) {
+                field("验证码") {
+                    Button {
+                        copy(receiver.codeDisplay, title: "验证码已复制", detail: "可直接粘贴到 OpenAI 验证页面。")
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(receiver.codeDisplay)
+                            if receiver.phase == .received {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.caption.weight(.semibold))
+                            }
+                        }
+                        .font(.system(.title3, design: .rounded, weight: .bold).monospacedDigit())
+                        .foregroundStyle(receiver.phase == .received ? .green : .primary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(receiver.phase != .received)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    Label(receiver.isRefreshing ? "刷新中" : "刷新", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!receiver.canRefresh)
+
+                Button { confirmation = .changeNumber } label: {
+                    Label(receiver.isChangingNumber ? "换号中" : "换号", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!receiver.canChangeNumber)
+
+                Button(role: .destructive) { confirmation = .cancel } label: {
+                    Label(receiver.isCancelling ? "取消中" : "取消", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!receiver.canCancel)
+            }
+        }
+        .padding(.vertical, 6)
+        .alert(item: $confirmation) { action in
+            switch action {
+            case .changeNumber:
+                Alert(
+                    title: Text("更换手机号？"),
+                    message: Text("当前手机号会被取消，卡密会保留在 XIASS API 服务器队列中，并自动重新取号。"),
+                    primaryButton: .destructive(Text("确认换号")) { Task { await changeNumber() } },
+                    secondaryButton: .cancel(Text("返回"))
+                )
+            case .cancel:
+                Alert(
+                    title: Text("取消当前取号？"),
+                    message: Text("当前接码会话会被取消；卡密不会作废，只有实际收到验证码后才会清除。"),
+                    primaryButton: .destructive(Text("确认取消")) { Task { await cancel() } },
+                    secondaryButton: .cancel(Text("返回"))
+                )
+            }
+        }
+    }
+
+    private func field<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    private func copy(_ value: String, title: String, detail: String) {
+        guard !value.isEmpty, value != "--" else { return }
+        UIPasteboard.general.string = value
+        feedback.success(title, detail: detail)
+    }
+
+    private func refresh() async {
+        do {
+            let outcome = try await receiver.refresh(using: api)
+            switch outcome {
+            case .waiting:
+                feedback.notice("接码状态已刷新", detail: "暂未收到验证码，后台仍在实时监听。")
+            case .received:
+                feedback.success("已收到验证码", detail: "点击验证码即可复制。")
+            case .expired:
+                feedback.notice("取号已超时", detail: "该会话已结束，卡密已保留在服务器待用队列中。")
+            case .unavailable:
+                feedback.notice("暂无可用卡密", detail: "请在设置的“接码卡密”中批量加入新的卡密。")
+            }
+        } catch {
+            feedback.failure(error, title: "刷新接码状态失败")
+        }
+    }
+
+    private func changeNumber() async {
+        do {
+            let outcome = try await receiver.changeNumber(using: api)
+            switch outcome {
+            case .waiting:
+                feedback.success("已更换手机号", detail: "新号码正在实时监听验证码。")
+            case .received:
+                feedback.success("已更换手机号", detail: "新号码已收到验证码，点击即可复制。")
+            case .expired:
+                feedback.notice("新号码已超时", detail: "请重新生成授权链接后继续。")
+            case .unavailable:
+                feedback.notice("暂无可用卡密", detail: "当前号码已取消，请先补充服务器待用卡密。")
+            }
+        } catch {
+            feedback.failure(error, title: "更换手机号失败")
+        }
+    }
+
+    private func cancel() async {
+        do {
+            try await receiver.cancel(using: api)
+            feedback.success("已取消当前取号", detail: "当前会话已清理，卡密已返回服务器待用队列。")
+        } catch {
+            feedback.failure(error, title: "取消取号失败")
+        }
+    }
+}
+
 struct OAuthAccountFlow: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var feedback: FeedbackCenter
@@ -122,6 +582,7 @@ struct OAuthAccountFlow: View {
     @State private var authorizationResult: OAuthAuthorizationResult?
     @State private var editorAccount: AdminAccount?
     @State private var error: ErrorMessage?
+    @StateObject private var smsReceiver = SMSReceiveAssistant()
 
     init(platform: PlatformOption, existingAccount: AdminAccount? = nil, onSaved: @escaping () -> Void) {
         self.platform = platform
@@ -225,6 +686,10 @@ struct OAuthAccountFlow: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if usesSMSReceiver, let api = session.api {
+                        SMSReceiveAssistantCard(api: api, receiver: smsReceiver)
+                    }
+
                     OAuthFlowStep(number: 3, title: "导入授权凭证") {
                         TextField("粘贴回调链接或授权码", text: $callbackText, axis: .vertical)
                             .lineLimit(2...4)
@@ -267,7 +732,11 @@ struct OAuthAccountFlow: View {
         .onChange(of: scenePhase) { phase in
             guard phase == .active else { return }
             importClipboardCallbackIfAvailable()
+            if let api = session.api {
+                smsReceiver.resumePollingIfNeeded(using: api)
+            }
         }
+        .onDisappear { smsReceiver.stopPolling() }
         .alert(item: $authorizationResult) { result in
             Alert(
                 title: Text(result.title),
@@ -318,7 +787,31 @@ struct OAuthAccountFlow: View {
                 guard let url = URL(string: auth.authURL) else { throw APIError(message: "服务端返回的授权链接无效。") }
                 authorizationURL = url
                 feedback.notice(isReauthorization ? "重新授权链接已生成" : "授权链接已生成", detail: "复制链接或点击“打开浏览器”后完成 \(platform.title) 登录。")
+                if usesSMSReceiver {
+                    Task { await beginSMSReceiver() }
+                }
             } catch { self.error = ErrorMessage(error, title: "生成授权链接失败") }
+        }
+    }
+
+    private func beginSMSReceiver() async {
+        do {
+            guard let api = session.api else {
+                throw APIError(message: "登录已失效，请重新登录。")
+            }
+            let outcome = try await smsReceiver.begin(using: api)
+            switch outcome {
+            case .waiting:
+                feedback.notice("已自动取号", detail: "手机号已放在授权第 2、3 步之间，可点击号码复制。")
+            case .received:
+                feedback.success("已收到验证码", detail: "验证码已显示，可点击复制。")
+            case .expired:
+                feedback.notice("取号已超时", detail: "卡密已返回服务器待用队列，请重新生成授权链接后继续。")
+            case .unavailable:
+                feedback.notice("暂无可用卡密", detail: "请先到“设置 → 接码卡密”批量加入服务器队列，随后重新生成授权链接。")
+            }
+        } catch {
+            feedback.notice("授权链接已生成", detail: "自动取号未完成：\(error.localizedDescription)")
         }
     }
 
@@ -455,6 +948,8 @@ struct OAuthAccountFlow: View {
         let configured = existingAccount?.credentials?["oauth_type"]?.stringValue
         return ["code_assist", "google_one", "ai_studio"].contains(configured ?? "") ? configured : "code_assist"
     }
+
+    private var usesSMSReceiver: Bool { platform == .openai }
 
     private var geminiProjectID: String? {
         guard oauthType == "code_assist" else { return nil }

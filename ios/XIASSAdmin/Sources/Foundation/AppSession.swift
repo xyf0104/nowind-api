@@ -16,6 +16,7 @@ final class AppSession: ObservableObject {
 
     func restore() async {
         guard phase == .restoring else { return }
+        SecureStore.purgeLegacySMSCardKeys()
         guard let savedURL = SecureStore.baseURL,
               let baseURL = try? ConnectionURL.normalize(savedURL) else {
             phase = .signedOut

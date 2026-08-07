@@ -833,3 +833,56 @@ struct BalanceChangeRequest: Encodable {
     let operation: String
     let notes: String
 }
+
+struct SMSReceiverQueueStatus: Decodable, Equatable {
+    let queuedCount: Int
+    let activeCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case queuedCount = "queued_count"
+        case activeCount = "active_count"
+    }
+}
+
+struct SMSReceiverSession: Decodable, Equatable {
+    let sessionID: String?
+    let status: String
+    let number: String?
+    let country: String?
+    let code: String?
+    let queuedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case status, number, country, code
+        case queuedCount = "queued_count"
+    }
+}
+
+struct SMSReceiverCardKeysRequest: Encodable {
+    let cardKeys: String
+
+    enum CodingKeys: String, CodingKey {
+        case cardKeys = "card_keys"
+    }
+}
+
+struct SMSReceiverAddResult: Decodable, Equatable {
+    let addedCount: Int
+    let queuedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case addedCount = "added_count"
+        case queuedCount = "queued_count"
+    }
+}
+
+struct SMSReceiverClearResult: Decodable, Equatable {
+    let deletedCount: Int
+    let queuedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case deletedCount = "deleted_count"
+        case queuedCount = "queued_count"
+    }
+}

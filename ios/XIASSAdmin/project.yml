@@ -21,8 +21,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiass.admin
         PRODUCT_NAME: XIASS 管理端
-        MARKETING_VERSION: 1.0.7
-        CURRENT_PROJECT_VERSION: 7
+        MARKETING_VERSION: 1.0.8
+        CURRENT_PROJECT_VERSION: 8
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: XIASS 管理端
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.business
@@ -33,6 +33,8 @@ targets:
     info:
       path: Resources/Info.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleURLTypes:
           - CFBundleURLName: com.xiass.admin.oauth
             CFBundleURLSchemes:
