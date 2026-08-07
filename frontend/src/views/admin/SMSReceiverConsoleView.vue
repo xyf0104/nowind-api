@@ -1,64 +1,6 @@
 <template>
   <main class="sms-console" :class="{ 'is-preview': isLocalPreview }">
     <DarkVideoBackground blurred force-theme="dark" />
-    <header class="sms-console__header">
-      <div class="sms-console__header-inner">
-        <router-link :to="consoleHomePath" class="sms-brand" aria-label="返回 XIASS API 控制台">
-          <span class="sms-brand__mark" aria-hidden="true"><Icon name="bolt" size="sm" :stroke-width="2.4" /></span>
-          <span class="sms-brand__text">XIASS <b>API</b></span>
-          <span class="sms-brand__divider" aria-hidden="true"></span>
-          <span class="sms-brand__section">授权接码</span>
-        </router-link>
-
-        <div class="sms-header-actions">
-          <span class="sms-connection" :class="connectionClass">
-            <span class="sms-connection__dot" aria-hidden="true"></span>
-            {{ connectionLabel }}
-          </span>
-          <button
-            v-if="authStore.isAuthenticated"
-            type="button"
-            class="sms-header-button"
-            title="刷新队列状态"
-            :disabled="isLoadingStatus"
-            @click="loadStatus"
-          >
-            <Icon name="refresh" size="sm" :class="{ 'animate-spin': isLoadingStatus }" />
-            <span>刷新状态</span>
-          </button>
-          <button
-            v-if="authStore.isAuthenticated"
-            type="button"
-            class="sms-header-button sms-header-button--quiet"
-            @click="goToAdmin"
-          >
-            <Icon name="arrowLeft" size="sm" />
-            <span>{{ isAdmin ? '管理后台' : '用户中心' }}</span>
-          </button>
-          <template v-else>
-            <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
-              <Icon name="login" size="sm" />
-              <span>登录</span>
-            </button>
-            <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
-              <Icon name="userPlus" size="sm" />
-              <span>注册</span>
-            </button>
-          </template>
-          <button
-            v-if="authStore.isAuthenticated"
-            type="button"
-            class="sms-icon-button"
-            title="退出登录"
-            aria-label="退出登录"
-            @click="logout"
-          >
-            <Icon name="login" size="sm" />
-          </button>
-        </div>
-      </div>
-    </header>
-
     <div class="sms-console__body">
       <div v-if="isLocalPreview" class="sms-preview-banner" role="status">
         <Icon name="beaker" size="sm" />
@@ -71,6 +13,43 @@
           <h1 id="sms-page-title">Codex 授权接码工作台</h1>
           <p class="sms-intro__summary">领取临时号码，实时接收 OAuth 验证码。</p>
           <p class="sms-intro__purpose"><Icon name="shield" size="xs" />仅限 Codex 登录接码使用</p>
+          <div class="sms-workbench-actions" aria-label="接码工作台操作">
+            <span class="sms-connection" :class="connectionClass">
+              <span class="sms-connection__dot" aria-hidden="true"></span>
+              {{ connectionLabel }}
+            </span>
+            <template v-if="authStore.isAuthenticated">
+              <button
+                type="button"
+                class="sms-header-button"
+                title="刷新接码服务状态"
+                :disabled="isLoadingStatus"
+                @click="loadStatus"
+              >
+                <Icon name="refresh" size="sm" :class="{ 'animate-spin': isLoadingStatus }" />
+                <span>刷新状态</span>
+              </button>
+              <button
+                type="button"
+                class="sms-icon-button"
+                title="退出登录"
+                aria-label="退出登录"
+                @click="logout"
+              >
+                <Icon name="login" size="sm" />
+              </button>
+            </template>
+            <template v-else>
+              <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
+                <Icon name="login" size="sm" />
+                <span>登录</span>
+              </button>
+              <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
+                <Icon name="userPlus" size="sm" />
+                <span>注册</span>
+              </button>
+            </template>
+          </div>
         </div>
         <div v-if="isAdmin" class="sms-overview" aria-label="接码服务概览">
           <div class="sms-overview__item">
@@ -216,6 +195,16 @@
                 : `刷新和复制不收费；领取时预扣 ${formatMoney(currentFeeAmount)}，实际收到验证码后才最终结算。` }}
             </p>
           </div>
+
+          <a :href="mainSiteHomeURL" class="sms-brand-promo" aria-label="访问 XIASS API 官方中转站">
+            <img src="/brand/xiass-mark-dark.png" alt="" class="sms-brand-promo__logo" />
+            <span class="sms-brand-promo__copy">
+              <strong>XIASS <b>API</b></strong>
+              <span>官方 API 中转站</span>
+              <small>全满血账号</small>
+            </span>
+            <span class="sms-brand-promo__visit">访问官网 <Icon name="arrowRight" size="sm" /></span>
+          </a>
         </article>
 
         <aside v-if="isAdmin" class="sms-panel sms-panel--queue">
@@ -445,7 +434,11 @@ let previewNumberIndex = 0
 const hasCode = computed(() => Boolean(code.value && code.value !== '--'))
 const memberBalance = computed(() => balance.value ?? authStore.user?.balance ?? null)
 const currentFeeAmount = computed(() => feeAmount.value > 0 ? feeAmount.value : 2)
-const consoleHomePath = computed(() => isAdmin.value ? '/admin/accounts' : '/dashboard')
+const mainSiteHomeURL = computed(() => {
+  const currentHost = window.location.host
+  const mainHost = currentHost.replace(/^sms\./i, 'api.')
+  return `${window.location.protocol}//${mainHost}/`
+})
 const canStart = computed(() => !hasActiveSession.value && !['waiting', 'starting'].includes(phase.value))
 const startButtonLabel = computed(() => phase.value === 'received' ? '领取新的号码' : '领取一个号码')
 const memberMutationCountdown = computed(() => {
@@ -713,10 +706,6 @@ async function copyCode(): Promise<void> {
   }
 }
 
-function goToAdmin(): void {
-  void router.push(consoleHomePath.value)
-}
-
 function goToLogin(): void {
   void router.push({ path: '/login', query: { redirect: '/sms' } })
 }
@@ -783,34 +772,16 @@ onBeforeUnmount(() => {
   background: rgba(4, 20, 28, .48);
 }
 
-.sms-console__header,
 .sms-console__body {
   position: relative;
   z-index: 1;
 }
 
-.sms-console__header {
-  border-bottom: 1px solid rgba(102, 159, 213, .22);
-  background: rgba(6, 17, 31, .78);
-  backdrop-filter: blur(18px);
-}
-
-.sms-console__header-inner,
 .sms-console__body {
   width: min(1180px, calc(100% - 40px));
   margin: 0 auto;
 }
 
-.sms-console__header-inner {
-  min-height: 68px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.sms-brand,
-.sms-header-actions,
 .sms-connection,
 .sms-panel__title-group,
 .sms-region,
@@ -823,14 +794,6 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
-.sms-brand {
-  min-width: 0;
-  gap: 9px;
-  color: #eff6ff;
-  text-decoration: none;
-}
-
-.sms-brand__mark,
 .sms-panel__icon,
 .sms-flow__icon,
 .sms-security-note__icon {
@@ -840,27 +803,6 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
-.sms-brand__mark {
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(98, 207, 255, .62);
-  border-radius: 8px;
-  color: #052033;
-  background: #67d2ff;
-  box-shadow: 0 0 20px rgba(48, 183, 255, .24);
-}
-
-.sms-brand__text {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: .08em;
-}
-
-.sms-brand__text b { color: #64d7ff; }
-.sms-brand__divider { width: 1px; height: 19px; background: rgba(148, 179, 211, .36); }
-.sms-brand__section { color: #97a9c1; font-size: 13px; font-weight: 600; }
-
-.sms-header-actions { gap: 9px; }
 .sms-connection { gap: 7px; color: #9ab0c9; font-size: 12px; white-space: nowrap; }
 .sms-connection__dot,
 .sms-status__dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 17%, transparent); }
@@ -913,6 +855,7 @@ onBeforeUnmount(() => {
 .sms-intro__summary { max-width: 625px; margin: 11px 0 0; color: #9fb1c8; font-size: 14px; line-height: 1.7; }
 .sms-intro__purpose { display: inline-flex; align-items: center; gap: 6px; margin: 13px 0 0; padding: 6px 9px; border: 1px solid rgba(76, 218, 180, .42); border-radius: 6px; color: #9cf0d5; background: rgba(16, 121, 101, .18); font-size: 11px; font-weight: 750; letter-spacing: .02em; }
 .sms-intro__purpose svg { color: #58e0ba; }
+.sms-workbench-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; width: fit-content; margin-top: 17px; padding: 8px 9px; border: 1px solid rgba(95, 156, 208, .23); border-radius: 8px; background: rgba(6, 26, 45, .56); box-shadow: inset 0 1px rgba(255, 255, 255, .025); }
 
 .sms-overview { display: flex; align-items: stretch; min-width: 214px; padding: 12px 16px; border: 1px solid rgba(94, 148, 200, .24); border-radius: 8px; background: rgba(9, 31, 54, .74); box-shadow: inset 0 1px rgba(255, 255, 255, .03); }
 .sms-overview__item { min-width: 74px; }
@@ -970,6 +913,16 @@ onBeforeUnmount(() => {
 .sms-start-button:hover:not(:disabled), .sms-save-button:hover:not(:disabled) { color: #021925; background: #99e6ff; transform: translateY(-1px); box-shadow: 0 12px 25px rgba(25, 170, 232, .26); }
 .sms-action-help { display: flex; align-items: flex-start; gap: 6px; margin: 12px 1px 0; color: #758ca6; font-size: 11px; line-height: 1.5; }
 .sms-action-help svg { flex: 0 0 auto; margin-top: 2px; }
+
+.sms-brand-promo { display: flex; align-items: center; gap: 14px; min-height: 82px; margin: 0 21px 21px; padding: 13px 16px; overflow: hidden; border: 1px solid rgba(78, 204, 220, .32); border-radius: 8px; color: #e7f9ff; background: rgba(8, 48, 65, .74); box-shadow: inset 0 1px rgba(255, 255, 255, .035); text-decoration: none; transition: border-color .18s ease, background-color .18s ease, transform .18s ease, box-shadow .18s ease; }
+.sms-brand-promo:hover { border-color: rgba(89, 223, 231, .72); background: rgba(10, 68, 84, .84); transform: translateY(-1px); box-shadow: 0 11px 25px rgba(2, 32, 46, .28), inset 0 1px rgba(255, 255, 255, .055); }
+.sms-brand-promo__logo { width: 54px; height: 54px; flex: 0 0 54px; object-fit: contain; opacity: .94; filter: drop-shadow(0 4px 10px rgba(84, 223, 239, .22)); }
+.sms-brand-promo__copy { display: grid; min-width: 0; gap: 3px; }
+.sms-brand-promo__copy strong { color: #f3fdff; font-size: 15px; font-weight: 850; letter-spacing: .08em; }
+.sms-brand-promo__copy strong b { color: #67def4; }
+.sms-brand-promo__copy > span { color: #bdedf5; font-size: 12px; font-weight: 700; }
+.sms-brand-promo__copy small { color: #78b1c0; font-size: 11px; }
+.sms-brand-promo__visit { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: #7be3ec; font-size: 11px; font-weight: 750; white-space: nowrap; }
 
 .sms-panel--queue { display: flex; flex-direction: column; }
 .sms-queue-stats { display: grid; grid-template-columns: 1fr 1fr; margin: 19px 21px 0; border: 1px solid rgba(107, 103, 201, .27); border-radius: 8px; overflow: hidden; background: rgba(51, 42, 113, .18); }
@@ -1044,16 +997,12 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 660px) {
-  .sms-console__header-inner, .sms-console__body { width: min(100% - 28px, 1180px); }
-  .sms-console__header-inner { min-height: 60px; }
-  .sms-brand__divider, .sms-brand__section, .sms-connection, .sms-header-button--quiet { display: none; }
-  .sms-header-actions { gap: 6px; }
-  .sms-header-button { width: 34px; padding: 0; justify-content: center; }
-  .sms-header-button span { display: none; }
+  .sms-console__body { width: min(100% - 28px, 1180px); }
   .sms-console__body { padding: 25px 0 32px; }
   .sms-intro { align-items: flex-start; flex-direction: column; gap: 17px; margin-bottom: 19px; }
   .sms-intro h1 { font-size: 27px; }
   .sms-intro__summary { font-size: 13px; line-height: 1.6; }
+  .sms-workbench-actions { width: 100%; box-sizing: border-box; }
   .sms-overview { width: 100%; box-sizing: border-box; }
   .sms-overview__item { flex: 1; }
   .sms-panel__head, .sms-receiver-content, .sms-action-area { padding-left: 15px; padding-right: 15px; }
@@ -1066,6 +1015,9 @@ onBeforeUnmount(() => {
   .sms-action > svg { grid-row: auto; }
   .sms-action span { font-size: 12px; }
   .sms-action small { max-width: 100%; font-size: 9px; }
+  .sms-brand-promo { gap: 11px; min-height: 76px; margin-left: 15px; margin-right: 15px; margin-bottom: 15px; padding: 11px 12px; }
+  .sms-brand-promo__logo { width: 46px; height: 46px; flex-basis: 46px; }
+  .sms-brand-promo__visit { font-size: 10px; }
   .sms-queue-stats { margin-left: 15px; margin-right: 15px; }
   .sms-member-fee { margin-left: 15px; margin-right: 15px; }
   .sms-textarea-label { margin-left: 15px; margin-right: 15px; }
@@ -1079,7 +1031,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 380px) {
-  .sms-brand__text { font-size: 13px; }
   .sms-intro h1 { font-size: 25px; }
   .sms-status { padding-left: 7px; padding-right: 7px; }
   .sms-panel__title-group { gap: 9px; }
@@ -1089,5 +1040,6 @@ onBeforeUnmount(() => {
   .sms-action { min-height: 68px; }
   .sms-queue-buttons { grid-template-columns: 1fr; }
   .sms-clear-button { width: 100%; }
+  .sms-brand-promo__visit { display: none; }
 }
 </style>

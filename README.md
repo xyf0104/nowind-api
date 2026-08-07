@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.0.103-0ea5e9" alt="当前版本 v1.0.103" />
+    <img src="https://img.shields.io/badge/当前版本-v1.0.104-0ea5e9" alt="当前版本 v1.0.104" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.0.103
+> 当前版本：v1.0.104
 
-v1.0.103 修复独立接码子域名入口，根路径与历史 `/home` 链接统一进入 Codex 授权接码工作台；独立域名不再显示 XIASS API 公告和管理员合规弹窗。优化接码充值弹窗的支付方式卡片布局，确保微信、支付宝及自定义支付名称在窄容器中完整显示。保留原 OAuth 授权流程、iOS 管理端接码 UI、XIASS 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径。
+v1.0.104 将独立 Codex 授权接码工作台改为无顶部导航的专注布局：服务状态、刷新和退出操作移至标题下方，移除站内用户中心入口；会话面板新增可直达主站的 XIASS 官方 API 中转推广卡。独立接码子域名根路径与历史 `/home` 链接统一进入工作台，不再显示 XIASS API 公告和管理员合规弹窗；充值弹窗的支付方式卡片会在窄容器内完整显示。保留原 OAuth 授权流程、iOS 管理端接码 UI、XIASS 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径。
 
 XIASS API 是本项目唯一的公开源码仓库与正式发布源。仓库包含完整前后端源码、Docker 镜像构建、数据库迁移、一键安装、在线更新、备份恢复和软路由代理节点功能。
 
