@@ -72,6 +72,7 @@ const props = withDefaults(defineProps<{
   darkPlaybackRate?: number
   lightPlaybackRate?: number
   loopCrossfadeSeconds?: number
+  forceTheme?: ThemeVideo
 }>(), {
   blurred: false,
   darkSrc: '/media/xiass-dark-bokeh.mp4',
@@ -80,7 +81,8 @@ const props = withDefaults(defineProps<{
   lightPoster: '/media/xiass-light-water-poster.png',
   darkPlaybackRate: 0.72,
   lightPlaybackRate: 0.42,
-  loopCrossfadeSeconds: 1.15
+  loopCrossfadeSeconds: 1.15,
+  forceTheme: undefined
 })
 
 const darkVideoRef = ref<HTMLVideoElement | null>(null)
@@ -89,7 +91,7 @@ const darkPosterRef = ref<HTMLImageElement | null>(null)
 const lightPosterRef = ref<HTMLImageElement | null>(null)
 const darkLoopFading = ref(false)
 const lightLoopFading = ref(false)
-const isDark = ref(document.documentElement.classList.contains('dark'))
+const isDark = ref(props.forceTheme ? props.forceTheme === 'dark' : document.documentElement.classList.contains('dark'))
 const resetInProgress: Record<ThemeVideo, boolean> = { light: false, dark: false }
 const posterSettled: Record<ThemeVideo, boolean> = { light: false, dark: false }
 let themeObserver: MutationObserver | null = null
@@ -203,7 +205,7 @@ function handleEnded(theme: ThemeVideo) {
 }
 
 function syncPlaybackWithTheme() {
-  isDark.value = document.documentElement.classList.contains('dark')
+  isDark.value = props.forceTheme ? props.forceTheme === 'dark' : document.documentElement.classList.contains('dark')
   notifyIfActivePosterSettled()
 
   void nextTick(() => {

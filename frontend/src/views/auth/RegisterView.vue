@@ -985,6 +985,7 @@ async function handleRegister(): Promise<void> {
   isLoading.value = true
 
   try {
+    const redirect = resolveSafeRedirect(route.query.redirect)
     const affCode = formData.aff_code.trim() || loadAffiliateReferralCode()
     if (affCode) {
       formData.aff_code = affCode
@@ -1004,12 +1005,13 @@ async function handleRegister(): Promise<void> {
           tencent_captcha_randstr: tencentCaptchaEnabled.value ? tencentCaptchaRandstr.value : undefined,
           promo_code: formData.promo_code || undefined,
           invitation_code: formData.invitation_code || undefined,
+          ...(redirect ? { redirect } : {}),
           ...(affCode ? { aff_code: affCode } : {})
         })
       )
 
       // Navigate to email verification page
-      await router.push('/email-verify')
+      await router.push({ path: '/email-verify', query: redirect ? { redirect } : undefined })
       return
     }
 
@@ -1031,7 +1033,7 @@ async function handleRegister(): Promise<void> {
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
     // Redirect to dashboard
-    await router.push('/dashboard')
+    await router.push(redirect || '/dashboard')
   } catch (error: unknown) {
     // Handle registration error
     errorMessage.value = buildAuthErrorMessage(error, {
@@ -1046,6 +1048,11 @@ async function handleRegister(): Promise<void> {
     }
     isLoading.value = false
   }
+}
+
+function resolveSafeRedirect(value: unknown): string {
+  const redirect = typeof value === 'string' ? value.trim() : ''
+  return redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : ''
 }
 </script>
 

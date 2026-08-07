@@ -591,6 +591,7 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// XIASS server-side OAuth SMS receiver. Card keys are encrypted at rest
 		// and only opaque session identifiers reach the browser.
 		adminSettings.GET("/sms-receiver", h.Admin.Setting.GetPixlabSMSStatus)
+		adminSettings.PUT("/sms-receiver/member-fee", h.Admin.Setting.UpdatePixlabSMSMemberFee)
 		adminSettings.POST("/sms-receiver/card-keys", h.Admin.Setting.AddPixlabSMSCardKeys)
 		adminSettings.DELETE("/sms-receiver/card-keys", h.Admin.Setting.ClearPixlabSMSCardKeys)
 		adminSettings.POST("/sms-receiver/redeem", h.Admin.Setting.RedeemPixlabSMSNumber)

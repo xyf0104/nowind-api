@@ -4,8 +4,10 @@ import type { SMSReceiverSession } from '@/api/admin/smsReceiver'
 
 type SMSPhase = 'idle' | 'starting' | 'waiting' | 'received' | 'expired' | 'unavailable' | 'error'
 export type SMSReceiveOutcome = 'waiting' | 'received' | 'expired' | 'unavailable'
+export type SMSReceiverScope = 'admin' | 'member'
 
 const ACTIVE_SESSION_STORAGE_KEY = 'xiass-api:pixlab-sms:active-session-id'
+const MEMBER_ACTIVE_SESSION_STORAGE_KEY = 'xiass-api:pixlab-sms:member-active-session-id'
 const LEGACY_QUEUE_STORAGE_KEY = 'xiass-api:pixlab-sms:card-key-queue'
 const LEGACY_ACTIVE_KEY_STORAGE_KEY = 'xiass-api:pixlab-sms:active-card-key'
 const POLL_INTERVAL_MS = 5_000
@@ -23,6 +25,48 @@ const callingCodes = [
   ['880', '孟加拉国'], ['886', '台湾'], ['960', '马尔代夫'], ['961', '黎巴嫩'], ['971', '阿联酋']
 ] as const
 
+const countryFlags: Record<string, string> = {
+  '美国': '🇺🇸', 'united states': '🇺🇸', 'us': '🇺🇸',
+  '加拿大': '🇨🇦', 'canada': '🇨🇦',
+  '英国': '🇬🇧', 'united kingdom': '🇬🇧', 'uk': '🇬🇧',
+  '日本': '🇯🇵', 'japan': '🇯🇵',
+  '韩国': '🇰🇷', 'south korea': '🇰🇷', 'korea': '🇰🇷',
+  '中国': '🇨🇳', 'china': '🇨🇳',
+  '香港': '🇭🇰', 'hong kong': '🇭🇰',
+  '澳门': '🇲🇴', 'macau': '🇲🇴',
+  '台湾': '🇹🇼', 'taiwan': '🇹🇼',
+  '新加坡': '🇸🇬', 'singapore': '🇸🇬',
+  '澳大利亚': '🇦🇺', 'australia': '🇦🇺',
+  '马来西亚': '🇲🇾', 'malaysia': '🇲🇾',
+  '泰国': '🇹🇭', 'thailand': '🇹🇭',
+  '越南': '🇻🇳', 'vietnam': '🇻🇳',
+  '菲律宾': '🇵🇭', 'philippines': '🇵🇭',
+  '印度': '🇮🇳', 'india': '🇮🇳',
+  '印度尼西亚': '🇮🇩', 'indonesia': '🇮🇩',
+  '德国': '🇩🇪', 'germany': '🇩🇪',
+  '法国': '🇫🇷', 'france': '🇫🇷',
+  '西班牙': '🇪🇸', 'spain': '🇪🇸',
+  '意大利': '🇮🇹', 'italy': '🇮🇹',
+  '巴西': '🇧🇷', 'brazil': '🇧🇷',
+  '墨西哥': '🇲🇽', 'mexico': '🇲🇽',
+  '俄罗斯': '🇷🇺', 'russia': '🇷🇺',
+  '土耳其': '🇹🇷', 'turkey': '🇹🇷',
+  '阿联酋': '🇦🇪', 'united arab emirates': '🇦🇪',
+}
+
+const callingCodeFlags: Record<string, string> = {
+  '1': '🇺🇸', '7': '🇷🇺', '20': '🇪🇬', '27': '🇿🇦', '30': '🇬🇷',
+  '31': '🇳🇱', '32': '🇧🇪', '33': '🇫🇷', '34': '🇪🇸', '39': '🇮🇹',
+  '44': '🇬🇧', '49': '🇩🇪', '52': '🇲🇽', '55': '🇧🇷', '60': '🇲🇾',
+  '61': '🇦🇺', '62': '🇮🇩', '63': '🇵🇭', '65': '🇸🇬', '66': '🇹🇭',
+  '81': '🇯🇵', '82': '🇰🇷', '84': '🇻🇳', '86': '🇨🇳', '90': '🇹🇷',
+  '91': '🇮🇳', '92': '🇵🇰', '93': '🇦🇫', '94': '🇱🇰', '95': '🇲🇲',
+  '98': '🇮🇷', '212': '🇲🇦', '351': '🇵🇹', '352': '🇱🇺', '353': '🇮🇪',
+  '354': '🇮🇸', '358': '🇫🇮', '380': '🇺🇦', '420': '🇨🇿', '852': '🇭🇰',
+  '853': '🇲🇴', '855': '🇰🇭', '856': '🇱🇦', '880': '🇧🇩', '886': '🇹🇼',
+  '960': '🇲🇻', '961': '🇱🇧', '971': '🇦🇪',
+}
+
 function safeStorage(): Storage | null {
   try {
     return typeof window !== 'undefined' ? window.localStorage : null
@@ -32,15 +76,17 @@ function safeStorage(): Storage | null {
 }
 
 // The browser stores only an opaque server session ID, never a card key.
-function readActiveSession(): string {
-  return safeStorage()?.getItem(ACTIVE_SESSION_STORAGE_KEY)?.trim() ?? ''
+function readActiveSession(scope: SMSReceiverScope): string {
+	const key = scope === 'member' ? MEMBER_ACTIVE_SESSION_STORAGE_KEY : ACTIVE_SESSION_STORAGE_KEY
+	return safeStorage()?.getItem(key)?.trim() ?? ''
 }
 
-function writeActiveSession(value: string): void {
-  const storage = safeStorage()
-  if (!storage) return
-  if (value) storage.setItem(ACTIVE_SESSION_STORAGE_KEY, value)
-  else storage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+function writeActiveSession(scope: SMSReceiverScope, value: string): void {
+	const storage = safeStorage()
+	if (!storage) return
+	const key = scope === 'member' ? MEMBER_ACTIVE_SESSION_STORAGE_KEY : ACTIVE_SESSION_STORAGE_KEY
+	if (value) storage.setItem(key, value)
+	else storage.removeItem(key)
 }
 
 function readLegacyCardKeys(): string[] {
@@ -73,9 +119,12 @@ function formatPhone(number: string, reportedRegion: string): {
   display: string
   copyValue: string
   region: string
+  flag: string
 } {
   const digits = number.replace(/\D/g, '')
-  if (!digits) return { display: '--', copyValue: '', region: reportedRegion || '--' }
+  if (!digits) return { display: '--', copyValue: '', region: reportedRegion || '--', flag: '' }
+
+  const normalizedRegion = reportedRegion.trim().toLowerCase()
 
   const match = [...callingCodes]
     .sort(([left], [right]) => right.length - left.length)
@@ -87,11 +136,17 @@ function formatPhone(number: string, reportedRegion: string): {
     return {
       display: `+${callingCode} ${localNumber}`,
       copyValue: localNumber,
-      region: reportedRegion || fallbackRegion
+      region: reportedRegion || fallbackRegion,
+      flag: countryFlags[normalizedRegion] || callingCodeFlags[callingCode] || ''
     }
   }
 
-  return { display: `+${digits}`, copyValue: digits, region: reportedRegion || '自动识别' }
+  return {
+    display: `+${digits}`,
+    copyValue: digits,
+    region: reportedRegion || '自动识别',
+    flag: countryFlags[normalizedRegion] || ''
+  }
 }
 
 function errorReason(error: unknown): string {
@@ -101,18 +156,28 @@ function errorReason(error: unknown): string {
   return ''
 }
 
-export function usePixlabSMSReceiver() {
-  const phase = ref<SMSPhase>('idle')
+export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
+	const isMember = scope === 'member'
+	const api = isMember ? smsReceiverAPI.memberSMSReceiverAPI : smsReceiverAPI
+	const phase = ref<SMSPhase>('idle')
   const phoneDisplay = ref('--')
   const phoneForCopy = ref('')
   const region = ref('--')
+  const countryFlag = ref('')
   const code = ref('--')
   const queuedKeyCount = ref(0)
-  const activeSessionID = ref(readActiveSession())
+	const activeSessionID = ref(readActiveSession(scope))
+	const available = ref(false)
+	const feeAmount = ref(0)
+	const balance = ref<number | null>(null)
+	const chargeState = ref<'held' | 'captured' | 'released' | ''>('')
+  const actionAvailableAt = ref('')
+  const currentTime = ref(Date.now())
   const isRefreshing = ref(false)
   const isChangingNumber = ref(false)
   const isCancelling = ref(false)
   let pollingTimer: number | undefined
+  let cooldownTimer: number | undefined
 
   const statusText = computed(() => {
     const labels: Record<SMSPhase, string> = {
@@ -136,13 +201,21 @@ export function usePixlabSMSReceiver() {
 
   const hasActiveSession = computed(() => Boolean(activeSessionID.value))
   const canRefresh = computed(() => hasActiveSession.value && !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && !['starting', 'received', 'expired'].includes(phase.value))
-  const canChangeNumber = computed(() => hasActiveSession.value && !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && !['starting', 'received'].includes(phase.value))
-  const canCancel = computed(() => hasActiveSession.value && !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && !['starting', 'received'].includes(phase.value))
+  const memberMutationRemainingSeconds = computed(() => {
+    if (!isMember || !actionAvailableAt.value) return 0
+    const availableAt = Date.parse(actionAvailableAt.value)
+    if (!Number.isFinite(availableAt)) return 0
+    return Math.max(0, Math.ceil((availableAt - currentTime.value) / 1_000))
+  })
+  const canMutateMemberSession = computed(() => !isMember || memberMutationRemainingSeconds.value === 0)
+  const canChangeNumber = computed(() => hasActiveSession.value && canMutateMemberSession.value && !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && !['starting', 'received'].includes(phase.value))
+  const canCancel = computed(() => hasActiveSession.value && canMutateMemberSession.value && !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && !['starting', 'received'].includes(phase.value))
 
   // Move queues produced by the short-lived browser-local implementation to
   // the server on first use. This is deliberately best-effort: a failed upload
   // leaves the legacy data intact so an operator can retry rather than lose it.
   async function migrateLegacyCardKeys(): Promise<number> {
+    if (isMember) return 0
     const legacyKeys = readLegacyCardKeys()
     if (legacyKeys.length === 0) return 0
     const result = await smsReceiverAPI.addCardKeys(legacyKeys.join('\n'))
@@ -151,9 +224,13 @@ export function usePixlabSMSReceiver() {
     return result.added_count
   }
 
-  async function refreshQueueStatus(): Promise<void> {
-    const status = await smsReceiverAPI.getStatus()
-    queuedKeyCount.value = status.queued_count
+  async function refreshQueueStatus(): Promise<smsReceiverAPI.SMSReceiverQueueStatus> {
+		const status = await api.getStatus()
+		queuedKeyCount.value = status.queued_count
+		available.value = status.available === true
+		if (typeof status.fee_amount === 'number') feeAmount.value = status.fee_amount
+		if (typeof status.balance === 'number') balance.value = status.balance
+		return status
   }
 
   async function appendCardKeys(raw: string): Promise<number> {
@@ -168,15 +245,33 @@ export function usePixlabSMSReceiver() {
     return result.deleted_count
   }
 
-  function stop(): void {
+  function stopPolling(): void {
     if (pollingTimer) clearInterval(pollingTimer)
     pollingTimer = undefined
+  }
+
+  function stop(): void {
+    stopPolling()
+    if (cooldownTimer) clearInterval(cooldownTimer)
+    cooldownTimer = undefined
+  }
+
+  function startCooldownTicker(): void {
+    if (!isMember || !actionAvailableAt.value || memberMutationRemainingSeconds.value <= 0) return
+    if (cooldownTimer) return
+    cooldownTimer = window.setInterval(() => {
+      currentTime.value = Date.now()
+      if (memberMutationRemainingSeconds.value <= 0 && cooldownTimer) {
+        clearInterval(cooldownTimer)
+        cooldownTimer = undefined
+      }
+    }, 1_000)
   }
 
   function clearActiveSession(): void {
     stop()
     activeSessionID.value = ''
-    writeActiveSession('')
+		writeActiveSession(scope, '')
   }
 
   function resetDisplay(nextPhase: SMSPhase): void {
@@ -185,20 +280,39 @@ export function usePixlabSMSReceiver() {
     phoneDisplay.value = nextPhase === 'unavailable' ? '暂无待用卡密' : '--'
     phoneForCopy.value = ''
     region.value = '--'
+    countryFlag.value = ''
     code.value = '--'
   }
 
-  function applyPhone(result: SMSReceiverSession): void {
+	function applyPhone(result: SMSReceiverSession): void {
     const rawNumber = result.number?.trim() ?? ''
     if (!rawNumber) return
     const formatted = formatPhone(rawNumber, result.country?.trim() ?? '')
     phoneDisplay.value = formatted.display
     phoneForCopy.value = formatted.copyValue
     region.value = formatted.region
-  }
+		countryFlag.value = formatted.flag
+	}
 
-  function applyResponse(result: SMSReceiverSession): SMSReceiveOutcome {
-    queuedKeyCount.value = result.queued_count
+	function applyBilling(result: SMSReceiverSession): void {
+		if (typeof result.fee_amount === 'number') feeAmount.value = result.fee_amount
+		if (typeof result.balance === 'number') balance.value = result.balance
+		if (result.charge_state === 'held' || result.charge_state === 'captured' || result.charge_state === 'released') {
+			chargeState.value = result.charge_state
+		}
+		actionAvailableAt.value = result.action_available_at || ''
+		currentTime.value = Date.now()
+		if (actionAvailableAt.value) {
+			startCooldownTicker()
+		} else if (cooldownTimer) {
+			clearInterval(cooldownTimer)
+			cooldownTimer = undefined
+		}
+	}
+
+	function applyResponse(result: SMSReceiverSession): SMSReceiveOutcome {
+		queuedKeyCount.value = result.queued_count
+		applyBilling(result)
     applyPhone(result)
     const status = (result.status || '').trim().toUpperCase()
     const incomingCode = result.code?.trim() ?? ''
@@ -219,7 +333,7 @@ export function usePixlabSMSReceiver() {
 
     if (result.session_id) {
       activeSessionID.value = result.session_id
-      writeActiveSession(result.session_id)
+			writeActiveSession(scope, result.session_id)
     }
     phase.value = 'waiting'
     startPolling()
@@ -227,7 +341,7 @@ export function usePixlabSMSReceiver() {
   }
 
   function startPolling(): void {
-    stop()
+    stopPolling()
     if (!activeSessionID.value) return
     pollingTimer = window.setInterval(() => {
       if (phase.value !== 'waiting') {
@@ -239,7 +353,7 @@ export function usePixlabSMSReceiver() {
   }
 
   async function resumeActive(): Promise<SMSReceiveOutcome> {
-    const sessionID = activeSessionID.value || readActiveSession()
+		const sessionID = activeSessionID.value || readActiveSession(scope)
     if (!sessionID) {
       resetDisplay('unavailable')
       return 'unavailable'
@@ -247,7 +361,7 @@ export function usePixlabSMSReceiver() {
     activeSessionID.value = sessionID
     phase.value = 'starting'
     try {
-      return applyResponse(await smsReceiverAPI.resume(sessionID))
+		return applyResponse(await api.resume(sessionID))
     } catch (error) {
       if (errorReason(error) === 'SMS_SESSION_NOT_FOUND') clearActiveSession()
       phase.value = 'error'
@@ -256,11 +370,11 @@ export function usePixlabSMSReceiver() {
   }
 
   async function start(): Promise<SMSReceiveOutcome> {
-    if (activeSessionID.value || readActiveSession()) return resumeActive()
+    if (activeSessionID.value || readActiveSession(scope)) return resumeActive()
 
     await migrateLegacyCardKeys()
     await refreshQueueStatus()
-    if (queuedKeyCount.value <= 0) {
+		if ((!isMember && queuedKeyCount.value <= 0) || (isMember && !available.value)) {
       resetDisplay('unavailable')
       return 'unavailable'
     }
@@ -270,7 +384,7 @@ export function usePixlabSMSReceiver() {
     region.value = '--'
     code.value = '--'
     try {
-      return applyResponse(await smsReceiverAPI.redeem())
+		return applyResponse(await api.redeem())
     } catch (error) {
       phase.value = 'error'
       await refreshQueueStatus().catch(() => undefined)
@@ -279,7 +393,7 @@ export function usePixlabSMSReceiver() {
   }
 
   async function refresh(silent = false): Promise<SMSReceiveOutcome> {
-    const sessionID = activeSessionID.value || readActiveSession()
+		const sessionID = activeSessionID.value || readActiveSession(scope)
     if (!sessionID) {
       resetDisplay('unavailable')
       return 'unavailable'
@@ -288,8 +402,8 @@ export function usePixlabSMSReceiver() {
     if (!silent) isRefreshing.value = true
     try {
       const result = phase.value === 'error' || phase.value === 'starting'
-        ? await smsReceiverAPI.resume(sessionID)
-        : await smsReceiverAPI.check(sessionID)
+			? await api.resume(sessionID)
+			: await api.check(sessionID)
       return applyResponse(result)
     } catch (error) {
       if (errorReason(error) === 'SMS_SESSION_NOT_FOUND') clearActiveSession()
@@ -301,12 +415,12 @@ export function usePixlabSMSReceiver() {
   }
 
   async function changeNumber(): Promise<SMSReceiveOutcome> {
-    const sessionID = activeSessionID.value || readActiveSession()
+		const sessionID = activeSessionID.value || readActiveSession(scope)
     if (!sessionID) throw new Error('当前没有可更换的手机号。')
     isChangingNumber.value = true
     stop()
     try {
-      return applyResponse(await smsReceiverAPI.change(sessionID))
+		return applyResponse(await api.change(sessionID))
     } catch (error) {
       if (errorReason(error) === 'SMS_SESSION_NOT_FOUND') clearActiveSession()
       phase.value = 'error'
@@ -317,19 +431,22 @@ export function usePixlabSMSReceiver() {
     }
   }
 
-  async function cancel(): Promise<void> {
-    const sessionID = activeSessionID.value || readActiveSession()
+  async function cancel(): Promise<SMSReceiveOutcome> {
+		const sessionID = activeSessionID.value || readActiveSession(scope)
     if (!sessionID) {
       resetDisplay('idle')
-      return
+      return 'unavailable'
     }
     isCancelling.value = true
     stop()
     try {
-      const result = await smsReceiverAPI.cancel(sessionID)
-      queuedKeyCount.value = result.queued_count
-      clearActiveSession()
-      resetDisplay('idle')
+		const result = await api.cancel(sessionID)
+		const outcome = applyResponse(result)
+      if (outcome !== 'received') {
+        clearActiveSession()
+        resetDisplay('idle')
+      }
+      return outcome
     } finally {
       isCancelling.value = false
       if (phase.value === 'waiting') startPolling()
@@ -341,8 +458,16 @@ export function usePixlabSMSReceiver() {
     phoneDisplay,
     phoneForCopy,
     region,
+		countryFlag,
     code,
-    queuedKeyCount,
+		queuedKeyCount,
+		available,
+		feeAmount,
+		balance,
+		chargeState,
+		actionAvailableAt,
+		memberMutationRemainingSeconds,
+    hasActiveSession,
     statusText,
     statusClass,
     canRefresh,

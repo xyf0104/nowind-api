@@ -95,6 +95,18 @@ func RegisterUserRoutes(
 			channels.GET("/available", h.AvailableChannel.List)
 		}
 
+		// Paid OAuth SMS receiver. Members can operate only their own opaque
+		// sessions; key inventory remains an administrator-only capability.
+		smsReceiver := authenticated.Group("/sms-receiver")
+		{
+			smsReceiver.GET("", h.SMSReceiver.GetStatus)
+			smsReceiver.POST("/redeem", h.SMSReceiver.Redeem)
+			smsReceiver.POST("/sessions/:session_id/resume", h.SMSReceiver.Resume)
+			smsReceiver.POST("/sessions/:session_id/check", h.SMSReceiver.Check)
+			smsReceiver.POST("/sessions/:session_id/change", h.SMSReceiver.Change)
+			smsReceiver.POST("/sessions/:session_id/cancel", h.SMSReceiver.Cancel)
+		}
+
 		// 使用记录（聚合统计属重查询，叠加更严格的按用户限流）
 		usage := authenticated.Group("/usage")
 		usage.Use(panelRateLimiter.Heavy())

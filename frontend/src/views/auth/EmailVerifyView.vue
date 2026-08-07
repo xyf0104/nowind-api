@@ -177,7 +177,7 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { AuthLayout } from '@/components/layout'
 import Icon from '@/components/icons/Icon.vue'
@@ -209,6 +209,7 @@ const { t, locale } = useI18n()
 // ==================== Router & Stores ====================
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const appStore = useAppStore()
 
@@ -336,7 +337,7 @@ onMounted(async () => {
       pendingAuthToken.value = registerData.pending_auth_token || activePendingSession?.token || ''
       pendingAuthTokenField.value = registerData.pending_auth_token_field || activePendingSession?.token_field || 'pending_auth_token'
       pendingProvider.value = registerData.pending_provider || activePendingSession?.provider || ''
-      pendingRedirect.value = registerData.pending_redirect || activePendingSession?.redirect || ''
+      pendingRedirect.value = registerData.redirect || registerData.pending_redirect || activePendingSession?.redirect || resolveSafeRedirect(route.query.redirect)
       pendingAdoptionDecision.value = registerData.pending_adoption_decision
         ? {
             adoptDisplayName: registerData.pending_adoption_decision.adopt_display_name === true,
@@ -352,6 +353,8 @@ onMounted(async () => {
     pendingAuthTokenField.value = activePendingSession.token_field
     pendingProvider.value = activePendingSession.provider
     pendingRedirect.value = activePendingSession.redirect || ''
+  } else {
+    pendingRedirect.value = resolveSafeRedirect(route.query.redirect)
   }
 
   // Load public settings
@@ -756,7 +759,12 @@ function handleBack(): void {
   sessionStorage.removeItem('register_data')
 
   // Go back to registration
-  router.push('/register')
+  router.push({ path: '/register', query: pendingRedirect.value ? { redirect: pendingRedirect.value } : undefined })
+}
+
+function resolveSafeRedirect(value: unknown): string {
+  const redirect = typeof value === 'string' ? value.trim() : ''
+  return redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : ''
 }
 
 function buildEmailSuffixNotAllowedMessage(): string {

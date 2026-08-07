@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"math"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -11,6 +12,10 @@ import (
 
 type pixlabSMSCardKeysRequest struct {
 	CardKeys string `json:"card_keys" binding:"required,max=1048576"`
+}
+
+type pixlabSMSMemberFeeRequest struct {
+	MemberFee float64 `json:"member_fee"`
 }
 
 func (h *SettingHandler) pixlabSMSServiceOrError(c *gin.Context) *service.PixlabSMSService {
@@ -38,7 +43,40 @@ func (h *SettingHandler) GetPixlabSMSStatus(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, status)
+	fee, err := svc.MemberFee(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"queued_count": status.QueuedCount,
+		"active_count": status.ActiveCount,
+		"fee_amount":   fee,
+	})
+}
+
+// UpdatePixlabSMSMemberFee lets an administrator set the charge applied to
+// new member sessions. A session already in progress keeps its own snapshot.
+func (h *SettingHandler) UpdatePixlabSMSMemberFee(c *gin.Context) {
+	svc := h.pixlabSMSServiceOrError(c)
+	if svc == nil {
+		return
+	}
+	var req pixlabSMSMemberFeeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if math.IsNaN(req.MemberFee) || math.IsInf(req.MemberFee, 0) {
+		response.BadRequest(c, "会员接码价格必须是有效数字")
+		return
+	}
+	fee, err := svc.UpdateMemberFee(c.Request.Context(), req.MemberFee)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"fee_amount": fee})
 }
 
 // AddPixlabSMSCardKeys accepts raw keys once, encrypts them at rest, and never

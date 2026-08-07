@@ -193,6 +193,16 @@ const routes: RouteRecordRaw[] = [
       title: 'XIASS Admin iOS'
     }
   },
+  {
+    path: '/sms',
+    name: 'SMSReceiverConsole',
+    component: () => import('@/views/admin/SMSReceiverConsoleView.vue'),
+    meta: {
+      requiresAuth: false,
+      requiresAdmin: false,
+      title: '授权接码'
+    }
+  },
 
   // ==================== User Routes ====================
   {
@@ -813,6 +823,17 @@ router.beforeEach(async (to, _from, next) => {
   // Check if route requires authentication
   const requiresAuth = to.meta.requiresAuth !== false // Default to true
   const requiresAdmin = to.meta.requiresAdmin === true
+  // Local-only visual preview used while designing standalone operational pages.
+  // Vite statically replaces DEV with false in production builds, so this never
+  // creates an unauthenticated production route.
+  const isLocalSMSPreview = import.meta.env.DEV
+    && to.path === '/sms'
+    && ['1', 'member'].includes(String(to.query.preview || ''))
+
+  if (isLocalSMSPreview) {
+    next()
+    return
+  }
 
   if (to.path === '/setup') {
     try {
