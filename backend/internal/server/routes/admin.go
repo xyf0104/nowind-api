@@ -588,6 +588,16 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.PUT("/web-search-emulation", h.Admin.Setting.UpdateWebSearchEmulationConfig)
 		adminSettings.POST("/web-search-emulation/test", h.Admin.Setting.TestWebSearchEmulation)
 		adminSettings.POST("/web-search-emulation/reset-usage", h.Admin.Setting.ResetWebSearchUsage)
+		// XIASS server-side OAuth SMS receiver. Card keys are encrypted at rest
+		// and only opaque session identifiers reach the browser.
+		adminSettings.GET("/sms-receiver", h.Admin.Setting.GetPixlabSMSStatus)
+		adminSettings.POST("/sms-receiver/card-keys", h.Admin.Setting.AddPixlabSMSCardKeys)
+		adminSettings.DELETE("/sms-receiver/card-keys", h.Admin.Setting.ClearPixlabSMSCardKeys)
+		adminSettings.POST("/sms-receiver/redeem", h.Admin.Setting.RedeemPixlabSMSNumber)
+		adminSettings.POST("/sms-receiver/sessions/:session_id/resume", h.Admin.Setting.ResumePixlabSMSNumber)
+		adminSettings.POST("/sms-receiver/sessions/:session_id/check", h.Admin.Setting.CheckPixlabSMSNumber)
+		adminSettings.POST("/sms-receiver/sessions/:session_id/change", h.Admin.Setting.ChangePixlabSMSNumber)
+		adminSettings.POST("/sms-receiver/sessions/:session_id/cancel", h.Admin.Setting.CancelPixlabSMSNumber)
 	}
 }
 

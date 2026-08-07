@@ -62,6 +62,7 @@ type SettingHandler struct {
 	notificationEmailService *service.NotificationEmailService
 	totpService              *service.TotpService
 	userService              *service.UserService
+	pixlabSMSService         *service.PixlabSMSService
 }
 
 // NewSettingHandler 创建系统设置处理器
@@ -96,6 +97,12 @@ func (h *SettingHandler) SetAliyunCaptchaService(aliyunCaptchaService *service.A
 func (h *SettingHandler) SetStepUpDeps(totpService *service.TotpService, userService *service.UserService) {
 	h.totpService = totpService
 	h.userService = userService
+}
+
+// SetPixlabSMSService attaches the server-side SMS card-key queue without
+// expanding the long-standing constructor used throughout handler tests.
+func (h *SettingHandler) SetPixlabSMSService(pixlabSMSService *service.PixlabSMSService) {
+	h.pixlabSMSService = pixlabSMSService
 }
 
 // GetSettings 获取所有系统设置

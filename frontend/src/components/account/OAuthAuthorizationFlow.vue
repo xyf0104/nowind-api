@@ -737,6 +737,12 @@
             </div>
           </div>
 
+          <!-- OpenAI phone verification helper: starts only after a usable authorization link exists. -->
+          <PixlabSMSReceiver
+            v-if="platform === 'openai'"
+            :active="Boolean(authUrl)"
+          />
+
           <!-- Step 3: Enter authorization code -->
           <div
             class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
@@ -814,6 +820,7 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
+import PixlabSMSReceiver from '@/components/account/PixlabSMSReceiver.vue'
 import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
 import type { AccountPlatform } from '@/types'
 
