@@ -28,26 +28,30 @@
               <Icon name="refresh" size="sm" :class="{ 'animate-spin': isLoadingStatus }" />
               <span>刷新状态</span>
             </button>
+          </div>
+        </div>
+        <div class="sms-intro-auth" aria-label="账户入口">
+          <template v-if="authStore.isAuthenticated">
             <button
               type="button"
-              class="sms-icon-button"
-              title="退出登录"
-              aria-label="退出登录"
+              class="sms-header-button sms-header-button--quiet"
+              title="退出当前账户"
               @click="logout"
             >
               <Icon name="login" size="sm" />
+              <span>退出登录</span>
             </button>
-          </div>
-        </div>
-        <div v-if="!authStore.isAuthenticated" class="sms-intro-auth" aria-label="账户入口">
-          <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
-            <Icon name="login" size="sm" />
-            <span>登录</span>
-          </button>
-          <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
-            <Icon name="userPlus" size="sm" />
-            <span>注册</span>
-          </button>
+          </template>
+          <template v-else>
+            <button type="button" class="sms-header-button sms-header-button--quiet" @click="goToLogin">
+              <Icon name="login" size="sm" />
+              <span>登录</span>
+            </button>
+            <button type="button" class="sms-header-button sms-header-button--primary" @click="goToRegister">
+              <Icon name="userPlus" size="sm" />
+              <span>注册</span>
+            </button>
+          </template>
         </div>
       </section>
 
