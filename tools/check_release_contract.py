@@ -23,6 +23,18 @@ ALLOWED_PUBLIC_API_REFERENCES = {
     "tools/xiass-codex-helper/web/index.html": (
         'placeholder="https://api.xiass.com"',
     ),
+    "ios/XIASSAdmin/README.md": (
+        "`https://api.xiass.com/ios`",
+    ),
+    "ios/XIASSAdmin/Sources/Foundation/APIClient.swift": (
+        "https://api.xiass.com",
+    ),
+    "ios/XIASSAdmin/Sources/Foundation/AppSession.swift": (
+        "https://api.xiass.com",
+    ),
+    "ios/XIASSAdmin/Sources/Views/LoginView.swift": (
+        "https://api.xiass.com",
+    ),
 }
 
 
