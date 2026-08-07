@@ -66,7 +66,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import * as smsReceiverAPI from '@/api/admin/smsReceiver'
-import { useAppStore } from '@/stores/app'
+import { useAppStore } from '@/stores'
 import Icon from '@/components/icons/Icon.vue'
 
 const appStore = useAppStore()
