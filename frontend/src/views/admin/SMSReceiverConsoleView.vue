@@ -860,10 +860,10 @@ onBeforeUnmount(() => {
 .sms-workbench-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; width: fit-content; margin-top: 17px; padding: 8px 9px; border: 1px solid rgba(95, 156, 208, .23); border-radius: 8px; background: rgba(6, 26, 45, .56); box-shadow: inset 0 1px rgba(255, 255, 255, .025); }
 .sms-intro-auth { display: flex; align-items: center; gap: 9px; min-height: 34px; }
 
-.sms-overview { display: flex; align-items: stretch; min-width: 214px; padding: 12px 16px; border: 1px solid rgba(94, 148, 200, .24); border-radius: 8px; background: rgba(9, 31, 54, .9); box-shadow: inset 0 1px rgba(255, 255, 255, .03), 0 12px 28px rgba(0, 0, 0, .14); }
-.sms-overview__item { min-width: 74px; }
+.sms-overview { display: flex; align-items: stretch; width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 16px; border: 1px solid rgba(94, 148, 200, .24); border-radius: 8px; background: rgba(9, 31, 54, .9); box-shadow: inset 0 1px rgba(255, 255, 255, .03), 0 12px 28px rgba(0, 0, 0, .14); }
+.sms-overview__item { min-width: 0; flex: 1 1 0; }
 .sms-overview__item span { display: block; color: #90a4bf; font-size: 11px; }
-.sms-overview__item strong { display: block; margin-top: 2px; color: #ecf8ff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 23px; line-height: 1; }
+.sms-overview__item strong { display: block; margin-top: 2px; color: #ecf8ff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 22px; line-height: 1; white-space: nowrap; }
 .sms-overview__item strong small { color: #90a6bf; font-family: inherit; font-size: 11px; font-weight: 600; }
 .sms-overview__divider { width: 1px; margin: 0 17px; background: rgba(124, 160, 197, .25); }
 
