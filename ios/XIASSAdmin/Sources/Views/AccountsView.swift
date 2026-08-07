@@ -167,9 +167,17 @@ private struct AccountRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Text(account.name)
-                    .font(.headline)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let email = account.displayEmail {
+                        Text(email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer(minLength: 8)
                 StatusPill(text: account.healthLabel)
             }
@@ -227,6 +235,7 @@ struct AccountDetailView: View {
                 LabeledContent("并发", value: "\(current.currentConcurrency ?? 0) / \(current.concurrency ?? 0)")
                 LabeledContent("费率倍率", value: DisplayFormat.decimal(current.rateMultiplier))
                 LabeledContent("分组", value: current.groupIDs?.map(String.init).joined(separator: "、") ?? "未分组")
+                if let email = current.displayEmail { LabeledContent("邮箱", value: email) }
                 if let notes = current.notes, !notes.isEmpty { LabeledContent("备注", value: notes) }
             }
 

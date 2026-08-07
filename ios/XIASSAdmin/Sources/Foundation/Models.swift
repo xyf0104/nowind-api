@@ -306,6 +306,18 @@ struct AdminAccount: Codable, Identifiable, Hashable {
         if schedulable == false { return "Paused" }
         return status.capitalized
     }
+
+    var displayEmail: String? {
+        let keys = ["email", "email_address", "account_email", "user_email"]
+        for values in [extra, credentials] {
+            for key in keys {
+                if let value = values?[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
 }
 
 struct AdminGroup: Decodable, Identifiable, Hashable {

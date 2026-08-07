@@ -7,7 +7,6 @@ struct DashboardView: View {
     @State private var stats: DashboardStats?
     @State private var realtime: RealtimeMetrics?
     @State private var groupCount = 0
-    @State private var recentCalls: [UsageLog] = []
     @State private var isLoading = true
     @State private var error: ErrorMessage?
 
@@ -48,8 +47,9 @@ struct DashboardView: View {
                         NavigationLink { PaymentOrdersView() } label: {
                             MetricTile(title: "充值记录", value: "查看", systemImage: "creditcard.and.123", tint: .mint)
                         }
-                        RecentCallMetric(calls: recentCalls)
-                        .gridCellColumns(2)
+                        NavigationLink { UsageLogsView() } label: {
+                            MetricTile(title: "最近调用", value: "查看", systemImage: "clock.arrow.circlepath", tint: .purple)
+                        }
                     }
                     .buttonStyle(.plain)
 
@@ -119,145 +119,12 @@ struct DashboardView: View {
             async let statsRequest: DashboardStats = api.request(method: .get, path: "admin/dashboard/stats")
             async let realtimeRequest: RealtimeMetrics = api.request(method: .get, path: "admin/dashboard/realtime")
             async let groupRequest: Page<AdminGroup> = api.request(method: .get, path: "admin/groups", query: [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "page_size", value: "1")])
-            async let usageRequest: Page<UsageLog> = api.request(method: .get, path: "admin/usage", query: [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "page_size", value: "5")])
             stats = try await statsRequest
             realtime = try await realtimeRequest
             groupCount = try await groupRequest.total
-            recentCalls = try await usageRequest.items
             if notify { feedback.success("概览已刷新", detail: "已同步最新账号、用户、分组和调用状态。") }
         } catch {
             self.error = ErrorMessage(error, title: "无法读取概览")
         }
-    }
-}
-
-private struct RecentCallMetric: View {
-    let calls: [UsageLog]
-
-    var body: some View {
-        GlassCard(tint: .purple) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 9) {
-                    GlassIcon(name: "clock.arrow.circlepath", tint: .purple)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("最近调用")
-                            .font(.headline)
-                        Text(calls.isEmpty ? "暂无调用记录" : "最近 \(calls.count) 条调用")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                }
-
-                if calls.isEmpty {
-                    NavigationLink { UsageLogsView() } label: {
-                        HStack {
-                            Text("查看调用记录")
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(calls.indices, id: \.self) { index in
-                            NavigationLink { UsageLogDetailView(log: calls[index]) } label: {
-                                RecentCallRow(call: calls[index])
-                            }
-                            .buttonStyle(.plain)
-
-                            if index != calls.indices.last {
-                                Divider()
-                                    .padding(.leading, 50)
-                            }
-                        }
-                    }
-
-                    NavigationLink { UsageLogsView() } label: {
-                        HStack(spacing: 6) {
-                            Text("查看全部调用记录")
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.bold))
-                        }
-                        .foregroundStyle(AppTheme.primary)
-                        .padding(.top, 6)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-private struct RecentCallRow: View {
-    let call: UsageLog
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            GlassIcon(name: "arrow.left.arrow.right.circle.fill", tint: statusTint)
-                .scaleEffect(0.84)
-                .frame(width: 38, height: 38)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(call.displayUser)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    if let statusCode = call.statusCode {
-                        Text(String(statusCode))
-                            .font(.caption.monospacedDigit().weight(.bold))
-                            .foregroundStyle(statusTint)
-                    }
-                }
-
-                Text(modelTitle)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-
-                HStack(spacing: 8) {
-                    Text("推理 \(reasoningTitle(call.reasoningEffort))")
-                    Text("\(call.displayGroup) -> \(call.displayAccount)")
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-                HStack(spacing: 10) {
-                    Text("首字 \(call.firstTokenMS.map { "\($0) ms" } ?? "--")")
-                    Text("总延迟 \(call.durationMS.map { "\($0) ms" } ?? "--")")
-                    Spacer(minLength: 0)
-                    Text(DisplayFormat.shortDate(call.createdAt))
-                }
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-            }
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 4)
-        }
-        .contentShape(Rectangle())
-        .padding(.vertical, 10)
-    }
-
-    private var statusTint: Color {
-        guard let statusCode = call.statusCode else { return .purple }
-        return (200..<300).contains(statusCode) ? .green : .red
-    }
-
-    private var modelTitle: String {
-        guard let upstream = call.upstreamModel, !upstream.isEmpty, upstream != call.model else {
-            return call.model ?? "--"
-        }
-        return "\(call.model ?? "--") -> \(upstream)"
     }
 }

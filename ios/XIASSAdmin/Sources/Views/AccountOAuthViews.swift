@@ -86,10 +86,18 @@ private struct ApplyOAuthCredentialsRequest: Encodable {
     let extra: [String: JSONValue]?
 }
 
+private struct OAuthAuthorizationResult: Identifiable {
+    let id = UUID()
+    let account: AdminAccount
+    let title: String
+    let detail: String
+}
+
 struct OAuthAccountFlow: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var feedback: FeedbackCenter
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     let platform: PlatformOption
     let existingAccount: AdminAccount?
@@ -109,6 +117,10 @@ struct OAuthAccountFlow: View {
     @State private var isAuthorizing = false
     @State private var isOpeningBrowser = false
     @State private var isSaving = false
+    @State private var isAwaitingBrowserCallback = false
+    @State private var lastClipboardCallback = ""
+    @State private var authorizationResult: OAuthAuthorizationResult?
+    @State private var editorAccount: AdminAccount?
     @State private var error: ErrorMessage?
 
     init(platform: PlatformOption, existingAccount: AdminAccount? = nil, onSaved: @escaping () -> Void) {
@@ -130,6 +142,11 @@ struct OAuthAccountFlow: View {
                             Text(existingAccount.name)
                             Text("\(platform.title) OAuth · 账号 ID \(existingAccount.id)")
                                 .font(.caption).foregroundStyle(.secondary)
+                            if let email = existingAccount.displayEmail {
+                                Text(email)
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                     }
                     LabeledContent("当前优先级", value: String(existingAccount.priority ?? 0))
@@ -203,7 +220,7 @@ struct OAuthAccountFlow: View {
                     }
 
                     OAuthFlowStep(number: 2, title: "完成网页登录") {
-                        Text("登录完成后复制浏览器最终地址中的回调链接或授权码。")
+                        Text("登录完成后返回此页；已复制的回调链接会自动识别。也可手动粘贴浏览器最终地址或授权码。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -246,6 +263,26 @@ struct OAuthAccountFlow: View {
         .navigationTitle(isReauthorization ? "重新授权" : "添加 \(platform.title)")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadGroups() }
+        .onOpenURL { receive($0) }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            importClipboardCallbackIfAvailable()
+        }
+        .alert(item: $authorizationResult) { result in
+            Alert(
+                title: Text(result.title),
+                message: Text(result.detail),
+                primaryButton: .default(Text("下一步")) {
+                    editorAccount = result.account
+                },
+                secondaryButton: .cancel(Text("完成")) {
+                    dismiss()
+                }
+            )
+        }
+        .sheet(item: $editorAccount) { account in
+            AccountEditorView(account: account, onSaved: onSaved)
+        }
         .requestError($error)
     }
 
@@ -276,6 +313,8 @@ struct OAuthAccountFlow: View {
                 state = auth.state ?? ""
                 authorizationCode = ""
                 callbackText = ""
+                lastClipboardCallback = ""
+                isAwaitingBrowserCallback = false
                 guard let url = URL(string: auth.authURL) else { throw APIError(message: "服务端返回的授权链接无效。") }
                 authorizationURL = url
                 feedback.notice(isReauthorization ? "重新授权链接已生成" : "授权链接已生成", detail: "复制链接或点击“打开浏览器”后完成 \(platform.title) 登录。")
@@ -289,7 +328,8 @@ struct OAuthAccountFlow: View {
             DispatchQueue.main.async {
                 isOpeningBrowser = false
                 if opened {
-                    feedback.notice("已在浏览器打开授权页", detail: "完成登录后回到此页，粘贴回调链接或授权码即可。")
+                    isAwaitingBrowserCallback = true
+                    feedback.notice("已在浏览器打开授权页", detail: "完成登录后回到此页，已复制的回调链接会自动导入。")
                 } else {
                     error = ErrorMessage(APIError(message: "无法打开系统浏览器。"), title: "打开授权页失败")
                 }
@@ -301,7 +341,8 @@ struct OAuthAccountFlow: View {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         if let providerError = components?.queryItems?.first(where: { $0.name == "error" })?.value {
             let description = components?.queryItems?.first(where: { $0.name == "error_description" })?.value
-            error = ErrorMessage(APIError(message: description ?? providerError), title: "OAuth 授权未完成")
+            isAwaitingBrowserCallback = false
+            error = ErrorMessage(APIError(message: description ?? providerError), title: "OAuth 授权失败")
             return
         }
         authorizationCode = components?.queryItems?.first(where: { $0.name == "code" })?.value ?? ""
@@ -316,7 +357,7 @@ struct OAuthAccountFlow: View {
 
     private func importManualCallback() {
         let input = callbackText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let url = URL(string: input), URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.isEmpty == false {
+        if let url = callbackURL(from: input) {
             receive(url)
             return
         }
@@ -344,23 +385,49 @@ struct OAuthAccountFlow: View {
             )
             let token: OAuthTokenInfo = try await api.request(method: .post, path: exchangePath, body: body)
             guard !token.credentials.isEmpty else { throw APIError(message: "授权成功但没有返回可保存的凭证。") }
+            let savedAccount: AdminAccount
+            let title: String
+            let detail: String
             if let existingAccount {
                 let request = ApplyOAuthCredentialsRequest(
                     type: existingAccount.type == "setup-token" ? "setup-token" : "oauth",
                     credentials: credentialsForPersistence(token),
                     extra: extraForPersistence(token)
                 )
-                let _: AdminAccount = try await api.request(method: .post, path: "admin/accounts/\(existingAccount.id)/apply-oauth-credentials", body: request)
-                feedback.success("账号已重新授权", detail: "\(existingAccount.name) 的凭证已更新，原有账号设置保持不变。")
+                savedAccount = try await api.request(method: .post, path: "admin/accounts/\(existingAccount.id)/apply-oauth-credentials", body: request)
+                title = "OAuth 授权成功"
+                detail = "\(savedAccount.name) 的上游凭证已更新。点击“下一步”可继续编辑账号配置。"
             } else {
                 let accountName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (token.email ?? "\(platform.title) OAuth 账号") : name.trimmingCharacters(in: .whitespacesAndNewlines)
                 let request = AccountCreateRequest(name: accountName, notes: "通过 XIASS 管理端 OAuth 导入", platform: platform.rawValue, type: "oauth", credentials: credentialsForPersistence(token), extra: extraForPersistence(token), concurrency: concurrency, priority: priority, rateMultiplier: rateMultiplier, loadFactor: nil, groupIDs: Array(selectedGroupIDs).sorted(), confirmMixedChannelRisk: true)
-                let _: AdminAccount = try await api.request(method: .post, path: "admin/accounts", body: request)
-                feedback.success("OAuth 账号已添加", detail: "\(accountName) 已完成授权并加入调度。")
+                savedAccount = try await api.request(method: .post, path: "admin/accounts", body: request)
+                title = "OAuth 授权成功"
+                detail = "\(savedAccount.name) 已创建并加入调度。点击“下一步”可继续编辑账号配置。"
             }
+            isAwaitingBrowserCallback = false
             onSaved()
-            dismiss()
-        } catch { self.error = ErrorMessage(error, title: "OAuth 凭证导入失败") }
+            authorizationResult = OAuthAuthorizationResult(account: savedAccount, title: title, detail: detail)
+        } catch { self.error = ErrorMessage(error, title: "OAuth 授权失败") }
+    }
+
+    private func importClipboardCallbackIfAvailable() {
+        guard isAwaitingBrowserCallback, !isSaving else { return }
+        guard let clipboard = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let callbackURL = callbackURL(from: clipboard),
+              clipboard != lastClipboardCallback else { return }
+
+        lastClipboardCallback = clipboard
+        callbackText = clipboard
+        feedback.notice("已识别授权回调", detail: "正在验证并导入上游 OAuth 凭证。")
+        receive(callbackURL)
+    }
+
+    private func callbackURL(from input: String) -> URL? {
+        guard let url = URL(string: input),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = components.queryItems,
+              items.contains(where: { $0.name == "code" || $0.name == "error" }) else { return nil }
+        return url
     }
 
     private var authorizationPath: String {

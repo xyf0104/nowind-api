@@ -11,7 +11,19 @@ struct UsageLogsView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 12) {
+            LazyVStack(spacing: 8) {
+                if !logs.isEmpty {
+                    HStack {
+                        Text("最近 100 条调用记录")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("已加载 \(logs.count) 条")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 2)
+                }
                 if isLoading && logs.isEmpty {
                     ProgressView("正在读取最近调用…").frame(maxWidth: .infinity, minHeight: 180)
                 }
@@ -20,7 +32,7 @@ struct UsageLogsView: View {
                 }
                 ForEach(logs, id: \.stableID) { log in
                     NavigationLink { UsageLogDetailView(log: log) } label: {
-                        UsageLogCard(log: log)
+                        UsageLogRow(log: log)
                     }
                     .buttonStyle(.plain)
                 }
@@ -68,44 +80,73 @@ struct UsageLogsView: View {
     }
 }
 
-private struct UsageLogCard: View {
+private struct UsageLogRow: View {
     let log: UsageLog
 
     var body: some View {
         GlassCard(tint: log.statusCode.map { (200..<300).contains($0) ? .green : .red } ?? .purple) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    PlatformBadge(platform: log.group?.platform ?? "")
-                    Text(log.model ?? "未知模型")
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(log.statusCode.map(String.init) ?? "--")
-                        .font(.caption.monospacedDigit().weight(.bold))
-                        .foregroundStyle((log.statusCode ?? 200) < 300 ? .green : .red)
-                }
+            HStack(spacing: 7) {
+                Image(systemName: PlatformStyle.icon(for: log.group?.platform ?? ""))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(PlatformStyle.color(for: log.group?.platform ?? ""))
+                    .frame(width: 16)
+
                 Text(log.displayUser)
-                    .font(.subheadline.weight(.medium))
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
-                HStack(spacing: 8) {
-                    Label(log.displayGroup, systemImage: "square.stack.3d.up")
-                    Label(log.displayAccount, systemImage: "person.crop.rectangle.stack")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                HStack(spacing: 10) {
-                    Text("推理 \(reasoningTitle(log.reasoningEffort))")
-                    Text("首字 \(log.firstTokenMS.map { "\($0) ms" } ?? "--")")
-                    Text("总延迟 \(log.durationMS.map { "\($0) ms" } ?? "--")")
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                Text(DisplayFormat.shortDate(log.createdAt))
-                    .font(.caption2)
+                    .truncationMode(.tail)
+                    .frame(width: 56, alignment: .leading)
+
+                Divider()
+                    .frame(height: 14)
+
+                Text(modelTitle)
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: 82, alignment: .leading)
+
+                Text(reasoningTitle(log.reasoningEffort))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 28)
+
+                Text(latencyTitle)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 47, alignment: .trailing)
+
+                Text(log.statusCode.map(String.init) ?? "--")
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(statusTint)
+                    .lineLimit(1)
+                    .frame(width: 24, alignment: .trailing)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.tertiary)
             }
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
         }
+    }
+
+    private var modelTitle: String {
+        log.upstreamModel?.isEmpty == false ? log.upstreamModel! : (log.model ?? "未知模型")
+    }
+
+    private var latencyTitle: String {
+        if let firstTokenMS = log.firstTokenMS { return "首 \(firstTokenMS)ms" }
+        if let durationMS = log.durationMS { return "总 \(durationMS)ms" }
+        return "--"
+    }
+
+    private var statusTint: Color {
+        guard let statusCode = log.statusCode else { return .purple }
+        return (200..<300).contains(statusCode) ? .green : .red
     }
 }
 

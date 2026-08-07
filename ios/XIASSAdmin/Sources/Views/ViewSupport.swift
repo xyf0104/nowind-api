@@ -45,8 +45,8 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 enum AppTheme {
-    static let primary = Color(red: 0.04, green: 0.53, blue: 0.89)
-    static let accent = Color(red: 0.00, green: 0.64, blue: 0.49)
+    static let primary = Color(red: 0.00, green: 0.42, blue: 0.76)
+    static let accent = Color(red: 0.00, green: 0.49, blue: 0.35)
     static let panelRadius: CGFloat = 18
     static let compactRadius: CGFloat = 13
 }
@@ -58,13 +58,13 @@ struct AppBackdrop: View {
         LinearGradient(
             colors: colorScheme == .dark
                 ? [Color(red: 0.025, green: 0.07, blue: 0.12), Color(red: 0.035, green: 0.13, blue: 0.19), Color(red: 0.025, green: 0.17, blue: 0.20)]
-                : [Color(red: 0.93, green: 0.97, blue: 1.0), Color(red: 0.97, green: 0.99, blue: 1.0), Color(red: 0.90, green: 0.97, blue: 0.95)],
+                : [Color(red: 0.86, green: 0.93, blue: 0.99), Color(red: 0.92, green: 0.97, blue: 1.0), Color(red: 0.84, green: 0.95, blue: 0.91)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
         .overlay(alignment: .top) {
             LinearGradient(
-                colors: [AppTheme.primary.opacity(colorScheme == .dark ? 0.18 : 0.10), .clear],
+                colors: [AppTheme.primary.opacity(colorScheme == .dark ? 0.24 : 0.16), .clear],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -105,10 +105,10 @@ struct GlassCard<Content: View>: View {
         content
             .padding(16)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
-            .background(tint.opacity(colorScheme == .dark ? 0.11 : 0.07), in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
+            .background(tint.opacity(colorScheme == .dark ? 0.21 : 0.16), in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous)
-                    .stroke(colorScheme == .dark ? .white.opacity(0.16) : .white.opacity(0.86), lineWidth: 0.9)
+                    .stroke(colorScheme == .dark ? .white.opacity(0.20) : .white.opacity(0.94), lineWidth: 1)
             }
             .shadow(color: .black.opacity(colorScheme == .dark ? 0.14 : 0.08), radius: 12, y: 6)
     }
@@ -123,7 +123,7 @@ struct GlassIcon: View {
             .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(tint)
             .frame(width: 38, height: 38)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(tint.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .stroke(.white.opacity(0.16), lineWidth: 0.8)
@@ -251,7 +251,7 @@ struct MetricTile: View {
                     GlassIcon(name: systemImage, tint: tint)
                     Text(title)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.78))
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
