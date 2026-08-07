@@ -60,6 +60,7 @@
                 <PaymentMethodSelector
                   :methods="methodOptions"
                   :selected="selectedMethod"
+                  compact
                   @select="selectedMethod = $event"
                 />
               </div>

@@ -60,4 +60,22 @@ describe('PaymentMethodSelector', () => {
     expect(button.classes()).toContain('border-primary-500')
     expect(button.classes()).not.toContain('border-[#02A9F1]')
   })
+
+  it('uses container-aware columns for compact dialogs and keeps the label readable', () => {
+    const wrapper = mount(PaymentMethodSelector, {
+      props: {
+        compact: true,
+        selected: 'wxpay',
+        methods: [{ type: 'wxpay', display_name: '微信支付', fee_rate: 0, available: true }],
+      },
+    })
+
+    const grid = wrapper.get('[data-testid="payment-method-grid"]')
+    const label = wrapper.get('[data-testid="payment-method-label"]')
+
+    expect(grid.classes()).toContain('grid-cols-[repeat(auto-fit,minmax(140px,1fr))]')
+    expect(label.classes()).toContain('break-words')
+    expect(label.classes()).not.toContain('truncate')
+    expect(label.text()).toBe('微信支付')
+  })
 })

@@ -5,7 +5,12 @@
     </label>
     <div
       data-testid="payment-method-grid"
-      class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+      :class="[
+        'grid gap-3',
+        compact
+          ? 'grid-cols-[repeat(auto-fit,minmax(140px,1fr))]'
+          : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4',
+      ]"
     >
       <button
         v-for="method in sortedMethods"
@@ -26,7 +31,11 @@
         <span class="flex w-full min-w-0 items-center justify-center gap-2">
           <img :src="methodIcon(method.type)" :alt="methodLabel(method)" class="h-7 w-7 shrink-0 object-contain" />
           <span class="flex min-w-0 flex-col items-start leading-none">
-            <span data-testid="payment-method-label" class="block w-full truncate text-base font-semibold">
+            <span
+              data-testid="payment-method-label"
+              class="block w-full text-base font-semibold"
+              :class="compact ? 'break-words text-center leading-tight' : 'truncate'"
+            >
               {{ methodLabel(method) }}
             </span>
             <span
@@ -62,7 +71,10 @@ export interface PaymentMethodOption {
 const props = defineProps<{
   methods: PaymentMethodOption[]
   selected: string
+  compact?: boolean
 }>()
+
+const compact = computed(() => props.compact === true)
 
 const emit = defineEmits<{
   select: [type: string]

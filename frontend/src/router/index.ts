@@ -207,7 +207,7 @@ const routes: RouteRecordRaw[] = [
   // ==================== User Routes ====================
   {
     path: '/',
-    redirect: '/home'
+    redirect: () => window.location.hostname.split('.')[0]?.toLowerCase() === 'sms' ? '/sms' : '/home'
   },
   {
     path: '/dashboard',
@@ -804,6 +804,14 @@ router.beforeEach(async (to, _from, next) => {
   navigationLoading.startNavigation()
 
   const authStore = useAuthStore()
+  const isStandaloneSMSHost = window.location.hostname.split('.')[0]?.toLowerCase() === 'sms'
+
+  // The SMS subdomain is intentionally a focused entry point. This also
+  // handles stale links or an old reverse-proxy rewrite to /home.
+  if (isStandaloneSMSHost && (to.path === '/' || to.path === '/home')) {
+    next({ path: '/sms', query: to.query })
+    return
+  }
 
   // Restore auth state from localStorage on first navigation (page refresh)
   if (!authInitialized) {

@@ -25,6 +25,10 @@ const adminComplianceStore = useAdminComplianceStore()
 const adminSettingsStore = useAdminSettingsStore()
 let themeObserver: MutationObserver | null = null
 
+// The SMS host is a standalone member workbench. Keep XIASS API's global
+// announcements and admin acknowledgement flow scoped to the main domain.
+const isStandaloneSMSHost = window.location.hostname.split('.')[0]?.toLowerCase() === 'sms'
+
 function updateDocumentTitle() {
   const customMenuItems = [
     ...(appStore.cachedPublicSettings?.custom_menu_items ?? []),
@@ -107,7 +111,7 @@ watch(
 
 // Watch for authentication state and manage subscription data + announcements
 function onVisibilityChange() {
-  if (document.visibilityState === 'visible' && authStore.isAuthenticated) {
+  if (!isStandaloneSMSHost && document.visibilityState === 'visible' && authStore.isAuthenticated) {
     announcementStore.fetchAnnouncements()
   }
 }
@@ -121,7 +125,7 @@ watch(
   () => authStore.isAuthenticated,
   (isAuthenticated, oldValue) => {
     if (isAuthenticated) {
-      if (authStore.isAdmin) {
+      if (authStore.isAdmin && !isStandaloneSMSHost) {
         adminComplianceStore.fetchStatus().catch((error) => {
           console.error('Failed to fetch admin compliance status:', error)
         })
@@ -134,10 +138,10 @@ watch(
       subscriptionStore.startPolling()
 
       // Announcements: new login vs page refresh restore
-      if (oldValue === false) {
+      if (!isStandaloneSMSHost && oldValue === false) {
         // New login: delay 3s then force fetch
         setTimeout(() => announcementStore.fetchAnnouncements(true), 3000)
-      } else {
+      } else if (!isStandaloneSMSHost) {
         // Page refresh restore (oldValue was undefined)
         announcementStore.fetchAnnouncements()
       }
@@ -157,7 +161,7 @@ watch(
 
 // Route change trigger (throttled by store)
 router.afterEach(() => {
-  if (authStore.isAuthenticated) {
+  if (!isStandaloneSMSHost && authStore.isAuthenticated) {
     announcementStore.fetchAnnouncements()
   }
 })
@@ -199,6 +203,6 @@ onMounted(async () => {
   <NavigationProgress />
   <RouterView />
   <Toast />
-  <AnnouncementPopup />
-  <AdminComplianceDialog />
+  <AnnouncementPopup v-if="!isStandaloneSMSHost" />
+  <AdminComplianceDialog v-if="!isStandaloneSMSHost" />
 </template>
