@@ -307,6 +307,8 @@ struct AccountTestSheet: View {
                             Spacer()
                             Image(systemName: "chevron.up.chevron.down").foregroundStyle(AppTheme.primary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     if isLoadingModels {

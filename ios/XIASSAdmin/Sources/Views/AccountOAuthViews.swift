@@ -1,6 +1,4 @@
 import SwiftUI
-import AuthenticationServices
-import Network
 import UIKit
 
 struct AccountCreationHubView: View {
@@ -97,7 +95,6 @@ struct OAuthAccountFlow: View {
     let existingAccount: AdminAccount?
     let onSaved: () -> Void
 
-    @StateObject private var browser = OAuthBrowser()
     @State private var name = ""
     @State private var concurrency = 1
     @State private var priority = 0
@@ -181,36 +178,66 @@ struct OAuthAccountFlow: View {
             Section("授权") {
                 Button(isAuthorizing ? "正在生成授权链接…" : isReauthorization ? "生成重新授权链接" : "生成授权链接") { beginAuthorization() }
                     .disabled(isAuthorizing || isOpeningBrowser || isSaving)
+
                 if let authorizationURL {
-                    Text("授权链接已生成。可复制链接，或确认后手动打开浏览器完成登录。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Text(authorizationURL.absoluteString)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .lineLimit(3...6)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 12) {
-                        Button {
-                            UIPasteboard.general.string = authorizationURL.absoluteString
-                            feedback.success("授权链接已复制", detail: "可粘贴到任意浏览器完成登录。")
-                        } label: {
-                            Label("复制链接", systemImage: "doc.on.doc")
+                    OAuthFlowStep(number: 1, title: "打开授权链接") {
+                        Text(authorizationURL.absoluteString)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .lineLimit(3...6)
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 12) {
+                            Button {
+                                UIPasteboard.general.string = authorizationURL.absoluteString
+                                feedback.success("授权链接已复制", detail: "可粘贴到任意浏览器完成登录。")
+                            } label: {
+                                Label("复制链接", systemImage: "doc.on.doc")
+                            }
+
+                            Button(isOpeningBrowser ? "正在打开…" : "打开浏览器") {
+                                openAuthorizationURL(authorizationURL)
+                            }
+                            .disabled(isOpeningBrowser || isSaving)
                         }
-                        Button(isOpeningBrowser ? "正在打开…" : "打开浏览器") {
-                            openAuthorizationURL(authorizationURL)
-                        }
-                        .disabled(isOpeningBrowser || isSaving)
                     }
-                }
-                if !sessionID.isEmpty {
-                    Text("完成授权后会自动回到 App；如上游未回跳，可粘贴回调链接或授权码。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    TextField("粘贴回调链接或授权码", text: $callbackText, axis: .vertical)
-                        .lineLimit(2...4)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Button(isSaving ? "正在导入…" : "导入授权凭证") { importManualCallback() }
-                        .disabled(isSaving || callbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    OAuthFlowStep(number: 2, title: "完成网页登录") {
+                        Text("登录完成后复制浏览器最终地址中的回调链接或授权码。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    OAuthFlowStep(number: 3, title: "导入授权凭证") {
+                        TextField("粘贴回调链接或授权码", text: $callbackText, axis: .vertical)
+                            .lineLimit(2...4)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+
+                        HStack(spacing: 12) {
+                            Button {
+                                guard let value = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+                                    feedback.notice("剪贴板没有可导入的内容", detail: "请先复制回调链接或授权码。")
+                                    return
+                                }
+                                callbackText = value
+                                importManualCallback()
+                            } label: {
+                                Label("从剪贴板导入", systemImage: "clipboard")
+                            }
+                            .disabled(isSaving)
+
+                            Button(isSaving ? "正在导入…" : "完成授权") { importManualCallback() }
+                                .disabled(isSaving || callbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+
+                    Button {
+                        beginAuthorization()
+                    } label: {
+                        Label("重新生成链接", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isAuthorizing || isOpeningBrowser || isSaving)
                 }
             }
         }
@@ -219,7 +246,6 @@ struct OAuthAccountFlow: View {
         .navigationTitle(isReauthorization ? "重新授权" : "添加 \(platform.title)")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadGroups() }
-        .onDisappear { browser.cancel() }
         .requestError($error)
     }
 
@@ -246,7 +272,6 @@ struct OAuthAccountFlow: View {
                     tierID: geminiTierID
                 )
                 let auth: OAuthAuthorization = try await api.request(method: .post, path: authorizationPath, body: request)
-                browser.cancel()
                 sessionID = auth.sessionID
                 state = auth.state ?? ""
                 authorizationCode = ""
@@ -260,13 +285,14 @@ struct OAuthAccountFlow: View {
 
     private func openAuthorizationURL(_ url: URL) {
         isOpeningBrowser = true
-        browser.open(url: url) { result in
-            isOpeningBrowser = false
-            switch result {
-            case .success(let callbackURL):
-                receive(callbackURL)
-            case .failure:
-                feedback.notice("等待授权结果", detail: "如页面未自动回到 App，请复制回调链接或授权码后在本页导入。")
+        UIApplication.shared.open(url, options: [:]) { opened in
+            DispatchQueue.main.async {
+                isOpeningBrowser = false
+                if opened {
+                    feedback.notice("已在浏览器打开授权页", detail: "完成登录后回到此页，粘贴回调链接或授权码即可。")
+                } else {
+                    error = ErrorMessage(APIError(message: "无法打开系统浏览器。"), title: "打开授权页失败")
+                }
             }
         }
     }
@@ -394,229 +420,24 @@ struct OAuthAccountFlow: View {
     }
 }
 
-@MainActor
-private final class OAuthBrowser: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
-    private var authenticationSession: ASWebAuthenticationSession?
-    private var loopbackRelay: OAuthLoopbackRelay?
-    private var completion: ((Result<URL, Error>) -> Void)?
-    private var didComplete = false
-    private var activeAttempt = UUID()
+private struct OAuthFlowStep<Content: View>: View {
+    let number: Int
+    let title: String
+    @ViewBuilder let content: Content
 
-    func open(url: URL, completion: @escaping (Result<URL, Error>) -> Void) {
-        cancel()
-        let attempt = UUID()
-        activeAttempt = attempt
-        self.completion = completion
-        didComplete = false
-
-        let startAuthentication = { [weak self] in
-            guard let self else { return }
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "xiassadmin") { [weak self] callbackURL, error in
-                if let callbackURL { self?.finish(.success(callbackURL)) }
-                else { self?.finish(.failure(error ?? APIError(message: "授权窗口已关闭。"))) }
-            }
-            session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
-            self.authenticationSession = session
-            if !session.start() {
-                self.finish(.failure(APIError(message: "无法启动系统授权窗口。")))
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)")
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(AppTheme.primary, in: Circle())
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(.subheadline.weight(.semibold))
+                content
             }
         }
-
-        // The web console uses the provider's registered localhost callback.
-        // Relay that one short-lived callback into the app's private scheme.
-        if let redirectURI = OAuthLoopbackRelay.redirectURI(from: url) {
-            let relay = OAuthLoopbackRelay(redirectURI: redirectURI)
-            loopbackRelay = relay
-            relay.start { [weak self] result in
-                guard let self, self.activeAttempt == attempt else { return }
-                switch result {
-                case .success:
-                    startAuthentication()
-                case .failure:
-                    // The flow remains usable through its built-in manual
-                    // callback import if the selected localhost port is busy.
-                    self.loopbackRelay = nil
-                    startAuthentication()
-                }
-            }
-        } else {
-            startAuthentication()
-        }
-    }
-
-    func cancel() {
-        activeAttempt = UUID()
-        didComplete = true
-        let session = authenticationSession
-        self.authenticationSession = nil
-        loopbackRelay?.stop()
-        loopbackRelay = nil
-        completion = nil
-        session?.cancel()
-    }
-
-    private func finish(_ result: Result<URL, Error>) {
-        guard !didComplete else { return }
-        didComplete = true
-        loopbackRelay?.stop()
-        loopbackRelay = nil
-        authenticationSession = nil
-        let completion = completion
-        self.completion = nil
-        completion?(result)
-    }
-
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        let windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-        return windowScene?.keyWindow ?? ASPresentationAnchor()
-    }
-}
-
-/// Relays an OAuth provider's registered localhost callback into the app's
-/// custom scheme. XIASS API still validates state and PKCE server-side before
-/// any returned code can be exchanged for an account credential.
-private final class OAuthLoopbackRelay {
-    private static let acceptedHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
-    private let redirectURI: URL
-    private let expectedPath: String
-    private let queue = DispatchQueue(label: "com.xiass.admin.oauth.loopback")
-    private var listener: NWListener?
-    private var didSignalReady = false
-    private var onReady: ((Result<Void, Error>) -> Void)?
-
-    init(redirectURI: URL) {
-        self.redirectURI = redirectURI
-        self.expectedPath = redirectURI.path.isEmpty ? "/" : redirectURI.path
-    }
-
-    static func redirectURI(from authorizationURL: URL) -> URL? {
-        guard let components = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false),
-              let value = components.queryItems?.first(where: { $0.name == "redirect_uri" })?.value,
-              let redirectURI = URL(string: value),
-              let host = redirectURI.host?.lowercased(),
-              acceptedHosts.contains(host),
-              redirectURI.port != nil else {
-            return nil
-        }
-        return redirectURI
-    }
-
-    func start(onReady: @escaping (Result<Void, Error>) -> Void) {
-        guard listener == nil else {
-            onReady(.failure(APIError(message: "OAuth 本机回调已在运行。")))
-            return
-        }
-        guard let rawPort = redirectURI.port, let port = NWEndpoint.Port(rawValue: UInt16(rawPort)) else {
-            onReady(.failure(APIError(message: "OAuth 回调端口无效。")))
-            return
-        }
-
-        do {
-            let parameters = NWParameters.tcp
-            parameters.requiredInterfaceType = .loopback
-            let listener = try NWListener(using: parameters, on: port)
-            self.listener = listener
-            self.onReady = onReady
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.receiveRequest(on: connection)
-            }
-            listener.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    self?.signalReady(.success(()))
-                case .failed(let error):
-                    self?.listener = nil
-                    self?.signalReady(.failure(error))
-                case .cancelled:
-                    self?.listener = nil
-                default:
-                    break
-                }
-            }
-            listener.start(queue: queue)
-        } catch {
-            onReady(.failure(error))
-        }
-    }
-
-    func stop() {
-        listener?.cancel()
-        listener = nil
-        onReady = nil
-    }
-
-    private func signalReady(_ result: Result<Void, Error>) {
-        guard !didSignalReady else { return }
-        didSignalReady = true
-        let callback = onReady
-        onReady = nil
-        DispatchQueue.main.async {
-            callback?(result)
-        }
-    }
-
-    private func receiveRequest(on connection: NWConnection, accumulated: Data = Data()) {
-        connection.start(queue: queue)
-        receiveRequestBody(on: connection, accumulated: accumulated)
-    }
-
-    private func receiveRequestBody(on connection: NWConnection, accumulated: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] content, _, _, _ in
-            guard let self, let content else {
-                connection.cancel()
-                return
-            }
-            var request = accumulated
-            request.append(content)
-            guard request.count <= 16 * 1024 else {
-                connection.cancel()
-                return
-            }
-            if request.range(of: Data("\r\n\r\n".utf8)) == nil {
-                self.receiveRequestBody(on: connection, accumulated: request)
-                return
-            }
-            self.reply(to: request, on: connection)
-        }
-    }
-
-    private func reply(to request: Data, on connection: NWConnection) {
-        guard let callbackURL = callbackURL(from: request) else {
-            send("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", on: connection)
-            return
-        }
-        let response = "HTTP/1.1 302 Found\r\nLocation: \(callbackURL.absoluteString)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        send(response, on: connection)
-    }
-
-    private func send(_ response: String, on connection: NWConnection) {
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-            connection.cancel()
-        })
-    }
-
-    private func callbackURL(from request: Data) -> URL? {
-        guard let header = String(data: request, encoding: .utf8),
-              let firstLine = header.components(separatedBy: "\r\n").first else {
-            return nil
-        }
-        let parts = firstLine.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-        guard parts.count >= 2, parts[0] == "GET",
-              let requestComponents = URLComponents(string: String(parts[1])),
-              requestComponents.path == expectedPath else {
-            return nil
-        }
-
-        let allowedNames: Set<String> = ["code", "state", "error", "error_description", "error_uri"]
-        let items = (requestComponents.queryItems ?? []).filter { allowedNames.contains($0.name) }
-        guard !items.isEmpty else { return nil }
-
-        var callback = URLComponents()
-        callback.scheme = "xiassadmin"
-        callback.host = "oauth"
-        callback.queryItems = items
-        return callback.url
+        .padding(.vertical, 4)
     }
 }
 
