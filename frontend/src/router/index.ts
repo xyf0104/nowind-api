@@ -184,6 +184,15 @@ const routes: RouteRecordRaw[] = [
       title: 'API Documentation'
     }
   },
+  {
+    path: '/ios',
+    name: 'IOSInstall',
+    component: () => import('@/views/public/IOSInstallView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'XIASS Admin iOS'
+    }
+  },
 
   // ==================== User Routes ====================
   {
@@ -752,7 +761,7 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/airwallex', '/legal']
+const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/airwallex', '/legal', '/ios']
 const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/callback',
   '/auth/linuxdo/callback',

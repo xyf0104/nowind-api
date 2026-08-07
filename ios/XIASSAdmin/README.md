@@ -27,7 +27,7 @@ XIASS API 的原生 iPhone/iPad 管理端。它直接调用现有的 `/api/v1` �
 
 ## 发布 GitHub 安装包与手机端更新
 
-App 的“更新中心”会扫描 GitHub 最近 30 个 Release，并只识别同时带有 `XIASSAdmin` 签名 IPA 和 OTA manifest 的发布。源码 ZIP 不会被误认为可安装更新。发布完成后，手机端点“检查全部更新”即可看到新版本。
+App 的“更新中心”会扫描 GitHub 最近 30 个 Release，并只识别同时带有 `XIASSAdmin` 签名 IPA 和 OTA manifest 的发布。源码 ZIP 不会被误认为可安装更新。发布完成后，手机端点“检查全部更新”即可直接交给 iOS 安装服务完成覆盖更新；也可以在 iPhone Safari 打开 `https://api.xiass.com/ios` 后点安装。
 
 推荐发布 `ios-v1.0.1` 这类独立于服务端的 iOS 标签，避免服务端与 App 的版本号互相干扰。发布资产需要使用以下固定命名：
 

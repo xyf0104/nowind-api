@@ -29,15 +29,13 @@ struct GitHubRelease: Decodable, Hashable {
 
     var otaManifestAsset: GitHubReleaseAsset? {
         assets.first { asset in
-            let name = asset.name.lowercased()
-            return name.contains("xiass-admin") && name.hasSuffix(".plist")
+            isXIASSAdminAsset(asset, withExtension: ".plist")
         }
     }
 
     var installerAsset: GitHubReleaseAsset? {
         assets.first { asset in
-            let name = asset.name.lowercased()
-            return name.contains("xiass-admin") && name.hasSuffix(".ipa")
+            isXIASSAdminAsset(asset, withExtension: ".ipa")
         }
     }
 
@@ -56,6 +54,11 @@ struct GitHubRelease: Decodable, Hashable {
             URLQueryItem(name: "url", value: manifestURL.absoluteString)
         ]
         return components.url
+    }
+
+    private func isXIASSAdminAsset(_ asset: GitHubReleaseAsset, withExtension fileExtension: String) -> Bool {
+        let name = asset.name.lowercased()
+        return (name.hasPrefix("xiassadmin-") || name.hasPrefix("xiass-admin-")) && name.hasSuffix(fileExtension)
     }
 }
 

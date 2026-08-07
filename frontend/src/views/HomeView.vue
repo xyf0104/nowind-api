@@ -46,6 +46,7 @@
         <div class="hidden items-center gap-7 md:flex">
           <a href="#top" class="text-sm font-medium text-gray-600 transition-colors hover:text-primary-600 dark:text-dark-300 dark:hover:text-primary-400">首页</a>
           <a href="#pricing" class="text-sm font-medium text-gray-600 transition-colors hover:text-primary-600 dark:text-dark-300 dark:hover:text-primary-400">模型价格</a>
+          <router-link to="/ios" class="text-sm font-medium text-gray-600 transition-colors hover:text-primary-600 dark:text-dark-300 dark:hover:text-primary-400">iPhone 管理端</router-link>
           <a v-if="docUrl" :href="docUrl" target="_blank" rel="noopener noreferrer" class="text-sm font-medium text-gray-600 transition-colors hover:text-primary-600 dark:text-dark-300 dark:hover:text-primary-400">接入文档</a>
           <a href="#faq" class="text-sm font-medium text-gray-600 transition-colors hover:text-primary-600 dark:text-dark-300 dark:hover:text-primary-400">常见问题</a>
         </div>
@@ -66,6 +67,14 @@
           >
             <Icon name="book" size="md" />
           </a>
+
+          <router-link
+            to="/ios"
+            class="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:text-dark-400 dark:hover:bg-dark-800 dark:hover:text-primary-300"
+            title="安装 iPhone 管理端"
+          >
+            <Icon name="download" size="md" />
+          </router-link>
 
           <!-- Theme Toggle -->
           <button

@@ -40,6 +40,7 @@ command -v gh >/dev/null || {
 }
 
 sed "s/__TEAM_ID__/${TEAM_ID}/g" "$PROJECT_DIR/Release/ExportOptions.template.plist" > "$EXPORT_OPTIONS"
+plutil -lint "$EXPORT_OPTIONS"
 
 xcodebuild \
   -allowProvisioningUpdates \
@@ -65,6 +66,15 @@ if [ -z "$EXPORTED_IPA" ]; then
   exit 70
 fi
 mv "$EXPORTED_IPA" "$IPA_PATH"
+
+unzip -p "$IPA_PATH" 'Payload/*.app/embedded.mobileprovision' > "$WORK_DIR/embedded.mobileprovision"
+security cms -D -i "$WORK_DIR/embedded.mobileprovision" > "$WORK_DIR/embedded.mobileprovision.plist"
+PROFILE_TASK_ALLOW="$(plutil -extract Entitlements.get-task-allow raw "$WORK_DIR/embedded.mobileprovision.plist")"
+PROFILE_DEVICE="$(plutil -extract ProvisionedDevices.0 raw "$WORK_DIR/embedded.mobileprovision.plist")"
+if [ "$PROFILE_TASK_ALLOW" != "false" ] || [ -z "$PROFILE_DEVICE" ]; then
+  echo "Exported IPA is not signed with an installable Ad Hoc profile."
+  exit 71
+fi
 
 sed \
   -e "s|__IPA_URL__|${IPA_URL}|g" \
