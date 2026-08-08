@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.2-0ea5e9" alt="当前版本 v1.1.2" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.3-0ea5e9" alt="当前版本 v1.1.3" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.2
+> 当前版本：v1.1.3
 
-v1.1.2 修复接码站与 OAuth 授权中的国际号码展示：完整显示地区和国旗，清晰分隔国家区号与本地号码，并且复制号码时不包含国家区号。保留 XIASS API 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手、OAuth 授权接码、独立会员接码站与 iOS 接码流程及全部持久化数据路径。
+v1.1.3 修复接码站与 OAuth 授权中的国际号码展示：过滤上游地区字段的图标前缀、完整显示国家与国旗，清晰分隔同字号的国家区号与本地号码，并且复制号码时不包含国家区号。保留 XIASS API 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手、OAuth 授权接码、独立会员接码站与 iOS 接码流程及全部持久化数据路径。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 

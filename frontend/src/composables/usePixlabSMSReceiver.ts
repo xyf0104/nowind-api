@@ -81,7 +81,7 @@ const countryRegionAliases: Record<string, { name: string; flag: string }> = {
   'it': { name: '意大利', flag: '🇮🇹' }, 'italy': { name: '意大利', flag: '🇮🇹' },
   'br': { name: '巴西', flag: '🇧🇷' }, 'brazil': { name: '巴西', flag: '🇧🇷' },
   'mx': { name: '墨西哥', flag: '🇲🇽' }, 'mexico': { name: '墨西哥', flag: '🇲🇽' },
-  'co': { name: '哥伦比亚', flag: '🇨🇴' }, 'col': { name: '哥伦比亚', flag: '🇨🇴' }, 'colombia': { name: '哥伦比亚', flag: '🇨🇴' }, '哥伦比亚': { name: '哥伦比亚', flag: '🇨🇴' },
+  'co': { name: '哥伦比亚', flag: '🇨🇴' }, 'col': { name: '哥伦比亚', flag: '🇨🇴' }, 'colombia': { name: '哥伦比亚', flag: '🇨🇴' }, '哥伦': { name: '哥伦比亚', flag: '🇨🇴' }, '哥伦比亚': { name: '哥伦比亚', flag: '🇨🇴' },
   'ru': { name: '俄罗斯', flag: '🇷🇺' }, 'russia': { name: '俄罗斯', flag: '🇷🇺' },
   'tr': { name: '土耳其', flag: '🇹🇷' }, 'turkey': { name: '土耳其', flag: '🇹🇷' },
   'ae': { name: '阿拉伯联合酋长国', flag: '🇦🇪' }, 'united arab emirates': { name: '阿拉伯联合酋长国', flag: '🇦🇪' },
@@ -163,7 +163,9 @@ function formatPhone(number: string, reportedRegion: string): {
     }
   }
 
-  const normalizedRegion = reportedRegion.trim().toLowerCase()
+  // Some providers prefix their country label with an emoji such as `🌎`.
+  // It is presentation noise, not part of the country identity.
+  const normalizedRegion = reportedRegion.trim().toLowerCase().replace(/^[^a-z\u4e00-\u9fff]+/, '').trim()
   const reportedCountry = countryRegionAliases[normalizedRegion]
 
   const match = [...callingCodes]
@@ -176,7 +178,7 @@ function formatPhone(number: string, reportedRegion: string): {
     return {
       display: `+${callingCode} ${localNumber}`,
       copyValue: localNumber,
-      region: reportedCountry?.name || reportedRegion || fallbackRegion,
+      region: reportedCountry?.name || fallbackRegion,
       flag: reportedCountry?.flag || countryFlags[normalizedRegion] || callingCodeFlags[callingCode] || '',
       callingCode,
       localNumber

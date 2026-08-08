@@ -905,14 +905,15 @@ onBeforeUnmount(() => {
 .sms-copy-value { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0 10px; color: #f2f9ff; background: transparent; text-align: left; }
 .sms-copy-value:hover:not(:disabled) { color: #7cdeff; transform: translateX(2px); }
 .sms-copy-value strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; letter-spacing: .015em; }
-.sms-copy-value--phone strong { display: inline-flex; align-items: baseline; gap: 9px; white-space: nowrap; font-size: clamp(21px, 2.25vw, 28px); }
-.sms-phone-number__code { color: #70d7f6; font-size: .62em; font-weight: 750; }
+.sms-copy-value--phone strong { display: inline-flex; align-items: baseline; gap: 12px; white-space: nowrap; font-size: clamp(21px, 2.25vw, 28px); }
+.sms-phone-number__code { color: #70d7f6; font-size: inherit; font-weight: 750; }
 .sms-phone-number__local { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sms-copy-value--code strong { font-size: clamp(26px, 3.15vw, 38px); letter-spacing: .18em; }
 .sms-copy-value.is-empty strong { color: #63758d; }
-.sms-number-meta { display: flex; align-items: center; gap: 8px; padding-top: 11px; border-top: 1px solid rgba(104, 148, 193, .18); color: #91a6bf; font-size: 12px; }
-.sms-number-meta__label { color: #61758f; }
-.sms-region { flex-wrap: wrap; gap: 5px; color: #c8d9e9; font-weight: 600; }
+.sms-number-meta { display: flex; align-items: baseline; gap: 13px; padding-top: 14px; border-top: 1px solid rgba(104, 148, 193, .18); color: #91a6bf; font-size: clamp(21px, 2.25vw, 28px); line-height: 1.2; }
+.sms-number-meta__label { flex: 0 0 auto; color: #91a6bf; font-weight: 650; }
+.sms-region { min-width: 0; flex-wrap: nowrap; gap: 9px; color: #c8d9e9; font-weight: 700; white-space: nowrap; }
+.sms-region__flag { flex: 0 0 auto; font-size: 1em; line-height: 1; }
 .sms-code-card__received { display: inline-flex; align-items: center; gap: 4px; color: #62dfa2; font-weight: 700; }
 .sms-code-card__hint { display: flex; align-items: flex-start; gap: 6px; margin: 5px 0 0; color: #7f95ad; font-size: 11px; line-height: 1.55; }
 .sms-code-card__hint svg { flex: 0 0 auto; margin-top: 2px; color: #64c9ee; }

@@ -97,7 +97,7 @@ describe('usePixlabSMSReceiver', () => {
       session_id: 'server-session-colombia',
       status: 'WAITING',
       number: '573242390811',
-      country: 'CO',
+      country: '🌎 哥伦',
       queued_count: 0
     })
 
