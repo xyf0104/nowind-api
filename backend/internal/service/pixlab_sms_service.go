@@ -926,9 +926,6 @@ func (s *PixlabSMSService) callProvider(ctx context.Context, action, cardKey str
 			return nil, infraerrors.ServiceUnavailable("SMS_PROVIDER_INVALID_RESPONSE", "接码服务返回了无效数据")
 		}
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, infraerrors.ServiceUnavailable("SMS_PROVIDER_HTTP_ERROR", "接码服务请求失败，请稍后重试")
-	}
 	provider := &pixlabSMSProviderResponse{
 		Success: payload.Success,
 		Message: pixlabRawText(payload.Message),
@@ -938,11 +935,17 @@ func (s *PixlabSMSService) callProvider(ctx context.Context, action, cardKey str
 		Country: pixlabRawText(payload.Country),
 		Code:    pixlabRawText(payload.Code),
 	}
-	if !pixlabSuccess(provider.Success) {
-		message := strings.TrimSpace(provider.Message)
-		if message == "" {
-			message = strings.TrimSpace(provider.Error)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		// Pixlab returns the per-card sixth-use circuit-breaker as a non-2xx
+		// response. Preserve that signal so Redeem can retire the spent card and
+		// continue with the next card instead of surfacing a generic outage.
+		if message := pixlabProviderMessage(provider); isPixlabCardUsageLimitMessage(message) {
+			return nil, infraerrors.BadRequest("SMS_PROVIDER_REJECTED", message)
 		}
+		return nil, infraerrors.ServiceUnavailable("SMS_PROVIDER_HTTP_ERROR", "接码服务请求失败，请稍后重试")
+	}
+	if !pixlabSuccess(provider.Success) {
+		message := pixlabProviderMessage(provider)
 		if message == "" {
 			message = "接码服务未能完成该操作"
 		}
@@ -964,12 +967,26 @@ func isPixlabCardUsageLimitError(err error) bool {
 	if infraerrors.Reason(err) != "SMS_PROVIDER_REJECTED" {
 		return false
 	}
-	message := strings.ToLower(strings.TrimSpace(infraerrors.Message(err)))
+	return isPixlabCardUsageLimitMessage(infraerrors.Message(err))
+}
+
+func isPixlabCardUsageLimitMessage(raw string) bool {
+	message := strings.ToLower(strings.TrimSpace(raw))
 	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "").Replace(message)
 	return strings.Contains(message, "连续换号上限") ||
 		strings.Contains(message, "单卡连续换号") ||
 		strings.Contains(message, "触发熔断") ||
 		strings.Contains(compact, "6次")
+}
+
+func pixlabProviderMessage(provider *pixlabSMSProviderResponse) string {
+	if provider == nil {
+		return ""
+	}
+	if message := strings.TrimSpace(provider.Message); message != "" {
+		return message
+	}
+	return strings.TrimSpace(provider.Error)
 }
 
 func pixlabRawText(raw json.RawMessage) string {

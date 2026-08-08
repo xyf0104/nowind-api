@@ -125,6 +125,7 @@ func TestPixlabSMSServiceRedeemSkipsCardAtProviderUsageLimit(t *testing.T) {
 		receivedCardKeys = append(receivedCardKeys, request["cardKey"])
 		w.Header().Set("Content-Type", "application/json")
 		if request["cardKey"] == "AT-LIMIT" {
+			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"success":false,"message":"单卡连续换号上限（6次）触发熔断"}`))
 			return
 		}
@@ -413,6 +414,7 @@ func TestPixlabSMSServiceRedeemForMemberRotatesLimitedCardWithoutDoubleCharge(t 
 		var request map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 		if request["cardKey"] == "AT-LIMIT" {
+			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"success":false,"error":"单卡连续换号上限（6次）触发熔断"}`))
 			return
 		}
@@ -646,6 +648,7 @@ func TestPixlabSMSServiceMemberCancelReleasesHeldFee(t *testing.T) {
 func TestIsPixlabCardUsageLimitError(t *testing.T) {
 	require.True(t, isPixlabCardUsageLimitError(infraerrors.BadRequest("SMS_PROVIDER_REJECTED", "单卡连续换号上限（6 次）触发熔断")))
 	require.True(t, isPixlabCardUsageLimitError(infraerrors.BadRequest("SMS_PROVIDER_REJECTED", "连续换号上限")))
+	require.True(t, isPixlabCardUsageLimitMessage("单卡连续换号上限（6次）触发熔断"))
 	require.False(t, isPixlabCardUsageLimitError(infraerrors.BadRequest("SMS_PROVIDER_REJECTED", "号码暂时不足，请稍后重试")))
 	require.False(t, isPixlabCardUsageLimitError(infraerrors.ServiceUnavailable("SMS_PROVIDER_UNAVAILABLE", "接码服务暂时无法连接")))
 }

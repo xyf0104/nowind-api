@@ -13,6 +13,7 @@
       @error="handlePosterSettled('light')"
     />
     <video
+      v-if="!isDark"
       ref="lightVideoRef"
       class="theme-video-background__media theme-video-background__video theme-video-background__media--light"
       :class="[
@@ -23,7 +24,7 @@
       :poster="lightPoster"
       muted
       playsinline
-      preload="auto"
+      preload="metadata"
       @timeupdate="handleTimeUpdate('light')"
       @ended="handleEnded('light')"
     ></video>
@@ -40,6 +41,7 @@
       @error="handlePosterSettled('dark')"
     />
     <video
+      v-if="isDark"
       ref="darkVideoRef"
       class="theme-video-background__media theme-video-background__video theme-video-background__media--dark"
       :class="[
@@ -50,7 +52,7 @@
       :poster="darkPoster"
       muted
       playsinline
-      preload="auto"
+      preload="metadata"
       @timeupdate="handleTimeUpdate('dark')"
       @ended="handleEnded('dark')"
     ></video>
@@ -276,13 +278,15 @@ onUnmounted(() => {
 }
 
 .theme-video-background__media--blurred {
-  filter: blur(10px) brightness(0.72) saturate(0.92);
-  transform: scale(1.06);
+	/* Avoid a full-screen GPU blur on every frame; the darkened media still
+	 * keeps text legible while scrolling the console smoothly. */
+	filter: brightness(0.72) saturate(0.92);
+	transform: scale(1.035);
 }
 
 .theme-video-background__media--light.theme-video-background__media--blurred {
-  filter: grayscale(1) brightness(0.68) contrast(3.2) blur(10px);
-  mix-blend-mode: screen;
+	filter: grayscale(1) brightness(0.68) contrast(3.2);
+	mix-blend-mode: screen;
 }
 
 .theme-video-background__media--light.theme-video-background__media--blurred.theme-video-background__media--active {

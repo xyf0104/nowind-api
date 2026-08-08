@@ -56,32 +56,38 @@ const onboardingStore = useOnboardingStore()
 
 const appCanvasRef = ref<HTMLCanvasElement | null>(null)
 let animationId = 0
+let teardownParticles: (() => void) | undefined
 
 interface Particle {
   x: number; y: number; vx: number; vy: number; radius: number; opacity: number
 }
 
-function initParticles() {
+function initParticles(): () => void {
   const canvas = appCanvasRef.value
-  if (!canvas) return
+  if (!canvas) return () => undefined
   const ctx = canvas.getContext('2d')
-  if (!ctx) return
+  if (!ctx) return () => undefined
 
-  const dpr = window.devicePixelRatio || 1
   const resize = () => {
+    // Retina canvases do not need to redraw a decorative background at the
+    // display's maximum density. Cap it to keep route transitions responsive.
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
     canvas.width = window.innerWidth * dpr
     canvas.height = window.innerHeight * dpr
     canvas.style.width = window.innerWidth + 'px'
     canvas.style.height = window.innerHeight + 'px'
-    ctx.scale(dpr, dpr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
   resize()
   window.addEventListener('resize', resize)
 
-  // 控制台用稍少的粒子，避免性能问题
-  const count = Math.min(60, Math.floor(window.innerWidth / 20))
+  // The previous 60-particle, 60fps network was an expensive full-screen
+  // decoration. Keep the same visual language at a calmer refresh budget.
+  const count = Math.min(36, Math.max(20, Math.floor(window.innerWidth / 36)))
   const particles: Particle[] = []
   const maxDist = 140
+  const frameInterval = 1000 / 30
+  let previousFrameAt = 0
 
   for (let i = 0; i < count; i++) {
     particles.push({
@@ -94,8 +100,18 @@ function initParticles() {
     })
   }
 
-  function draw() {
+  function draw(frameAt: number) {
     if (!ctx) return
+    if (document.visibilityState !== 'visible') {
+      animationId = 0
+      return
+    }
+    if (frameAt - previousFrameAt < frameInterval) {
+      animationId = requestAnimationFrame(draw)
+      return
+    }
+    previousFrameAt = frameAt
+
     const w = window.innerWidth, h = window.innerHeight
     ctx.clearRect(0, 0, w, h)
 
@@ -132,16 +148,30 @@ function initParticles() {
     }
     animationId = requestAnimationFrame(draw)
   }
-  draw()
+  const resumeWhenVisible = () => {
+    if (document.visibilityState === 'visible' && animationId === 0) {
+      previousFrameAt = 0
+      animationId = requestAnimationFrame(draw)
+    }
+  }
+  document.addEventListener('visibilitychange', resumeWhenVisible)
+  animationId = requestAnimationFrame(draw)
+
+  return () => {
+    cancelAnimationFrame(animationId)
+    animationId = 0
+    window.removeEventListener('resize', resize)
+    document.removeEventListener('visibilitychange', resumeWhenVisible)
+  }
 }
 
 onMounted(() => {
   onboardingStore.setReplayCallback(replayTour)
-  initParticles()
+  teardownParticles = initParticles()
 })
 
 onUnmounted(() => {
-  cancelAnimationFrame(animationId)
+  teardownParticles?.()
 })
 
 defineExpose({ replayTour })
