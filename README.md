@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.0.114-0ea5e9" alt="当前版本 v1.0.114" />
+    <img src="https://img.shields.io/badge/当前版本-v1.0.115-0ea5e9" alt="当前版本 v1.0.115" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.0.114
+> 当前版本：v1.0.115
 
-v1.0.114 修复管理员 OAuth 授权接码因残留会话无法领取新号码的问题：可恢复有效旧会话，上游明确拒绝时自动释放旧会话并轮换下一张卡密。系统设置新增卡密明文查看、单条删除和待用队列排序；删除处于会员预扣会话中的卡密时会自动释放对应余额。保留原 OAuth 授权流程、独立授权接码工作台、iOS 管理端接码 UI、XIASS 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径。
+v1.0.115 将 OpenAI OAuth 授权接码改为显式领取：生成授权链接不会再自动取号，只有点击蓝色的第 3 步“获取手机号”才会从卡密队列领取。授权链接或 Code 输入调整为第 4 步；手机号区号与本地号码分开显示和复制，并补全地区名称与国旗。iOS 管理端同步采用手动取号和相同的号码展示规则。保留原 OAuth 授权流程、独立授权接码工作台、XIASS 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手及全部持久化数据路径。
 
 XIASS API 是本项目唯一的公开源码仓库与正式发布源。仓库包含完整前后端源码、Docker 镜像构建、数据库迁移、一键安装、在线更新、备份恢复和软路由代理节点功能。
 
