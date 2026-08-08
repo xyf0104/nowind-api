@@ -59,8 +59,11 @@ def require_all(
 def check_version(errors: list[str]) -> None:
     version = read("backend/cmd/server/VERSION").strip()
     readme = read("README.md")
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
         errors.append(f"VERSION 格式无效: {version!r}")
+        return
+    if any(int(component) > 99 for component in version.split(".")):
+        errors.append(f"VERSION 每一段必须不大于 99: {version!r}")
         return
     if f"> 当前版本：v{version}" not in readme:
         errors.append(f"README 当前版本未同步为 v{version}")

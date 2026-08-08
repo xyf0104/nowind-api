@@ -43,6 +43,7 @@ jobs:
           else
             VERSION=${GITHUB_REF#refs/tags/v}
           fi
+          python3 tools/release_version.py validate "$VERSION"
           echo "$VERSION" > backend/cmd/server/VERSION
           echo "Updated VERSION file to: $VERSION"
 
@@ -348,6 +349,7 @@ jobs:
           else
             VERSION=${GITHUB_REF#refs/tags/v}
           fi
+          python3 tools/release_version.py validate "$VERSION"
 
           CURRENT_VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION || true)
           if [ "$CURRENT_VERSION" = "$VERSION" ]; then

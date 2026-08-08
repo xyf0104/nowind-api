@@ -91,6 +91,25 @@ describe('usePixlabSMSReceiver', () => {
     expect(receiver.countryFlag.value).toBe('🇺🇸')
   })
 
+  it('separates Colombian country code and renders its full region with flag', async () => {
+    vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 1, active_count: 0 })
+    vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'server-session-colombia',
+      status: 'WAITING',
+      number: '573242390811',
+      country: 'CO',
+      queued_count: 0
+    })
+
+    await receiver.start()
+
+    expect(receiver.countryCallingCode.value).toBe('57')
+    expect(receiver.localPhoneNumber.value).toBe('3242390811')
+    expect(receiver.phoneForCopy.value).toBe('3242390811')
+    expect(receiver.region.value).toBe('哥伦比亚')
+    expect(receiver.countryFlag.value).toBe('🇨🇴')
+  })
+
   it('uses one server-side change request and replaces the opaque session ID', async () => {
     vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 2, active_count: 0 })
     vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({

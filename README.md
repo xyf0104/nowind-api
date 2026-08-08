@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.0.116-0ea5e9" alt="当前版本 v1.0.116" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.2-0ea5e9" alt="当前版本 v1.1.2" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,11 @@
   </p>
 </div>
 
-> 当前版本：v1.0.116
+> 当前版本：v1.1.2
 
-v1.0.116 选择性融合上游 v0.1.172 的稳定修复：新增实际上游响应模型审计与“不一致”筛选，补齐 Antigravity Gemini 3.6 Flash 系列；优化 Codex 流式故障转移、WebSocket 续链、工具参数兼容、连接超时和模型冷却；修复余额精度、订阅日重置、Grok 405/视频回执、代理 HTML 403 误判、Responses 转 Anthropic 内容块和系统日志退避等问题。保留 XIASS API 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手、OAuth 授权接码、独立会员接码站与 iOS 接码流程及全部持久化数据路径。
+v1.1.2 修复接码站与 OAuth 授权中的国际号码展示：完整显示地区和国旗，清晰分隔国家区号与本地号码，并且复制号码时不包含国家区号。保留 XIASS API 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手、OAuth 授权接码、独立会员接码站与 iOS 接码流程及全部持久化数据路径。
+
+发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 
 XIASS API 是本项目唯一的公开源码仓库与正式发布源。仓库包含完整前后端源码、Docker 镜像构建、数据库迁移、一键安装、在线更新、备份恢复和软路由代理节点功能。
 

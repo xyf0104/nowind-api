@@ -82,17 +82,19 @@
                 class="sms-copy-value sms-copy-value--phone"
                 :class="{ 'is-empty': !phoneForCopy }"
                 :disabled="!phoneForCopy"
-                :title="phoneForCopy ? '复制手机号' : '尚未领取号码'"
+                :title="phoneForCopy ? '复制本地号码（不含国家区号）' : '尚未领取号码'"
                 @click="copyPhone"
               >
-                <strong>{{ phoneDisplay }}</strong>
+                <strong class="sms-phone-number">
+                  <span v-if="countryCallingCode" class="sms-phone-number__code">+{{ countryCallingCode }}</span>
+                  <span class="sms-phone-number__local">{{ localPhoneNumber }}</span>
+                </strong>
                 <Icon :name="phoneCopied ? 'check' : 'copy'" size="md" />
               </button>
               <div class="sms-number-meta">
                 <span class="sms-number-meta__label">地区</span>
                 <span class="sms-region">
                   <span v-if="countryFlag" class="sms-region__flag" aria-hidden="true">{{ countryFlag }}</span>
-                  <Icon v-else name="globe" size="xs" />
                   {{ region }}
                 </span>
               </div>
@@ -402,8 +404,9 @@ const receiver = usePixlabSMSReceiver(receiverScope)
 
 const {
   phase,
-  phoneDisplay,
   phoneForCopy,
+  countryCallingCode,
+  localPhoneNumber,
   region,
   countryFlag,
   code,
@@ -485,9 +488,11 @@ const statusToneClass = computed(() => {
 })
 
 function previewSession(number = '+1 816 215 0598', nextCode = '--'): void {
+  const digits = number.replace(/\D/g, '')
   phase.value = nextCode === '--' ? 'waiting' : 'received'
-  phoneDisplay.value = number
-  phoneForCopy.value = number.replace(/\D/g, '').slice(1)
+  countryCallingCode.value = '1'
+  localPhoneNumber.value = digits.slice(1)
+  phoneForCopy.value = localPhoneNumber.value
   region.value = '美国'
   countryFlag.value = '🇺🇸'
   code.value = nextCode
@@ -587,7 +592,7 @@ async function begin(): Promise<void> {
 
 async function refreshCode(): Promise<void> {
   if (isLocalPreview.value) {
-    previewSession(phoneDisplay.value === '--' ? '+1 816 215 0598' : phoneDisplay.value, '846 217')
+    previewSession(phoneForCopy.value ? `+${countryCallingCode.value} ${phoneForCopy.value}` : '+1 816 215 0598', '846 217')
     appStore.showSuccess('本地预览：已模拟收到验证码。')
     return
   }
@@ -621,9 +626,11 @@ async function changeNumber(): Promise<void> {
 async function cancelSession(): Promise<void> {
   if (isLocalPreview.value) {
     phase.value = 'idle'
-    phoneDisplay.value = '--'
     phoneForCopy.value = ''
+    countryCallingCode.value = ''
+    localPhoneNumber.value = '--'
     region.value = '--'
+    countryFlag.value = ''
     code.value = '--'
     activeCount.value = 0
     appStore.showInfo('本地预览：已取消演示会话。')
@@ -898,12 +905,14 @@ onBeforeUnmount(() => {
 .sms-copy-value { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0 10px; color: #f2f9ff; background: transparent; text-align: left; }
 .sms-copy-value:hover:not(:disabled) { color: #7cdeff; transform: translateX(2px); }
 .sms-copy-value strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; letter-spacing: .015em; }
-.sms-copy-value--phone strong { font-size: clamp(21px, 2.25vw, 28px); }
+.sms-copy-value--phone strong { display: inline-flex; align-items: baseline; gap: 9px; white-space: nowrap; font-size: clamp(21px, 2.25vw, 28px); }
+.sms-phone-number__code { color: #70d7f6; font-size: .62em; font-weight: 750; }
+.sms-phone-number__local { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sms-copy-value--code strong { font-size: clamp(26px, 3.15vw, 38px); letter-spacing: .18em; }
 .sms-copy-value.is-empty strong { color: #63758d; }
 .sms-number-meta { display: flex; align-items: center; gap: 8px; padding-top: 11px; border-top: 1px solid rgba(104, 148, 193, .18); color: #91a6bf; font-size: 12px; }
 .sms-number-meta__label { color: #61758f; }
-.sms-region { gap: 5px; color: #c8d9e9; font-weight: 600; }
+.sms-region { flex-wrap: wrap; gap: 5px; color: #c8d9e9; font-weight: 600; }
 .sms-code-card__received { display: inline-flex; align-items: center; gap: 4px; color: #62dfa2; font-weight: 700; }
 .sms-code-card__hint { display: flex; align-items: flex-start; gap: 6px; margin: 5px 0 0; color: #7f95ad; font-size: 11px; line-height: 1.55; }
 .sms-code-card__hint svg { flex: 0 0 auto; margin-top: 2px; color: #64c9ee; }
