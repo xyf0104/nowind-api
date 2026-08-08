@@ -1,21 +1,21 @@
 <template>
   <section
-    class="relative rounded-lg border border-cyan-200 bg-cyan-50/70 p-4 dark:border-cyan-800/70 dark:bg-cyan-950/25"
+    class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
     aria-live="polite"
   >
     <div class="flex items-center justify-between gap-3">
-      <div class="flex min-w-0 items-center gap-2.5">
-        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-600 text-white shadow-sm">
-          <Icon name="chat" size="sm" :stroke-width="2" />
+      <div class="flex min-w-0 items-center gap-3">
+        <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
+          3
         </span>
         <div class="min-w-0">
-          <h5 class="text-sm font-semibold text-cyan-950 dark:text-cyan-100">授权接码</h5>
+          <h5 class="text-base font-medium text-blue-900 dark:text-blue-200">获取手机号</h5>
           <p class="truncate text-xs" :class="statusClass">{{ statusText }}</p>
         </div>
       </div>
       <button
         type="button"
-        class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-cyan-700 transition-colors hover:bg-cyan-100 hover:text-cyan-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:text-cyan-200 dark:hover:bg-cyan-900/70 dark:hover:text-white"
+        class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-blue-700 transition-colors hover:bg-blue-100 hover:text-blue-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-300 dark:hover:bg-blue-900/70 dark:hover:text-white"
         title="管理接码卡密"
         aria-label="管理接码卡密"
         @click="openKeyManager"
@@ -24,27 +24,58 @@
       </button>
     </div>
 
-    <div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+    <div v-if="needsManualStart" class="mt-3">
       <button
         type="button"
-        class="group flex min-w-0 items-center justify-between gap-3 rounded-md border border-cyan-200 bg-white/85 px-3 py-2.5 text-left transition-colors hover:border-cyan-400 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-cyan-900/80 dark:bg-gray-900/70 dark:hover:border-cyan-600 dark:hover:bg-gray-900"
-        :disabled="!phoneForCopy"
-        :title="phoneForCopy ? '点击复制手机号' : '等待获取手机号'"
-        @click="copyPhone"
+        class="btn btn-primary w-full !py-2.5 text-sm"
+        data-testid="request-sms-phone"
+        :disabled="!active || isStartingPhone"
+        :title="active ? '领取用于当前授权的手机号' : '请先生成授权链接'"
+        @click="requestPhone"
       >
-        <span class="min-w-0">
-          <span class="block text-[11px] font-medium text-cyan-700 dark:text-cyan-300">手机号 / 地区</span>
-          <span class="mt-0.5 block truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {{ phoneDisplay }}
-            <span class="font-sans text-xs font-normal text-gray-500 dark:text-gray-400">{{ region }}</span>
-          </span>
-        </span>
-        <Icon
-          :name="phoneCopied ? 'check' : 'copy'"
-          size="sm"
-          :class="phoneCopied ? 'text-emerald-600 dark:text-emerald-300' : 'text-cyan-600 opacity-0 transition-opacity group-hover:opacity-100 dark:text-cyan-300'"
-        />
+        <svg v-if="isStartingPhone" class="mr-1.5 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+        <Icon v-else name="chat" size="sm" class="mr-1.5" />
+        获取手机号
       </button>
+    </div>
+
+    <div v-else class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,0.8fr)]">
+      <div class="min-w-0 rounded-md border border-blue-200 bg-white/85 px-3 py-2.5 dark:border-blue-900/80 dark:bg-gray-900/70">
+        <span class="block text-[11px] font-medium text-blue-700 dark:text-blue-300">手机号</span>
+        <div class="mt-1 flex min-w-0 items-center gap-2">
+          <span
+            v-if="countryCallingCode"
+            class="shrink-0 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 font-mono text-xs font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/60 dark:text-blue-200"
+          >
+            +{{ countryCallingCode }}
+          </span>
+          <button
+            type="button"
+            class="group flex min-w-0 flex-1 items-center justify-between gap-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            :disabled="!phoneForCopy"
+            :title="phoneForCopy ? '点击复制本地号码' : '等待获取手机号'"
+            @click="copyPhone"
+          >
+            <span class="truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ localPhoneNumber }}</span>
+            <Icon
+              :name="phoneCopied ? 'check' : 'copy'"
+              size="sm"
+              :class="phoneCopied ? 'shrink-0 text-emerald-600 dark:text-emerald-300' : 'shrink-0 text-blue-600 opacity-0 transition-opacity group-hover:opacity-100 dark:text-blue-300'"
+            />
+          </button>
+        </div>
+      </div>
+
+      <div class="min-w-0 rounded-md border border-blue-200 bg-white/85 px-3 py-2.5 dark:border-blue-900/80 dark:bg-gray-900/70">
+        <span class="block text-[11px] font-medium text-blue-700 dark:text-blue-300">地区</span>
+        <span class="mt-1 flex min-w-0 items-center gap-1.5 text-sm font-medium text-gray-900 dark:text-gray-100">
+          <span v-if="countryFlag" class="shrink-0 text-base leading-none" aria-hidden="true">{{ countryFlag }}</span>
+          <span class="truncate">{{ region }}</span>
+        </span>
+      </div>
 
       <button
         type="button"
@@ -65,7 +96,7 @@
       </button>
     </div>
 
-    <div class="mt-3 flex flex-wrap items-center gap-2">
+    <div v-if="!needsManualStart" class="mt-3 flex flex-wrap items-center gap-2">
       <button
         type="button"
         class="btn btn-secondary !px-2.5 !py-1.5 text-xs"
@@ -108,36 +139,9 @@
       <span class="ml-auto text-xs text-gray-500 dark:text-gray-400">待用卡密 {{ queuedKeyCount }} 个</span>
     </div>
 
-    <p v-if="phase === 'unavailable'" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
+    <p v-if="!needsManualStart && phase === 'unavailable'" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
       请点右上角齿轮添加接码卡密；卡密会加密保存到 XIASS API 服务器，收到验证码后才会自动清除。
     </p>
-
-    <div
-      v-if="needsManualStart"
-      class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-cyan-50/95 p-4 backdrop-blur-[1px] dark:bg-cyan-950/95"
-    >
-      <div class="flex max-w-xs flex-col items-center text-center">
-        <span class="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-600 text-white shadow-sm">
-          <Icon name="chat" size="sm" />
-        </span>
-        <p class="text-sm font-semibold text-cyan-950 dark:text-cyan-100">需要手机号时再领取</p>
-        <p class="mt-1 text-xs leading-5 text-cyan-800/80 dark:text-cyan-200/80">重新授权不会自动消耗接码卡密。</p>
-        <button
-          type="button"
-          class="btn btn-primary mt-3 !px-4 !py-2 text-sm"
-          data-testid="request-sms-phone"
-          :disabled="isStartingPhone"
-          @click="requestPhone"
-        >
-          <svg v-if="isStartingPhone" class="mr-1.5 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-          </svg>
-          <Icon v-else name="chat" size="sm" class="mr-1.5" />
-          获取手机号
-        </button>
-      </div>
-    </div>
   </section>
 
   <BaseDialog
@@ -192,10 +196,8 @@ import Icon from '@/components/icons/Icon.vue'
 
 const props = withDefaults(defineProps<{
   active?: boolean
-  manualStart?: boolean
 }>(), {
-  active: false,
-  manualStart: false
+  active: false
 })
 
 const appStore = useAppStore()
@@ -203,9 +205,11 @@ const { copyToClipboard } = useClipboard()
 const receiver = usePixlabSMSReceiver()
 const {
   phase,
-  phoneDisplay,
   phoneForCopy,
+  countryCallingCode,
+  localPhoneNumber,
   region,
+  countryFlag,
   code,
   queuedKeyCount,
   statusText,
@@ -225,7 +229,7 @@ const isSavingKeys = ref(false)
 const isClearingKeys = ref(false)
 const hasManuallyStarted = ref(false)
 const isStartingPhone = ref(false)
-const needsManualStart = computed(() => props.active && props.manualStart && !hasManuallyStarted.value)
+const needsManualStart = computed(() => !hasManuallyStarted.value)
 
 function showError(error: unknown): void {
   appStore.showError(error instanceof Error ? error.message : '接码服务暂时不可用，请稍后重试。')
@@ -246,7 +250,9 @@ async function requestPhone(): Promise<void> {
   isStartingPhone.value = true
   hasManuallyStarted.value = true
   const started = await begin()
-  if (!started) hasManuallyStarted.value = false
+  if (!started || ['expired', 'unavailable'].includes(receiver.phase.value)) {
+    hasManuallyStarted.value = false
+  }
   isStartingPhone.value = false
 }
 
@@ -269,6 +275,7 @@ async function changeNumber(): Promise<void> {
 async function cancel(): Promise<void> {
   try {
     await receiver.cancel()
+    hasManuallyStarted.value = false
     appStore.showInfo('已取消当前手机号。')
   } catch (error) {
     showError(error)
@@ -309,9 +316,7 @@ async function saveKeys(): Promise<void> {
     }
     appStore.showSuccess(`已保存 ${added} 个接码卡密到服务器。`)
     showKeyManager.value = false
-    if (props.active && receiver.phase.value === 'unavailable') {
-      await begin()
-    }
+    if (props.active && receiver.phase.value === 'unavailable') hasManuallyStarted.value = false
   } catch (error) {
     showError(error)
   } finally {
@@ -332,20 +337,14 @@ async function clearQueuedKeys(): Promise<void> {
 }
 
 watch(
-  () => [props.active, props.manualStart] as const,
-  ([active, manualStart]) => {
+  () => props.active,
+  (active) => {
     if (!active) {
       hasManuallyStarted.value = false
       receiver.stop()
       return
     }
-    if (manualStart && !hasManuallyStarted.value) {
-      receiver.stop()
-      return
-    }
-    if (active) {
-      void begin()
-    }
+    receiver.stop()
   },
   { immediate: true }
 )

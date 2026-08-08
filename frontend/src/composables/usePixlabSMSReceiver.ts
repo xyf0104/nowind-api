@@ -54,6 +54,37 @@ const countryFlags: Record<string, string> = {
   '阿联酋': '🇦🇪', 'united arab emirates': '🇦🇪',
 }
 
+// Pixlab may return a country code, an English name, or a Chinese name. Keep
+// the displayed region readable in Chinese instead of showing a raw `US`/`GB`.
+const countryRegionAliases: Record<string, { name: string; flag: string }> = {
+  'us': { name: '美国', flag: '🇺🇸' }, 'usa': { name: '美国', flag: '🇺🇸' }, 'united states': { name: '美国', flag: '🇺🇸' }, 'united states of america': { name: '美国', flag: '🇺🇸' },
+  'ca': { name: '加拿大', flag: '🇨🇦' }, 'canada': { name: '加拿大', flag: '🇨🇦' },
+  'gb': { name: '英国', flag: '🇬🇧' }, 'uk': { name: '英国', flag: '🇬🇧' }, 'united kingdom': { name: '英国', flag: '🇬🇧' },
+  'jp': { name: '日本', flag: '🇯🇵' }, 'japan': { name: '日本', flag: '🇯🇵' },
+  'kr': { name: '韩国', flag: '🇰🇷' }, 'south korea': { name: '韩国', flag: '🇰🇷' }, 'korea': { name: '韩国', flag: '🇰🇷' },
+  'cn': { name: '中国', flag: '🇨🇳' }, 'china': { name: '中国', flag: '🇨🇳' },
+  'hk': { name: '中国香港', flag: '🇭🇰' }, 'hong kong': { name: '中国香港', flag: '🇭🇰' },
+  'mo': { name: '中国澳门', flag: '🇲🇴' }, 'macau': { name: '中国澳门', flag: '🇲🇴' },
+  'tw': { name: '中国台湾', flag: '🇹🇼' }, 'taiwan': { name: '中国台湾', flag: '🇹🇼' },
+  'sg': { name: '新加坡', flag: '🇸🇬' }, 'singapore': { name: '新加坡', flag: '🇸🇬' },
+  'au': { name: '澳大利亚', flag: '🇦🇺' }, 'australia': { name: '澳大利亚', flag: '🇦🇺' },
+  'my': { name: '马来西亚', flag: '🇲🇾' }, 'malaysia': { name: '马来西亚', flag: '🇲🇾' },
+  'th': { name: '泰国', flag: '🇹🇭' }, 'thailand': { name: '泰国', flag: '🇹🇭' },
+  'vn': { name: '越南', flag: '🇻🇳' }, 'vietnam': { name: '越南', flag: '🇻🇳' },
+  'ph': { name: '菲律宾', flag: '🇵🇭' }, 'philippines': { name: '菲律宾', flag: '🇵🇭' },
+  'id': { name: '印度尼西亚', flag: '🇮🇩' }, 'indonesia': { name: '印度尼西亚', flag: '🇮🇩' },
+  'in': { name: '印度', flag: '🇮🇳' }, 'india': { name: '印度', flag: '🇮🇳' },
+  'de': { name: '德国', flag: '🇩🇪' }, 'germany': { name: '德国', flag: '🇩🇪' },
+  'fr': { name: '法国', flag: '🇫🇷' }, 'france': { name: '法国', flag: '🇫🇷' },
+  'es': { name: '西班牙', flag: '🇪🇸' }, 'spain': { name: '西班牙', flag: '🇪🇸' },
+  'it': { name: '意大利', flag: '🇮🇹' }, 'italy': { name: '意大利', flag: '🇮🇹' },
+  'br': { name: '巴西', flag: '🇧🇷' }, 'brazil': { name: '巴西', flag: '🇧🇷' },
+  'mx': { name: '墨西哥', flag: '🇲🇽' }, 'mexico': { name: '墨西哥', flag: '🇲🇽' },
+  'ru': { name: '俄罗斯', flag: '🇷🇺' }, 'russia': { name: '俄罗斯', flag: '🇷🇺' },
+  'tr': { name: '土耳其', flag: '🇹🇷' }, 'turkey': { name: '土耳其', flag: '🇹🇷' },
+  'ae': { name: '阿拉伯联合酋长国', flag: '🇦🇪' }, 'united arab emirates': { name: '阿拉伯联合酋长国', flag: '🇦🇪' },
+}
+
 const callingCodeFlags: Record<string, string> = {
   '1': '🇺🇸', '7': '🇷🇺', '20': '🇪🇬', '27': '🇿🇦', '30': '🇬🇷',
   '31': '🇳🇱', '32': '🇧🇪', '33': '🇫🇷', '34': '🇪🇸', '39': '🇮🇹',
@@ -120,11 +151,18 @@ function formatPhone(number: string, reportedRegion: string): {
   copyValue: string
   region: string
   flag: string
+  callingCode: string
+  localNumber: string
 } {
   const digits = number.replace(/\D/g, '')
-  if (!digits) return { display: '--', copyValue: '', region: reportedRegion || '--', flag: '' }
+  if (!digits) {
+    return {
+      display: '--', copyValue: '', region: reportedRegion || '--', flag: '', callingCode: '', localNumber: '--'
+    }
+  }
 
   const normalizedRegion = reportedRegion.trim().toLowerCase()
+  const reportedCountry = countryRegionAliases[normalizedRegion]
 
   const match = [...callingCodes]
     .sort(([left], [right]) => right.length - left.length)
@@ -136,16 +174,20 @@ function formatPhone(number: string, reportedRegion: string): {
     return {
       display: `+${callingCode} ${localNumber}`,
       copyValue: localNumber,
-      region: reportedRegion || fallbackRegion,
-      flag: countryFlags[normalizedRegion] || callingCodeFlags[callingCode] || ''
+      region: reportedCountry?.name || reportedRegion || fallbackRegion,
+      flag: reportedCountry?.flag || countryFlags[normalizedRegion] || callingCodeFlags[callingCode] || '',
+      callingCode,
+      localNumber
     }
   }
 
   return {
     display: `+${digits}`,
     copyValue: digits,
-    region: reportedRegion || '自动识别',
-    flag: countryFlags[normalizedRegion] || ''
+    region: reportedCountry?.name || reportedRegion || '自动识别',
+    flag: reportedCountry?.flag || countryFlags[normalizedRegion] || '',
+    callingCode: '',
+    localNumber: digits
   }
 }
 
@@ -159,9 +201,11 @@ function errorReason(error: unknown): string {
 export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
 	const isMember = scope === 'member'
 	const api = isMember ? smsReceiverAPI.memberSMSReceiverAPI : smsReceiverAPI
-	const phase = ref<SMSPhase>('idle')
+  const phase = ref<SMSPhase>('idle')
   const phoneDisplay = ref('--')
   const phoneForCopy = ref('')
+  const countryCallingCode = ref('')
+  const localPhoneNumber = ref('--')
   const region = ref('--')
   const countryFlag = ref('')
   const code = ref('--')
@@ -279,6 +323,8 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
     phase.value = nextPhase
     phoneDisplay.value = nextPhase === 'unavailable' ? '暂无待用卡密' : '--'
     phoneForCopy.value = ''
+    countryCallingCode.value = ''
+    localPhoneNumber.value = '--'
     region.value = '--'
     countryFlag.value = ''
     code.value = '--'
@@ -290,6 +336,8 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
     const formatted = formatPhone(rawNumber, result.country?.trim() ?? '')
     phoneDisplay.value = formatted.display
     phoneForCopy.value = formatted.copyValue
+    countryCallingCode.value = formatted.callingCode
+    localPhoneNumber.value = formatted.localNumber
     region.value = formatted.region
 		countryFlag.value = formatted.flag
 	}
@@ -457,6 +505,8 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
     phase,
     phoneDisplay,
     phoneForCopy,
+    countryCallingCode,
+    localPhoneNumber,
     region,
 		countryFlag,
     code,

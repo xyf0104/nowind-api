@@ -115,7 +115,10 @@ private final class SMSReceiveAssistant: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var numberDisplay = "--"
     @Published private(set) var numberForCopy = ""
+    @Published private(set) var countryCallingCode = ""
+    @Published private(set) var localNumberDisplay = "--"
     @Published private(set) var regionDisplay = "--"
+    @Published private(set) var countryFlag = ""
     @Published private(set) var codeDisplay = "--"
     @Published private(set) var queuedKeyCount = 0
     @Published private(set) var isRefreshing = false
@@ -158,6 +161,10 @@ private final class SMSReceiveAssistant: ObservableObject {
 
     var canCancel: Bool {
         activeSessionID != nil && !isRefreshing && !isChangingNumber && !isCancelling && phase != .activating && phase != .received
+    }
+
+    var needsPhoneRequest: Bool {
+        [.idle, .unavailable, .expired, .failed].contains(phase)
     }
 
     func begin(using api: APIClient) async throws -> SMSReceiveOutcome {
@@ -328,7 +335,10 @@ private final class SMSReceiveAssistant: ObservableObject {
         self.phase = phase
         numberDisplay = phase == .unavailable ? "暂无待用卡密" : "--"
         numberForCopy = ""
+        countryCallingCode = ""
+        localNumberDisplay = "--"
         regionDisplay = "--"
+        countryFlag = ""
         codeDisplay = "--"
     }
 
@@ -348,12 +358,57 @@ private final class SMSReceiveAssistant: ObservableObject {
         if let callingCode = Self.callingCodes.first(where: { digits.hasPrefix($0.code) && digits.count > $0.code.count }) {
             numberDisplay = "+\(callingCode.code) \(digits.dropFirst(callingCode.code.count))"
             numberForCopy = String(digits.dropFirst(callingCode.code.count))
-            regionDisplay = suppliedRegion ?? callingCode.region
+            countryCallingCode = "+\(callingCode.code)"
+            localNumberDisplay = numberForCopy
+            let country = Self.countryInfo(reportedRegion: suppliedRegion, fallbackRegion: callingCode.region, callingCode: callingCode.code)
+            regionDisplay = country.name
+            countryFlag = country.flag
         } else {
             numberDisplay = "+\(digits)"
             numberForCopy = digits
-            regionDisplay = suppliedRegion ?? "自动识别"
+            countryCallingCode = ""
+            localNumberDisplay = digits
+            let country = Self.countryInfo(reportedRegion: suppliedRegion, fallbackRegion: "自动识别", callingCode: nil)
+            regionDisplay = country.name
+            countryFlag = country.flag
         }
+    }
+
+    private static func countryInfo(reportedRegion: String?, fallbackRegion: String, callingCode: String?) -> (name: String, flag: String) {
+        let raw = reportedRegion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let aliases: [String: (name: String, flag: String)] = [
+            "us": ("美国", "🇺🇸"), "usa": ("美国", "🇺🇸"), "united states": ("美国", "🇺🇸"),
+            "ca": ("加拿大", "🇨🇦"), "canada": ("加拿大", "🇨🇦"),
+            "gb": ("英国", "🇬🇧"), "uk": ("英国", "🇬🇧"), "united kingdom": ("英国", "🇬🇧"),
+            "jp": ("日本", "🇯🇵"), "japan": ("日本", "🇯🇵"),
+            "kr": ("韩国", "🇰🇷"), "south korea": ("韩国", "🇰🇷"),
+            "cn": ("中国", "🇨🇳"), "china": ("中国", "🇨🇳"),
+            "hk": ("中国香港", "🇭🇰"), "hong kong": ("中国香港", "🇭🇰"),
+            "mo": ("中国澳门", "🇲🇴"), "macau": ("中国澳门", "🇲🇴"),
+            "tw": ("中国台湾", "🇹🇼"), "taiwan": ("中国台湾", "🇹🇼"),
+            "sg": ("新加坡", "🇸🇬"), "singapore": ("新加坡", "🇸🇬"),
+            "au": ("澳大利亚", "🇦🇺"), "australia": ("澳大利亚", "🇦🇺"),
+            "my": ("马来西亚", "🇲🇾"), "malaysia": ("马来西亚", "🇲🇾"),
+            "th": ("泰国", "🇹🇭"), "thailand": ("泰国", "🇹🇭"),
+            "vn": ("越南", "🇻🇳"), "vietnam": ("越南", "🇻🇳"),
+            "ph": ("菲律宾", "🇵🇭"), "philippines": ("菲律宾", "🇵🇭"),
+            "id": ("印度尼西亚", "🇮🇩"), "indonesia": ("印度尼西亚", "🇮🇩"),
+            "in": ("印度", "🇮🇳"), "india": ("印度", "🇮🇳"),
+            "de": ("德国", "🇩🇪"), "germany": ("德国", "🇩🇪"),
+            "fr": ("法国", "🇫🇷"), "france": ("法国", "🇫🇷"),
+            "es": ("西班牙", "🇪🇸"), "spain": ("西班牙", "🇪🇸"),
+            "it": ("意大利", "🇮🇹"), "italy": ("意大利", "🇮🇹"),
+            "br": ("巴西", "🇧🇷"), "brazil": ("巴西", "🇧🇷"),
+            "mx": ("墨西哥", "🇲🇽"), "mexico": ("墨西哥", "🇲🇽"),
+            "ru": ("俄罗斯", "🇷🇺"), "russia": ("俄罗斯", "🇷🇺"),
+            "tr": ("土耳其", "🇹🇷"), "turkey": ("土耳其", "🇹🇷"),
+            "ae": ("阿拉伯联合酋长国", "🇦🇪"), "united arab emirates": ("阿拉伯联合酋长国", "🇦🇪")
+        ]
+        if let alias = aliases[raw.lowercased()] { return alias }
+        let flags: [String: String] = [
+            "1": "🇺🇸", "7": "🇷🇺", "20": "🇪🇬", "27": "🇿🇦", "30": "🇬🇷", "31": "🇳🇱", "32": "🇧🇪", "33": "🇫🇷", "34": "🇪🇸", "39": "🇮🇹", "44": "🇬🇧", "49": "🇩🇪", "52": "🇲🇽", "55": "🇧🇷", "60": "🇲🇾", "61": "🇦🇺", "62": "🇮🇩", "63": "🇵🇭", "65": "🇸🇬", "66": "🇹🇭", "81": "🇯🇵", "82": "🇰🇷", "84": "🇻🇳", "86": "🇨🇳", "90": "🇹🇷", "91": "🇮🇳", "852": "🇭🇰", "853": "🇲🇴", "886": "🇹🇼", "971": "🇦🇪"
+        ]
+        return (raw.isEmpty ? fallbackRegion : raw, callingCode.flatMap { flags[$0] } ?? "")
     }
 
     private static let callingCodes: [(code: String, region: String)] = [
@@ -392,31 +447,54 @@ private struct SMSReceiveAssistantCard: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
+            if receiver.needsPhoneRequest {
+                Button {
+                    Task { await requestPhone() }
+                } label: {
+                    Label(receiver.phase == .activating ? "正在获取手机号…" : "获取手机号", systemImage: "message.badge")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(receiver.phase == .activating)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
                 field("手机号") {
-                    Button {
-                        copy(receiver.numberForCopy, title: "手机号已复制", detail: "已复制不含国家区号的号码，可直接粘贴。")
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(receiver.numberDisplay)
-                            if !receiver.numberForCopy.isEmpty {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.caption.weight(.semibold))
-                            }
+                    HStack(spacing: 7) {
+                        if !receiver.countryCallingCode.isEmpty {
+                            Text(receiver.countryCallingCode)
+                                .font(.caption.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                         }
-                        .font(.subheadline.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(receiver.numberForCopy.isEmpty ? .secondary : .primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
+                        Button {
+                            copy(receiver.numberForCopy, title: "手机号已复制", detail: "已复制不含国家区号的号码，可直接粘贴。")
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(receiver.localNumberDisplay)
+                                if !receiver.numberForCopy.isEmpty {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.caption.weight(.semibold))
+                                }
+                            }
+                            .font(.subheadline.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(receiver.numberForCopy.isEmpty ? .secondary : .primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(receiver.numberForCopy.isEmpty)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(receiver.numberForCopy.isEmpty)
                 }
 
                 Spacer(minLength: 4)
 
                 field("地区") {
-                    Text(receiver.regionDisplay)
+                    HStack(spacing: 5) {
+                        if !receiver.countryFlag.isEmpty { Text(receiver.countryFlag) }
+                        Text(receiver.regionDisplay)
+                    }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -424,11 +502,11 @@ private struct SMSReceiveAssistantCard: View {
 
                 StatusPill(text: receiver.statusText)
                     .foregroundStyle(receiver.statusColor)
-            }
+                }
 
-            Divider()
+                Divider()
 
-            HStack(spacing: 12) {
+                HStack(spacing: 12) {
                 field("验证码") {
                     Button {
                         copy(receiver.codeDisplay, title: "验证码已复制", detail: "可直接粘贴到 OpenAI 验证页面。")
@@ -471,6 +549,7 @@ private struct SMSReceiveAssistantCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!receiver.canCancel)
+                }
             }
         }
         .padding(.vertical, 6)
@@ -505,6 +584,24 @@ private struct SMSReceiveAssistantCard: View {
         guard !value.isEmpty, value != "--" else { return }
         UIPasteboard.general.string = value
         feedback.success(title, detail: detail)
+    }
+
+    private func requestPhone() async {
+        do {
+            let outcome = try await receiver.begin(using: api)
+            switch outcome {
+            case .waiting:
+                feedback.success("手机号已获取", detail: "点击本地号码即可复制，系统会继续监听验证码。")
+            case .received:
+                feedback.success("已收到验证码", detail: "点击验证码即可复制。")
+            case .expired:
+                feedback.notice("取号已超时", detail: "卡密已返回服务器待用队列，可重新获取手机号。")
+            case .unavailable:
+                feedback.notice("暂无可用卡密", detail: "请在设置的“接码卡密”中加入新的卡密。")
+            }
+        } catch {
+            feedback.failure(error, title: "获取手机号失败")
+        }
     }
 
     private func refresh() async {
@@ -787,31 +884,7 @@ struct OAuthAccountFlow: View {
                 guard let url = URL(string: auth.authURL) else { throw APIError(message: "服务端返回的授权链接无效。") }
                 authorizationURL = url
                 feedback.notice(isReauthorization ? "重新授权链接已生成" : "授权链接已生成", detail: "复制链接或点击“打开浏览器”后完成 \(platform.title) 登录。")
-                if usesSMSReceiver {
-                    Task { await beginSMSReceiver() }
-                }
             } catch { self.error = ErrorMessage(error, title: "生成授权链接失败") }
-        }
-    }
-
-    private func beginSMSReceiver() async {
-        do {
-            guard let api = session.api else {
-                throw APIError(message: "登录已失效，请重新登录。")
-            }
-            let outcome = try await smsReceiver.begin(using: api)
-            switch outcome {
-            case .waiting:
-                feedback.notice("已自动取号", detail: "手机号已放在授权第 2、3 步之间，可点击号码复制。")
-            case .received:
-                feedback.success("已收到验证码", detail: "验证码已显示，可点击复制。")
-            case .expired:
-                feedback.notice("取号已超时", detail: "卡密已返回服务器待用队列，请重新生成授权链接后继续。")
-            case .unavailable:
-                feedback.notice("暂无可用卡密", detail: "请先到“设置 → 接码卡密”批量加入服务器队列，随后重新生成授权链接。")
-            }
-        } catch {
-            feedback.notice("授权链接已生成", detail: "自动取号未完成：\(error.localizedDescription)")
         }
     }
 

@@ -22,7 +22,10 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
       phase: ref('idle'),
       phoneDisplay: ref('--'),
       phoneForCopy: ref(''),
+      countryCallingCode: ref(''),
+      localPhoneNumber: ref('--'),
       region: ref('--'),
+      countryFlag: ref(''),
       code: ref('--'),
       queuedKeyCount: ref(3),
       statusText: ref('等待取号'),
@@ -56,9 +59,9 @@ describe('PixlabSMSReceiver', () => {
     receiverMocks.start.mockResolvedValue('waiting')
   })
 
-  it('requires an explicit request before claiming a number during reauthorization', async () => {
+  it('requires an explicit request before claiming a number for every OAuth flow', async () => {
     const wrapper = mount(PixlabSMSReceiver, {
-      props: { active: true, manualStart: true },
+      props: { active: true },
       global: { stubs: { BaseDialog: true, Icon: true } }
     })
 
@@ -72,13 +75,19 @@ describe('PixlabSMSReceiver', () => {
     expect(wrapper.find('[data-testid="request-sms-phone"]').exists()).toBe(false)
   })
 
-  it('continues to claim a number automatically for a newly added account', async () => {
-    mount(PixlabSMSReceiver, {
-      props: { active: true, manualStart: false },
+  it('keeps the request button visible but disabled until an authorization link exists', async () => {
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: false },
       global: { stubs: { BaseDialog: true, Icon: true } }
     })
 
-    await flushPromises()
-    expect(receiverMocks.start).toHaveBeenCalledTimes(1)
+    const requestButton = wrapper.get('[data-testid="request-sms-phone"]')
+    expect(requestButton.attributes('disabled')).toBeDefined()
+    expect(receiverMocks.start).not.toHaveBeenCalled()
+
+    await wrapper.setProps({ active: true })
+    expect(wrapper.get('[data-testid="request-sms-phone"]').attributes('disabled')).toBeUndefined()
+    expect(receiverMocks.start).not.toHaveBeenCalled()
   })
+
 })
