@@ -16,6 +16,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const pixlabSMSAPIBaseURL = "https://sms.pixlab.cc/api"
@@ -41,11 +42,24 @@ var (
 	ErrPixlabSMSLocked    = infraerrors.Conflict("SMS_SESSION_ACTION_LOCKED", "领取号码后需等待 1 分钟才可换号或取消")
 )
 
-// PixlabSMSQueueStatus intentionally contains counters only. Card keys never
-// leave the server after they have been submitted once.
+// PixlabSMSQueueStatus intentionally contains counters only. Plaintext card
+// keys are available exclusively from the administrator-only management API.
 type PixlabSMSQueueStatus struct {
 	QueuedCount int64 `json:"queued_count"`
 	ActiveCount int64 `json:"active_count"`
+}
+
+// PixlabSMSCardKey is returned only from the administrator's settings API.
+// CardKey remains encrypted at rest and is decrypted only for that explicitly
+// authenticated management view; member and OAuth endpoints never use it.
+type PixlabSMSCardKey struct {
+	ID            int64      `json:"id"`
+	CardKey       string     `json:"card_key"`
+	Status        string     `json:"status"`
+	ClaimCount    int        `json:"claim_count"`
+	QueueRank     int64      `json:"queue_rank"`
+	LastClaimedAt *time.Time `json:"last_claimed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // PixlabSMSResult is the browser-safe representation of a provider session.
@@ -87,7 +101,8 @@ type PixlabSMSMemberResult struct {
 }
 
 // PixlabSMSService owns server-side card-key persistence and provider proxying.
-// It deliberately has no API that returns decrypted card keys.
+// Card keys remain encrypted at rest and are only decrypted for the explicit
+// administrator-only queue-management API.
 type PixlabSMSService struct {
 	db           *sql.DB
 	encryptor    SecretEncryptor
@@ -166,8 +181,12 @@ func (s *PixlabSMSService) AddCardKeys(ctx context.Context, raw string) (int, *P
 		}
 		var rowID int64
 		err = s.db.QueryRowContext(ctx, `
-			INSERT INTO xiass_sms_card_keys (encrypted_key, key_fingerprint)
-			VALUES ($1, $2)
+			INSERT INTO xiass_sms_card_keys (encrypted_key, key_fingerprint, queue_rank)
+			VALUES (
+				$1,
+				$2,
+				(SELECT COALESCE(MAX(queue_rank), 0) + 1 FROM xiass_sms_card_keys)
+			)
 			ON CONFLICT (key_fingerprint) DO NOTHING
 			RETURNING id`, ciphertext, pixlabCardKeyFingerprint(key)).Scan(&rowID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -220,6 +239,190 @@ func (s *PixlabSMSService) ClearQueuedCardKeys(ctx context.Context) (int64, *Pix
 		return 0, nil, err
 	}
 	return deleted, status, nil
+}
+
+// ListCardKeys returns plaintext card keys only for the administrator's
+// management screen. Keys remain encrypted in PostgreSQL at all times.
+func (s *PixlabSMSService) ListCardKeys(ctx context.Context) ([]PixlabSMSCardKey, *PixlabSMSQueueStatus, error) {
+	if s == nil || s.db == nil || s.encryptor == nil {
+		return nil, nil, infraerrors.InternalServer("SMS_RECEIVER_UNAVAILABLE", "接码服务尚未初始化")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, encrypted_key, status, claim_count, queue_rank, last_claimed_at, created_at
+		FROM xiass_sms_card_keys
+		ORDER BY
+			CASE status WHEN 'queued' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+			claim_count ASC,
+			queue_rank ASC,
+			last_claimed_at NULLS FIRST,
+			id ASC`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list sms card keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	keys := make([]PixlabSMSCardKey, 0)
+	for rows.Next() {
+		var (
+			entry       PixlabSMSCardKey
+			encrypted   string
+			lastClaimed sql.NullTime
+		)
+		if err := rows.Scan(
+			&entry.ID,
+			&encrypted,
+			&entry.Status,
+			&entry.ClaimCount,
+			&entry.QueueRank,
+			&lastClaimed,
+			&entry.CreatedAt,
+		); err != nil {
+			return nil, nil, fmt.Errorf("scan sms card key: %w", err)
+		}
+		plainKey, err := s.encryptor.Decrypt(encrypted)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt sms card key %d: %w", entry.ID, err)
+		}
+		entry.CardKey = plainKey
+		if lastClaimed.Valid {
+			claimedAt := lastClaimed.Time
+			entry.LastClaimedAt = &claimedAt
+		}
+		keys = append(keys, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate sms card keys: %w", err)
+	}
+	status, err := s.QueueStatus(ctx, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	return keys, status, nil
+}
+
+// DeleteCardKey permanently removes one operator-selected card. When an active
+// member session still has a held charge, it releases that balance in the same
+// transaction before removing the card. This lets an operator remove a broken
+// active credential without leaving the member's balance in a held state.
+func (s *PixlabSMSService) DeleteCardKey(ctx context.Context, cardKeyID int64) (*PixlabSMSQueueStatus, error) {
+	if s == nil || s.db == nil {
+		return nil, infraerrors.InternalServer("SMS_RECEIVER_UNAVAILABLE", "接码服务尚未初始化")
+	}
+	if cardKeyID <= 0 {
+		return nil, infraerrors.BadRequest("SMS_CARD_KEY_ID_INVALID", "卡密编号无效")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin delete sms card key: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		status      string
+		ownerUserID sql.NullInt64
+		sessionID   sql.NullString
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT status, owner_user_id, session_id
+		FROM xiass_sms_card_keys
+		WHERE id = $1
+		FOR UPDATE`, cardKeyID).Scan(&status, &ownerUserID, &sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, infraerrors.NotFound("SMS_CARD_KEY_NOT_FOUND", "接码卡密不存在或已被删除")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock sms card key for deletion: %w", err)
+	}
+
+	refundedUserID := int64(0)
+	if status == "active" && ownerUserID.Valid && sessionID.Valid && strings.TrimSpace(sessionID.String) != "" {
+		var amount float64
+		err = tx.QueryRowContext(ctx, `
+			SELECT amount
+			FROM xiass_sms_member_charges
+			WHERE session_id = $1 AND user_id = $2 AND status = 'held'
+			FOR UPDATE`, sessionID.String, ownerUserID.Int64).Scan(&amount)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// Administrator sessions have no member charge. A captured member
+			// charge also remains final and is never refunded here.
+		case err != nil:
+			return nil, fmt.Errorf("lock member sms charge for card deletion: %w", err)
+		default:
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE users
+				SET balance = balance + $1, updated_at = NOW()
+				WHERE id = $2 AND deleted_at IS NULL`, amount, ownerUserID.Int64); err != nil {
+				return nil, fmt.Errorf("refund member balance for card deletion: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE xiass_sms_member_charges
+				SET status = 'released', released_at = NOW(), updated_at = NOW()
+				WHERE session_id = $1 AND user_id = $2 AND status = 'held'`, sessionID.String, ownerUserID.Int64); err != nil {
+				return nil, fmt.Errorf("release member sms charge for card deletion: %w", err)
+			}
+			refundedUserID = ownerUserID.Int64
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM xiass_sms_card_keys WHERE id = $1`, cardKeyID); err != nil {
+		return nil, fmt.Errorf("delete sms card key: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit delete sms card key: %w", err)
+	}
+	if refundedUserID > 0 {
+		s.invalidateBalance(ctx, refundedUserID)
+	}
+	return s.QueueStatus(ctx, 0)
+}
+
+// ReorderCardKeys updates only queued cards. The scheduler still distributes
+// claims by usage count first, then uses this operator-defined rank to break
+// ties between equally used cards.
+func (s *PixlabSMSService) ReorderCardKeys(ctx context.Context, cardKeyIDs []int64) (*PixlabSMSQueueStatus, error) {
+	if s == nil || s.db == nil {
+		return nil, infraerrors.InternalServer("SMS_RECEIVER_UNAVAILABLE", "接码服务尚未初始化")
+	}
+	if len(cardKeyIDs) == 0 || len(cardKeyIDs) > 500 {
+		return nil, infraerrors.BadRequest("SMS_CARD_KEY_ORDER_INVALID", "请提交 1 到 500 个待用卡密编号")
+	}
+	seen := make(map[int64]struct{}, len(cardKeyIDs))
+	for _, cardKeyID := range cardKeyIDs {
+		if cardKeyID <= 0 {
+			return nil, infraerrors.BadRequest("SMS_CARD_KEY_ID_INVALID", "卡密编号无效")
+		}
+		if _, exists := seen[cardKeyID]; exists {
+			return nil, infraerrors.BadRequest("SMS_CARD_KEY_ORDER_INVALID", "排序中包含重复卡密")
+		}
+		seen[cardKeyID] = struct{}{}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin sms card key reorder: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for index, cardKeyID := range cardKeyIDs {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE xiass_sms_card_keys
+			SET queue_rank = $1, updated_at = NOW()
+			WHERE id = $2 AND status = 'queued'`, int64(index+1), cardKeyID)
+		if err != nil {
+			return nil, fmt.Errorf("reorder sms card key: %w", err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("read reordered sms card key count: %w", err)
+		}
+		if updated == 0 {
+			return nil, infraerrors.Conflict("SMS_CARD_KEY_REORDER_CONFLICT", "待用卡密状态已变化，请刷新后重试")
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit sms card key reorder: %w", err)
+	}
+	return s.QueueStatus(ctx, 0)
 }
 
 // MemberFee returns the current administrator-configured member price. Each
@@ -317,7 +520,7 @@ func (s *PixlabSMSService) Redeem(ctx context.Context, ownerUserID int64) (*Pixl
 				SELECT id
 				FROM xiass_sms_card_keys
 				WHERE status = 'queued' AND claim_count < $3
-				ORDER BY claim_count ASC, last_claimed_at NULLS FIRST, id
+				ORDER BY claim_count ASC, queue_rank ASC, last_claimed_at NULLS FIRST, id
 				FOR UPDATE SKIP LOCKED
 				LIMIT 1
 			)
@@ -332,6 +535,34 @@ func (s *PixlabSMSService) Redeem(ctx context.Context, ownerUserID int64) (*Pixl
 			return nil, ErrPixlabSMSNoCardKey
 		}
 		if err != nil {
+			// The database keeps one live session per user as a final guard
+			// against concurrent browser tabs. OAuth can be opened from a new
+			// tab after the browser-local session ID has been lost, so recover
+			// the existing session instead of surfacing a misleading outage.
+			if isPixlabActiveOwnerConflict(err) {
+				existingSessionID, lookupErr := s.activeSessionID(ctx, ownerUserID)
+				if lookupErr != nil {
+					return nil, lookupErr
+				}
+				if existingSessionID != "" {
+					result, resumeErr := s.Resume(ctx, ownerUserID, existingSessionID)
+					if resumeErr == nil {
+						return result, nil
+					}
+					// A Pixlab HTTP rejection is distinct from a network outage. The
+					// former means this provider-side session cannot be resumed, so
+					// release the stale local claim and continue the normal card
+					// rotation. Connection failures remain retryable and keep the
+					// current session intact.
+					if isPixlabProviderHTTPError(resumeErr) {
+						if releaseErr := s.releaseSession(ctx, existingSessionID, ownerUserID); releaseErr != nil {
+							return nil, releaseErr
+						}
+						continue
+					}
+					return nil, resumeErr
+				}
+			}
 			return nil, fmt.Errorf("claim sms card key: %w", err)
 		}
 
@@ -353,6 +584,34 @@ func (s *PixlabSMSService) Redeem(ctx context.Context, ownerUserID int64) (*Pixl
 		}
 		return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, false)
 	}
+}
+
+func (s *PixlabSMSService) activeSessionID(ctx context.Context, ownerUserID int64) (string, error) {
+	var sessionID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id
+		FROM xiass_sms_card_keys
+		WHERE owner_user_id = $1 AND status = 'active'
+		ORDER BY consumed_at DESC NULLS LAST, id DESC
+		LIMIT 1`, ownerUserID).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load active sms session: %w", err)
+	}
+	return strings.TrimSpace(sessionID), nil
+}
+
+func isPixlabActiveOwnerConflict(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) &&
+		pqErr.Code == "23505" &&
+		pqErr.Constraint == "uq_xiass_sms_card_keys_active_owner"
+}
+
+func isPixlabProviderHTTPError(err error) bool {
+	return infraerrors.Reason(err) == "SMS_PROVIDER_HTTP_ERROR"
 }
 
 // RedeemForMember reserves ¥2.00 and claims one card in the same database
@@ -717,7 +976,7 @@ func (s *PixlabSMSService) claimMemberSession(ctx context.Context, userID int64)
 			SELECT id
 			FROM xiass_sms_card_keys
 			WHERE status = 'queued' AND claim_count < $3
-			ORDER BY claim_count ASC, last_claimed_at NULLS FIRST, id
+			ORDER BY claim_count ASC, queue_rank ASC, last_claimed_at NULLS FIRST, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)

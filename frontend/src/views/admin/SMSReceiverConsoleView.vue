@@ -279,7 +279,7 @@
             placeholder="每行一个卡密，也支持用空格或逗号分隔"
             spellcheck="false"
           />
-          <p class="sms-field-note"><Icon name="lock" size="xs" /> 已保存的卡密不会再次显示或返回到浏览器。</p>
+          <p class="sms-field-note"><Icon name="lock" size="xs" /> 卡密会加密保存；明文、删除和排序请在系统设置的“授权接码卡密”中管理。</p>
 
           <div class="sms-queue-buttons">
             <button
@@ -305,7 +305,7 @@
 
           <div class="sms-security-note">
             <span class="sms-security-note__icon"><Icon name="shield" size="sm" /></span>
-            <p><b>卡密安全规则</b>：仅提交到 XIASS API 服务器并加密存储；浏览器不会接收到已保存卡密。</p>
+            <p><b>卡密安全规则</b>：仅提交到 XIASS API 服务器并加密存储；原文仅在管理员系统设置的卡密管理区可见。</p>
           </div>
         </aside>
 

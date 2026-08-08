@@ -31,6 +31,20 @@ export interface SMSReceiverClearResult {
   queued_count: number
 }
 
+export interface SMSReceiverCardKey {
+  id: number
+  card_key: string
+  status: string
+  claim_count: number
+  queue_rank: number
+  last_claimed_at?: string
+  created_at: string
+}
+
+export interface SMSReceiverCardKeyListResult extends SMSReceiverQueueStatus {
+  card_keys: SMSReceiverCardKey[]
+}
+
 export interface SMSReceiverMemberFeeResult {
   fee_amount: number
 }
@@ -49,6 +63,23 @@ export async function addCardKeys(cardKeys: string): Promise<SMSReceiverAddResul
 
 export async function clearCardKeys(): Promise<SMSReceiverClearResult> {
   const { data } = await apiClient.delete<SMSReceiverClearResult>('/admin/settings/sms-receiver/card-keys')
+  return data
+}
+
+export async function listCardKeys(): Promise<SMSReceiverCardKeyListResult> {
+  const { data } = await apiClient.get<SMSReceiverCardKeyListResult>('/admin/settings/sms-receiver/card-keys')
+  return data
+}
+
+export async function deleteCardKey(cardKeyID: number): Promise<SMSReceiverQueueStatus> {
+  const { data } = await apiClient.delete<SMSReceiverQueueStatus>(`/admin/settings/sms-receiver/card-keys/${cardKeyID}`)
+  return data
+}
+
+export async function reorderCardKeys(cardKeyIDs: number[]): Promise<SMSReceiverQueueStatus> {
+  const { data } = await apiClient.put<SMSReceiverQueueStatus>('/admin/settings/sms-receiver/card-keys/order', {
+    card_key_ids: cardKeyIDs
+  })
   return data
 }
 

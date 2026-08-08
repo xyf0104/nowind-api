@@ -2,6 +2,7 @@ package admin
 
 import (
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -16,6 +17,10 @@ type pixlabSMSCardKeysRequest struct {
 
 type pixlabSMSMemberFeeRequest struct {
 	MemberFee float64 `json:"member_fee"`
+}
+
+type pixlabSMSCardKeyOrderRequest struct {
+	CardKeyIDs []int64 `json:"card_key_ids"`
 }
 
 func (h *SettingHandler) pixlabSMSServiceOrError(c *gin.Context) *service.PixlabSMSService {
@@ -79,8 +84,8 @@ func (h *SettingHandler) UpdatePixlabSMSMemberFee(c *gin.Context) {
 	response.Success(c, gin.H{"fee_amount": fee})
 }
 
-// AddPixlabSMSCardKeys accepts raw keys once, encrypts them at rest, and never
-// returns them to the caller. The route is excluded from request-body auditing.
+// AddPixlabSMSCardKeys accepts raw keys, encrypts them at rest, and appends
+// them to the operator-controlled queue. The route is excluded from request-body auditing.
 func (h *SettingHandler) AddPixlabSMSCardKeys(c *gin.Context) {
 	svc := h.pixlabSMSServiceOrError(c)
 	if svc == nil {
@@ -115,6 +120,67 @@ func (h *SettingHandler) ClearPixlabSMSCardKeys(c *gin.Context) {
 	response.Success(c, gin.H{
 		"deleted_count": deleted,
 		"queued_count":  status.QueuedCount,
+	})
+}
+
+// ListPixlabSMSCardKeys returns plaintext card keys to the authenticated
+// administrator-only settings screen for direct queue management.
+func (h *SettingHandler) ListPixlabSMSCardKeys(c *gin.Context) {
+	svc := h.pixlabSMSServiceOrError(c)
+	if svc == nil {
+		return
+	}
+	keys, status, err := svc.ListCardKeys(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"card_keys":    keys,
+		"queued_count": status.QueuedCount,
+		"active_count": status.ActiveCount,
+	})
+}
+
+func (h *SettingHandler) DeletePixlabSMSCardKey(c *gin.Context) {
+	svc := h.pixlabSMSServiceOrError(c)
+	if svc == nil {
+		return
+	}
+	cardKeyID, err := strconv.ParseInt(strings.TrimSpace(c.Param("card_key_id")), 10, 64)
+	if err != nil || cardKeyID <= 0 {
+		response.BadRequest(c, "卡密编号无效")
+		return
+	}
+	status, err := svc.DeleteCardKey(c.Request.Context(), cardKeyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"queued_count": status.QueuedCount,
+		"active_count": status.ActiveCount,
+	})
+}
+
+func (h *SettingHandler) ReorderPixlabSMSCardKeys(c *gin.Context) {
+	svc := h.pixlabSMSServiceOrError(c)
+	if svc == nil {
+		return
+	}
+	var req pixlabSMSCardKeyOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "排序请求无效: "+err.Error())
+		return
+	}
+	status, err := svc.ReorderCardKeys(c.Request.Context(), req.CardKeyIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"queued_count": status.QueuedCount,
+		"active_count": status.ActiveCount,
 	})
 }
 
