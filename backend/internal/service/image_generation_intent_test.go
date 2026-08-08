@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestIsImageGenerationIntent(t *testing.T) {
@@ -103,6 +104,54 @@ func TestIsImageGenerationIntent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, IsImageGenerationIntent(tt.endpoint, tt.model, tt.body))
+		})
+	}
+}
+
+func TestForceOpenAIResponsesImageGenerationSize1K(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        []byte
+		wantChanged bool
+		wantTool    string
+		wantRoot    string
+	}{
+		{
+			name:        "rewrites auto and 2k image tools",
+			body:        []byte(`{"model":"gpt-5.4","tools":[{"type":"web_search"},{"type":"image_generation","size":"auto"},{"type":"image_generation","size":"2048x1152"}]}`),
+			wantChanged: true,
+			wantTool:    xiassForcedOpenAIImageSize,
+		},
+		{
+			name:        "keeps an already forced tool unchanged",
+			body:        []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","size":"1024x1024"}]}`),
+			wantChanged: false,
+			wantTool:    xiassForcedOpenAIImageSize,
+		},
+		{
+			name:        "forces image-only model root size",
+			body:        []byte(`{"model":"gpt-image-2","size":"3840x2160"}`),
+			wantChanged: true,
+			wantRoot:    xiassForcedOpenAIImageSize,
+		},
+		{
+			name:        "leaves a text request untouched",
+			body:        []byte(`{"model":"gpt-5.4","tools":[{"type":"web_search"}]}`),
+			wantChanged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updated, changed, err := forceOpenAIResponsesImageGenerationSize1K(tt.body)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantChanged, changed)
+			if tt.wantTool != "" {
+				require.Equal(t, tt.wantTool, gjson.GetBytes(updated, `tools.#(type=="image_generation").size`).String())
+			}
+			if tt.wantRoot != "" {
+				require.Equal(t, tt.wantRoot, gjson.GetBytes(updated, "size").String())
+			}
 		})
 	}
 }

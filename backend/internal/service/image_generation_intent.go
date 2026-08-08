@@ -1,9 +1,11 @@
 package service
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -13,6 +15,9 @@ const (
 	responsesLiteHeaderKey           = "x-openai-internal-codex-responses-lite"
 	responsesLiteWSMetadataKey       = "ws_request_header_x_openai_internal_codex_responses_lite"
 	imageGenerationPermissionMessage = "Image generation is not enabled for this group"
+	// XIASS deliberately uses the 1K OpenAI image tier for every image request.
+	// This is an upstream size, not merely a billing-display fallback.
+	xiassForcedOpenAIImageSize = "1024x1024"
 )
 
 func isOpenAIResponsesLiteHeader(value string) bool {
@@ -520,4 +525,50 @@ func openAIJSONString(value gjson.Result) string {
 		return ""
 	}
 	return strings.TrimSpace(value.String())
+}
+
+// forceOpenAIResponsesImageGenerationSize1K makes every native Responses
+// image tool use the XIASS 1K tier. It keeps the raw JSON representation so
+// passthrough and WebSocket paths avoid an unnecessary full request decode.
+func forceOpenAIResponsesImageGenerationSize1K(body []byte) ([]byte, bool, error) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body, false, nil
+	}
+
+	updated := body
+	changed := false
+	hasImageTool := false
+	var setErr error
+	tools := gjson.GetBytes(body, "tools")
+	if tools.IsArray() {
+		tools.ForEach(func(index, tool gjson.Result) bool {
+			if openAIJSONString(tool.Get("type")) != "image_generation" {
+				return true
+			}
+			hasImageTool = true
+			if openAIJSONString(tool.Get("size")) == xiassForcedOpenAIImageSize {
+				return true
+			}
+			updated, setErr = sjson.SetBytes(updated, fmt.Sprintf("tools.%d.size", index.Int()), xiassForcedOpenAIImageSize)
+			if setErr != nil {
+				return false
+			}
+			changed = true
+			return true
+		})
+	}
+	if setErr != nil {
+		return nil, false, fmt.Errorf("force Responses image size to 1K: %w", setErr)
+	}
+	if hasImageTool || !isOpenAIImageGenerationModel(openAIJSONString(gjson.GetBytes(body, "model"))) {
+		return updated, changed, nil
+	}
+	if openAIJSONString(gjson.GetBytes(body, "size")) == xiassForcedOpenAIImageSize {
+		return updated, changed, nil
+	}
+	updated, setErr = sjson.SetBytes(updated, "size", xiassForcedOpenAIImageSize)
+	if setErr != nil {
+		return nil, false, fmt.Errorf("force Responses image size to 1K: %w", setErr)
+	}
+	return updated, true, nil
 }
