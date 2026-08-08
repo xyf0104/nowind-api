@@ -127,6 +127,7 @@ func (s *helperServer) routes() http.Handler {
 	mux.HandleFunc("POST /api/repair-history", s.handleRepairHistory)
 	mux.HandleFunc("POST /api/restore-history", s.handleRestoreHistory)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
+	mux.HandleFunc("POST /api/browser-closed", s.handleBrowserClosed)
 	return s.localOnly(s.securityHeaders(mux))
 }
 
@@ -236,6 +237,9 @@ func (s *helperServer) handleHistoryBackups(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if backups == nil {
+		backups = []HistoryBackupInfo{}
 	}
 	writeJSON(w, http.StatusOK, historyBackupsResponse{Items: backups})
 }
@@ -791,6 +795,18 @@ func (s *helperServer) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		s.requestShutdown()
 	}()
+}
+
+// handleBrowserClosed releases the local listener when the helper page closes.
+// Authorization navigation is explicitly excluded by the page so that the
+// local callback remains available until the website returns configuration data.
+func (s *helperServer) handleBrowserClosed(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("state") != s.state {
+		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
+		return
+	}
+	s.requestShutdown()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *helperServer) validState(r *http.Request) bool {

@@ -127,8 +127,17 @@
     </div>
   </main>
   <script>
-    const helperState = document.querySelector('meta[name="xiass-helper-state"]').content;
-    const message = document.getElementById('message');
+	const helperState = document.querySelector('meta[name="xiass-helper-state"]').content;
+	const message = document.getElementById('message');
+	let keepHelperRunningForAuthorization = false;
+
+	function releaseHelperOnPageClose() {
+	  if (keepHelperRunningForAuthorization) return;
+	  const target = `/api/browser-closed?state=${encodeURIComponent(helperState)}`;
+	  navigator.sendBeacon(target, new Blob(['{}'], { type: 'application/json' }));
+	}
+
+	window.addEventListener('pagehide', releaseHelperOnPageClose);
 
     function showMessage(text, kind) {
       message.textContent = text;
@@ -173,9 +182,10 @@
 
     async function loadBackups() {
       const data = await request('/api/backups');
+      const items = Array.isArray(data.items) ? data.items : [];
       const select = document.getElementById('backup-select');
       select.innerHTML = '';
-      if (!data.items.length) {
+      if (!items.length) {
         const option = document.createElement('option');
         option.value = '';
         option.textContent = '暂无可恢复备份';
@@ -183,7 +193,7 @@
         document.getElementById('restore-button').disabled = true;
         return;
       }
-      for (const item of data.items) {
+      for (const item of items) {
         const option = document.createElement('option');
         option.value = item.id;
         const reason = item.reason === 'pre_restore' ? '恢复前安全备份' : '配置前备份';
@@ -195,9 +205,10 @@
 
     async function loadHistoryBackups() {
       const data = await request('/api/history-backups');
+      const items = Array.isArray(data.items) ? data.items : [];
       const select = document.getElementById('history-backup-select');
       select.innerHTML = '';
-      if (!data.items.length) {
+      if (!items.length) {
         const option = document.createElement('option');
         option.value = '';
         option.textContent = '暂无可恢复的历史会话备份';
@@ -205,7 +216,7 @@
         document.getElementById('restore-history-button').disabled = true;
         return;
       }
-      for (const item of data.items) {
+      for (const item of items) {
         const option = document.createElement('option');
         option.value = item.id;
         const compatibility = item.sanitized_records ? ` · 清理 ${item.sanitized_records} 条内部记录` : '';
@@ -244,6 +255,7 @@
       button.disabled = true;
       try {
         const data = await request('/api/site', { method: 'POST', body: JSON.stringify({ site_url: siteURL }) });
+		keepHelperRunningForAuthorization = true;
         window.location.assign(data.connect_url);
       } catch (error) {
         showMessage(error.message, 'error');

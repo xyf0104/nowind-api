@@ -11,6 +11,16 @@ import (
 	"testing"
 )
 
+func TestHistoryRepairListBackupsReturnsEmptySliceWhenBackupDirectoryIsAbsent(t *testing.T) {
+	backups, err := NewHistoryRepairer(t.TempDir()).ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backups == nil || len(backups) != 0 {
+		t.Fatalf("history backups = %#v, want an empty non-nil slice", backups)
+	}
+}
+
 func TestHistoryRepairSynchronizesAllProvidersAcrossLegacyAndCurrentStores(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, "codex_local_access")

@@ -516,7 +516,7 @@ func (r *HistoryRepairer) RestoreBackup(backupID string) error {
 func (r *HistoryRepairer) ListBackups() ([]HistoryBackupInfo, error) {
 	entries, err := os.ReadDir(r.BackupRoot)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return []HistoryBackupInfo{}, nil
 	}
 	if err != nil {
 		return nil, err

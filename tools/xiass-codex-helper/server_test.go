@@ -22,6 +22,64 @@ func newTestHelperServer(manager *ConfigManager, site, state string) (*helperSer
 	return helper, err
 }
 
+func TestHelperServerHistoryBackupsAlwaysReturnsJSONArray(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.listHistoryBackups = func() ([]HistoryBackupInfo, error) { return nil, nil }
+
+	request := httptest.NewRequest(http.MethodGet, "/api/history-backups", nil)
+	request.Host = "127.0.0.1:43123"
+	request.Header.Set("X-XIASS-Helper-State", helper.state)
+	response := httptest.NewRecorder()
+	helper.routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("history backups status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if string(payload["items"]) != "[]" {
+		t.Fatalf("history backups items = %s, want []", payload["items"])
+	}
+}
+
+func TestHelperServerBrowserCloseRequiresLocalStateAndRequestsShutdown(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := helper.routes()
+
+	invalid := httptest.NewRequest(http.MethodPost, "/api/browser-closed", nil)
+	invalid.Host = "127.0.0.1:43123"
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusForbidden {
+		t.Fatalf("invalid browser-close status = %d, want %d", invalidResponse.Code, http.StatusForbidden)
+	}
+	select {
+	case <-helper.shutdown:
+		t.Fatal("invalid browser-close request shut down helper")
+	default:
+	}
+
+	valid := httptest.NewRequest(http.MethodPost, "/api/browser-closed?state="+helper.state, nil)
+	valid.Host = "127.0.0.1:43123"
+	validResponse := httptest.NewRecorder()
+	handler.ServeHTTP(validResponse, valid)
+	if validResponse.Code != http.StatusNoContent {
+		t.Fatalf("valid browser-close status = %d, want %d", validResponse.Code, http.StatusNoContent)
+	}
+	select {
+	case <-helper.shutdown:
+	default:
+		t.Fatal("valid browser-close request did not shut down helper")
+	}
+}
+
 func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
 	if err := os.WriteFile(manager.ConfigPath, []byte(testOriginalConfig), 0o600); err != nil {

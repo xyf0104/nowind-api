@@ -21,8 +21,19 @@
 	<h1 id="title">正在安全配置 Codex...</h1>
 	<p id="detail">正在退出 Codex、备份并修复历史会话；全部校验通过后会自动重新启动。</p>
   </main>
-  <script>
-    function decodeBase64Url(value) {
+	<script>
+	  let helperState = '';
+	  let keepHelperRunning = false;
+
+	  function releaseHelperOnPageClose() {
+		if (!helperState || keepHelperRunning) return;
+		const target = `/api/browser-closed?state=${encodeURIComponent(helperState)}`;
+		navigator.sendBeacon(target, new Blob(['{}'], { type: 'application/json' }));
+	  }
+
+	  window.addEventListener('pagehide', releaseHelperOnPageClose);
+
+	  function decodeBase64Url(value) {
       const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
       const padding = '='.repeat((4 - normalized.length % 4) % 4);
       const binary = atob(normalized + padding);
@@ -36,16 +47,18 @@
       titleElement.textContent = title;
       titleElement.className = kind;
       detailElement.textContent = detail + ' ';
-      const link = document.createElement('a');
-      link.href = '/';
-      link.textContent = '返回配置助手';
-      detailElement.append(link);
+		const link = document.createElement('a');
+		link.href = '/';
+		link.textContent = '返回配置助手';
+		link.addEventListener('click', () => { keepHelperRunning = true; });
+		detailElement.append(link);
     }
 
     async function apply() {
       const params = new URLSearchParams(location.hash.slice(1));
-      const state = params.get('state') || '';
-      const payload = params.get('payload') || '';
+		const state = params.get('state') || '';
+		const payload = params.get('payload') || '';
+		helperState = state;
       history.replaceState(null, '', '/callback');
       if (!state || !payload) throw new Error('网站没有返回有效的配置数据。');
       const response = await fetch('/api/apply', {
