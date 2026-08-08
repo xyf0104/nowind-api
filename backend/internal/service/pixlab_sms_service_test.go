@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -70,19 +71,20 @@ func TestPixlabSMSServiceRedeemHandlesNumericProviderFieldsWithoutLeakingCardKey
 		WITH next_key AS (
 			SELECT id
 			FROM xiass_sms_card_keys
-			WHERE status = 'queued'
-			ORDER BY id
+			WHERE status = 'queued' AND claim_count < $3
+			ORDER BY claim_count ASC, last_claimed_at NULLS FIRST, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
 		UPDATE xiass_sms_card_keys AS card
 		SET status = 'active', owner_user_id = $1, session_id = $2,
-			consumed_at = NOW(), updated_at = NOW()
+			consumed_at = NOW(), last_claimed_at = NOW(),
+			claim_count = card.claim_count + 1, updated_at = NOW()
 		FROM next_key
 		WHERE card.id = next_key.id
 		RETURNING card.encrypted_key`)
 	mock.ExpectQuery(claim).
-		WithArgs(int64(42), sqlmock.AnyArg()).
+		WithArgs(int64(42), sqlmock.AnyArg(), PixlabSMSCardKeyMaxClaims).
 		WillReturnRows(sqlmock.NewRows([]string{"encrypted_key"}).AddRow("enc:SERVER-ONLY-CARD"))
 	mock.ExpectExec(regexp.QuoteMeta(`
 		DELETE FROM xiass_sms_card_keys
@@ -111,6 +113,78 @@ func TestPixlabSMSServiceRedeemHandlesNumericProviderFieldsWithoutLeakingCardKey
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestPixlabSMSServiceRedeemSkipsCardAtProviderUsageLimit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	var receivedCardKeys []string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		receivedCardKeys = append(receivedCardKeys, request["cardKey"])
+		w.Header().Set("Content-Type", "application/json")
+		if request["cardKey"] == "AT-LIMIT" {
+			_, _ = w.Write([]byte(`{"success":false,"message":"单卡连续换号上限（6次）触发熔断"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"number":"12025550124","country":"美国","status":"RECEIVED","code":"654322"}`))
+	}))
+	t.Cleanup(provider.Close)
+
+	claim := regexp.QuoteMeta(`
+		WITH next_key AS (
+			SELECT id
+			FROM xiass_sms_card_keys
+			WHERE status = 'queued' AND claim_count < $3
+			ORDER BY claim_count ASC, last_claimed_at NULLS FIRST, id
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		)
+		UPDATE xiass_sms_card_keys AS card
+		SET status = 'active', owner_user_id = $1, session_id = $2,
+			consumed_at = NOW(), last_claimed_at = NOW(),
+			claim_count = card.claim_count + 1, updated_at = NOW()
+		FROM next_key
+		WHERE card.id = next_key.id
+		RETURNING card.encrypted_key`)
+	exhaust := regexp.QuoteMeta(`
+		UPDATE xiass_sms_card_keys
+		SET status = 'exhausted', owner_user_id = NULL, session_id = NULL,
+			consumed_at = NULL, updated_at = NOW()
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)
+	mock.ExpectQuery(claim).
+		WithArgs(int64(42), sqlmock.AnyArg(), PixlabSMSCardKeyMaxClaims).
+		WillReturnRows(sqlmock.NewRows([]string{"encrypted_key"}).AddRow("enc:AT-LIMIT"))
+	mock.ExpectExec(exhaust).
+		WithArgs(sqlmock.AnyArg(), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(claim).
+		WithArgs(int64(42), sqlmock.AnyArg(), PixlabSMSCardKeyMaxClaims).
+		WillReturnRows(sqlmock.NewRows([]string{"encrypted_key"}).AddRow("enc:NEXT-CARD"))
+	mock.ExpectExec(regexp.QuoteMeta(`
+		DELETE FROM xiass_sms_card_keys
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
+		WithArgs(sqlmock.AnyArg(), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'queued'),
+			COUNT(*) FILTER (WHERE status = 'active' AND ($1 = 0 OR owner_user_id = $1))
+		FROM xiass_sms_card_keys`)).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"queued", "active"}).AddRow(2, 0))
+
+	svc := newPixlabSMSService(db, pixlabSMSPrefixEncryptor{}, provider.Client(), provider.URL)
+	result, err := svc.Redeem(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, []string{"AT-LIMIT", "NEXT-CARD"}, receivedCardKeys)
+	require.Equal(t, "12025550124", result.Number)
+	require.Equal(t, "654322", result.Code)
+	require.Equal(t, int64(2), result.QueuedCount)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestPixlabSMSServiceCheckKeepsActiveCardAfterProviderFailure(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -133,6 +207,50 @@ func TestPixlabSMSServiceCheckKeepsActiveCardAfterProviderFailure(t *testing.T) 
 	svc := newPixlabSMSService(db, pixlabSMSPrefixEncryptor{}, provider.Client(), provider.URL)
 	_, err = svc.Check(context.Background(), 42, "session-1")
 	require.Error(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPixlabSMSServiceCheckRetiresCardAtProviderUsageLimit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/check", r.URL.Path)
+		_, _ = w.Write([]byte(`{"success":false,"message":"单卡连续换号上限（6次）触发熔断"}`))
+	}))
+	t.Cleanup(provider.Close)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT encrypted_key
+		FROM xiass_sms_card_keys
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
+		WithArgs("session-limit", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"encrypted_key"}).AddRow("enc:AT-LIMIT"))
+	mock.ExpectExec(regexp.QuoteMeta(`
+		UPDATE xiass_sms_card_keys
+		SET status = 'exhausted', owner_user_id = NULL, session_id = NULL,
+			consumed_at = NULL, updated_at = NOW()
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
+		WithArgs("session-limit", int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'queued'),
+			COUNT(*) FILTER (WHERE status = 'active' AND ($1 = 0 OR owner_user_id = $1))
+		FROM xiass_sms_card_keys`)).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"queued", "active"}).AddRow(3, 0))
+
+	svc := newPixlabSMSService(db, pixlabSMSPrefixEncryptor{}, provider.Client(), provider.URL)
+	result, err := svc.Check(context.Background(), 42, "session-limit")
+	require.NoError(t, err)
+	require.Equal(t, "EXHAUSTED", result.Status)
+	require.Empty(t, result.SessionID)
+	require.Equal(t, int64(3), result.QueuedCount)
+	encoded, marshalErr := json.Marshal(result)
+	require.NoError(t, marshalErr)
+	require.NotContains(t, string(encoded), "AT-LIMIT")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -164,10 +282,11 @@ func TestPixlabSMSServiceCancelRequeuesCardWithoutVerificationCode(t *testing.T)
 		WillReturnRows(sqlmock.NewRows([]string{"queued", "active"}).AddRow(2, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`
 		UPDATE xiass_sms_card_keys
-		SET status = 'queued', owner_user_id = NULL, session_id = NULL,
+		SET status = CASE WHEN claim_count >= $3 THEN 'exhausted' ELSE 'queued' END,
+			owner_user_id = NULL, session_id = NULL,
 			consumed_at = NULL, updated_at = NOW()
 		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
-		WithArgs("session-1", int64(42)).
+		WithArgs("session-1", int64(42), PixlabSMSCardKeyMaxClaims).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT
@@ -218,18 +337,19 @@ func TestPixlabSMSServiceRedeemForMemberCapturesFeeOnlyAfterCode(t *testing.T) {
 		WITH next_key AS (
 			SELECT id
 			FROM xiass_sms_card_keys
-			WHERE status = 'queued'
-			ORDER BY id
+			WHERE status = 'queued' AND claim_count < $3
+			ORDER BY claim_count ASC, last_claimed_at NULLS FIRST, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
 		UPDATE xiass_sms_card_keys AS card
 		SET status = 'active', owner_user_id = $1, session_id = $2,
-			consumed_at = NOW(), updated_at = NOW()
+			consumed_at = NOW(), last_claimed_at = NOW(),
+			claim_count = card.claim_count + 1, updated_at = NOW()
 		FROM next_key
 		WHERE card.id = next_key.id
 		RETURNING card.encrypted_key`)).
-		WithArgs(int64(7), sqlmock.AnyArg()).
+		WithArgs(int64(7), sqlmock.AnyArg(), PixlabSMSCardKeyMaxClaims).
 		WillReturnRows(sqlmock.NewRows([]string{"encrypted_key"}).AddRow("enc:MEMBER-CARD"))
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		UPDATE users
@@ -281,6 +401,144 @@ func TestPixlabSMSServiceRedeemForMemberCapturesFeeOnlyAfterCode(t *testing.T) {
 	require.Equal(t, PixlabSMSMemberFee, result.FeeAmount)
 	require.Equal(t, 8.0, result.Balance)
 	require.Empty(t, result.SessionID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPixlabSMSServiceRedeemForMemberRotatesLimitedCardWithoutDoubleCharge(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		if request["cardKey"] == "AT-LIMIT" {
+			_, _ = w.Write([]byte(`{"success":false,"error":"单卡连续换号上限（6次）触发熔断"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"number":"12025550124","country":"美国","status":"RECEIVED","code":"654322"}`))
+	}))
+	t.Cleanup(provider.Close)
+
+	claim := regexp.QuoteMeta(`
+		WITH next_key AS (
+			SELECT id
+			FROM xiass_sms_card_keys
+			WHERE status = 'queued' AND claim_count < $3
+			ORDER BY claim_count ASC, last_claimed_at NULLS FIRST, id
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		)
+		UPDATE xiass_sms_card_keys AS card
+		SET status = 'active', owner_user_id = $1, session_id = $2,
+			consumed_at = NOW(), last_claimed_at = NOW(),
+			claim_count = card.claim_count + 1, updated_at = NOW()
+		FROM next_key
+		WHERE card.id = next_key.id
+		RETURNING card.encrypted_key`)
+	exhaust := regexp.QuoteMeta(`
+		UPDATE xiass_sms_card_keys
+		SET status = 'exhausted', owner_user_id = NULL, session_id = NULL,
+			consumed_at = NULL, updated_at = NOW()
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)
+	expectMemberClaim := func(card string) {
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock($1)`)).
+			WithArgs(int64(7)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`
+			SELECT EXISTS(
+				SELECT 1 FROM xiass_sms_card_keys
+				WHERE owner_user_id = $1 AND status = 'active'
+			)`)).
+			WithArgs(int64(7)).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+		mock.ExpectQuery(regexp.QuoteMeta(`
+			SELECT member_fee
+			FROM xiass_sms_receiver_settings
+			WHERE id = 1
+			FOR UPDATE`)).
+			WillReturnRows(sqlmock.NewRows([]string{"member_fee"}).AddRow(PixlabSMSMemberFee))
+		mock.ExpectQuery(claim).
+			WithArgs(int64(7), sqlmock.AnyArg(), PixlabSMSCardKeyMaxClaims).
+			WillReturnRows(sqlmock.NewRows([]string{"encrypted_key"}).AddRow("enc:" + card))
+		mock.ExpectQuery(regexp.QuoteMeta(`
+			UPDATE users
+			SET balance = balance - $1, updated_at = NOW()
+			WHERE id = $2 AND deleted_at IS NULL AND balance >= $1
+			RETURNING balance`)).
+			WithArgs(PixlabSMSMemberFee, int64(7)).
+			WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(8.0))
+		mock.ExpectExec(regexp.QuoteMeta(`
+			INSERT INTO xiass_sms_member_charges (session_id, user_id, amount, status)
+			VALUES ($1, $2, $3, 'held')`)).
+			WithArgs(sqlmock.AnyArg(), int64(7), PixlabSMSMemberFee).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+	}
+	expectMemberClaim("AT-LIMIT")
+	mock.ExpectExec(exhaust).
+		WithArgs(sqlmock.AnyArg(), int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT amount
+		FROM xiass_sms_member_charges
+		WHERE session_id = $1 AND user_id = $2 AND status = 'held'
+		FOR UPDATE`)).
+		WithArgs(sqlmock.AnyArg(), int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"amount"}).AddRow(PixlabSMSMemberFee))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		UPDATE users
+		SET balance = balance + $1, updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL
+		RETURNING balance`)).
+		WithArgs(PixlabSMSMemberFee, int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(10.0))
+	mock.ExpectExec(regexp.QuoteMeta(`
+		UPDATE xiass_sms_member_charges
+		SET status = 'released', released_at = NOW(), updated_at = NOW()
+		WHERE session_id = $1 AND user_id = $2 AND status = 'held'`)).
+		WithArgs(sqlmock.AnyArg(), int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	expectMemberClaim("NEXT-CARD")
+	mock.ExpectExec(regexp.QuoteMeta(`
+		UPDATE xiass_sms_member_charges
+		SET status = 'captured', captured_at = NOW(), updated_at = NOW()
+		WHERE session_id = $1 AND user_id = $2 AND status = 'held'`)).
+		WithArgs(sqlmock.AnyArg(), int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`
+		DELETE FROM xiass_sms_card_keys
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
+		WithArgs(sqlmock.AnyArg(), int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'queued'),
+			COUNT(*) FILTER (WHERE status = 'active' AND ($1 = 0 OR owner_user_id = $1))
+		FROM xiass_sms_card_keys`)).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"queued", "active"}).AddRow(1, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT balance FROM users WHERE id = $1 AND deleted_at IS NULL`)).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(8.0))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT status, amount
+		FROM xiass_sms_member_charges
+		WHERE session_id = $1 AND user_id = $2`)).
+		WithArgs(sqlmock.AnyArg(), int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "amount"}).AddRow("captured", PixlabSMSMemberFee))
+
+	svc := newPixlabSMSService(db, pixlabSMSPrefixEncryptor{}, provider.Client(), provider.URL)
+	result, err := svc.RedeemForMember(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, "captured", result.ChargeState)
+	require.Equal(t, PixlabSMSMemberFee, result.FeeAmount)
+	require.Equal(t, 8.0, result.Balance)
+	require.Equal(t, "654322", result.Code)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -352,10 +610,11 @@ func TestPixlabSMSServiceMemberCancelReleasesHeldFee(t *testing.T) {
 	mock.ExpectCommit()
 	mock.ExpectExec(regexp.QuoteMeta(`
 		UPDATE xiass_sms_card_keys
-		SET status = 'queued', owner_user_id = NULL, session_id = NULL,
+		SET status = CASE WHEN claim_count >= $3 THEN 'exhausted' ELSE 'queued' END,
+			owner_user_id = NULL, session_id = NULL,
 			consumed_at = NULL, updated_at = NOW()
 		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
-		WithArgs("member-session", int64(7)).
+		WithArgs("member-session", int64(7), PixlabSMSCardKeyMaxClaims).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT
@@ -382,4 +641,11 @@ func TestPixlabSMSServiceMemberCancelReleasesHeldFee(t *testing.T) {
 	require.Equal(t, 10.0, result.Balance)
 	require.Equal(t, "CANCELLED", result.Status)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIsPixlabCardUsageLimitError(t *testing.T) {
+	require.True(t, isPixlabCardUsageLimitError(infraerrors.BadRequest("SMS_PROVIDER_REJECTED", "单卡连续换号上限（6 次）触发熔断")))
+	require.True(t, isPixlabCardUsageLimitError(infraerrors.BadRequest("SMS_PROVIDER_REJECTED", "连续换号上限")))
+	require.False(t, isPixlabCardUsageLimitError(infraerrors.BadRequest("SMS_PROVIDER_REJECTED", "号码暂时不足，请稍后重试")))
+	require.False(t, isPixlabCardUsageLimitError(infraerrors.ServiceUnavailable("SMS_PROVIDER_UNAVAILABLE", "接码服务暂时无法连接")))
 }

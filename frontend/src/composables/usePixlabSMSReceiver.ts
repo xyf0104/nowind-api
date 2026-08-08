@@ -324,7 +324,7 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
       return 'received'
     }
 
-    if (['EXPIRED', 'TIMEOUT', 'CANCELLED', 'CANCELED', 'FAILED', 'ERROR', 'RECEIVED', 'COMPLETED', 'USED'].includes(status)) {
+    if (['EXPIRED', 'TIMEOUT', 'CANCELLED', 'CANCELED', 'FAILED', 'ERROR', 'EXHAUSTED', 'RECEIVED', 'COMPLETED', 'USED'].includes(status)) {
       clearActiveSession()
       phase.value = 'expired'
       code.value = '--'

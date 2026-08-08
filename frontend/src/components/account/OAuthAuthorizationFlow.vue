@@ -741,6 +741,7 @@
           <PixlabSMSReceiver
             v-if="platform === 'openai'"
             :active="Boolean(authUrl)"
+            :manual-start="manualSMSStart"
           />
 
           <!-- Step 3: Enter authorization code -->
@@ -847,6 +848,7 @@ interface Props {
   initialInputMethod?: AuthInputMethod
   platform?: AccountPlatform // Platform type for different UI/text
   showProjectId?: boolean // New prop to control project ID visibility
+  manualSMSStart?: boolean // Reauthorization must not claim a number automatically
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -870,7 +872,8 @@ const props = withDefaults(defineProps<Props>(), {
   showManualOption: true,
   initialInputMethod: 'manual',
   platform: 'anthropic',
-  showProjectId: true
+  showProjectId: true,
+  manualSMSStart: false
 })
 
 const emit = defineEmits<{

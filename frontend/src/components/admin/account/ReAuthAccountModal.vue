@@ -134,6 +134,7 @@
         :method-label="t('admin.accounts.inputMethod')"
         :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : isGrok ? 'grok' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
+        :manual-sms-start="isOpenAI"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
       />

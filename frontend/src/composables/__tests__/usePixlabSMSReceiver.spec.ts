@@ -94,4 +94,25 @@ describe('usePixlabSMSReceiver', () => {
     expect(receiver.phoneForCopy.value).toBe('13912345678')
     expect(receiver.queuedKeyCount.value).toBe(0)
   })
+
+  it('clears a locally stored session when the server retires a limit-reached card', async () => {
+    vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 2, active_count: 0 })
+    vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'server-session-limit',
+      status: 'WAITING',
+      number: '8613812345678',
+      queued_count: 1
+    })
+    vi.mocked(smsReceiverAPI.check).mockResolvedValue({
+      status: 'EXHAUSTED',
+      queued_count: 1
+    })
+
+    await receiver.start()
+    await expect(receiver.refresh()).resolves.toBe('expired')
+
+    expect(receiver.phase.value).toBe('expired')
+    expect(localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)).toBeNull()
+    expect(receiver.queuedKeyCount.value).toBe(1)
+  })
 })

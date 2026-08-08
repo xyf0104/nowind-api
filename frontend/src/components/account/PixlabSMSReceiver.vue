@@ -1,6 +1,6 @@
 <template>
   <section
-    class="rounded-lg border border-cyan-200 bg-cyan-50/70 p-4 dark:border-cyan-800/70 dark:bg-cyan-950/25"
+    class="relative rounded-lg border border-cyan-200 bg-cyan-50/70 p-4 dark:border-cyan-800/70 dark:bg-cyan-950/25"
     aria-live="polite"
   >
     <div class="flex items-center justify-between gap-3">
@@ -111,6 +111,33 @@
     <p v-if="phase === 'unavailable'" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
       请点右上角齿轮添加接码卡密；卡密会加密保存到 XIASS API 服务器，收到验证码后才会自动清除。
     </p>
+
+    <div
+      v-if="needsManualStart"
+      class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-cyan-50/95 p-4 backdrop-blur-[1px] dark:bg-cyan-950/95"
+    >
+      <div class="flex max-w-xs flex-col items-center text-center">
+        <span class="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-600 text-white shadow-sm">
+          <Icon name="chat" size="sm" />
+        </span>
+        <p class="text-sm font-semibold text-cyan-950 dark:text-cyan-100">需要手机号时再领取</p>
+        <p class="mt-1 text-xs leading-5 text-cyan-800/80 dark:text-cyan-200/80">重新授权不会自动消耗接码卡密。</p>
+        <button
+          type="button"
+          class="btn btn-primary mt-3 !px-4 !py-2 text-sm"
+          data-testid="request-sms-phone"
+          :disabled="isStartingPhone"
+          @click="requestPhone"
+        >
+          <svg v-if="isStartingPhone" class="mr-1.5 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+          <Icon v-else name="chat" size="sm" class="mr-1.5" />
+          获取手机号
+        </button>
+      </div>
+    </div>
   </section>
 
   <BaseDialog
@@ -156,7 +183,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
 import { usePixlabSMSReceiver } from '@/composables/usePixlabSMSReceiver'
@@ -165,8 +192,10 @@ import Icon from '@/components/icons/Icon.vue'
 
 const props = withDefaults(defineProps<{
   active?: boolean
+  manualStart?: boolean
 }>(), {
-  active: false
+  active: false,
+  manualStart: false
 })
 
 const appStore = useAppStore()
@@ -194,17 +223,31 @@ const phoneCopied = ref(false)
 const codeCopied = ref(false)
 const isSavingKeys = ref(false)
 const isClearingKeys = ref(false)
+const hasManuallyStarted = ref(false)
+const isStartingPhone = ref(false)
+const needsManualStart = computed(() => props.active && props.manualStart && !hasManuallyStarted.value)
 
 function showError(error: unknown): void {
   appStore.showError(error instanceof Error ? error.message : '接码服务暂时不可用，请稍后重试。')
 }
 
-async function begin(): Promise<void> {
+async function begin(): Promise<boolean> {
   try {
     await receiver.start()
+    return true
   } catch (error) {
     showError(error)
+    return false
   }
+}
+
+async function requestPhone(): Promise<void> {
+  if (!props.active || isStartingPhone.value) return
+  isStartingPhone.value = true
+  hasManuallyStarted.value = true
+  const started = await begin()
+  if (!started) hasManuallyStarted.value = false
+  isStartingPhone.value = false
 }
 
 async function refresh(): Promise<void> {
@@ -289,12 +332,19 @@ async function clearQueuedKeys(): Promise<void> {
 }
 
 watch(
-  () => props.active,
-  (active) => {
+  () => [props.active, props.manualStart] as const,
+  ([active, manualStart]) => {
+    if (!active) {
+      hasManuallyStarted.value = false
+      receiver.stop()
+      return
+    }
+    if (manualStart && !hasManuallyStarted.value) {
+      receiver.stop()
+      return
+    }
     if (active) {
       void begin()
-    } else {
-      receiver.stop()
     }
   },
   { immediate: true }
