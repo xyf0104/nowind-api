@@ -340,7 +340,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			normalized = stripped
 			logOpenAIWSModeInfo("ingress_ws_codex_spark_image_tool_stripped account_id=%d", account.ID)
 		}
-		forcedImagePayload, _, forceImageErr := forceOpenAIResponsesImageGenerationSize1K(normalized)
+		forcedImagePayload, _, forceImageErr := applyOpenAIResponsesImageSizeDefault(normalized)
 		if forceImageErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", forceImageErr)
 		}

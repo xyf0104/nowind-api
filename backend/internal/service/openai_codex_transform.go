@@ -864,8 +864,10 @@ func normalizeOpenAIResponsesImageGenerationTools(reqBody map[string]any) bool {
 		if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
 			continue
 		}
-		if strings.TrimSpace(firstNonEmptyString(toolMap["size"])) != xiassForcedOpenAIImageSize {
-			toolMap["size"] = xiassForcedOpenAIImageSize
+		toolSize := strings.TrimSpace(firstNonEmptyString(toolMap["size"]))
+		rootSize := strings.TrimSpace(firstNonEmptyString(reqBody["size"]))
+		if isOpenAIImageSizeDefault(toolSize) && (toolSize != "" || isOpenAIImageSizeDefault(rootSize)) {
+			toolMap["size"] = xiassDefaultOpenAIImageSize
 			modified = true
 		}
 		if _, ok := toolMap["output_format"]; !ok {

@@ -98,7 +98,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, err
 		}
 	}
-	forcedImageBody, _, forceImageErr := forceOpenAIResponsesImageGenerationSize1K(body)
+	forcedImageBody, _, forceImageErr := applyOpenAIResponsesImageSizeDefault(body)
 	if forceImageErr != nil {
 		return nil, forceImageErr
 	}

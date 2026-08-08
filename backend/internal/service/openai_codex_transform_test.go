@@ -646,7 +646,7 @@ func TestNormalizeOpenAIResponsesImageGenerationTools_RewritesLegacyFields(t *te
 	require.True(t, ok)
 	first, ok := tools[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, xiassForcedOpenAIImageSize, first["size"])
+	require.Equal(t, xiassDefaultOpenAIImageSize, first["size"])
 	require.Equal(t, "png", first["output_format"])
 	require.Equal(t, 60, first["output_compression"])
 	_, hasFormat := first["format"]

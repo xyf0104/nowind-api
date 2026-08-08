@@ -109,7 +109,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, policyErr
 	}
 	body = updatedBody
-	forcedImageBody, _, forceImageErr := forceOpenAIResponsesImageGenerationSize1K(body)
+	forcedImageBody, _, forceImageErr := applyOpenAIResponsesImageSizeDefault(body)
 	if forceImageErr != nil {
 		return nil, forceImageErr
 	}

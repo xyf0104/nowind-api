@@ -50,10 +50,10 @@ func TestOpenAIGatewayService_APIKeyPassthrough_ImageIntentPreservesGateAndBilli
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, upstream.lastReq)
-		require.Equal(t, xiassForcedOpenAIImageSize, gjson.GetBytes(upstream.lastBody, "tools.0.size").String())
+		require.Equal(t, "2048x1152", gjson.GetBytes(upstream.lastBody, "tools.0.size").String())
 		require.Equal(t, 1, result.ImageCount)
 		require.Equal(t, "gpt-image-2", result.BillingModel)
-		require.Equal(t, "1K", result.ImageSize)
-		require.Equal(t, xiassForcedOpenAIImageSize, result.ImageInputSize)
+		require.Equal(t, "2K", result.ImageSize)
+		require.Equal(t, "2048x1152", result.ImageInputSize)
 	})
 }

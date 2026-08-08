@@ -108,31 +108,39 @@ func TestIsImageGenerationIntent(t *testing.T) {
 	}
 }
 
-func TestForceOpenAIResponsesImageGenerationSize1K(t *testing.T) {
+func TestApplyOpenAIResponsesImageSizeDefault(t *testing.T) {
 	tests := []struct {
-		name        string
-		body        []byte
-		wantChanged bool
-		wantTool    string
-		wantRoot    string
+		name           string
+		body           []byte
+		wantChanged    bool
+		wantTool       string
+		wantSecondTool string
+		wantRoot       string
 	}{
 		{
-			name:        "rewrites auto and 2k image tools",
-			body:        []byte(`{"model":"gpt-5.4","tools":[{"type":"web_search"},{"type":"image_generation","size":"auto"},{"type":"image_generation","size":"2048x1152"}]}`),
-			wantChanged: true,
-			wantTool:    xiassForcedOpenAIImageSize,
+			name:           "rewrites auto and preserves explicit 2k image tools",
+			body:           []byte(`{"model":"gpt-5.4","tools":[{"type":"web_search"},{"type":"image_generation","size":"auto"},{"type":"image_generation","size":"2048x1152"}]}`),
+			wantChanged:    true,
+			wantTool:       xiassDefaultOpenAIImageSize,
+			wantSecondTool: "2048x1152",
 		},
 		{
 			name:        "keeps an already forced tool unchanged",
 			body:        []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","size":"1024x1024"}]}`),
 			wantChanged: false,
-			wantTool:    xiassForcedOpenAIImageSize,
+			wantTool:    xiassDefaultOpenAIImageSize,
 		},
 		{
-			name:        "forces image-only model root size",
-			body:        []byte(`{"model":"gpt-image-2","size":"3840x2160"}`),
+			name:        "forces omitted image-only model root size",
+			body:        []byte(`{"model":"gpt-image-2"}`),
 			wantChanged: true,
-			wantRoot:    xiassForcedOpenAIImageSize,
+			wantRoot:    xiassDefaultOpenAIImageSize,
+		},
+		{
+			name:        "preserves explicit root size for omitted tool size",
+			body:        []byte(`{"model":"gpt-5.4","size":"3840x2160","tools":[{"type":"image_generation"}]}`),
+			wantChanged: false,
+			wantRoot:    "3840x2160",
 		},
 		{
 			name:        "leaves a text request untouched",
@@ -143,11 +151,14 @@ func TestForceOpenAIResponsesImageGenerationSize1K(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			updated, changed, err := forceOpenAIResponsesImageGenerationSize1K(tt.body)
+			updated, changed, err := applyOpenAIResponsesImageSizeDefault(tt.body)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantChanged, changed)
 			if tt.wantTool != "" {
 				require.Equal(t, tt.wantTool, gjson.GetBytes(updated, `tools.#(type=="image_generation").size`).String())
+			}
+			if tt.wantSecondTool != "" {
+				require.Equal(t, tt.wantSecondTool, gjson.GetBytes(updated, "tools.2.size").String())
 			}
 			if tt.wantRoot != "" {
 				require.Equal(t, tt.wantRoot, gjson.GetBytes(updated, "size").String())

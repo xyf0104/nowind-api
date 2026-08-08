@@ -562,7 +562,7 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
-	forceOpenAIImagesRequestSize1K(parsed)
+	applyOpenAIImagesRequestSizeDefault(parsed)
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
@@ -573,11 +573,14 @@ func (s *OpenAIGatewayService) ForwardImages(
 	}
 }
 
-func forceOpenAIImagesRequestSize1K(req *OpenAIImagesRequest) {
+func applyOpenAIImagesRequestSizeDefault(req *OpenAIImagesRequest) {
 	if req == nil {
 		return
 	}
-	req.Size = xiassForcedOpenAIImageSize
+	if !isOpenAIImageSizeDefault(req.Size) {
+		return
+	}
+	req.Size = xiassDefaultOpenAIImageSize
 	req.ExplicitSize = true
 	req.SizeTier = ImageBillingSize1K
 }
