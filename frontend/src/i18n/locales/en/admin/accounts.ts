@@ -12,6 +12,8 @@ export default {
       autoRefreshCountdown: 'Auto refresh: {seconds}s',
       listPendingSyncHint: 'List changes are pending sync. Click sync to load latest rows.',
       listPendingSyncAction: 'Sync now',
+      activeConcurrencyFilter: '{group} · Accounts using concurrency now',
+      clearActiveConcurrencyFilter: 'Show all accounts',
       syncFromCrs: 'Sync from CRS',
       dataExport: 'Export',
       dataExportSelected: 'Export Selected',

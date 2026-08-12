@@ -29,6 +29,19 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 	return accounts, result.Total, nil
 }
 
+func (s *adminServiceImpl) ListAccountsByIDs(ctx context.Context, page, pageSize int, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error) {
+	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+	lister, ok := s.accountRepo.(AccountIDFilteredLister)
+	if !ok {
+		return nil, 0, errors.New("account repository does not support ID-filtered listing")
+	}
+	accounts, result, err := lister.ListWithFiltersByIDs(ctx, params, accountIDs, platform, accountType, status, search, groupID, privacyMode)
+	if err != nil {
+		return nil, 0, err
+	}
+	return accounts, result.Total, nil
+}
+
 func (s *adminServiceImpl) ListAccountsForSchedulerScoreFilter(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, nil

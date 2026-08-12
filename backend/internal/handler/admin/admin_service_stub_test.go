@@ -54,6 +54,7 @@ type stubAdminService struct {
 		sortBy      string
 		sortOrder   string
 		calls       int
+		accountIDs  []int64
 	}
 	lastListUsers struct {
 		page      int
@@ -426,6 +427,24 @@ func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int,
 		end = total
 	}
 	return accounts[start:end], int64(total), nil
+}
+
+func (s *stubAdminService) ListAccountsByIDs(ctx context.Context, page, pageSize int, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]service.Account, int64, error) {
+	s.lastListAccounts.accountIDs = append([]int64(nil), accountIDs...)
+	allowed := make(map[int64]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		allowed[id] = struct{}{}
+	}
+	original := s.accounts
+	s.accounts = nil
+	for i := range original {
+		if _, ok := allowed[original[i].ID]; ok {
+			s.accounts = append(s.accounts, original[i])
+		}
+	}
+	items, total, err := s.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	s.accounts = original
+	return items, total, err
 }
 
 func (s *stubAdminService) ListAccountsForSchedulerScoreFilter(_ context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {

@@ -173,6 +173,26 @@
             {{ t('admin.accounts.listPendingSyncAction') }}
           </button>
         </div>
+        <div
+          v-if="hasActiveConcurrencyFilter"
+          data-test="active-concurrency-filter"
+          class="mt-2 flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-700/40 dark:bg-primary-900/20 dark:text-primary-200"
+        >
+          <span>
+            {{
+              t('admin.accounts.activeConcurrencyFilter', {
+                group: activeConcurrencyGroupLabel
+              })
+            }}
+          </span>
+          <button
+            type="button"
+            class="btn btn-secondary flex-shrink-0 px-2 py-1 text-xs"
+            @click="clearActiveConcurrencyFilter"
+          >
+            {{ t('admin.accounts.clearActiveConcurrencyFilter') }}
+          </button>
+        </div>
       </template>
       <template #table>
         <AccountBulkActionsBar
@@ -180,6 +200,7 @@
           :total-results="pagination.total"
           :selecting-all="selectingAllResults"
           :all-results-selected="allResultsSelected"
+          :dynamic-filter="hasActiveConcurrencyFilter"
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
@@ -484,6 +505,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
@@ -535,6 +557,18 @@ import type { Account, AccountPlatform, AccountSchedulerGroupScore, AccountType,
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const route = useRoute() as ReturnType<typeof useRoute> | undefined
+const router = useRouter() as ReturnType<typeof useRouter> | undefined
+
+const normalizeActiveConcurrencyGroup = (value: unknown): string => {
+  const rawValue = Array.isArray(value) ? value[0] : value
+  if (typeof rawValue !== 'string' || !/^[1-9]\d*$/.test(rawValue)) return ''
+  return rawValue
+}
+
+const initialActiveConcurrencyGroup = normalizeActiveConcurrencyGroup(
+  route?.query.active_concurrency_group
+)
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -924,11 +958,18 @@ const {
     status: '',
     privacy_mode: '',
     group: '',
+    active_concurrency_group: initialActiveConcurrencyGroup,
     search: '',
     include_scheduler_score: shouldIncludeSchedulerScore() ? '1' : '0',
     sort_by: sortState.sort_by,
     sort_order: sortState.sort_order
   }
+})
+
+const hasActiveConcurrencyFilter = computed(() => Boolean(params.active_concurrency_group))
+const activeConcurrencyGroupLabel = computed(() => {
+  const groupID = Number(params.active_concurrency_group)
+  return groups.value.find(group => group.id === groupID)?.name || `#${groupID}`
 })
 
 const {
@@ -966,6 +1007,17 @@ const clearSelection = () => {
   selectedAllResultIDs.value = null
   selectedAllResultSnapshot.value = null
   clearSelectedIds()
+}
+
+const clearActiveConcurrencyFilter = async () => {
+  clearSelection()
+  params.active_concurrency_group = ''
+  const query = { ...(route?.query ?? {}) }
+  delete query.active_concurrency_group
+  if (router) {
+    await router.replace({ name: 'AdminAccounts', query })
+  }
+  await reload()
 }
 
 const selectPage = () => {
@@ -1024,6 +1076,16 @@ const reload = async () => {
   await baseReload()
   await refreshTodayStatsBatch()
 }
+
+watch(
+  () => normalizeActiveConcurrencyGroup(route?.query.active_concurrency_group),
+  async (activeGroup) => {
+    if (activeGroup === params.active_concurrency_group) return
+    clearSelection()
+    params.active_concurrency_group = activeGroup
+    await reload()
+  }
+)
 
 const refreshUpstreamBillingSortedList = async (force = false) => {
   if (sortState.sort_by !== 'upstream_billing_rate') return
@@ -1190,6 +1252,7 @@ const refreshAccountsIncrementally = async () => {
         status?: string
         privacy_mode?: string
         group?: string
+        active_concurrency_group?: string
         search?: string
         sort_by?: string
         sort_order?: AccountSortOrder

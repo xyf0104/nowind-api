@@ -877,7 +877,14 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 }
 
 func (r *accountRepository) accountListFilteredQuery(platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
+	return r.accountListFilteredQueryByIDs(nil, platform, accountType, status, search, groupID, privacyMode)
+}
+
+func (r *accountRepository) accountListFilteredQueryByIDs(accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
 	q := r.client.Account.Query()
+	if accountIDs != nil {
+		q = q.Where(dbaccount.IDIn(accountIDs...))
+	}
 
 	if platform != "" {
 		q = q.Where(dbaccount.PlatformEQ(platform))
@@ -974,6 +981,18 @@ func (r *accountRepository) accountListFilteredQuery(platform, accountType, stat
 
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode)
+	return r.listAccountQuery(ctx, params, q)
+}
+
+func (r *accountRepository) ListWithFiltersByIDs(ctx context.Context, params pagination.PaginationParams, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
+	if len(accountIDs) == 0 {
+		return []service.Account{}, paginationResultFromTotal(0, params), nil
+	}
+	q := r.accountListFilteredQueryByIDs(accountIDs, platform, accountType, status, search, groupID, privacyMode)
+	return r.listAccountQuery(ctx, params, q)
+}
+
+func (r *accountRepository) listAccountQuery(ctx context.Context, params pagination.PaginationParams, q *dbent.AccountQuery) ([]service.Account, *pagination.PaginationResult, error) {
 	// Clone before Count so interceptor-appended predicates (SoftDeleteMixin's
 	// deleted_at IS NULL) don't accumulate on the shared builder and pollute the
 	// subsequent list query. Same pattern used in group_repo/promo_code_repo/user_repo

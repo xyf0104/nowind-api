@@ -42,11 +42,11 @@ type groupCapacityGroupConcurrencyCacheStub struct {
 	requestedGroups []int64
 }
 
-func (s *groupCapacityGroupConcurrencyCacheStub) TrackGroupSlot(context.Context, int64, string) error {
+func (s *groupCapacityGroupConcurrencyCacheStub) TrackGroupSlot(context.Context, int64, int64, string) error {
 	return nil
 }
 
-func (s *groupCapacityGroupConcurrencyCacheStub) ReleaseGroupSlot(context.Context, int64, string) error {
+func (s *groupCapacityGroupConcurrencyCacheStub) ReleaseGroupSlot(context.Context, int64, int64, string) error {
 	return nil
 }
 
@@ -57,6 +57,10 @@ func (s *groupCapacityGroupConcurrencyCacheStub) GetGroupConcurrencyBatch(_ cont
 		out[id] = s.groupCounts[id]
 	}
 	return out, nil
+}
+
+func (s *groupCapacityGroupConcurrencyCacheStub) GetGroupAccountConcurrency(context.Context, int64) (map[int64]int, bool, time.Time, error) {
+	return map[int64]int{}, true, time.Time{}, nil
 }
 
 func (s *groupCapacityConcurrencyCacheStub) GetAccountConcurrencyBatch(_ context.Context, accountIDs []int64) (map[int64]int, error) {

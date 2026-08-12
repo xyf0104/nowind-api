@@ -64,20 +64,28 @@ type ingressLeaseCacheForTest struct {
 type groupLeaseCacheForTest struct {
 	stubConcurrencyCacheForTest
 	trackedGroupIDs         []int64
+	trackedGroupAccountIDs  []int64
 	trackedGroupRequestIDs  []string
 	releasedGroupIDs        []int64
+	releasedGroupAccountIDs []int64
 	releasedGroupRequestIDs []string
 	groupCounts             map[int64]int
+	groupAccountCounts      map[int64]map[int64]int
+	groupSnapshotComplete   bool
+	groupSnapshotAt         time.Time
+	groupSnapshotErr        error
 }
 
-func (c *groupLeaseCacheForTest) TrackGroupSlot(_ context.Context, groupID int64, requestID string) error {
+func (c *groupLeaseCacheForTest) TrackGroupSlot(_ context.Context, groupID, accountID int64, requestID string) error {
 	c.trackedGroupIDs = append(c.trackedGroupIDs, groupID)
+	c.trackedGroupAccountIDs = append(c.trackedGroupAccountIDs, accountID)
 	c.trackedGroupRequestIDs = append(c.trackedGroupRequestIDs, requestID)
 	return nil
 }
 
-func (c *groupLeaseCacheForTest) ReleaseGroupSlot(_ context.Context, groupID int64, requestID string) error {
+func (c *groupLeaseCacheForTest) ReleaseGroupSlot(_ context.Context, groupID, accountID int64, requestID string) error {
 	c.releasedGroupIDs = append(c.releasedGroupIDs, groupID)
+	c.releasedGroupAccountIDs = append(c.releasedGroupAccountIDs, accountID)
 	c.releasedGroupRequestIDs = append(c.releasedGroupRequestIDs, requestID)
 	return nil
 }
@@ -88,6 +96,10 @@ func (c *groupLeaseCacheForTest) GetGroupConcurrencyBatch(_ context.Context, gro
 		out[groupID] = c.groupCounts[groupID]
 	}
 	return out, nil
+}
+
+func (c *groupLeaseCacheForTest) GetGroupAccountConcurrency(_ context.Context, groupID int64) (map[int64]int, bool, time.Time, error) {
+	return c.groupAccountCounts[groupID], c.groupSnapshotComplete, c.groupSnapshotAt, c.groupSnapshotErr
 }
 
 func (c *ingressLeaseCacheForTest) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {
@@ -232,6 +244,54 @@ func TestAcquireAccountSlot_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Acquired)
 	require.NotNil(t, result.ReleaseFunc)
+}
+
+func TestAcquireAccountSlot_TracksActualGroupAndAccount(t *testing.T) {
+	cache := &groupLeaseCacheForTest{stubConcurrencyCacheForTest: stubConcurrencyCacheForTest{acquireResult: true}}
+	svc := NewConcurrencyService(cache)
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: 42})
+
+	result, err := svc.AcquireAccountSlot(ctx, 99, 5)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.Equal(t, []int64{42}, cache.trackedGroupIDs)
+	require.Equal(t, []int64{99}, cache.trackedGroupAccountIDs)
+	require.Len(t, cache.trackedGroupRequestIDs, 1)
+
+	result.ReleaseFunc()
+	require.Equal(t, []int64{42}, cache.releasedGroupIDs)
+	require.Equal(t, []int64{99}, cache.releasedGroupAccountIDs)
+	require.Equal(t, cache.trackedGroupRequestIDs, cache.releasedGroupRequestIDs)
+}
+
+func TestGetGroupAccountConcurrencySnapshot(t *testing.T) {
+	snapshotAt := time.Unix(1_700_000_000, 0).UTC()
+	t.Run("returns complete group scoped counts", func(t *testing.T) {
+		cache := &groupLeaseCacheForTest{
+			groupAccountCounts:    map[int64]map[int64]int{42: {7: 2, 8: 1}},
+			groupSnapshotComplete: true,
+			groupSnapshotAt:       snapshotAt,
+		}
+		snapshot, err := NewConcurrencyService(cache).GetGroupAccountConcurrencySnapshot(context.Background(), 42)
+		require.NoError(t, err)
+		require.Equal(t, map[int64]int{7: 2, 8: 1}, snapshot.Counts)
+		require.Equal(t, snapshotAt, snapshot.SnapshotAt)
+	})
+
+	t.Run("legacy members fail closed", func(t *testing.T) {
+		cache := &groupLeaseCacheForTest{
+			groupAccountCounts:    map[int64]map[int64]int{42: {7: 1}},
+			groupSnapshotComplete: false,
+		}
+		_, err := NewConcurrencyService(cache).GetGroupAccountConcurrencySnapshot(context.Background(), 42)
+		require.ErrorIs(t, err, ErrGroupConcurrencySnapshotIncomplete)
+	})
+
+	t.Run("cache errors fail unavailable", func(t *testing.T) {
+		cache := &groupLeaseCacheForTest{groupSnapshotErr: errors.New("redis down")}
+		_, err := NewConcurrencyService(cache).GetGroupAccountConcurrencySnapshot(context.Background(), 42)
+		require.ErrorIs(t, err, ErrGroupConcurrencySnapshotUnavailable)
+	})
 }
 
 func TestAcquireAccountSlot_Failure(t *testing.T) {

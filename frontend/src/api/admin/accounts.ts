@@ -45,7 +45,8 @@ export async function list(
     search?: string
     privacy_mode?: string
     lite?: string
-    include_scheduler_score?: string
+	    include_scheduler_score?: string
+	    active_concurrency_group?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },
@@ -81,7 +82,8 @@ export async function listWithEtag(
     search?: string
     privacy_mode?: string
     lite?: string
-    include_scheduler_score?: string
+	    include_scheduler_score?: string
+	    active_concurrency_group?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },

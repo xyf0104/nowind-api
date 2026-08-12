@@ -316,6 +316,8 @@
               :sessions-max="capacityMap.get(row.id)!.sessionsMax"
               :rpm-used="capacityMap.get(row.id)!.rpmUsed"
               :rpm-max="capacityMap.get(row.id)!.rpmMax"
+              :concurrency-drilldown-label="t('admin.groups.viewActiveConcurrencyAccounts')"
+              @click-concurrency="openActiveConcurrencyAccounts(row.id)"
             />
             <span v-else class="text-xs text-gray-400">—</span>
           </template>
@@ -4173,6 +4175,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/app";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { adminAPI } from "@/api/admin";
@@ -4249,6 +4252,7 @@ import {
 } from "./groupsImagePricing";
 
 const { t } = useI18n();
+const router = useRouter();
 const appStore = useAppStore();
 const onboardingStore = useOnboardingStore();
 
@@ -4263,6 +4267,13 @@ const VERSION_NEW_HIDDEN_COLUMNS: Record<number, string[]> = {
   2: ["id"],
 };
 const CAPACITY_REFRESH_INTERVAL_MS = 5_000;
+
+const openActiveConcurrencyAccounts = (groupID: number) => {
+  void router.push({
+    name: "AdminAccounts",
+    query: { active_concurrency_group: String(groupID) },
+  });
+};
 
 const allColumns = computed<Column[]>(() => [
   { key: "name", label: t("admin.groups.columns.name"), sortable: true },

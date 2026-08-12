@@ -770,6 +770,7 @@ export default {
       title: '分组管理',
       description: '管理 API 密钥分组和费率配置',
       searchGroups: '搜索分组...',
+      viewActiveConcurrencyAccounts: '查看当前占用并发的账号',
       createGroup: '创建分组',
       editGroup: '编辑分组',
       deleteGroup: '删除分组',

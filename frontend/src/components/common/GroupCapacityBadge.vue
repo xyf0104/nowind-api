@@ -2,11 +2,15 @@
   <div class="flex flex-col gap-1">
     <!-- 并发槽位 -->
     <div class="flex items-center gap-1">
-      <span
+      <button
+        type="button"
         :class="[
-          'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium',
+          'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-75 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1',
           capacityClass(concurrencyUsed, concurrencyMax)
         ]"
+        :title="concurrencyDrilldownLabel"
+        :aria-label="concurrencyDrilldownLabel"
+        @click="$emit('click-concurrency')"
       >
         <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
@@ -14,7 +18,7 @@
         <span class="font-mono">{{ concurrencyUsed }}</span>
         <span class="text-gray-400 dark:text-gray-500">/</span>
         <span class="font-mono">{{ concurrencyMax }}</span>
-      </span>
+      </button>
     </div>
 
     <!-- 会话数 -->
@@ -61,6 +65,7 @@ interface Props {
   sessionsMax: number
   rpmUsed: number
   rpmMax: number
+  concurrencyDrilldownLabel?: string
 }
 
 withDefaults(defineProps<Props>(), {
@@ -69,8 +74,11 @@ withDefaults(defineProps<Props>(), {
   sessionsUsed: 0,
   sessionsMax: 0,
   rpmUsed: 0,
-  rpmMax: 0
+  rpmMax: 0,
+  concurrencyDrilldownLabel: 'View active accounts'
 })
+
+defineEmits<{ (event: 'click-concurrency'): void }>()
 
 function capacityClass(used: number, max: number): string {
   if (max > 0 && used >= max) {

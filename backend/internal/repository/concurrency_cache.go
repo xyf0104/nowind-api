@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -34,6 +36,7 @@ const (
 	// request. A short TTL plus service-side refresh prevents stale capacity
 	// badges without changing real account concurrency enforcement.
 	groupSlotKeyPrefix       = "concurrency:group:"
+	groupSlotMemberVersion   = "v1"
 	groupSlotTTLSeconds      = 75
 	liveAccountSlotKeyPrefix = "concurrency:live:account:"
 	liveUserSlotKeyPrefix    = "concurrency:live:user:"
@@ -205,6 +208,19 @@ var (
 		redis.call('ZADD', key, now, requestID)
 		redis.call('EXPIRE', key, ttl)
 		return 1
+	`)
+
+	// Return one Redis-time-based group member snapshot after removing stale
+	// entries. The first item is the Unix timestamp; the rest are members.
+	groupAccountSnapshotScript = redis.NewScript(`
+		redis.replicate_commands()
+		local key = KEYS[1]
+		local ttl = tonumber(ARGV[1])
+		local now = tonumber(redis.call('TIME')[1])
+		redis.call('ZREMRANGEBYSCORE', key, '-inf', now - ttl)
+		local members = redis.call('ZRANGE', key, 0, -1)
+		table.insert(members, 1, tostring(now))
+		return members
 	`)
 
 	// acquireOpenAIWSIngressLeaseScript atomically reaps crashed members and
@@ -397,6 +413,19 @@ func apiKeySlotKey(apiKeyID int64) string {
 
 func groupSlotKey(groupID int64) string {
 	return fmt.Sprintf("%s%d", groupSlotKeyPrefix, groupID)
+}
+
+func groupSlotMember(accountID int64, requestID string) string {
+	return groupSlotMemberVersion + ":" + strconv.FormatInt(accountID, 10) + ":" + requestID
+}
+
+func parseGroupSlotMember(member string) (int64, bool) {
+	parts := strings.SplitN(member, ":", 3)
+	if len(parts) != 3 || parts[0] != groupSlotMemberVersion || parts[2] == "" {
+		return 0, false
+	}
+	accountID, err := strconv.ParseInt(parts[1], 10, 64)
+	return accountID, err == nil && accountID > 0
 }
 
 func liveAccountSlotKey(accountID int64) string {
@@ -759,19 +788,19 @@ func (c *concurrencyCache) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64
 	return c.rdb.ZRem(ctx, key, requestID).Err()
 }
 
-func (c *concurrencyCache) TrackGroupSlot(ctx context.Context, groupID int64, requestID string) error {
-	if c == nil || c.rdb == nil || groupID <= 0 || requestID == "" {
+func (c *concurrencyCache) TrackGroupSlot(ctx context.Context, groupID, accountID int64, requestID string) error {
+	if c == nil || c.rdb == nil || groupID <= 0 || accountID <= 0 || requestID == "" {
 		return nil
 	}
-	_, err := trackSlotScript.Run(ctx, c.rdb, []string{groupSlotKey(groupID)}, groupSlotTTLSeconds, requestID).Result()
+	_, err := trackSlotScript.Run(ctx, c.rdb, []string{groupSlotKey(groupID)}, groupSlotTTLSeconds, groupSlotMember(accountID, requestID)).Result()
 	return err
 }
 
-func (c *concurrencyCache) ReleaseGroupSlot(ctx context.Context, groupID int64, requestID string) error {
-	if c == nil || c.rdb == nil || groupID <= 0 || requestID == "" {
+func (c *concurrencyCache) ReleaseGroupSlot(ctx context.Context, groupID, accountID int64, requestID string) error {
+	if c == nil || c.rdb == nil || groupID <= 0 || accountID <= 0 || requestID == "" {
 		return nil
 	}
-	return c.rdb.ZRem(ctx, groupSlotKey(groupID), requestID).Err()
+	return c.rdb.ZRem(ctx, groupSlotKey(groupID), groupSlotMember(accountID, requestID)).Err()
 }
 
 func (c *concurrencyCache) GetGroupConcurrencyBatch(ctx context.Context, groupIDs []int64) (map[int64]int, error) {
@@ -803,6 +832,40 @@ func (c *concurrencyCache) GetGroupConcurrencyBatch(ctx context.Context, groupID
 		result[cmd.groupID] = int(cmd.zcard.Val())
 	}
 	return result, nil
+}
+
+func (c *concurrencyCache) GetGroupAccountConcurrency(ctx context.Context, groupID int64) (map[int64]int, bool, time.Time, error) {
+	if c == nil || c.rdb == nil || groupID <= 0 {
+		return nil, false, time.Time{}, errors.New("group concurrency cache unavailable")
+	}
+	values, err := groupAccountSnapshotScript.Run(
+		ctx,
+		c.rdb,
+		[]string{groupSlotKey(groupID)},
+		groupSlotTTLSeconds,
+	).StringSlice()
+	if err != nil {
+		return nil, false, time.Time{}, fmt.Errorf("read group account concurrency: %w", err)
+	}
+	if len(values) == 0 {
+		return nil, false, time.Time{}, errors.New("group concurrency snapshot missing timestamp")
+	}
+	snapshotUnix, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil {
+		return nil, false, time.Time{}, fmt.Errorf("parse group concurrency snapshot timestamp: %w", err)
+	}
+
+	counts := make(map[int64]int)
+	complete := true
+	for _, member := range values[1:] {
+		accountID, ok := parseGroupSlotMember(member)
+		if !ok {
+			complete = false
+			continue
+		}
+		counts[accountID]++
+	}
+	return counts, complete, time.Unix(snapshotUnix, 0).UTC(), nil
 }
 
 func (c *concurrencyCache) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {

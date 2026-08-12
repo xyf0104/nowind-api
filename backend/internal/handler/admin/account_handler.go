@@ -66,6 +66,10 @@ type AccountHandler struct {
 	ollamaCloudUsage        *service.OllamaCloudUsageService
 }
 
+type activeConcurrencyAccountLister interface {
+	ListAccountsByIDs(ctx context.Context, page, pageSize int, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]service.Account, int64, error)
+}
+
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
 func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamBillingProbeService) {
 	h.upstreamBillingProbe = probe
@@ -190,9 +194,10 @@ type CheckMixedChannelRequest struct {
 // AccountWithConcurrency extends Account with real-time concurrency info
 type AccountWithConcurrency struct {
 	*dto.Account
-	CurrentConcurrency int                          `json:"current_concurrency"`
-	SchedulerScore     *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
-	SchedulerScores    []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
+	CurrentConcurrency      int                          `json:"current_concurrency"`
+	GroupCurrentConcurrency *int                         `json:"group_current_concurrency,omitempty"`
+	SchedulerScore          *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
+	SchedulerScores         []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
 	// 以下字段仅对 Anthropic OAuth/SetupToken 账号有效，且仅在启用相应功能时返回
 	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
 	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
@@ -516,7 +521,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 	includeSchedulerScore := parseBoolQueryWithDefault(c.Query("include_scheduler_score"), false)
 
 	var groupID int64
+	groupFilterSet := false
 	if groupIDStr := c.Query("group"); groupIDStr != "" {
+		groupFilterSet = true
 		if groupIDStr == accountListGroupUngroupedQueryValue {
 			groupID = service.AccountListGroupUngrouped
 		} else {
@@ -533,7 +540,62 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	var activeConcurrencyGroupID int64
+	var groupConcurrencyCounts map[int64]int
+	var concurrencySnapshotAt time.Time
+	if rawActiveGroup := strings.TrimSpace(c.Query("active_concurrency_group")); rawActiveGroup != "" {
+		parsedActiveGroup, parseErr := strconv.ParseInt(rawActiveGroup, 10, 64)
+		if parseErr != nil || parsedActiveGroup <= 0 {
+			response.ErrorFrom(c, infraerrors.BadRequest("INVALID_CONCURRENCY_GROUP_FILTER", "invalid active concurrency group filter"))
+			return
+		}
+		if groupFilterSet && groupID != parsedActiveGroup {
+			response.ErrorFrom(c, infraerrors.BadRequest("CONFLICTING_GROUP_FILTERS", "group and active concurrency group filters must match"))
+			return
+		}
+		if h.concurrencyService == nil {
+			response.ErrorFrom(c, infraerrors.ServiceUnavailable("CONCURRENCY_SNAPSHOT_UNAVAILABLE", "group concurrency snapshot is temporarily unavailable"))
+			return
+		}
+		snapshot, snapshotErr := h.concurrencyService.GetGroupAccountConcurrencySnapshot(c.Request.Context(), parsedActiveGroup)
+		if snapshotErr != nil {
+			reason := "CONCURRENCY_SNAPSHOT_UNAVAILABLE"
+			message := "group concurrency snapshot is temporarily unavailable"
+			if errors.Is(snapshotErr, service.ErrGroupConcurrencySnapshotIncomplete) {
+				reason = "CONCURRENCY_SNAPSHOT_INCOMPLETE"
+				message = "group concurrency snapshot is incomplete during upgrade; retry after active legacy requests finish"
+			}
+			response.ErrorFrom(c, infraerrors.ServiceUnavailable(reason, message).WithCause(snapshotErr))
+			return
+		}
+		activeConcurrencyGroupID = parsedActiveGroup
+		groupConcurrencyCounts = snapshot.Counts
+		concurrencySnapshotAt = snapshot.SnapshotAt
+	}
+
+	var accounts []service.Account
+	var total int64
+	var err error
+	if activeConcurrencyGroupID > 0 {
+		lister, ok := h.adminService.(activeConcurrencyAccountLister)
+		if !ok {
+			response.ErrorFrom(c, infraerrors.ServiceUnavailable("CONCURRENCY_SNAPSHOT_UNAVAILABLE", "group concurrency account filtering is temporarily unavailable"))
+			return
+		}
+		accountIDs := make([]int64, 0, len(groupConcurrencyCounts))
+		for accountID, count := range groupConcurrencyCounts {
+			if accountID > 0 && count > 0 {
+				accountIDs = append(accountIDs, accountID)
+			}
+		}
+		sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+		// The live snapshot is authoritative. A matching `group` query is accepted
+		// for compatibility but must not hide an in-flight account removed from the
+		// persistent group membership after its request started.
+		accounts, total, err = lister.ListAccountsByIDs(c.Request.Context(), page, pageSize, accountIDs, platform, accountType, status, search, 0, privacyMode, sortBy, sortOrder)
+	} else {
+		accounts, total, err = h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -571,6 +633,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 	if includeSchedulerScore && pageHasOpenAIAccounts {
 		schedulerFilterPool := h.listAccountSchedulerScoreFilterPool(c.Request.Context(), platform, accountType, status, search, groupID, privacyMode)
+		if activeConcurrencyGroupID > 0 {
+			schedulerFilterPool = filterAccountsByConcurrencySnapshot(schedulerFilterPool, groupConcurrencyCounts)
+		}
 		schedulerScores, schedulerGroupScores = h.buildOpenAIAccountSchedulerScores(c.Request.Context(), accounts, schedulerFilterPool)
 	}
 
@@ -656,6 +721,10 @@ func (h *AccountHandler) List(c *gin.Context) {
 			SchedulerScore:     schedulerScores[acc.ID],
 			SchedulerScores:    schedulerGroupScores[acc.ID],
 		}
+		if activeConcurrencyGroupID > 0 {
+			groupCount := groupConcurrencyCounts[acc.ID]
+			item.GroupCurrentConcurrency = &groupCount
+		}
 
 		// 添加窗口费用（仅当启用时）
 		if windowCosts != nil {
@@ -683,7 +752,10 @@ func (h *AccountHandler) List(c *gin.Context) {
 
 	h.enrichShadowParents(c.Request.Context(), result)
 
-	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, lite)
+	if !concurrencySnapshotAt.IsZero() {
+		c.Header("X-Concurrency-Snapshot-At", concurrencySnapshotAt.Format(time.RFC3339))
+	}
+	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, activeConcurrencyGroupID, groupConcurrencyCounts, lite)
 	if etag != "" {
 		c.Header("ETag", etag)
 		c.Header("Vary", "If-None-Match")
@@ -701,28 +773,34 @@ func buildAccountsListETag(
 	total int64,
 	page, pageSize int,
 	platform, accountType, status, search string,
+	activeConcurrencyGroupID int64,
+	groupConcurrencyCounts map[int64]int,
 	lite bool,
 ) string {
 	payload := struct {
-		Total       int64                    `json:"total"`
-		Page        int                      `json:"page"`
-		PageSize    int                      `json:"page_size"`
-		Platform    string                   `json:"platform"`
-		AccountType string                   `json:"type"`
-		Status      string                   `json:"status"`
-		Search      string                   `json:"search"`
-		Lite        bool                     `json:"lite"`
-		Items       []AccountWithConcurrency `json:"items"`
+		Total                    int64                    `json:"total"`
+		Page                     int                      `json:"page"`
+		PageSize                 int                      `json:"page_size"`
+		Platform                 string                   `json:"platform"`
+		AccountType              string                   `json:"type"`
+		Status                   string                   `json:"status"`
+		Search                   string                   `json:"search"`
+		ActiveConcurrencyGroupID int64                    `json:"active_concurrency_group"`
+		GroupConcurrencyCounts   map[int64]int            `json:"group_current_concurrency"`
+		Lite                     bool                     `json:"lite"`
+		Items                    []AccountWithConcurrency `json:"items"`
 	}{
-		Total:       total,
-		Page:        page,
-		PageSize:    pageSize,
-		Platform:    platform,
-		AccountType: accountType,
-		Status:      status,
-		Search:      search,
-		Lite:        lite,
-		Items:       items,
+		Total:                    total,
+		Page:                     page,
+		PageSize:                 pageSize,
+		Platform:                 platform,
+		AccountType:              accountType,
+		Status:                   status,
+		Search:                   search,
+		ActiveConcurrencyGroupID: activeConcurrencyGroupID,
+		GroupConcurrencyCounts:   groupConcurrencyCounts,
+		Lite:                     lite,
+		Items:                    items,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -730,6 +808,19 @@ func buildAccountsListETag(
 	}
 	sum := sha256.Sum256(raw)
 	return "\"" + hex.EncodeToString(sum[:]) + "\""
+}
+
+func filterAccountsByConcurrencySnapshot(accounts []service.Account, counts map[int64]int) []service.Account {
+	if len(accounts) == 0 || len(counts) == 0 {
+		return nil
+	}
+	filtered := make([]service.Account, 0, len(accounts))
+	for i := range accounts {
+		if counts[accounts[i].ID] > 0 {
+			filtered = append(filtered, accounts[i])
+		}
+	}
+	return filtered
 }
 
 func ifNoneMatchMatched(ifNoneMatch, etag string) bool {

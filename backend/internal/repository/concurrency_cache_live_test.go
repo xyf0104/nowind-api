@@ -71,3 +71,49 @@ func TestLiveLeaseExpiresWithoutRefresh(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, refreshed)
 }
+
+func TestGroupAccountConcurrencySnapshotIsScopedAndRejectsLegacyMembers(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	ctx := context.Background()
+
+	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 101, "request-a"))
+	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 101, "request-b"))
+	require.NoError(t, cache.TrackGroupSlot(ctx, 20, 101, "request-c"))
+	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 202, "request-d"))
+
+	group10, complete, snapshotAt, err := cache.GetGroupAccountConcurrency(ctx, 10)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.False(t, snapshotAt.IsZero())
+	require.Equal(t, map[int64]int{101: 2, 202: 1}, group10)
+
+	group20, complete, _, err := cache.GetGroupAccountConcurrency(ctx, 20)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Equal(t, map[int64]int{101: 1}, group20, "shared accounts must only be attributed to the actual request group")
+
+	now := float64(time.Now().Unix())
+	require.NoError(t, client.ZAdd(ctx, groupSlotKey(10), redis.Z{Score: now, Member: "legacy-request-id"}).Err())
+	partial, complete, _, err := cache.GetGroupAccountConcurrency(ctx, 10)
+	require.NoError(t, err)
+	require.False(t, complete)
+	require.Equal(t, map[int64]int{101: 2, 202: 1}, partial)
+}
+
+func TestGroupSlotReleaseUsesAccountScopedMember(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	ctx := context.Background()
+
+	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 101, "same-request"))
+	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 202, "same-request"))
+	require.NoError(t, cache.ReleaseGroupSlot(ctx, 10, 101, "same-request"))
+
+	counts, complete, _, err := cache.GetGroupAccountConcurrency(ctx, 10)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Equal(t, map[int64]int{202: 1}, counts)
+}

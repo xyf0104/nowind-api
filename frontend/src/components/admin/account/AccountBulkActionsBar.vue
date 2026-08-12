@@ -18,7 +18,7 @@
           {{ t('admin.accounts.bulkActions.selectCurrentPage') }}
         </button>
       </template>
-      <template v-if="!allResultsSelected && totalResults > selectedIds.length">
+      <template v-if="!dynamicFilter && !allResultsSelected && totalResults > selectedIds.length">
         <span v-if="selectedIds.length > 0" class="text-gray-300 dark:text-primary-800">•</span>
         <button
           :disabled="selectingAll"
@@ -52,7 +52,7 @@
         <button @click="$emit('toggle-schedulable', false)" class="btn btn-warning btn-sm">{{ t('admin.accounts.bulkActions.disableScheduling') }}</button>
         <button @click="$emit('edit-selected')" class="btn btn-primary btn-sm">{{ t('admin.accounts.bulkActions.edit') }}</button>
       </template>
-      <button @click="$emit('edit-filtered')" class="btn btn-primary btn-sm">
+      <button v-if="!dynamicFilter" @click="$emit('edit-filtered')" class="btn btn-primary btn-sm">
         {{ t('admin.accounts.bulkEdit.submit') }}
       </button>
     </div>
@@ -67,6 +67,7 @@ defineProps<{
   totalResults: number
   selectingAll: boolean
   allResultsSelected: boolean
+  dynamicFilter?: boolean
 }>()
 
 defineEmits([

@@ -773,6 +773,7 @@ export default {
       title: 'Group Management',
       description: 'Manage API key groups and rate multipliers',
       searchGroups: 'Search groups...',
+      viewActiveConcurrencyAccounts: 'View accounts using concurrency now',
       createGroup: 'Create Group',
       editGroup: 'Edit Group',
       deleteGroup: 'Delete Group',

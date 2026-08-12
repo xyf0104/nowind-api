@@ -66,9 +66,20 @@ type APIKeyConcurrencyCache interface {
 // API key's actual group. It is intentionally separate from account slots so
 // one shared account is not reported as active in every group it belongs to.
 type GroupConcurrencyCache interface {
-	TrackGroupSlot(ctx context.Context, groupID int64, requestID string) error
-	ReleaseGroupSlot(ctx context.Context, groupID int64, requestID string) error
+	TrackGroupSlot(ctx context.Context, groupID, accountID int64, requestID string) error
+	ReleaseGroupSlot(ctx context.Context, groupID, accountID int64, requestID string) error
 	GetGroupConcurrencyBatch(ctx context.Context, groupIDs []int64) (map[int64]int, error)
+	GetGroupAccountConcurrency(ctx context.Context, groupID int64) (map[int64]int, bool, time.Time, error)
+}
+
+var (
+	ErrGroupConcurrencySnapshotUnavailable = errors.New("group concurrency snapshot unavailable")
+	ErrGroupConcurrencySnapshotIncomplete  = errors.New("group concurrency snapshot contains legacy members")
+)
+
+type GroupAccountConcurrencySnapshot struct {
+	Counts     map[int64]int
+	SnapshotAt time.Time
 }
 
 // OpenAIWSIngressLeaseCache owns the short-lived distributed lease used to
@@ -369,7 +380,7 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	}
 
 	if acquired {
-		groupReleaseFunc := s.trackGroupSlot(ctx, requestID)
+		groupReleaseFunc := s.trackGroupSlot(ctx, accountID, requestID)
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
@@ -391,7 +402,7 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	}, nil
 }
 
-func (s *ConcurrencyService) trackGroupSlot(ctx context.Context, requestID string) func() {
+func (s *ConcurrencyService) trackGroupSlot(ctx context.Context, accountID int64, requestID string) func() {
 	if s == nil || s.cache == nil || requestID == "" || ctx == nil {
 		return func() {}
 	}
@@ -400,13 +411,13 @@ func (s *ConcurrencyService) trackGroupSlot(ctx context.Context, requestID strin
 		return func() {}
 	}
 	group, _ := ctx.Value(ctxkey.Group).(*Group)
-	if group == nil || group.ID <= 0 {
+	if group == nil || group.ID <= 0 || accountID <= 0 {
 		return func() {}
 	}
 
 	groupID := group.ID
 	trackCtx, trackCancel := context.WithTimeout(context.WithoutCancel(ctx), groupSlotOperationTimeout)
-	err := cache.TrackGroupSlot(trackCtx, groupID, requestID)
+	err := cache.TrackGroupSlot(trackCtx, groupID, accountID, requestID)
 	trackCancel()
 	if err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: failed to track group slot for %d (req=%s): %v", groupID, requestID, err)
@@ -421,13 +432,13 @@ func (s *ConcurrencyService) trackGroupSlot(ctx context.Context, requestID strin
 	releaseRemote := func() {
 		remoteReleaseOnce.Do(func() {
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), groupSlotOperationTimeout)
-			releaseErr := cache.ReleaseGroupSlot(releaseCtx, groupID, requestID)
+			releaseErr := cache.ReleaseGroupSlot(releaseCtx, groupID, accountID, requestID)
 			releaseCancel()
 			if releaseErr == nil {
 				return
 			}
 			logger.LegacyPrintf("service.concurrency", "Warning: failed to release group slot for %d (req=%s): %v", groupID, requestID, releaseErr)
-			go retryGroupSlotRelease(cache, groupID, requestID)
+			go retryGroupSlotRelease(cache, groupID, accountID, requestID)
 		})
 	}
 
@@ -444,7 +455,7 @@ func (s *ConcurrencyService) trackGroupSlot(ctx context.Context, requestID strin
 				return
 			case <-ticker.C:
 				refreshCtx, refreshCancel := context.WithTimeout(context.Background(), groupSlotOperationTimeout)
-				refreshErr := cache.TrackGroupSlot(refreshCtx, groupID, requestID)
+				refreshErr := cache.TrackGroupSlot(refreshCtx, groupID, accountID, requestID)
 				refreshCancel()
 				if refreshErr != nil {
 					logger.LegacyPrintf("service.concurrency", "Warning: failed to refresh group slot for %d (req=%s): %v", groupID, requestID, refreshErr)
@@ -460,11 +471,11 @@ func (s *ConcurrencyService) trackGroupSlot(ctx context.Context, requestID strin
 	}
 }
 
-func retryGroupSlotRelease(cache GroupConcurrencyCache, groupID int64, requestID string) {
+func retryGroupSlotRelease(cache GroupConcurrencyCache, groupID, accountID int64, requestID string) {
 	for attempt := 1; attempt <= 2; attempt++ {
 		time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
 		ctx, cancel := context.WithTimeout(context.Background(), groupSlotOperationTimeout)
-		err := cache.ReleaseGroupSlot(ctx, groupID, requestID)
+		err := cache.ReleaseGroupSlot(ctx, groupID, accountID, requestID)
 		cancel()
 		if err == nil {
 			return
@@ -473,6 +484,34 @@ func retryGroupSlotRelease(cache GroupConcurrencyCache, groupID int64, requestID
 			logger.LegacyPrintf("service.concurrency", "Warning: group slot release retries exhausted for %d (req=%s): %v", groupID, requestID, err)
 		}
 	}
+}
+
+// GetGroupAccountConcurrencySnapshot returns the current request count per
+// account for one actual request group. Legacy group members have no account
+// identity, so their presence makes the snapshot unusable instead of silently
+// under-reporting active accounts during a rolling upgrade.
+func (s *ConcurrencyService) GetGroupAccountConcurrencySnapshot(ctx context.Context, groupID int64) (*GroupAccountConcurrencySnapshot, error) {
+	if groupID <= 0 || s == nil || s.cache == nil {
+		return nil, ErrGroupConcurrencySnapshotUnavailable
+	}
+	cache, ok := s.cache.(GroupConcurrencyCache)
+	if !ok {
+		return nil, ErrGroupConcurrencySnapshotUnavailable
+	}
+
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountLoadBatchFetchTimeout)
+	defer cancel()
+	counts, complete, snapshotAt, err := cache.GetGroupAccountConcurrency(fetchCtx, groupID)
+	if err != nil {
+		return nil, errors.Join(ErrGroupConcurrencySnapshotUnavailable, err)
+	}
+	if !complete {
+		return nil, ErrGroupConcurrencySnapshotIncomplete
+	}
+	if counts == nil {
+		counts = map[int64]int{}
+	}
+	return &GroupAccountConcurrencySnapshot{Counts: counts, SnapshotAt: snapshotAt}, nil
 }
 
 // GetGroupConcurrencyBatch returns active request counts scoped to the API

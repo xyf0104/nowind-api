@@ -1232,6 +1232,7 @@ export interface Account {
   concurrency: number
   load_factor?: number | null
   current_concurrency?: number // Real-time concurrency count from Redis
+  group_current_concurrency?: number // Real-time concurrency attributed to active_concurrency_group
   scheduler_score?: {
     base_score: number
     sticky_score?: number

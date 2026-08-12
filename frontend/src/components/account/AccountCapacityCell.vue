@@ -49,7 +49,9 @@ const props = defineProps<{
 const { t } = useI18n()
 
 // ====== 并发 ======
-const currentConcurrency = computed(() => props.account.current_concurrency || 0)
+const currentConcurrency = computed(() =>
+  props.account.group_current_concurrency ?? props.account.current_concurrency ?? 0
+)
 
 const concurrencyClass = computed(() => {
   const current = currentConcurrency.value
