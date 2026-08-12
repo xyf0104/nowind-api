@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.4-0ea5e9" alt="当前版本 v1.1.4" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.5-0ea5e9" alt="当前版本 v1.1.5" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.4
+> 当前版本：v1.1.5
 
-v1.1.4 修复充值支付方式卡片在窄弹窗内被截断的问题，完整显示支付宝与微信支付名称并移除重复标题；同时统一 OpenAI 生图尺寸规则：未指定尺寸或传入 `auto` 默认按 1K 请求与计费，明确指定 2K、4K 或具体尺寸时原样转发并按实际尺寸计费。保留 XIASS API 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手、OAuth 授权接码、独立会员接码站与 iOS 接码流程及全部持久化数据路径。
+v1.1.5 新增可配置的充值赠送活动，支持管理员随时启停并调整充值门槛与赠送金额，已创建订单保持入账快照不受后续活动变更影响；恢复用量统计中的账号成本与用户扣费美元展示，充值、余额、支付和退款仍保持人民币账务。融合上游 OpenAI service tier 成本、HTML 403 账号保护、Responses 确定性 400 透传、空完成流故障转移与嵌套 usage 解析修复；分组管理的并发数现在可直接筛选该分组实际占用并发的账号。保留 XIASS API 品牌、深浅主题、模型价格、批量导入、FRP/软路由/SOCKS、在线更新、配置助手、OAuth 授权接码、独立会员接码站与 iOS 接码流程及全部持久化数据路径；模型广场未合并。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 
