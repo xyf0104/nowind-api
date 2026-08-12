@@ -106,6 +106,13 @@ function checkoutInfoFixture(overrides: Partial<CheckoutInfoResponse> = {}) {
     plans: [],
     balance_disabled: false,
     balance_recharge_multiplier: 1,
+    recharge_bonus_enabled: true,
+    recharge_bonus_rules: [
+      { threshold: 50, bonus: 2.99 },
+      { threshold: 100, bonus: 8 },
+      { threshold: 200, bonus: 18 },
+      { threshold: 500, bonus: 50 },
+    ],
     subscription_usd_to_cny_rate: 0,
     recharge_fee_rate: 0,
     help_text: '',
@@ -418,6 +425,36 @@ describe('PaymentView recharge confirmation amounts', () => {
     expect(wrapper.text()).toContain('payment.creditedBalance ¥83.99')
     expect(wrapper.getComponent({ name: 'PaymentMethodSelector' }).props('compact')).toBe(true)
     expect(wrapper.text().match(/payment\.topup\.paymentMethod/g)).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('shows no recharge gift when the campaign is disabled', async () => {
+    routeState.path = '/purchase'
+    routeState.query = {}
+    getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoFixture({
+      recharge_bonus_enabled: false,
+    }))
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          PaymentMethodSelector: true,
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.find('input[type="number"]').setValue(81)
+    const checkoutButton = wrapper.findAll('button')
+      .find(button => button.text().includes('payment.topup.continueToCheckout'))
+    expect(checkoutButton).toBeDefined()
+    await checkoutButton?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('payment.creditedBalance ¥81.00')
+    expect(wrapper.text()).not.toContain('¥83.99')
     wrapper.unmount()
   })
 })

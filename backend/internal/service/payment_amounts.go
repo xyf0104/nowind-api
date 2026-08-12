@@ -25,28 +25,29 @@ func normalizeSubscriptionUSDToCNYRate(rate float64) float64 {
 	return rate
 }
 
-func calculateBalanceRechargeBonus(paymentAmount float64) float64 {
-	if math.IsNaN(paymentAmount) || math.IsInf(paymentAmount, 0) || paymentAmount < 50 {
+func calculateBalanceRechargeBonus(paymentAmount float64, enabled bool, rules []RechargeBonusRule) float64 {
+	if !enabled || math.IsNaN(paymentAmount) || math.IsInf(paymentAmount, 0) || paymentAmount <= 0 {
 		return 0
 	}
-	switch {
-	case paymentAmount < 100:
-		return 2.99
-	case paymentAmount < 200:
-		return 8
-	case paymentAmount < 500:
-		return 18
-	default:
-		return 50
+	bonus := decimal.Zero
+	highestThreshold := decimal.NewFromInt(-1)
+	paid := decimal.NewFromFloat(paymentAmount)
+	for _, rule := range rules {
+		threshold := decimal.NewFromFloat(rule.Threshold)
+		if paid.GreaterThanOrEqual(threshold) && threshold.GreaterThanOrEqual(highestThreshold) {
+			highestThreshold = threshold
+			bonus = decimal.NewFromFloat(rule.Bonus)
+		}
 	}
+	return bonus.Round(2).InexactFloat64()
 }
 
-func calculateCreditedBalance(paymentAmount, multiplier float64) float64 {
+func calculateCreditedBalance(paymentAmount, multiplier float64, bonusEnabled bool, bonusRules []RechargeBonusRule) float64 {
 	baseAmount := decimal.NewFromFloat(paymentAmount).
 		Mul(decimal.NewFromFloat(normalizeBalanceRechargeMultiplier(multiplier))).
 		Round(2)
 	return baseAmount.
-		Add(decimal.NewFromFloat(calculateBalanceRechargeBonus(paymentAmount))).
+		Add(decimal.NewFromFloat(calculateBalanceRechargeBonus(paymentAmount, bonusEnabled, bonusRules))).
 		Round(2).
 		InexactFloat64()
 }

@@ -46,7 +46,12 @@
             </div>
             <template v-else>
             <!-- Custom Quick Tiers -->
-            <TopupTiers @select="handleTierSelect" />
+            <TopupTiers
+              v-if="topupTiers.length > 0"
+              :tiers="topupTiers"
+              :bonus-enabled="rechargeBonusEnabled"
+              @select="handleTierSelect"
+            />
 
             <div class="mt-8 flex items-center mb-4">
               <div class="h-px flex-grow bg-gray-200 dark:bg-dark-700"></div>
@@ -303,10 +308,10 @@ import { paymentAPI } from '@/api/payment'
 import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiError'
 import { isMobileDevice } from '@/utils/device'
 import { hasPeakRate, formatPeakRateWindow, serverTimezoneLabel, type PeakRateFields } from '@/utils/peak-rate'
-import type { SubscriptionPlan, CheckoutInfoResponse, CreateOrderResult, OrderType } from '@/types/payment'
+import type { SubscriptionPlan, CheckoutInfoResponse, CreateOrderResult, OrderType, RechargeBonusRule } from '@/types/payment'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TopupTiers from '@/components/payment/TopupTiers.vue'
-import { calculateTopupCreditedAmount, type PricingTier } from '@/config/pricingTiers'
+import { buildTopupTiers, calculateTopupCreditedAmount, type PricingTier } from '@/config/pricingTiers'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector.vue'
 import { METHOD_ORDER, getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
 import {
@@ -554,7 +559,7 @@ function onPaymentSettled() {
 // All checkout data from single API call
 const checkout = ref<CheckoutInfoResponse>({
   methods: {}, global_min: 0, global_max: 0,
-  plans: [], balance_disabled: false, balance_recharge_multiplier: 1, subscription_usd_to_cny_rate: 0, recharge_fee_rate: 0, help_text: '', help_image_url: '', stripe_publishable_key: '',
+  plans: [], balance_disabled: false, balance_recharge_multiplier: 1, recharge_bonus_enabled: false, recharge_bonus_rules: [], subscription_usd_to_cny_rate: 0, recharge_fee_rate: 0, help_text: '', help_image_url: '', stripe_publishable_key: '',
 })
 
 const tabs = computed(() => {
@@ -571,12 +576,32 @@ const balanceRechargeMultiplier = computed(() => {
   const multiplier = checkout.value.balance_recharge_multiplier
   return Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
 })
+const rechargeBonusEnabled = computed(() => checkout.value.recharge_bonus_enabled === true)
+const rechargeBonusRules = computed<RechargeBonusRule[]>(() =>
+  Array.isArray(checkout.value.recharge_bonus_rules)
+    ? checkout.value.recharge_bonus_rules
+    : [],
+)
+const topupTiers = computed(() =>
+  buildTopupTiers(
+    rechargeBonusRules.value,
+    rechargeBonusEnabled.value,
+    balanceRechargeMultiplier.value,
+  ),
+)
 // 订阅 CNY 换算汇率（1 USD = X CNY）。0 = 未配置，订阅保持 price 直付（与后端 opt-in 条件严格镜像）。
 const subscriptionUsdToCnyRate = computed(() => {
   const rate = checkout.value.subscription_usd_to_cny_rate
   return Number.isFinite(rate) && rate > 0 ? rate : 0
 })
-const creditedAmount = computed(() => calculateTopupCreditedAmount(validAmount.value, balanceRechargeMultiplier.value))
+const creditedAmount = computed(() =>
+  calculateTopupCreditedAmount(
+    validAmount.value,
+    balanceRechargeMultiplier.value,
+    rechargeBonusEnabled.value,
+    rechargeBonusRules.value,
+  ),
+)
 
 // Adaptive grid: center single card, 2-col for 2 plans, 3-col for 3+
 const planGridClass = computed(() => {

@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-6">
     <!-- Banner -->
-    <div class="bg-orange-50/50 border border-orange-200 rounded-2xl p-6 flex items-center justify-between dark:bg-orange-900/10 dark:border-orange-500/20">
+    <div v-if="bonusEnabled && tiers.some((plan) => plan.bonusUSD > 0)" class="bg-orange-50/50 border border-orange-200 rounded-2xl p-6 flex items-center justify-between dark:bg-orange-900/10 dark:border-orange-500/20">
       <div>
         <div class="flex items-center space-x-2 mb-2">
           <span class="bg-orange-100 text-orange-700 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-orange-200 dark:bg-orange-500/20 dark:text-orange-400 dark:border-orange-500/30">
@@ -12,7 +12,7 @@
           {{ t('payment.topup.promoTitle', '多充多送，充值越高赠送越多') }}
         </h2>
         <p class="text-gray-500 dark:text-gray-400 text-sm">
-          {{ t('payment.topup.promoDesc', '选择更高档位可获得额外赠送余额，最高赠送 ¥50.00。') }}
+          {{ t('payment.topup.promoDesc', { bonus: maximumBonus.toFixed(2) }) }}
         </p>
       </div>
     </div>
@@ -20,7 +20,7 @@
     <!-- Pricing Cards -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
       <div
-        v-for="plan in TOPUP_TIERS"
+        v-for="plan in tiers"
         :key="plan.id"
         class="bg-white dark:bg-dark-800 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-dark-700 hover:border-primary-500 transition-all flex flex-col relative overflow-hidden group cursor-pointer"
         @click="$emit('select', plan)"
@@ -72,11 +72,22 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { TOPUP_TIERS, type PricingTier } from '@/config/pricingTiers'
+import type { PricingTier } from '@/config/pricingTiers'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t, locale } = useI18n()
+
+const props = withDefaults(defineProps<{
+  tiers?: PricingTier[]
+  bonusEnabled?: boolean
+}>(), {
+  tiers: () => [],
+  bonusEnabled: false,
+})
+
+const maximumBonus = computed(() => Math.max(0, ...props.tiers.map((tier) => tier.bonusUSD)))
 
 defineEmits<{
   (e: 'select', plan: PricingTier): void

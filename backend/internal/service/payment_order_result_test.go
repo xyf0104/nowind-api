@@ -280,12 +280,12 @@ func TestCalculateCreateOrderPayAmountForBalanceIgnoresSubscriptionRate(t *testi
 func TestCalculateCreditedBalanceStillUsesRechargeMultiplier(t *testing.T) {
 	t.Parallel()
 
-	got := calculateCreditedBalance(10, 0.14)
+	got := calculateCreditedBalance(10, 0.14, false, nil)
 	if got != 1.4 {
 		t.Fatalf("credited balance = %v, want 1.4", got)
 	}
 
-	got = calculateCreditedBalance(5, 10)
+	got = calculateCreditedBalance(5, 10, false, nil)
 	if got != 50 {
 		t.Fatalf("credited balance = %v, want 50", got)
 	}

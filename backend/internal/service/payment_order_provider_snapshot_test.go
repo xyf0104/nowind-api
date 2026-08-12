@@ -111,6 +111,54 @@ func TestCreateOrderInTx_WritesProviderSnapshot(t *testing.T) {
 	require.NotContains(t, order.ProviderSnapshot, "instance_name")
 }
 
+func TestCreateOrderInTx_PreservesRechargeBonusSnapshot(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("bonus-snapshot@example.com").
+		SetPasswordHash("hash").
+		SetUsername("bonus-snapshot-user").
+		Save(ctx)
+	require.NoError(t, err)
+
+	orderAmount := calculateCreditedBalance(50, 1, true, defaultRechargeBonusRules())
+	require.Equal(t, 52.99, orderAmount)
+
+	svc := &PaymentService{entClient: client}
+	order, err := svc.createOrderInTx(
+		ctx,
+		CreateOrderRequest{
+			UserID:      user.ID,
+			PaymentType: payment.TypeAlipay,
+			OrderType:   payment.OrderTypeBalance,
+			ClientIP:    "127.0.0.1",
+			SrcHost:     "app.example.com",
+		},
+		&User{
+			ID:       user.ID,
+			Email:    user.Email,
+			Username: user.Username,
+		},
+		nil,
+		&PaymentConfig{MaxPendingOrders: 3, OrderTimeoutMin: 30},
+		orderAmount,
+		50,
+		0,
+		50,
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 52.99, order.Amount)
+
+	// A later campaign shutdown only changes future order calculations. The
+	// existing payment order retains its creation-time credited amount.
+	require.Equal(t, 50.0, calculateCreditedBalance(50, 1, false, defaultRechargeBonusRules()))
+	persisted, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, 52.99, persisted.Amount)
+}
+
 func TestBuildPaymentOrderProviderSnapshot_UsesWxpayJSAPIAppIDForOpenIDOrders(t *testing.T) {
 	t.Parallel()
 

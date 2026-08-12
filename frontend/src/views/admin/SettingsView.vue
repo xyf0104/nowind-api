@@ -7554,6 +7554,84 @@
                       }}
                     </p>
                   </div>
+                  <div class="sm:col-span-2">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <label class="input-label mb-0">{{
+                          t("admin.settings.payment.rechargeBonusCampaign")
+                        }}</label>
+                        <p class="mt-0.5 text-xs text-gray-400">
+                          {{ t("admin.settings.payment.rechargeBonusCampaignHint") }}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        :class="[
+                          'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                          form.payment_recharge_bonus_enabled
+                            ? 'bg-primary-500'
+                            : 'bg-gray-300 dark:bg-dark-600',
+                        ]"
+                        :aria-label="t('admin.settings.payment.rechargeBonusCampaign')"
+                        @click="form.payment_recharge_bonus_enabled = !form.payment_recharge_bonus_enabled"
+                      >
+                        <span
+                          :class="[
+                            'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                            form.payment_recharge_bonus_enabled
+                              ? 'translate-x-5'
+                              : 'translate-x-0',
+                          ]"
+                        />
+                      </button>
+                    </div>
+                    <div
+                      v-if="form.payment_recharge_bonus_enabled"
+                      class="mt-3 space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-800"
+                    >
+                      <div
+                        v-for="(rule, index) in form.payment_recharge_bonus_rules"
+                        :key="`recharge-bonus-${index}`"
+                        class="flex flex-wrap items-center gap-2"
+                      >
+                        <span class="text-sm text-gray-600 dark:text-gray-300">{{ t("admin.settings.payment.rechargeBonusThreshold") }}</span>
+                        <input
+                          v-model.number="rule.threshold"
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          class="input w-28 text-center"
+                        />
+                        <span class="text-sm text-gray-600 dark:text-gray-300">{{ t("admin.settings.payment.rechargeBonusGift") }}</span>
+                        <input
+                          v-model.number="rule.bonus"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          class="input w-28 text-center"
+                        />
+						<span class="text-sm text-gray-600 dark:text-gray-300">{{ t("admin.settings.payment.rechargeBonusUnit") }}</span>
+                        <button
+                          type="button"
+                          class="btn btn-ghost btn-sm !px-2 text-red-500 hover:text-red-600"
+                          :aria-label="t('admin.settings.payment.rechargeBonusRemove')"
+                          :disabled="form.payment_recharge_bonus_rules.length <= 1"
+                          @click="removeRechargeBonusRule(index)"
+                        >
+                          <Icon name="trash" size="sm" />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        :disabled="form.payment_recharge_bonus_rules.length >= 20"
+                        @click="addRechargeBonusRule"
+                      >
+                        <Icon name="plus" size="sm" class="mr-1" />
+                        {{ t("admin.settings.payment.rechargeBonusAdd") }}
+                      </button>
+                    </div>
+                  </div>
                   <div>
                     <label class="input-label"
                       >{{ t("admin.settings.payment.orderTimeout") }}
@@ -9100,6 +9178,60 @@ type SettingsForm = Omit<
   default_platform_quotas: DefaultPlatformQuotasMap;
 };
 
+type RechargeBonusRuleForm = {
+  threshold: number;
+  bonus: number;
+};
+
+function normalizeRechargeBonusRules(
+  rules: RechargeBonusRuleForm[] | undefined,
+): RechargeBonusRuleForm[] | null {
+  const normalized: RechargeBonusRuleForm[] = [];
+  const thresholds = new Set<number>();
+
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    const threshold = Number(rule.threshold);
+    const bonus = Number(rule.bonus);
+    const thresholdCents = Math.round(threshold * 100);
+    const bonusCents = Math.round(bonus * 100);
+
+    if (
+      !Number.isFinite(threshold) ||
+      threshold <= 0 ||
+      !Number.isFinite(bonus) ||
+      bonus < 0 ||
+      Math.abs(threshold * 100 - thresholdCents) > 1e-7 ||
+      Math.abs(bonus * 100 - bonusCents) > 1e-7 ||
+      thresholds.has(thresholdCents)
+    ) {
+      return null;
+    }
+
+    thresholds.add(thresholdCents);
+    normalized.push({
+      threshold: thresholdCents / 100,
+      bonus: bonusCents / 100,
+    });
+  }
+
+  return normalized.sort((a, b) => a.threshold - b.threshold);
+}
+
+function addRechargeBonusRule(): void {
+  const rules = form.payment_recharge_bonus_rules;
+  if (rules.length >= 20) return;
+  const previous = rules[rules.length - 1];
+  rules.push({
+    threshold: previous ? Math.round((previous.threshold + 50) * 100) / 100 : 50,
+    bonus: 0,
+  });
+}
+
+function removeRechargeBonusRule(index: number): void {
+  if (form.payment_recharge_bonus_rules.length <= 1) return;
+  form.payment_recharge_bonus_rules.splice(index, 1);
+}
+
 const form = reactive<SettingsForm>({
   registration_enabled: true,
   email_verify_enabled: false,
@@ -9153,6 +9285,13 @@ const form = reactive<SettingsForm>({
   payment_balance_recharge_multiplier: 1,
   payment_subscription_usd_to_cny_rate: 0,
   payment_recharge_fee_rate: 0,
+  payment_recharge_bonus_enabled: true,
+  payment_recharge_bonus_rules: [
+    { threshold: 50, bonus: 2.99 },
+    { threshold: 100, bonus: 8 },
+    { threshold: 200, bonus: 18 },
+    { threshold: 500, bonus: 50 },
+  ],
   payment_enabled_types: [],
   payment_help_image_url: "",
   payment_help_text: "",
@@ -10570,6 +10709,19 @@ async function saveSettings() {
     form.table_default_page_size = normalizedTableDefaultPageSize;
     form.table_page_size_options = normalizedTablePageSizeOptions;
 
+    const normalizedRechargeBonusRules = normalizeRechargeBonusRules(
+      form.payment_recharge_bonus_rules,
+    );
+    if (!normalizedRechargeBonusRules) {
+      appStore.showError(
+        localText(
+          "充值赠送规则无效：门槛必须大于 0，赠送金额不能小于 0，金额最多保留两位小数，且门槛不可重复。",
+          "Invalid recharge bonus rules: thresholds must be above 0, gifts cannot be negative, values support at most two decimal places, and thresholds must be unique.",
+        ),
+      );
+      return;
+    }
+
     const normalizedLoginAgreementDocuments =
       normalizeLoginAgreementDocumentsForSave();
     if (form.login_agreement_enabled && normalizedLoginAgreementDocuments.length === 0) {
@@ -10910,6 +11062,8 @@ async function saveSettings() {
       payment_subscription_usd_to_cny_rate:
         Number(form.payment_subscription_usd_to_cny_rate) || 0,
       payment_recharge_fee_rate: Number(form.payment_recharge_fee_rate) || 0,
+      payment_recharge_bonus_enabled: form.payment_recharge_bonus_enabled,
+      payment_recharge_bonus_rules: normalizedRechargeBonusRules,
       payment_enabled_types: form.payment_enabled_types,
       payment_load_balance_strategy: form.payment_load_balance_strategy,
       payment_product_name_prefix: form.payment_product_name_prefix,

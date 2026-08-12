@@ -119,6 +119,12 @@ func TestParsePaymentConfig(t *testing.T) {
 		if cfg.AlipayMobilePrecreateDeepLink {
 			t.Fatal("expected AlipayMobilePrecreateDeepLink=false by default")
 		}
+		if !cfg.RechargeBonusEnabled {
+			t.Fatal("expected existing deployments to retain the recharge bonus by default")
+		}
+		if got := calculateBalanceRechargeBonus(500, cfg.RechargeBonusEnabled, cfg.RechargeBonusRules); got != 50 {
+			t.Fatalf("default recharge bonus = %v, want 50", got)
+		}
 	})
 
 	t.Run("all values populated", func(t *testing.T) {
@@ -235,6 +241,60 @@ func TestParsePaymentConfig(t *testing.T) {
 			t.Fatalf("expected empty EnabledTypes for empty string, got %v", cfg.EnabledTypes)
 		}
 	})
+}
+
+func TestRechargeBonusRulesNormalizeAndFailClosed(t *testing.T) {
+	t.Parallel()
+
+	svc := &PaymentConfigService{}
+	cfg := svc.parsePaymentConfig(map[string]string{
+		SettingRechargeBonusEnabled: "true",
+		SettingRechargeBonusRules:   `[{"threshold":200,"bonus":18},{"threshold":50,"bonus":2.99}]`,
+	})
+	if len(cfg.RechargeBonusRules) != 2 || cfg.RechargeBonusRules[0].Threshold != 50 || cfg.RechargeBonusRules[1].Threshold != 200 {
+		t.Fatalf("normalized rules = %#v", cfg.RechargeBonusRules)
+	}
+	if got := calculateBalanceRechargeBonus(200, cfg.RechargeBonusEnabled, cfg.RechargeBonusRules); got != 18 {
+		t.Fatalf("bonus = %v, want 18", got)
+	}
+
+	invalid := svc.parsePaymentConfig(map[string]string{SettingRechargeBonusRules: `not-json`})
+	if len(invalid.RechargeBonusRules) != 0 {
+		t.Fatalf("invalid persisted rules must fail closed, got %#v", invalid.RechargeBonusRules)
+	}
+}
+
+func TestUpdatePaymentConfigPersistsRechargeBonusCampaign(t *testing.T) {
+	t.Parallel()
+
+	repo := &paymentConfigSettingRepoStub{values: map[string]string{}}
+	svc := &PaymentConfigService{settingRepo: repo}
+	enabled := false
+	rules := []RechargeBonusRule{{Threshold: 200, Bonus: 18}, {Threshold: 50, Bonus: 2.99}}
+	if err := svc.UpdatePaymentConfig(context.Background(), UpdatePaymentConfigRequest{
+		RechargeBonusEnabled: &enabled,
+		RechargeBonusRules:   &rules,
+	}); err != nil {
+		t.Fatalf("UpdatePaymentConfig returned error: %v", err)
+	}
+	if repo.updates[SettingRechargeBonusEnabled] != "false" {
+		t.Fatalf("bonus enabled update = %q, want false", repo.updates[SettingRechargeBonusEnabled])
+	}
+	if repo.updates[SettingRechargeBonusRules] != `[{"threshold":50,"bonus":2.99},{"threshold":200,"bonus":18}]` {
+		t.Fatalf("bonus rules update = %q", repo.updates[SettingRechargeBonusRules])
+	}
+}
+
+func TestUpdatePaymentConfigRejectsInvalidRechargeBonusRules(t *testing.T) {
+	t.Parallel()
+
+	duplicate := []RechargeBonusRule{{Threshold: 50, Bonus: 1}, {Threshold: 50, Bonus: 2}}
+	err := (&PaymentConfigService{settingRepo: &paymentConfigSettingRepoStub{}}).UpdatePaymentConfig(context.Background(), UpdatePaymentConfigRequest{
+		RechargeBonusRules: &duplicate,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate recharge bonus threshold to fail")
+	}
 }
 
 func TestGetBasePaymentType(t *testing.T) {
