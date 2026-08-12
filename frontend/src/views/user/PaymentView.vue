@@ -261,9 +261,9 @@
             </div>
 
             <div class="space-y-4">
-              <div class="text-gray-900 dark:text-gray-300 font-semibold text-sm">{{ t('payment.topup.paymentMethod', '支付方式') }}</div>
               <div v-if="enabledMethods.length >= 1">
                 <PaymentMethodSelector
+                  compact
                   :methods="methodOptions"
                   :selected="selectedMethod"
                   @select="selectedMethod = $event"

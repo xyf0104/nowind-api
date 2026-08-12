@@ -416,6 +416,8 @@ describe('PaymentView recharge confirmation amounts', () => {
 
     expect(wrapper.find('.text-4xl').text()).toBe(formatPaymentAmount(84, 'JPY'))
     expect(wrapper.text()).toContain('payment.creditedBalance ¥83.99')
+    expect(wrapper.getComponent({ name: 'PaymentMethodSelector' }).props('compact')).toBe(true)
+    expect(wrapper.text().match(/payment\.topup\.paymentMethod/g)).toBeNull()
     wrapper.unmount()
   })
 })
