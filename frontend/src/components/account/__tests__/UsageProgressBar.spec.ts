@@ -146,4 +146,25 @@ describe('UsageProgressBar', () => {
     expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 100%')
     expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
   })
+
+  it('用 USD 显示窗口账号成本和用户成本', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '5h',
+        utilization: 25,
+        color: 'indigo',
+        windowStats: {
+          requests: 2,
+          tokens: 300,
+          cost: 1.25,
+          standard_cost: 2,
+          user_cost: 0.75
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('A $1.25')
+    expect(wrapper.text()).toContain('U $0.75')
+    expect(wrapper.text()).not.toContain('¥')
+  })
 })

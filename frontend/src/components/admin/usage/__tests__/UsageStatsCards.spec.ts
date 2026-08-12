@@ -81,4 +81,14 @@ describe('UsageStatsCards', () => {
 
     wrapper.unmount()
   })
+
+  it('shows usage, account, and standard costs in USD', () => {
+    const wrapper = mount(UsageStatsCards, {
+      props: { stats },
+      global: { stubs: { Icon: true, HelpTooltip: true } },
+    })
+
+    expect(wrapper.text()).toContain('$0.0010')
+    expect(wrapper.text()).not.toContain('¥')
+  })
 })
