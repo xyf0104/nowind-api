@@ -732,7 +732,10 @@ const loadUserSpendingRanking = async () => {
   }
 }
 
+let secondaryPanelLoadToken = 0
+
 const loadDashboardStats = async () => {
+  secondaryPanelLoadToken += 1
   await Promise.all([
     loadDashboardSnapshot(true),
     loadUsersTrend(),
@@ -740,7 +743,26 @@ const loadDashboardStats = async () => {
   ])
 }
 
+const scheduleSecondaryDashboardPanels = () => {
+  const token = ++secondaryPanelLoadToken
+  const loadSecondaryPanels = () => {
+    if (token !== secondaryPanelLoadToken) return
+    void loadUsersTrend()
+    void loadUserSpendingRanking()
+  }
+
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(loadSecondaryPanels, { timeout: 1500 })
+    return
+  }
+
+  // Safari lacks requestIdleCallback. Give the core snapshot a short head
+  // start, then populate secondary cards without delaying the first paint.
+  window.setTimeout(loadSecondaryPanels, 500)
+}
+
 const loadChartData = async () => {
+  secondaryPanelLoadToken += 1
   await Promise.all([
     loadDashboardSnapshot(false),
     loadUsersTrend(),
@@ -750,7 +772,8 @@ const loadChartData = async () => {
 
 onMounted(() => {
   void refreshBatchImageAccess()
-  loadDashboardStats()
+  void loadDashboardSnapshot(true)
+  scheduleSecondaryDashboardPanels()
 })
 </script>
 

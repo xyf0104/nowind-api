@@ -831,27 +831,6 @@ func buildOpenAIImagesURL(base string, endpoint string) string {
 	return buildOpenAIEndpointURL(base, endpoint)
 }
 
-func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]byte, string, error) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return body, contentType, nil
-	}
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		rewrittenBody, rewrittenType, rewriteErr := rewriteOpenAIImagesMultipartModel(body, contentType, model)
-		return rewrittenBody, rewrittenType, rewriteErr
-	}
-	rewritten, err := sjson.SetBytes(body, "model", model)
-	if err != nil {
-		return nil, "", fmt.Errorf("rewrite image request model: %w", err)
-	}
-	return rewritten, contentType, nil
-}
-
-func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model string) ([]byte, string, error) {
-	return rewriteOpenAIImagesMultipartFields(body, contentType, map[string]string{"model": model})
-}
-
 func rewriteOpenAIImagesMultipartFields(body []byte, contentType string, fields map[string]string) ([]byte, string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {

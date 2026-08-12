@@ -208,6 +208,51 @@ describe('admin AccountsView select all filtered results', () => {
     expect(wrapper.get('[data-test="all-results-selected"]').text()).toBe('false')
   })
 
+  it('starts every visit with recent account activity first instead of restoring an old table sort', async () => {
+    localStorage.setItem('account-table-sort', JSON.stringify({ key: 'name', order: 'asc' }))
+    listAccounts.mockResolvedValue({
+      items: makeAccounts(1),
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+
+    mountView()
+    await flushPromises()
+
+    expect(listAccounts).toHaveBeenCalledWith(
+      1,
+      20,
+      expect.objectContaining({
+        sort_by: 'updated_at',
+        sort_order: 'desc'
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+  })
+
+  it('does not reload today statistics when an automatic account refresh is unchanged', async () => {
+    listAccounts.mockResolvedValue({
+      items: makeAccounts(1),
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    const initialTodayStatsCalls = getBatchTodayStats.mock.calls.length
+
+    await wrapper.vm.$nextTick()
+    expect(typeof (wrapper.vm as any).refreshAccountsIncrementally).toBe('function')
+    await (wrapper.vm as any).refreshAccountsIncrementally()
+    await flushPromises()
+
+    expect(getBatchTodayStats).toHaveBeenCalledTimes(initialTodayStatsCalls)
+  })
+
   it('keeps the original page selection when loading all results fails', async () => {
     const currentPage = makeAccounts(20)
     listAccounts.mockImplementation(async (_page: number, pageSize: number) => {

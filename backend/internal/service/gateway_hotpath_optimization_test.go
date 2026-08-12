@@ -47,6 +47,43 @@ type usageLogWindowBatchRepoStub struct {
 	singleCalls  atomic.Int64
 }
 
+func TestAccountUsageService_GetAccountWindowStatsBatch_UsesSingleBatchQuery(t *testing.T) {
+	t.Parallel()
+
+	repo := &usageLogWindowBatchRepoStub{
+		batchResult: map[int64]*usagestats.AccountStats{
+			11: {StandardCost: 1.25},
+			12: {StandardCost: 2.5},
+		},
+	}
+	svc := &AccountUsageService{usageLogRepo: repo}
+	stats, err := svc.GetAccountWindowStatsBatch(context.Background(), []int64{11, 12, 11, 0, -1}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), repo.batchCalls.Load())
+	require.Equal(t, int64(0), repo.singleCalls.Load())
+	require.Equal(t, 1.25, stats[11].StandardCost)
+	require.Equal(t, 2.5, stats[12].StandardCost)
+}
+
+func TestAccountUsageService_GetAccountWindowStatsBatch_FallsBackAfterBatchFailure(t *testing.T) {
+	t.Parallel()
+
+	repo := &usageLogWindowBatchRepoStub{
+		batchErr: errors.New("batch unavailable"),
+		singleResult: map[int64]*usagestats.AccountStats{
+			11: {StandardCost: 1.25},
+			12: {StandardCost: 2.5},
+		},
+	}
+	svc := &AccountUsageService{usageLogRepo: repo}
+	stats, err := svc.GetAccountWindowStatsBatch(context.Background(), []int64{11, 12}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), repo.batchCalls.Load())
+	require.Equal(t, int64(2), repo.singleCalls.Load())
+	require.Equal(t, 1.25, stats[11].StandardCost)
+	require.Equal(t, 2.5, stats[12].StandardCost)
+}
+
 func (s *usageLogWindowBatchRepoStub) GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error) {
 	s.batchCalls.Add(1)
 	if s.batchErr != nil {

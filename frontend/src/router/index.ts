@@ -937,15 +937,15 @@ router.beforeEach(async (to, _from, next) => {
 
   if (requiresAdmin && authStore.isAdmin) {
     const adminComplianceStore = useAdminComplianceStore()
-    if (!adminComplianceStore.initialized) {
-      try {
-        await adminComplianceStore.fetchStatus()
-      } catch (error) {
+    if (!adminComplianceStore.initialized && !adminComplianceStore.loading) {
+      // Compliance acknowledgement remains enforced by the API and dialog, but
+      // a status refresh must never hold every admin navigation on the network.
+      void adminComplianceStore.fetchStatus().catch((error) => {
         const err = error as { status?: number; code?: string; metadata?: Record<string, string> }
         if (err.status === 423 && err.code === 'ADMIN_COMPLIANCE_ACK_REQUIRED') {
           adminComplianceStore.requireAcknowledgement(err.metadata)
         }
-      }
+      })
     }
   }
 

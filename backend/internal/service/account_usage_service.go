@@ -1347,6 +1347,68 @@ func (s *AccountUsageService) GetTodayStatsBatch(ctx context.Context, accountIDs
 	return result, nil
 }
 
+// GetAccountWindowStatsBatch returns window statistics for accounts sharing the
+// same start time. Account-list callers use it to avoid one aggregation query
+// per account while preserving the existing single-account fallback behavior.
+func (s *AccountUsageService) GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error) {
+	uniqueIDs := make([]int64, 0, len(accountIDs))
+	seen := make(map[int64]struct{}, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID <= 0 {
+			continue
+		}
+		if _, exists := seen[accountID]; exists {
+			continue
+		}
+		seen[accountID] = struct{}{}
+		uniqueIDs = append(uniqueIDs, accountID)
+	}
+
+	result := make(map[int64]*usagestats.AccountStats, len(uniqueIDs))
+	if len(uniqueIDs) == 0 {
+		return result, nil
+	}
+
+	if batchReader, ok := s.usageLogRepo.(accountWindowStatsBatchReader); ok {
+		statsByAccount, err := batchReader.GetAccountWindowStatsBatch(ctx, uniqueIDs, startTime)
+		if err == nil {
+			for _, accountID := range uniqueIDs {
+				if statsByAccount[accountID] == nil {
+					result[accountID] = &usagestats.AccountStats{}
+					continue
+				}
+				result[accountID] = statsByAccount[accountID]
+			}
+			return result, nil
+		}
+	}
+
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for _, accountID := range uniqueIDs {
+		id := accountID
+		g.Go(func() error {
+			stats, err := s.usageLogRepo.GetAccountWindowStats(gctx, id, startTime)
+			if err != nil {
+				return nil
+			}
+			mu.Lock()
+			result[id] = stats
+			mu.Unlock()
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	for _, accountID := range uniqueIDs {
+		if result[accountID] == nil {
+			result[accountID] = &usagestats.AccountStats{}
+		}
+	}
+	return result, nil
+}
+
 func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {
 	if stats == nil {
 		return &WindowStats{}

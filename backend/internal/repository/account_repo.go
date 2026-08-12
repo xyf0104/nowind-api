@@ -1111,6 +1111,9 @@ func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selecto
 	case "created_at":
 		field = dbaccount.FieldCreatedAt
 		defaultOrder = false
+	case "updated_at":
+		field = dbaccount.FieldUpdatedAt
+		defaultOrder = false
 	}
 
 	if sortOrder == pagination.SortOrderDesc {
@@ -1753,6 +1756,11 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 	if err != nil {
 		return err
 	}
+	// Group membership is part of an account's editable configuration. Touch the
+	// account so the admin list can consistently surface it as recently operated.
+	if err := r.touchAccountActivity(ctx, r.client, accountID); err != nil {
+		return err
+	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue add to group failed: account=%d group=%d err=%v", accountID, groupID, err)
@@ -1768,6 +1776,9 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 		).
 		Exec(ctx)
 	if err != nil {
+		return err
+	}
+	if err := r.touchAccountActivity(ctx, r.client, accountID); err != nil {
 		return err
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
@@ -1818,23 +1829,22 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		return err
 	}
 
-	if len(groupIDs) == 0 {
-		if tx != nil {
-			return tx.Commit()
+	if len(groupIDs) > 0 {
+		builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
+		for i, groupID := range groupIDs {
+			builders = append(builders, txClient.AccountGroup.Create().
+				SetAccountID(accountID).
+				SetGroupID(groupID).
+				SetPriority(i+1),
+			)
 		}
-		return nil
+
+		if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
+			return err
+		}
 	}
 
-	builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
-	for i, groupID := range groupIDs {
-		builders = append(builders, txClient.AccountGroup.Create().
-			SetAccountID(accountID).
-			SetGroupID(groupID).
-			SetPriority(i+1),
-		)
-	}
-
-	if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
+	if err := r.touchAccountActivity(ctx, txClient, accountID); err != nil {
 		return err
 	}
 
@@ -1848,6 +1858,16 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bind groups failed: account=%d err=%v", accountID, err)
 	}
 	return nil
+}
+
+func (r *accountRepository) touchAccountActivity(ctx context.Context, client *dbent.Client, accountID int64) error {
+	_, err := client.Account.Update().
+		Where(
+			dbaccount.IDEQ(accountID),
+			dbaccount.DeletedAtIsNil(),
+		).
+		Save(ctx)
+	return err
 }
 
 func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Account, error) {

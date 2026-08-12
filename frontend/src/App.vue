@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { onMounted, onBeforeUnmount, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import Toast from '@/components/common/Toast.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import AdminComplianceDialog from '@/components/admin/AdminComplianceDialog.vue'
 import { resolveRouteDocumentTitle } from '@/router/title'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
+import AppLayout from '@/components/layout/AppLayout.vue'
 import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminComplianceStore, useAdminSettingsStore } from '@/stores'
 import { getSetupStatus } from '@/api/setup'
 import { sanitizeUrl } from '@/utils/url'
@@ -28,6 +29,30 @@ let themeObserver: MutationObserver | null = null
 // The SMS host is a standalone member workbench. Keep XIASS API's global
 // announcements and admin acknowledgement flow scoped to the main domain.
 const isStandaloneSMSHost = window.location.hostname.split('.')[0]?.toLowerCase() === 'sms'
+
+// These views already use AppLayout. Keeping one layout instance above the
+// routed content prevents a route change from recreating the video background,
+// particle canvas, sidebar, header, onboarding setup, and version checks.
+const APP_LAYOUT_ROUTE_NAMES = new Set([
+  'Dashboard', 'Keys', 'CodexHelperConnect', 'BatchImageGuide', 'Usage',
+  'Redeem', 'Affiliate', 'UserPricing', 'Profile', 'Subscriptions',
+  'PurchaseSubscription', 'OrderList', 'PaymentQRCode', 'CustomPage',
+  // AdminOps owns a real fullscreen mode, so it deliberately keeps its
+  // existing self-contained layout instead of inheriting this shell.
+  'ChannelStatus', 'AdminDashboard', 'AdminAuditLogs', 'AdminUsers',
+  'AdminGroups', 'AdminChannels', 'AdminChannelMonitor', 'AdminSubscriptions',
+  'AdminAccounts', 'AdminAnnouncements', 'AdminProxies', 'AdminRedeem',
+  'AdminPromoCodes', 'AdminSettings', 'AdminRiskControl', 'AdminPromptAudit', 'AdminUsage',
+  'AdminAffiliateInvites', 'AdminAffiliateRebates', 'AdminAffiliateTransfers',
+  'AdminPaymentDashboard', 'AdminOrders', 'AdminPaymentPlans',
+  'AirwallexPayment',
+])
+
+const usesPersistentAppLayout = computed(() => (
+  !isStandaloneSMSHost
+  && typeof route.name === 'string'
+  && APP_LAYOUT_ROUTE_NAMES.has(route.name)
+))
 
 function updateDocumentTitle() {
   const customMenuItems = [
@@ -201,7 +226,12 @@ onMounted(async () => {
 
 <template>
   <NavigationProgress />
-  <RouterView />
+  <RouterView v-slot="{ Component }">
+    <AppLayout v-if="usesPersistentAppLayout">
+      <component :is="Component" />
+    </AppLayout>
+    <component :is="Component" v-else />
+  </RouterView>
   <Toast />
   <AnnouncementPopup v-if="!isStandaloneSMSHost" />
   <AdminComplianceDialog v-if="!isStandaloneSMSHost" />

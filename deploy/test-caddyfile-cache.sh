@@ -36,6 +36,16 @@ if ! printf '%s\n' "$active_config" | grep -Eq 'Cache-Control[[:space:]]+"no-cac
 	exit 1
 fi
 
+if ! printf '%s\n' "$active_config" | grep -Eq '@themeMedia[[:space:]]+path[[:space:]].*xiass-dark-bokeh\.mp4'; then
+	echo "Caddyfile must retain a dedicated dynamic theme media matcher" >&2
+	exit 1
+fi
+
+if ! printf '%s\n' "$active_config" | grep -Eq 'Cache-Control[[:space:]]+"public, max-age=86400, stale-while-revalidate=604800"'; then
+	echo "Caddyfile must cache dynamic theme media without making it immutable" >&2
+	exit 1
+fi
+
 # Keep one canonical encode block instead of reimplementing Caddy matcher semantics.
 expected_encode_block=$(cat <<'EOF'
 encode {

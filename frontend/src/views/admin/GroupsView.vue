@@ -4266,7 +4266,7 @@ const COLUMN_SETTINGS_VERSION = 2;
 const VERSION_NEW_HIDDEN_COLUMNS: Record<number, string[]> = {
   2: ["id"],
 };
-const CAPACITY_REFRESH_INTERVAL_MS = 5_000;
+const CAPACITY_REFRESH_INTERVAL_MS = 10_000;
 
 const openActiveConcurrencyAccounts = (groupID: number) => {
   void router.push({
@@ -5473,37 +5473,47 @@ const loadUsageSummary = async () => {
   }
 };
 
-const loadCapacitySummary = async () => {
+let capacityRefreshPromise: Promise<void> | null = null;
+
+const loadCapacitySummary = (): Promise<void> => {
   if (!hasVisibleCapacityColumn.value) {
-    return;
+    return Promise.resolve();
   }
-  try {
-    const data = await adminAPI.groups.getCapacitySummary();
-    const map = new Map<
-      number,
-      {
-        concurrencyUsed: number;
-        concurrencyMax: number;
-        sessionsUsed: number;
-        sessionsMax: number;
-        rpmUsed: number;
-        rpmMax: number;
+  if (capacityRefreshPromise !== null) return capacityRefreshPromise;
+
+  capacityRefreshPromise = (async () => {
+    try {
+      const data = await adminAPI.groups.getCapacitySummary();
+      const map = new Map<
+        number,
+        {
+          concurrencyUsed: number;
+          concurrencyMax: number;
+          sessionsUsed: number;
+          sessionsMax: number;
+          rpmUsed: number;
+          rpmMax: number;
+        }
+      >();
+      for (const item of data) {
+        map.set(item.group_id, {
+          concurrencyUsed: item.concurrency_used,
+          concurrencyMax: item.concurrency_max,
+          sessionsUsed: item.sessions_used,
+          sessionsMax: item.sessions_max,
+          rpmUsed: item.rpm_used,
+          rpmMax: item.rpm_max,
+        });
       }
-    >();
-    for (const item of data) {
-      map.set(item.group_id, {
-        concurrencyUsed: item.concurrency_used,
-        concurrencyMax: item.concurrency_max,
-        sessionsUsed: item.sessions_used,
-        sessionsMax: item.sessions_max,
-        rpmUsed: item.rpm_used,
-        rpmMax: item.rpm_max,
-      });
+      capacityMap.value = map;
+    } catch (error) {
+      console.error("Error loading group capacity summary:", error);
+    } finally {
+      capacityRefreshPromise = null;
     }
-    capacityMap.value = map;
-  } catch (error) {
-    console.error("Error loading group capacity summary:", error);
-  }
+  })();
+
+  return capacityRefreshPromise;
 };
 
 let capacityRefreshTimer: ReturnType<typeof setInterval> | null = null;

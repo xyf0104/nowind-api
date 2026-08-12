@@ -702,19 +702,31 @@ func (s *AccountRepoSuite) TestGroupBinding_And_BindGroups() {
 	g1 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g1"})
 	g2 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g2"})
 	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc"})
+	activityAt := account.UpdatedAt
 
 	s.Require().NoError(s.repo.AddToGroup(s.ctx, account.ID, g1.ID, 10), "AddToGroup")
+	account, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().True(account.UpdatedAt.After(activityAt), "adding a group should update account activity")
+	activityAt = account.UpdatedAt
 	groups, err := s.repo.GetGroups(s.ctx, account.ID)
 	s.Require().NoError(err, "GetGroups")
 	s.Require().Len(groups, 1, "expected 1 group")
 	s.Require().Equal(g1.ID, groups[0].ID)
 
 	s.Require().NoError(s.repo.RemoveFromGroup(s.ctx, account.ID, g1.ID), "RemoveFromGroup")
+	account, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().True(account.UpdatedAt.After(activityAt), "removing a group should update account activity")
+	activityAt = account.UpdatedAt
 	groups, err = s.repo.GetGroups(s.ctx, account.ID)
 	s.Require().NoError(err, "GetGroups after remove")
 	s.Require().Empty(groups, "expected 0 groups after remove")
 
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g2.ID}), "BindGroups")
+	account, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().True(account.UpdatedAt.After(activityAt), "binding groups should update account activity")
 	groups, err = s.repo.GetGroups(s.ctx, account.ID)
 	s.Require().NoError(err, "GetGroups after bind")
 	s.Require().Len(groups, 2, "expected 2 groups after bind")
@@ -724,8 +736,14 @@ func (s *AccountRepoSuite) TestBindGroups_EmptyList() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-empty"})
 	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g-empty"})
 	mustBindAccountToGroup(s.T(), s.client, account.ID, group.ID, 1)
+	account, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	activityAt := account.UpdatedAt
 
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{}), "BindGroups empty")
+	account, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().True(account.UpdatedAt.After(activityAt), "clearing groups should update account activity")
 
 	groups, err := s.repo.GetGroups(s.ctx, account.ID)
 	s.Require().NoError(err)

@@ -1,5 +1,7 @@
 <template>
-  <div class="app-layout min-h-screen bg-[#cdd8df] text-gray-800 dark:bg-[#061720] dark:text-gray-200 transition-colors duration-300">
+  <slot v-if="!isRootLayout" />
+
+  <div v-else class="app-layout min-h-screen bg-[#cdd8df] text-gray-800 dark:bg-[#061720] dark:text-gray-200 transition-colors duration-300">
     <DarkVideoBackground blurred />
 
     <!-- 科技感粒子动画背景 -->
@@ -31,7 +33,7 @@
 
 <script setup lang="ts">
 import '@/styles/onboarding.css'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, provide, ref } from 'vue'
 import { useAppStore } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
 import { useOnboardingTour } from '@/composables/useOnboardingTour'
@@ -40,15 +42,25 @@ import DarkVideoBackground from '@/components/common/DarkVideoBackground.vue'
 import AppSidebar from './AppSidebar.vue'
 import AppHeader from './AppHeader.vue'
 
+const APP_LAYOUT_CONTEXT = 'xiass-app-layout-context'
+const hasParentLayout = inject<boolean>(APP_LAYOUT_CONTEXT, false)
+const isRootLayout = !hasParentLayout
+
+if (isRootLayout) {
+  provide(APP_LAYOUT_CONTEXT, true)
+}
+
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 
-const { replayTour } = useOnboardingTour({
-  storageKey: isAdmin.value ? 'admin_guide' : 'user_guide',
-  autoStart: true
-})
+const { replayTour } = isRootLayout
+  ? useOnboardingTour({
+    storageKey: isAdmin.value ? 'admin_guide' : 'user_guide',
+    autoStart: true
+  })
+  : { replayTour: () => undefined }
 
 const onboardingStore = useOnboardingStore()
 
@@ -166,11 +178,13 @@ function initParticles(): () => void {
 }
 
 onMounted(() => {
+  if (!isRootLayout) return
   onboardingStore.setReplayCallback(replayTour)
   teardownParticles = initParticles()
 })
 
 onUnmounted(() => {
+  if (!isRootLayout) return
   teardownParticles?.()
 })
 

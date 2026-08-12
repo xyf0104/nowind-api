@@ -176,8 +176,13 @@ export const useAuthStore = defineStore('auth', () => {
     // Clear existing interval if any
     stopAutoRefresh()
 
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', refreshUserWhenVisible)
+    }
+
     refreshIntervalId = setInterval(() => {
-      if (token.value) {
+      // Background tabs do not need a fresh balance/profile every minute.
+      if (token.value && (typeof document === 'undefined' || document.visibilityState === 'visible')) {
         refreshUser().catch((error) => {
           console.error('Auto-refresh user failed:', error)
         })
@@ -193,6 +198,18 @@ export const useAuthStore = defineStore('auth', () => {
       clearInterval(refreshIntervalId)
       refreshIntervalId = null
     }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', refreshUserWhenVisible)
+    }
+  }
+
+  function refreshUserWhenVisible(): void {
+    if (!token.value || typeof document === 'undefined' || document.visibilityState !== 'visible') {
+      return
+    }
+    refreshUser().catch((error) => {
+      console.error('Foreground user refresh failed:', error)
+    })
   }
 
   /**

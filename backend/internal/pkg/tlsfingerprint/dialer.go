@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/proxy"
@@ -34,22 +35,35 @@ type Profile struct {
 
 // Dialer creates TLS connections with custom fingerprints.
 type Dialer struct {
-	profile    *Profile
-	baseDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+	profile             *Profile
+	baseDialer          func(ctx context.Context, network, addr string) (net.Conn, error)
+	tlsHandshakeTimeout time.Duration
+}
+
+// DialerOptions keeps TLS-fingerprint dialers within the same connection and
+// handshake budget as normal upstream transports. A zero value preserves the
+// historical net.Dialer behavior for standalone callers.
+type DialerOptions struct {
+	Dialer              *net.Dialer
+	TLSHandshakeTimeout time.Duration
 }
 
 // HTTPProxyDialer creates TLS connections through HTTP/HTTPS proxies with custom fingerprints.
 // It handles the CONNECT tunnel establishment before performing TLS handshake.
 type HTTPProxyDialer struct {
-	profile  *Profile
-	proxyURL *url.URL
+	profile             *Profile
+	proxyURL            *url.URL
+	dialer              *net.Dialer
+	tlsHandshakeTimeout time.Duration
 }
 
 // SOCKS5ProxyDialer creates TLS connections through SOCKS5 proxies with custom fingerprints.
 // It uses golang.org/x/net/proxy to establish the SOCKS5 tunnel.
 type SOCKS5ProxyDialer struct {
-	profile  *Profile
-	proxyURL *url.URL
+	profile             *Profile
+	proxyURL            *url.URL
+	dialer              *net.Dialer
+	tlsHandshakeTimeout time.Duration
 }
 
 // Default TLS fingerprint values captured from Claude Code (Node.js 24.x)
@@ -120,22 +134,66 @@ var (
 // baseDialer is used for TCP connection establishment (supports proxy scenarios).
 // If baseDialer is nil, direct TCP dial is used.
 func NewDialer(profile *Profile, baseDialer func(ctx context.Context, network, addr string) (net.Conn, error)) *Dialer {
-	if baseDialer == nil {
-		baseDialer = (&net.Dialer{}).DialContext
+	return NewDialerWithOptions(profile, baseDialer, DialerOptions{})
+}
+
+// NewDialerWithOptions creates a TLS fingerprint dialer with explicit upstream
+// connection and handshake limits when the caller provides them.
+func NewDialerWithOptions(profile *Profile, baseDialer func(ctx context.Context, network, addr string) (net.Conn, error), options DialerOptions) *Dialer {
+	dialer := options.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{}
 	}
-	return &Dialer{profile: profile, baseDialer: baseDialer}
+	if baseDialer == nil {
+		baseDialer = dialer.DialContext
+	}
+	return &Dialer{
+		profile:             profile,
+		baseDialer:          baseDialer,
+		tlsHandshakeTimeout: options.TLSHandshakeTimeout,
+	}
 }
 
 // NewHTTPProxyDialer creates a new TLS fingerprint dialer that works through HTTP/HTTPS proxies.
 // It establishes a CONNECT tunnel before performing TLS handshake with custom fingerprint.
 func NewHTTPProxyDialer(profile *Profile, proxyURL *url.URL) *HTTPProxyDialer {
-	return &HTTPProxyDialer{profile: profile, proxyURL: proxyURL}
+	return NewHTTPProxyDialerWithOptions(profile, proxyURL, DialerOptions{})
+}
+
+// NewHTTPProxyDialerWithOptions creates an HTTP CONNECT TLS-fingerprint
+// dialer with bounded proxy connection and TLS handshake time.
+func NewHTTPProxyDialerWithOptions(profile *Profile, proxyURL *url.URL, options DialerOptions) *HTTPProxyDialer {
+	dialer := options.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{}
+	}
+	return &HTTPProxyDialer{
+		profile:             profile,
+		proxyURL:            proxyURL,
+		dialer:              dialer,
+		tlsHandshakeTimeout: options.TLSHandshakeTimeout,
+	}
 }
 
 // NewSOCKS5ProxyDialer creates a new TLS fingerprint dialer that works through SOCKS5 proxies.
 // It establishes a SOCKS5 tunnel before performing TLS handshake with custom fingerprint.
 func NewSOCKS5ProxyDialer(profile *Profile, proxyURL *url.URL) *SOCKS5ProxyDialer {
-	return &SOCKS5ProxyDialer{profile: profile, proxyURL: proxyURL}
+	return NewSOCKS5ProxyDialerWithOptions(profile, proxyURL, DialerOptions{})
+}
+
+// NewSOCKS5ProxyDialerWithOptions creates a SOCKS5 TLS-fingerprint dialer
+// with bounded proxy connection and TLS handshake time.
+func NewSOCKS5ProxyDialerWithOptions(profile *Profile, proxyURL *url.URL, options DialerOptions) *SOCKS5ProxyDialer {
+	dialer := options.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{}
+	}
+	return &SOCKS5ProxyDialer{
+		profile:             profile,
+		proxyURL:            proxyURL,
+		dialer:              dialer,
+		tlsHandshakeTimeout: options.TLSHandshakeTimeout,
+	}
 }
 
 // DialTLSContext establishes a TLS connection through SOCKS5 proxy with the configured fingerprint.
@@ -160,7 +218,7 @@ func (d *SOCKS5ProxyDialer) DialTLSContext(ctx context.Context, network, addr st
 		proxyAddr = net.JoinHostPort(d.proxyURL.Hostname(), "1080") // Default SOCKS5 port
 	}
 
-	socksDialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, proxy.Direct)
+	socksDialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, d.dialer)
 	if err != nil {
 		slog.Debug("tls_fingerprint_socks5_dialer_failed", "error", err)
 		return nil, fmt.Errorf("create SOCKS5 dialer: %w", err)
@@ -176,7 +234,7 @@ func (d *SOCKS5ProxyDialer) DialTLSContext(ctx context.Context, network, addr st
 	slog.Debug("tls_fingerprint_socks5_tunnel_established")
 
 	// Step 3: Perform TLS handshake on the tunnel with utls fingerprint
-	return performTLSHandshake(ctx, conn, d.profile, addr)
+	return performTLSHandshakeWithTimeout(ctx, conn, d.profile, addr, d.tlsHandshakeTimeout)
 }
 
 // DialTLSContext establishes a TLS connection through HTTP proxy with the configured fingerprint.
@@ -197,8 +255,7 @@ func (d *HTTPProxyDialer) DialTLSContext(ctx context.Context, network, addr stri
 		}
 	}
 
-	dialer := &net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
+	conn, err := d.dialer.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		slog.Debug("tls_fingerprint_http_proxy_connect_failed", "error", err)
 		return nil, fmt.Errorf("connect to proxy: %w", err)
@@ -247,7 +304,7 @@ func (d *HTTPProxyDialer) DialTLSContext(ctx context.Context, network, addr stri
 	slog.Debug("tls_fingerprint_http_proxy_tunnel_established")
 
 	// Step 4: Perform TLS handshake on the tunnel with utls fingerprint
-	return performTLSHandshake(ctx, conn, d.profile, addr)
+	return performTLSHandshakeWithTimeout(ctx, conn, d.profile, addr, d.tlsHandshakeTimeout)
 }
 
 // DialTLSContext establishes a TLS connection with the configured fingerprint.
@@ -263,13 +320,17 @@ func (d *Dialer) DialTLSContext(ctx context.Context, network, addr string) (net.
 	slog.Debug("tls_fingerprint_tcp_connected", "addr", addr)
 
 	// Perform TLS handshake with utls fingerprint
-	return performTLSHandshake(ctx, conn, d.profile, addr)
+	return performTLSHandshakeWithTimeout(ctx, conn, d.profile, addr, d.tlsHandshakeTimeout)
 }
 
 // performTLSHandshake performs the uTLS handshake on an established connection.
 // It builds a ClientHello spec from the profile, applies it, and completes the handshake.
 // On failure, conn is closed and an error is returned.
 func performTLSHandshake(ctx context.Context, conn net.Conn, profile *Profile, addr string) (net.Conn, error) {
+	return performTLSHandshakeWithTimeout(ctx, conn, profile, addr, 0)
+}
+
+func performTLSHandshakeWithTimeout(ctx context.Context, conn net.Conn, profile *Profile, addr string, timeout time.Duration) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr
@@ -283,7 +344,13 @@ func performTLSHandshake(ctx context.Context, conn net.Conn, profile *Profile, a
 		return nil, fmt.Errorf("apply TLS preset: %w", err)
 	}
 
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	handshakeCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		handshakeCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("TLS handshake failed: %w", err)
 	}

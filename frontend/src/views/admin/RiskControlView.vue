@@ -1769,6 +1769,7 @@ async function loadAll() {
 }
 
 async function loadStatus(silent = true) {
+  if (statusLoading.value) return
   statusLoading.value = true
   try {
     const runtimeStatus = await adminAPI.riskControl.getStatus()
@@ -1783,6 +1784,12 @@ async function loadStatus(silent = true) {
     }
   } finally {
     statusLoading.value = false
+  }
+}
+
+function refreshStatusWhenVisible() {
+  if (document.visibilityState === 'visible') {
+    void loadStatus(true)
   }
 }
 
@@ -2361,8 +2368,11 @@ function formatNumber(value: number): string {
 onMounted(() => {
   void loadAll()
   statusTimer = window.setInterval(() => {
-    void loadStatus(true)
+    if (document.visibilityState === 'visible') {
+      void loadStatus(true)
+    }
   }, 15000)
+  document.addEventListener('visibilitychange', refreshStatusWhenVisible)
 })
 
 onUnmounted(() => {
@@ -2370,5 +2380,6 @@ onUnmounted(() => {
     window.clearInterval(statusTimer)
     statusTimer = null
   }
+  document.removeEventListener('visibilitychange', refreshStatusWhenVisible)
 })
 </script>

@@ -389,12 +389,34 @@ describe('admin GroupsView column settings', () => {
 
     expect(getCapacitySummary).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.advanceTimersByTimeAsync(10_000)
     await flushPromises()
     expect(getCapacitySummary).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
-    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.advanceTimersByTimeAsync(10_000)
     expect(getCapacitySummary).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not overlap slow capacity refreshes', async () => {
+    vi.useFakeTimers()
+    let resolveCapacity: ((value: []) => void) | undefined
+    getCapacitySummary.mockImplementationOnce(() => new Promise<[]>((resolve) => {
+      resolveCapacity = resolve
+    }))
+
+    const wrapper = await mountView()
+    expect(getCapacitySummary).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(getCapacitySummary).toHaveBeenCalledTimes(1)
+
+    resolveCapacity?.([])
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+    expect(getCapacitySummary).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
   })
 })

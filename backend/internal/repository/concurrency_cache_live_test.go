@@ -75,6 +75,7 @@ func TestLiveLeaseExpiresWithoutRefresh(t *testing.T) {
 func TestGroupAccountConcurrencySnapshotIsScopedAndRejectsLegacyMembers(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
 	ctx := context.Background()
 
@@ -105,6 +106,7 @@ func TestGroupAccountConcurrencySnapshotIsScopedAndRejectsLegacyMembers(t *testi
 func TestGroupSlotReleaseUsesAccountScopedMember(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
 	ctx := context.Background()
 

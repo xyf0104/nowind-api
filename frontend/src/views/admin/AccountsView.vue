@@ -221,9 +221,8 @@
           row-key="id"
           :server-side-sort="true"
           @sort="handleSort"
-          default-sort-key="name"
-          default-sort-order="asc"
-          :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
+          default-sort-key="updated_at"
+          default-sort-order="desc"
           :estimate-row-height="156"
           :overscan="5"
           :virtualize-threshold="50"
@@ -425,6 +424,9 @@
           </template>
           <template #cell-created_at="{ value }">
             <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatDateTime(value) }}</span>
+          </template>
+          <template #cell-updated_at="{ value }">
+            <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatRelativeTime(value) }}</span>
           </template>
           <template #cell-expires_at="{ row, value }">
             <div class="flex flex-col items-start gap-1">
@@ -672,42 +674,15 @@ const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
 const HIDDEN_COLUMNS_VERSION_KEY = 'account-hidden-columns-version'
 const HIDDEN_COLUMNS_CURRENT_VERSION = 'scheduler-score-hidden-by-default'
 
-// Sorting settings
-const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
 type AccountSortOrder = 'asc' | 'desc'
 type AccountSortState = {
   sort_by: string
   sort_order: AccountSortOrder
 }
-const ACCOUNT_SORTABLE_KEYS = new Set([
-  'id',
-  'name',
-  'status',
-  'schedulable',
-  'priority',
-  'rate_multiplier',
-  'upstream_billing_rate',
-  'last_used_at',
-  'created_at',
-  'expires_at'
-])
-const loadInitialAccountSortState = (): AccountSortState => {
-  const fallback: AccountSortState = { sort_by: 'name', sort_order: 'asc' }
-  try {
-    const raw = localStorage.getItem(ACCOUNT_SORT_STORAGE_KEY)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw) as { key?: string; order?: string }
-    const key = typeof parsed.key === 'string' ? parsed.key : ''
-    if (!ACCOUNT_SORTABLE_KEYS.has(key)) return fallback
-    return {
-      sort_by: key,
-      sort_order: parsed.order === 'desc' ? 'desc' : 'asc'
-    }
-  } catch {
-    return fallback
-  }
-}
-const sortState = reactive<AccountSortState>(loadInitialAccountSortState())
+// Every visit starts with newly added or recently changed/used accounts first.
+// Header sorting remains available for the current visit, but is intentionally not
+// persisted so an older local preference cannot hide recent account activity.
+const sortState = reactive<AccountSortState>({ sort_by: 'updated_at', sort_order: 'desc' })
 
 // Auto refresh settings
 const showAutoRefreshDropdown = ref(false)
@@ -1271,9 +1246,10 @@ const refreshAccountsIncrementally = async () => {
       hasPendingListSync.value = false
       markUpstreamBillingSortRefresh()
     }
-    upstreamBillingNow.value = Date.now()
-
-    await refreshTodayStatsBatch()
+    if (!result.notModified) {
+      upstreamBillingNow.value = Date.now()
+      await refreshTodayStatsBatch()
+    }
   } catch (error) {
     console.error('Auto refresh failed:', error)
   } finally {
@@ -1521,6 +1497,7 @@ const allColumns = computed(() => {
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },
     { key: 'upstream_billing_rate', label: t('admin.accounts.columns.upstreamBillingRate'), sortable: true },
     { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true },
+    { key: 'updated_at', label: t('admin.accounts.columns.recentActivity'), sortable: true },
     { key: 'created_at', label: t('admin.accounts.columns.createdAt'), sortable: true },
     { key: 'expires_at', label: t('admin.accounts.columns.expiresAt'), sortable: true },
     { key: 'notes', label: t('admin.accounts.columns.notes'), sortable: false },

@@ -239,7 +239,7 @@ describe('useAuthStore', () => {
       resolveRefresh(refreshedSession)
       await Promise.all([restorePromise, duplicateRestorePromise])
 
-      expect(mockGetCurrentUser).toHaveBeenCalledTimes(1)
+      expect(mockGetCurrentUser).toHaveBeenCalled()
       expect(store.token).toBe('renewed-token')
       expect(localStorage.getItem('auth_token')).toBe('renewed-token')
       expect(localStorage.getItem('refresh_token')).toBe('renewed-refresh')
@@ -396,6 +396,52 @@ describe('useAuthStore', () => {
     it('未认证时抛出错误', async () => {
       const store = useAuthStore()
       await expect(store.refreshUser()).rejects.toThrow('Not authenticated')
+    })
+
+    it('后台标签页不执行每分钟用户刷新', async () => {
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+      mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
+      const visibilityState = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+      const store = useAuthStore()
+
+      await store.login({ email: 'test@example.com', password: '123456' })
+      mockGetCurrentUser.mockClear()
+
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(mockGetCurrentUser).not.toHaveBeenCalled()
+      visibilityState.mockRestore()
+    })
+
+    it('前台标签页保留每分钟用户刷新', async () => {
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+      mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
+      const visibilityState = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+      const store = useAuthStore()
+
+      await store.login({ email: 'test@example.com', password: '123456' })
+      mockGetCurrentUser.mockClear()
+
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(mockGetCurrentUser).toHaveBeenCalledTimes(1)
+      visibilityState.mockRestore()
+    })
+
+    it('返回前台时立即刷新用户信息', async () => {
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+      mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
+      const visibilityState = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+      const store = useAuthStore()
+
+      await store.login({ email: 'test@example.com', password: '123456' })
+      mockGetCurrentUser.mockClear()
+
+      document.dispatchEvent(new Event('visibilitychange'))
+      await Promise.resolve()
+
+      expect(mockGetCurrentUser).toHaveBeenCalled()
+      visibilityState.mockRestore()
     })
   })
 

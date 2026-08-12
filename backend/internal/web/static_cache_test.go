@@ -56,6 +56,14 @@ func TestApplyStaticAssetCacheHeaders(t *testing.T) {
 		assert.Equal(t, stableBrandCacheControl, header.Get("Cache-Control"))
 	})
 
+	t.Run("caches_dynamic_theme_media_without_making_it_immutable", func(t *testing.T) {
+		t.Parallel()
+		header := make(http.Header)
+		applyStaticAssetCacheHeaders(header, "media/xiass-dark-bokeh.mp4")
+		assert.Equal(t, themeMediaCacheControl, header.Get("Cache-Control"))
+		assert.NotEqual(t, staticAssetsCacheControl, header.Get("Cache-Control"))
+	})
+
 	t.Run("skips_unhashed_assets", func(t *testing.T) {
 		t.Parallel()
 		header := make(http.Header)

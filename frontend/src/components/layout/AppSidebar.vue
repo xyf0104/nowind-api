@@ -981,16 +981,11 @@ const isUpdating = ref(false)
 
 async function checkVersion() {
   if (!isAdmin.value) return
-  try {
-    const { data } = await apiClient.get('/admin/system/version')
-    currentVersion.value = data.version || 'unknown'
-    // check latest
-    const { data: updateData } = await apiClient.get('/admin/system/check-updates')
-    latestVersion.value = updateData.latest_version
-    hasUpdate.value = updateData.has_update
-  } catch (err) {
-    console.error('Failed to check version:', err)
-  }
+  const version = await appStore.fetchVersion()
+  if (!version) return
+  currentVersion.value = version.current_version || 'unknown'
+  latestVersion.value = version.latest_version
+  hasUpdate.value = version.has_update
 }
 
 const isCheckingUpdate = ref(false)
@@ -999,9 +994,13 @@ async function manualCheckVersion() {
   if (isCheckingUpdate.value) return
   isCheckingUpdate.value = true
   try {
-    const { data: updateData } = await apiClient.get('/admin/system/check-updates?force=true')
-    latestVersion.value = updateData.latest_version
-    hasUpdate.value = updateData.has_update
+    const version = await appStore.fetchVersion(true)
+    if (!version) {
+      throw new Error('检查更新失败')
+    }
+    currentVersion.value = version.current_version || 'unknown'
+    latestVersion.value = version.latest_version
+    hasUpdate.value = version.has_update
     if (hasUpdate.value) {
       triggerUpdateConfirm()
     } else {
@@ -1083,10 +1082,6 @@ watch(isAdmin, (v) => {
 
 onMounted(() => {
   void refreshBatchImageAccess()
-  if (isAdmin.value) {
-    adminSettingsStore.fetch()
-    checkVersion()
-  }
   // Restore sidebar scroll position after route change re-mounts the component
   if (appStore.sidebarScrollTop > 0 && sidebarNavRef.value) {
     void nextTick(() => {

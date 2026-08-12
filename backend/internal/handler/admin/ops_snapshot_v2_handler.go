@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -13,7 +14,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var opsDashboardSnapshotV2Cache = newSnapshotCache(30 * time.Second)
+const opsDashboardSnapshotV2CacheTTL = 30 * time.Second
+
+var opsDashboardSnapshotV2Cache = newSnapshotCache(opsDashboardSnapshotV2CacheTTL)
 
 type opsDashboardSnapshotV2Response struct {
 	GeneratedAt string `json:"generated_at"`
@@ -49,6 +52,7 @@ func (h *OpsHandler) GetDashboardSnapshotV2(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	startTime, endTime = normalizeOpsDashboardSnapshotRange(c, startTime, endTime)
 
 	filter := &service.OpsDashboardFilter{
 		StartTime: startTime,
@@ -76,26 +80,51 @@ func (h *OpsHandler) GetDashboardSnapshotV2(c *gin.Context) {
 	})
 	cacheKey := string(keyRaw)
 
-	if cached, ok := opsDashboardSnapshotV2Cache.Get(cacheKey); ok {
-		if cached.ETag != "" {
-			c.Header("ETag", cached.ETag)
-			c.Header("Vary", "If-None-Match")
-			if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
-				c.Status(http.StatusNotModified)
-				return
-			}
-		}
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
+	cached, hit, err := opsDashboardSnapshotV2Cache.GetOrLoad(cacheKey, func() (any, error) {
+		return h.buildDashboardSnapshotV2(c.Request.Context(), filter, bucketSeconds)
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
+	if cached.ETag != "" {
+		c.Header("ETag", cached.ETag)
+		c.Header("Vary", "If-None-Match")
+		if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
+			c.Status(http.StatusNotModified)
+			return
+		}
+	}
+	if hit {
+		c.Header("X-Snapshot-Cache", "hit")
+	} else {
+		c.Header("X-Snapshot-Cache", "miss")
+	}
+	response.Success(c, cached.Payload)
+}
 
+// normalizeOpsDashboardSnapshotRange aligns only rolling time-range requests to
+// the cache window. Explicit timestamps must stay exact for investigation and
+// export workflows.
+func normalizeOpsDashboardSnapshotRange(c *gin.Context, startTime, endTime time.Time) (time.Time, time.Time) {
+	if c == nil || strings.TrimSpace(c.Query("start_time")) != "" || strings.TrimSpace(c.Query("end_time")) != "" {
+		return startTime, endTime
+	}
+	duration := endTime.Sub(startTime)
+	if duration <= 0 {
+		return startTime, endTime
+	}
+	endTime = endTime.UTC().Truncate(opsDashboardSnapshotV2CacheTTL)
+	return endTime.Add(-duration), endTime
+}
+
+func (h *OpsHandler) buildDashboardSnapshotV2(ctx context.Context, filter *service.OpsDashboardFilter, bucketSeconds int) (*opsDashboardSnapshotV2Response, error) {
 	var (
 		overview *service.OpsDashboardOverview
 		trend    *service.OpsThroughputTrendResponse
 		errTrend *service.OpsErrorTrendResponse
 	)
-	g, gctx := errgroup.WithContext(c.Request.Context())
+	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		f := *filter
 		result, err := h.opsService.GetDashboardOverview(gctx, &f)
@@ -124,22 +153,12 @@ func (h *OpsHandler) GetDashboardSnapshotV2(c *gin.Context) {
 		return nil
 	})
 	if err := g.Wait(); err != nil {
-		response.ErrorFrom(c, err)
-		return
+		return nil, err
 	}
-
-	resp := &opsDashboardSnapshotV2Response{
+	return &opsDashboardSnapshotV2Response{
 		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
 		Overview:        overview,
 		ThroughputTrend: trend,
 		ErrorTrend:      errTrend,
-	}
-
-	cached := opsDashboardSnapshotV2Cache.Set(cacheKey, resp)
-	if cached.ETag != "" {
-		c.Header("ETag", cached.ETag)
-		c.Header("Vary", "If-None-Match")
-	}
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, resp)
+	}, nil
 }

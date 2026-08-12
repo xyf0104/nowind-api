@@ -509,8 +509,10 @@ func (h *AccountHandler) List(c *gin.Context) {
 	status := c.Query("status")
 	search := c.Query("search")
 	privacyMode := strings.TrimSpace(c.Query("privacy_mode"))
-	sortBy := c.DefaultQuery("sort_by", "name")
-	sortOrder := c.DefaultQuery("sort_order", "asc")
+	// Keep newly added accounts and accounts changed or used most recently at the top
+	// of the admin list. Explicit table sorting still takes precedence per request.
+	sortBy := c.DefaultQuery("sort_by", "updated_at")
+	sortOrder := c.DefaultQuery("sort_order", "desc")
 	// 标准化和验证 search 参数
 	search = strings.TrimSpace(search)
 	if len(search) > 100 {
@@ -683,28 +685,39 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	// 始终获取窗口费用（PostgreSQL 聚合查询）
-	if len(windowCostAccountIDs) > 0 {
+	// Fetch window costs in batches by common window start. Accounts sharing a
+	// window now use one PostgreSQL aggregation instead of one query per row.
+	if len(windowCostAccountIDs) > 0 && h.accountUsageService != nil {
 		windowCosts = make(map[int64]float64)
-		var mu sync.Mutex
-		g, gctx := errgroup.WithContext(c.Request.Context())
-		g.SetLimit(10) // 限制并发数
-
+		accountIDsByWindowStart := make(map[time.Time][]int64)
 		for i := range accounts {
 			acc := &accounts[i]
 			if !acc.IsAnthropicOAuthOrSetupToken() || acc.GetWindowCostLimit() <= 0 {
 				continue
 			}
-			accCopy := acc // 闭包捕获
+			startTime := acc.GetCurrentWindowStartTime().UTC()
+			accountIDsByWindowStart[startTime] = append(accountIDsByWindowStart[startTime], acc.ID)
+		}
+
+		var mu sync.Mutex
+		g, gctx := errgroup.WithContext(c.Request.Context())
+		g.SetLimit(4)
+
+		for startTime, ids := range accountIDsByWindowStart {
+			start := startTime
+			accountIDsForWindow := append([]int64(nil), ids...)
 			g.Go(func() error {
-				// 使用统一的窗口开始时间计算逻辑（考虑窗口过期情况）
-				startTime := accCopy.GetCurrentWindowStartTime()
-				stats, err := h.accountUsageService.GetAccountWindowStats(gctx, accCopy.ID, startTime)
-				if err == nil && stats != nil {
-					mu.Lock()
-					windowCosts[accCopy.ID] = stats.StandardCost // 使用标准费用
-					mu.Unlock()
+				statsByAccount, err := h.accountUsageService.GetAccountWindowStatsBatch(gctx, accountIDsForWindow, start)
+				if err != nil {
+					return nil
 				}
+				mu.Lock()
+				for _, accountID := range accountIDsForWindow {
+					if stats := statsByAccount[accountID]; stats != nil {
+						windowCosts[accountID] = stats.StandardCost
+					}
+				}
+				mu.Unlock()
 				return nil // 不返回错误，允许部分失败
 			})
 		}

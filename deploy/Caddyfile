@@ -29,6 +29,14 @@ xiass.example.com {
 		-Expires
 	}
 
+	# 动态主题视频保持播放；缓存一天并允许后台复验，避免每次刷新重复下载媒体文件。
+	@themeMedia path /media/xiass-dark-bokeh.mp4 /media/xiass-light-water.mp4 /media/xiass-dark-bokeh-poster.png /media/xiass-light-water-poster.png
+	header @themeMedia {
+		Cache-Control "public, max-age=86400, stale-while-revalidate=604800"
+		-Pragma
+		-Expires
+	}
+
 	# =========================================================================
 	# TLS 安全配置
 	# =========================================================================

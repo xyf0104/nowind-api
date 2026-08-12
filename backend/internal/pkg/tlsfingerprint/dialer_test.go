@@ -14,12 +14,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestDialerBasicConnection tests that the dialer can establish TLS connections.
@@ -186,6 +189,33 @@ func TestDialerWithProfile(t *testing.T) {
 	if len(spec2.Extensions) <= len(spec1.Extensions) {
 		t.Error("expected GREASE profile to have more extensions")
 	}
+}
+
+func TestDialerWithOptionsPreservesConfiguredConnectionBudgets(t *testing.T) {
+	t.Parallel()
+
+	tcpDialer := &net.Dialer{Timeout: 7 * time.Second, KeepAlive: 13 * time.Second}
+	direct := NewDialerWithOptions(nil, nil, DialerOptions{
+		Dialer:              tcpDialer,
+		TLSHandshakeTimeout: 9 * time.Second,
+	})
+	require.Equal(t, 9*time.Second, direct.tlsHandshakeTimeout)
+	require.NotNil(t, direct.baseDialer)
+
+	proxyURL := mustParseURL("http://proxy.example.com:8080")
+	httpProxy := NewHTTPProxyDialerWithOptions(nil, proxyURL, DialerOptions{
+		Dialer:              tcpDialer,
+		TLSHandshakeTimeout: 9 * time.Second,
+	})
+	require.Same(t, tcpDialer, httpProxy.dialer)
+	require.Equal(t, 9*time.Second, httpProxy.tlsHandshakeTimeout)
+
+	socksProxy := NewSOCKS5ProxyDialerWithOptions(nil, mustParseURL("socks5://proxy.example.com:1080"), DialerOptions{
+		Dialer:              tcpDialer,
+		TLSHandshakeTimeout: 9 * time.Second,
+	})
+	require.Same(t, tcpDialer, socksProxy.dialer)
+	require.Equal(t, 9*time.Second, socksProxy.tlsHandshakeTimeout)
 }
 
 // TestHTTPProxyDialerBasic tests HTTP proxy dialer creation.
