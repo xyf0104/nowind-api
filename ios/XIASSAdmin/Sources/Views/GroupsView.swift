@@ -29,14 +29,7 @@ struct GroupsView: View {
                     }
                     .padding(.horizontal, 4)
                     .padding(.top, 4)
-                    ForEach(section.groups) { group in
-                        NavigationLink { GroupDetailView(group: group) } label: {
-                            GlassCard(tint: group.status == "active" ? groupTint(group.platform) : .orange) {
-                                GroupRow(group: group)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    GroupTable(groups: section.groups)
                 }
             }
             .padding(16)
@@ -98,36 +91,43 @@ struct GroupsView: View {
         }
     }
 
-    private func groupTint(_ platform: String) -> Color {
-        PlatformStyle.color(for: platform)
-    }
 }
 
-private struct GroupRow: View {
-    let group: AdminGroup
+private struct GroupTable: View {
+    let groups: [AdminGroup]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(group.name).font(.headline).lineLimit(1)
-                Spacer(minLength: 8)
-                StatusPill(text: group.status)
-            }
-            HStack(spacing: 8) {
-                PlatformBadge(platform: group.platform)
-                Text("\(group.activeAccountCount ?? 0)/\(group.accountCount ?? 0) 个账号")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("倍率 \(DisplayFormat.decimal(group.rateMultiplier ?? 1))")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                if let rpm = group.rpmLimit, rpm > 0 {
-                    Text("\(rpm) RPM").font(.caption).foregroundStyle(.secondary)
+        AdminTableSurface(minWidth: 706) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "分组", width: 174)
+                    AdminTableHeaderText(text: "平台", width: 94)
+                    AdminTableHeaderText(text: "账号", width: 76, alignment: .trailing)
+                    AdminTableHeaderText(text: "倍率", width: 70, alignment: .trailing)
+                    AdminTableHeaderText(text: "RPM", width: 76, alignment: .trailing)
+                    AdminTableHeaderText(text: "状态", width: 72)
+                    AdminTableHeaderText(text: "说明", width: 116)
+                    Spacer(minLength: 0)
                 }
             }
-            if let description = group.description, !description.isEmpty {
-                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            ForEach(groups) { group in
+                NavigationLink { GroupDetailView(group: group) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            AdminTableText(text: group.name, width: 174, weight: .semibold)
+                            PlatformBadge(platform: group.platform).frame(width: 94, alignment: .leading)
+                            AdminTableText(text: "\(group.activeAccountCount ?? 0)/\(group.accountCount ?? 0)", width: 76, alignment: .trailing)
+                            AdminTableText(text: DisplayFormat.decimal(group.rateMultiplier ?? 1), width: 70, alignment: .trailing)
+                            AdminTableText(text: (group.rpmLimit ?? 0) == 0 ? "不限" : String(group.rpmLimit ?? 0), width: 76, alignment: .trailing)
+                            StatusPill(text: group.status).frame(width: 72, alignment: .leading)
+                            AdminTableText(text: group.description ?? "--", width: 116, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 4)
     }
 }
 

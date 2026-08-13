@@ -49,14 +49,7 @@ struct AccountsView: View {
                     .padding(.horizontal, 4)
                     .padding(.top, 4)
 
-                    ForEach(section.accounts) { account in
-                        NavigationLink { AccountDetailView(account: account) } label: {
-                            GlassCard(tint: accountTint(account)) {
-                                AccountRow(account: account)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    AccountTable(accounts: section.accounts)
                 }
             }
             .padding(16)
@@ -154,59 +147,48 @@ struct AccountsView: View {
         return (order.firstIndex(of: lhs) ?? order.count) < (order.firstIndex(of: rhs) ?? order.count)
     }
 
-    private func accountTint(_ account: AdminAccount) -> Color {
-        if account.status == "error" || account.errorMessage?.isEmpty == false { return .red }
-        if account.schedulable == false || account.rateLimitedAt != nil || account.overloadUntil != nil { return .orange }
-        return PlatformStyle.color(for: account.platform)
-    }
 }
 
-private struct AccountRow: View {
-    let account: AdminAccount
+private struct AccountTable: View {
+    let accounts: [AdminAccount]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(account.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    if let email = account.displayEmail {
-                        Text(email)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+        AdminTableSurface(minWidth: 792) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "账号 / 邮箱", width: 190)
+                    AdminTableHeaderText(text: "类型", width: 78)
+                    AdminTableHeaderText(text: "状态", width: 72)
+                    AdminTableHeaderText(text: "并发", width: 66, alignment: .trailing)
+                    AdminTableHeaderText(text: "倍率", width: 70, alignment: .trailing)
+                    AdminTableHeaderText(text: "优先级", width: 66, alignment: .trailing)
+                    AdminTableHeaderText(text: "最近使用", width: 142)
+                    Spacer(minLength: 0)
+                }
+            }
+            ForEach(accounts) { account in
+                NavigationLink { AccountDetailView(account: account) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(account.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Text(account.displayEmail ?? "账号 #\(account.id)")
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            .frame(width: 190, alignment: .leading)
+                            AdminTableText(text: account.type, width: 78, color: .secondary)
+                            StatusPill(text: account.healthLabel).frame(width: 72, alignment: .leading)
+                            AdminTableText(text: "\(account.currentConcurrency ?? 0)/\(account.concurrency ?? 0)", width: 66, alignment: .trailing)
+                            AdminTableText(text: DisplayFormat.decimal(account.rateMultiplier ?? 1), width: 70, alignment: .trailing)
+                            AdminTableText(text: String(account.priority ?? 0), width: 66, alignment: .trailing)
+                            AdminTableText(text: DisplayFormat.shortDate(account.lastUsedAt), width: 142, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
                     }
                 }
-                Spacer(minLength: 8)
-                StatusPill(text: account.healthLabel)
-            }
-            HStack(spacing: 8) {
-                PlatformBadge(platform: account.platform)
-                Text(account.type)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let current = account.currentConcurrency, let limit = account.concurrency {
-                    Text("\(current)/\(limit)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                Text("倍率 \(DisplayFormat.decimal(account.rateMultiplier ?? 1))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("优先级 \(account.priority ?? 0)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            if let error = account.errorMessage, !error.isEmpty {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
+                .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 4)
     }
 }
 

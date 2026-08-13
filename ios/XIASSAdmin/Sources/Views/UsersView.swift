@@ -48,14 +48,7 @@ struct UsersView: View {
                 if !isLoading && users.isEmpty {
                     EmptyState(title: "暂无用户", systemImage: "person.2", detail: "创建用户后可直接设置余额、并发、RPM 和可用分组。")
                 }
-                ForEach(users) { user in
-                    NavigationLink { UserDetailView(user: user) } label: {
-                        GlassCard(tint: user.role == "admin" ? .indigo : AppTheme.accent) {
-                            UserRow(user: user)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
+                if !users.isEmpty { UserTable(users: users) }
             }
             .padding(16)
             .padding(.bottom, 100)
@@ -160,28 +153,46 @@ struct UsersView: View {
     }
 }
 
-private struct UserRow: View {
-    let user: UserProfile
+private struct UserTable: View {
+    let users: [UserProfile]
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: user.role == "admin" ? "person.badge.shield.checkmark.fill" : "person.crop.circle.fill")
-                .foregroundStyle(user.role == "admin" ? .indigo : .teal)
-                .font(.title3)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(user.email).font(.headline).lineLimit(1)
-                Text(user.username?.isEmpty == false ? user.username! : "用户 #\(user.id)")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("#\(user.id) · 最后使用 \(DisplayFormat.shortDate(user.lastUsedAt))")
-                    .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+        AdminTableSurface(minWidth: 800) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "用户 / 邮箱", width: 206)
+                    AdminTableHeaderText(text: "角色", width: 72)
+                    AdminTableHeaderText(text: "状态", width: 72)
+                    AdminTableHeaderText(text: "余额", width: 96, alignment: .trailing)
+                    AdminTableHeaderText(text: "并发", width: 68, alignment: .trailing)
+                    AdminTableHeaderText(text: "RPM", width: 66, alignment: .trailing)
+                    AdminTableHeaderText(text: "最后使用", width: 142)
+                    Spacer(minLength: 0)
+                }
             }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(DisplayFormat.currency(user.balance)).font(.subheadline.monospacedDigit())
-                StatusPill(text: user.status ?? "active")
+            ForEach(users) { user in
+                NavigationLink { UserDetailView(user: user) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(user.email).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Text(user.username?.isEmpty == false ? user.username! : "用户 #\(user.id)")
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            .frame(width: 206, alignment: .leading)
+                            AdminTableText(text: user.role == "admin" ? "管理员" : "用户", width: 72, color: user.role == "admin" ? .indigo : .secondary)
+                            StatusPill(text: user.status ?? "active").frame(width: 72, alignment: .leading)
+                            AdminTableText(text: DisplayFormat.currency(user.balance), width: 96, alignment: .trailing, weight: .semibold)
+                            AdminTableText(text: "\(user.currentConcurrency ?? 0)/\(user.concurrency ?? 0)", width: 68, alignment: .trailing)
+                            AdminTableText(text: (user.rpmLimit ?? 0) == 0 ? "不限" : String(user.rpmLimit ?? 0), width: 66, alignment: .trailing)
+                            AdminTableText(text: DisplayFormat.shortDate(user.lastUsedAt), width: 142, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 4)
     }
 }
 

@@ -15,31 +15,8 @@ struct ProxyListView: View {
                 if !isLoading && proxies.isEmpty {
                     EmptyState(title: "暂无代理节点", systemImage: "network", detail: "可在此添加并测试 HTTP、HTTPS 或 SOCKS5 代理。")
                 }
-                ForEach(proxies) { proxy in
-                    NavigationLink { ProxyDetailView(proxy: proxy, onChanged: { Task { await load() } }) } label: {
-                        GlassCard(tint: proxy.status == "active" ? .orange : .red) {
-                            HStack(spacing: 12) {
-                                GlassIcon(name: "network", tint: proxy.status == "active" ? .orange : .red)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text(proxy.name).font(.headline).lineLimit(1)
-                                        Spacer(minLength: 6)
-                                        StatusPill(text: proxy.status ?? "inactive")
-                                    }
-                                    Text("\(proxy.protocolName?.uppercased() ?? "代理") · \(proxy.host ?? "--"):\(proxy.port.map(String.init) ?? "--")")
-                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    HStack(spacing: 10) {
-                                        Text("绑定 \(proxy.accountCount ?? 0) 个账号")
-                                        Text(proxy.latencyMS.map { "\($0) ms" } ?? "未检测")
-                                        if let country = proxy.country, !country.isEmpty { Text(country) }
-                                    }
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
+                if !proxies.isEmpty {
+                    ProxyTable(proxies: proxies, onChanged: { Task { await load() } })
                 }
             }
             .padding(16)
@@ -68,6 +45,45 @@ struct ProxyListView: View {
             proxies = page.items
             if notify { feedback.success("代理列表已刷新", detail: "已同步 \(proxies.count) 个节点。") }
         } catch { self.error = ErrorMessage(error, title: "无法读取代理节点") }
+    }
+}
+
+private struct ProxyTable: View {
+    let proxies: [AdminProxy]
+    let onChanged: () -> Void
+
+    var body: some View {
+        AdminTableSurface(minWidth: 780) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "节点", width: 160)
+                    AdminTableHeaderText(text: "协议", width: 76)
+                    AdminTableHeaderText(text: "地址", width: 182)
+                    AdminTableHeaderText(text: "状态", width: 76)
+                    AdminTableHeaderText(text: "延迟", width: 82, alignment: .trailing)
+                    AdminTableHeaderText(text: "绑定账号", width: 82, alignment: .trailing)
+                    AdminTableHeaderText(text: "地区", width: 92)
+                    Spacer(minLength: 0)
+                }
+            }
+            ForEach(proxies) { proxy in
+                NavigationLink { ProxyDetailView(proxy: proxy, onChanged: onChanged) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            AdminTableText(text: proxy.name, width: 160, weight: .semibold)
+                            AdminTableText(text: proxy.protocolName?.uppercased() ?? "--", width: 76, color: .secondary)
+                            AdminTableText(text: "\(proxy.host ?? "--"):\(proxy.port.map(String.init) ?? "--")", width: 182)
+                            StatusPill(text: proxy.status ?? "inactive").frame(width: 76, alignment: .leading)
+                            AdminTableText(text: proxy.latencyMS.map { "\($0) ms" } ?? "未检测", width: 82, alignment: .trailing)
+                            AdminTableText(text: String(proxy.accountCount ?? 0), width: 82, alignment: .trailing)
+                            AdminTableText(text: proxy.country ?? "--", width: 92, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 }
 

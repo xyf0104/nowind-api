@@ -164,14 +164,33 @@ struct GlassActionRow: View {
 
 extension View {
     func appScreenStyle() -> some View {
-        background(AppBackdrop())
+        background {
+            AppBackdrop()
+                .contentShape(Rectangle())
+                .onTapGesture { dismissActiveKeyboard() }
+        }
             .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .toolbarBackground(.clear, for: .navigationBar)
     }
 
     func dismissKeyboardOnTap() -> some View {
         scrollDismissesKeyboard(.interactively)
+            .background {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { dismissActiveKeyboard() }
+            }
     }
+}
+
+private func dismissActiveKeyboard() {
+    UIApplication.shared.sendAction(
+        #selector(UIResponder.resignFirstResponder),
+        to: nil,
+        from: nil,
+        for: nil
+    )
 }
 
 enum DisplayFormat {
@@ -264,6 +283,97 @@ struct MetricTile: View {
             }
             .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
         }
+    }
+}
+
+struct AdminTableSurface<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let minWidth: CGFloat
+    let content: Content
+
+    init(minWidth: CGFloat, @ViewBuilder content: () -> Content) {
+        self.minWidth = minWidth
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                content
+            }
+            .frame(minWidth: minWidth, alignment: .leading)
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: AppTheme.compactRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.compactRadius, style: .continuous)
+                .stroke(colorScheme == .dark ? .white.opacity(0.16) : .white.opacity(0.88), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.compactRadius, style: .continuous))
+    }
+}
+
+struct AdminTableHeader<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .frame(height: 38)
+            .background(AppTheme.primary.opacity(0.08))
+    }
+}
+
+struct AdminTableRow<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(.horizontal, 14)
+            .frame(minHeight: 54)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+                Divider().opacity(colorScheme == .dark ? 0.34 : 0.58)
+            }
+    }
+}
+
+struct AdminTableText: View {
+    let text: String
+    let width: CGFloat
+    var alignment: Alignment = .leading
+    var color: Color? = nil
+    var weight: Font.Weight = .regular
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline.weight(weight))
+            .foregroundStyle(color ?? .primary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: width, alignment: alignment)
+    }
+}
+
+struct AdminTableHeaderText: View {
+    let text: String
+    let width: CGFloat
+    var alignment: Alignment = .leading
+
+    var body: some View {
+        Text(text)
+            .lineLimit(1)
+            .frame(width: width, alignment: alignment)
     }
 }
 

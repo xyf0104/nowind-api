@@ -22,31 +22,7 @@ struct UserAPIKeysView: View {
                 if keys.isEmpty && !isLoading {
                     EmptyState(title: "暂无 API 密钥", systemImage: "key", detail: "该用户尚未创建 API 密钥。")
                 }
-                ForEach(keys) { key in
-                    NavigationLink { APIKeyDetailView(key: key) } label: {
-                        GlassCard(tint: key.status == "active" ? AppTheme.primary : .orange) {
-                            HStack(alignment: .top, spacing: 12) {
-                                GlassIcon(name: "key.fill", tint: key.status == "active" ? AppTheme.primary : .orange)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    HStack {
-                                        Text(key.name).font(.headline).lineLimit(1)
-                                        Spacer(minLength: 8)
-                                        StatusPill(text: key.status)
-                                    }
-                                    Text(key.maskedKey).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                    HStack(spacing: 10) {
-                                        Text("分组 #\(key.groupID.map(String.init) ?? "未绑定")")
-                                        Text("用量 \(DisplayFormat.decimal(key.quotaUsed)) / \(key.quota == 0 ? "不限" : DisplayFormat.decimal(key.quota))")
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                }
-                                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
+                if !keys.isEmpty { APIKeyTable(keys: keys) }
             }
             .padding(16)
             .padding(.bottom, 72)
@@ -78,6 +54,46 @@ struct UserAPIKeysView: View {
             if notify { feedback.success("API 密钥已刷新", detail: "已同步 \(keys.count) 个 API 密钥。") }
         } catch {
             self.error = ErrorMessage(error, title: "无法读取 API 密钥")
+        }
+    }
+}
+
+private struct APIKeyTable: View {
+    let keys: [APIKeyRecord]
+
+    var body: some View {
+        AdminTableSurface(minWidth: 700) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "名称 / 密钥", width: 190)
+                    AdminTableHeaderText(text: "分组", width: 84)
+                    AdminTableHeaderText(text: "状态", width: 72)
+                    AdminTableHeaderText(text: "已用额度", width: 92, alignment: .trailing)
+                    AdminTableHeaderText(text: "额度上限", width: 92, alignment: .trailing)
+                    AdminTableHeaderText(text: "最近使用", width: 142)
+                    Spacer(minLength: 0)
+                }
+            }
+            ForEach(keys) { key in
+                NavigationLink { APIKeyDetailView(key: key) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(key.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Text(key.maskedKey).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            .frame(width: 190, alignment: .leading)
+                            AdminTableText(text: key.groupID.map { "#\($0)" } ?? "未绑定", width: 84, color: .secondary)
+                            StatusPill(text: key.status).frame(width: 72, alignment: .leading)
+                            AdminTableText(text: DisplayFormat.currency(key.quotaUsed), width: 92, alignment: .trailing)
+                            AdminTableText(text: key.quota == 0 ? "不限" : DisplayFormat.currency(key.quota), width: 92, alignment: .trailing)
+                            AdminTableText(text: DisplayFormat.shortDate(key.lastUsedAt), width: 142, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }
@@ -182,24 +198,7 @@ struct BalanceHistoryView: View {
                 if records.isEmpty {
                     EmptyState(title: "暂无余额记录", systemImage: "clock.arrow.circlepath", detail: "该用户暂无充值、余额或并发调整记录。")
                 }
-                ForEach(records) { item in
-                    GlassCard(tint: item.value >= 0 ? .green : .orange) {
-                        HStack(alignment: .top, spacing: 12) {
-                            GlassIcon(name: item.value >= 0 ? "arrow.down.circle.fill" : "arrow.up.circle.fill", tint: item.value >= 0 ? .green : .orange)
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(balanceTypeTitle(item.type)).font(.headline)
-                                    Spacer(minLength: 8)
-                                    Text(item.value.formatted(.number.precision(.fractionLength(2))))
-                                        .font(.headline.monospacedDigit())
-                                        .foregroundStyle(item.value >= 0 ? .green : .orange)
-                                }
-                                if let notes = item.notes, !notes.isEmpty { Text(notes).font(.caption).foregroundStyle(.secondary) }
-                                Text(DisplayFormat.shortDate(item.usedAt ?? item.createdAt)).font(.caption2).foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                }
+                if !records.isEmpty { BalanceHistoryTable(records: records) }
             }
             .padding(16)
             .padding(.bottom, 72)
@@ -224,6 +223,43 @@ struct BalanceHistoryView: View {
     }
 }
 
+private struct BalanceHistoryTable: View {
+    let records: [BalanceHistoryItem]
+
+    var body: some View {
+        AdminTableSurface(minWidth: 690) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "时间", width: 142)
+                    AdminTableHeaderText(text: "类型", width: 104)
+                    AdminTableHeaderText(text: "变动", width: 96, alignment: .trailing)
+                    AdminTableHeaderText(text: "状态", width: 76)
+                    AdminTableHeaderText(text: "备注", width: 218)
+                    Spacer(minLength: 0)
+                }
+            }
+            ForEach(records) { item in
+                AdminTableRow {
+                    HStack(spacing: 12) {
+                        AdminTableText(text: DisplayFormat.shortDate(item.usedAt ?? item.createdAt), width: 142, color: .secondary)
+                        AdminTableText(text: balanceTypeTitle(item.type), width: 104, weight: .semibold)
+                        AdminTableText(
+                            text: balanceHistoryValue(item),
+                            width: 96,
+                            alignment: .trailing,
+                            color: item.value >= 0 ? .green : .orange,
+                            weight: .semibold
+                        )
+                        StatusPill(text: item.status ?? "completed").frame(width: 76, alignment: .leading)
+                        AdminTableText(text: item.notes ?? "--", width: 218, color: .secondary)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct PaymentOrdersView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var feedback: FeedbackCenter
@@ -245,12 +281,7 @@ struct PaymentOrdersView: View {
                 if orders.isEmpty && !isLoading {
                     EmptyState(title: "暂无充值记录", systemImage: "creditcard", detail: "支付完成后的充值订单会显示在这里。")
                 }
-                ForEach(orders) { order in
-                    NavigationLink { PaymentOrderDetailView(order: order) } label: {
-                        PaymentOrderCard(order: order)
-                    }
-                    .buttonStyle(.plain)
-                }
+                if !orders.isEmpty { PaymentOrderTable(orders: orders) }
             }
             .padding(16)
             .padding(.bottom, 72)
@@ -282,28 +313,39 @@ struct PaymentOrdersView: View {
     }
 }
 
-private struct PaymentOrderCard: View {
-    let order: PaymentOrder
+private struct PaymentOrderTable: View {
+    let orders: [PaymentOrder]
 
     var body: some View {
-        GlassCard(tint: paymentStatusColor(order.status)) {
-            HStack(alignment: .top, spacing: 12) {
-                GlassIcon(name: "creditcard.fill", tint: paymentStatusColor(order.status))
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(order.userEmail ?? order.userName ?? "用户 #\(order.userID ?? 0)").font(.headline).lineLimit(1)
-                        Spacer(minLength: 8)
-                        StatusPill(text: order.status)
-                    }
-                    HStack(spacing: 8) {
-                        Text(paymentTypeTitle(order.paymentType)).font(.caption.weight(.semibold))
-                        Text(order.orderType == "subscription" ? "订阅" : "余额充值").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(paymentAmount(order)).font(.subheadline.monospacedDigit().weight(.bold))
-                    }
-                    Text(DisplayFormat.shortDate(order.paidAt ?? order.createdAt)).font(.caption2).foregroundStyle(.tertiary)
+        AdminTableSurface(minWidth: 844) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "用户", width: 190)
+                    AdminTableHeaderText(text: "时间", width: 140)
+                    AdminTableHeaderText(text: "方式", width: 92)
+                    AdminTableHeaderText(text: "类型", width: 86)
+                    AdminTableHeaderText(text: "金额", width: 96, alignment: .trailing)
+                    AdminTableHeaderText(text: "状态", width: 74)
+                    AdminTableHeaderText(text: "订单号", width: 128)
+                    Spacer(minLength: 0)
                 }
-                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+            }
+            ForEach(orders) { order in
+                NavigationLink { PaymentOrderDetailView(order: order) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            AdminTableText(text: order.userEmail ?? order.userName ?? "用户 #\(order.userID ?? 0)", width: 190, weight: .semibold)
+                            AdminTableText(text: DisplayFormat.shortDate(order.paidAt ?? order.createdAt), width: 140, color: .secondary)
+                            AdminTableText(text: paymentTypeTitle(order.paymentType), width: 92)
+                            AdminTableText(text: order.orderType == "subscription" ? "订阅" : "余额充值", width: 86, color: .secondary)
+                            AdminTableText(text: paymentAmount(order), width: 96, alignment: .trailing, weight: .semibold)
+                            StatusPill(text: order.status).frame(width: 74, alignment: .leading)
+                            AdminTableText(text: order.outTradeNo ?? "--", width: 128, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -354,14 +396,6 @@ struct AdminAPIKeyUpdateResult: Decodable {
     enum CodingKeys: String, CodingKey { case apiKey = "api_key" }
 }
 
-private func paymentStatusColor(_ value: String) -> Color {
-    switch value.lowercased() {
-    case "paid", "completed": return .green
-    case "failed", "cancelled", "expired": return .red
-    default: return .orange
-    }
-}
-
 private func paymentTypeTitle(_ value: String?) -> String {
     switch value?.lowercased() {
     case "alipay", "alipay_direct": return "支付宝"
@@ -386,5 +420,16 @@ private func balanceTypeTitle(_ value: String) -> String {
     case "concurrency", "admin_concurrency": return "并发调整"
     case "subscription": return "订阅变动"
     default: return value
+    }
+}
+
+private func balanceHistoryValue(_ item: BalanceHistoryItem) -> String {
+    switch item.type {
+    case "concurrency", "admin_concurrency":
+        return item.value.formatted(.number.sign(strategy: .always()).precision(.fractionLength(0)))
+    case "subscription":
+        return item.value.formatted(.number.sign(strategy: .always()).precision(.fractionLength(0...2)))
+    default:
+        return DisplayFormat.currency(item.value)
     }
 }

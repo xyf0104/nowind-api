@@ -28,22 +28,29 @@ struct RootView: View {
 }
 
 struct AdminTabView: View {
+    @State private var selection = 0
+
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             NavigationStack { DashboardView() }
                 .tabItem { Label("概览", systemImage: "rectangle.3.group.fill") }
+                .tag(0)
 
             NavigationStack { AccountsView() }
                 .tabItem { Label("账号", systemImage: "person.crop.rectangle.stack.fill") }
+                .tag(1)
 
             NavigationStack { GroupsView() }
                 .tabItem { Label("分组", systemImage: "square.stack.3d.up.fill") }
+                .tag(2)
 
             NavigationStack { UsersView() }
                 .tabItem { Label("用户", systemImage: "person.2.fill") }
+                .tag(3)
 
             NavigationStack { OperationsView() }
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
+                .tag(4)
         }
         .tint(AppTheme.primary)
         .background(AppBackdrop())

@@ -30,12 +30,7 @@ struct UsageLogsView: View {
                 if !isLoading && logs.isEmpty {
                     EmptyState(title: "暂无调用记录", systemImage: "clock.arrow.circlepath", detail: "新的 API 调用会实时显示在这里。")
                 }
-                ForEach(logs, id: \.stableID) { log in
-                    NavigationLink { UsageLogDetailView(log: log) } label: {
-                        UsageLogRow(log: log)
-                    }
-                    .buttonStyle(.plain)
-                }
+                if !logs.isEmpty { UsageLogTable(logs: logs) }
             }
             .padding(16)
             .padding(.bottom, 100)
@@ -80,72 +75,49 @@ struct UsageLogsView: View {
     }
 }
 
-private struct UsageLogRow: View {
-    let log: UsageLog
+private struct UsageLogTable: View {
+    let logs: [UsageLog]
 
     var body: some View {
-        GlassCard(tint: log.statusCode.map { (200..<300).contains($0) ? .green : .red } ?? .purple) {
-            HStack(spacing: 7) {
-                Image(systemName: PlatformStyle.icon(for: log.group?.platform ?? ""))
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(PlatformStyle.color(for: log.group?.platform ?? ""))
-                    .frame(width: 16)
-
-                Text(log.displayUser)
-                    .font(.caption.monospacedDigit().weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: 56, alignment: .leading)
-
-                Divider()
-                    .frame(height: 14)
-
-                Text(modelTitle)
-                    .font(.caption.monospacedDigit().weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: 82, alignment: .leading)
-
-                Text(reasoningTitle(log.reasoningEffort))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: 28)
-
-                Text(latencyTitle)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: 47, alignment: .trailing)
-
-                Text(log.statusCode.map(String.init) ?? "--")
-                    .font(.caption2.monospacedDigit().weight(.bold))
-                    .foregroundStyle(statusTint)
-                    .lineLimit(1)
-                    .frame(width: 24, alignment: .trailing)
-
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
+        AdminTableSurface(minWidth: 990) {
+            AdminTableHeader {
+                HStack(spacing: 12) {
+                    AdminTableHeaderText(text: "时间", width: 136)
+                    AdminTableHeaderText(text: "用户", width: 166)
+                    AdminTableHeaderText(text: "请求模型", width: 138)
+                    AdminTableHeaderText(text: "上游模型", width: 138)
+                    AdminTableHeaderText(text: "推理", width: 54)
+                    AdminTableHeaderText(text: "首字", width: 76, alignment: .trailing)
+                    AdminTableHeaderText(text: "总延迟", width: 76, alignment: .trailing)
+                    AdminTableHeaderText(text: "状态", width: 54, alignment: .trailing)
+                    AdminTableHeaderText(text: "账号", width: 112)
+                    Spacer(minLength: 0)
+                }
             }
-            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+            ForEach(logs, id: \.stableID) { log in
+                NavigationLink { UsageLogDetailView(log: log) } label: {
+                    AdminTableRow {
+                        HStack(spacing: 12) {
+                            AdminTableText(text: DisplayFormat.shortDate(log.createdAt), width: 136, color: .secondary)
+                            AdminTableText(text: log.displayUser, width: 166, weight: .semibold)
+                            AdminTableText(text: log.model ?? "--", width: 138)
+                            AdminTableText(text: log.upstreamModel?.isEmpty == false ? log.upstreamModel! : "--", width: 138)
+                            AdminTableText(text: reasoningTitle(log.reasoningEffort), width: 54, color: .secondary)
+                            AdminTableText(text: log.firstTokenMS.map { "\($0) ms" } ?? "--", width: 76, alignment: .trailing)
+                            AdminTableText(text: log.durationMS.map { "\($0) ms" } ?? "--", width: 76, alignment: .trailing)
+                            AdminTableText(text: log.statusCode.map(String.init) ?? "--", width: 54, alignment: .trailing, color: statusColor(log.statusCode), weight: .semibold)
+                            AdminTableText(text: log.displayAccount, width: 112, color: .secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
-    private var modelTitle: String {
-        log.upstreamModel?.isEmpty == false ? log.upstreamModel! : (log.model ?? "未知模型")
-    }
-
-    private var latencyTitle: String {
-        if let firstTokenMS = log.firstTokenMS { return "首 \(firstTokenMS)ms" }
-        if let durationMS = log.durationMS { return "总 \(durationMS)ms" }
-        return "--"
-    }
-
-    private var statusTint: Color {
-        guard let statusCode = log.statusCode else { return .purple }
+    private func statusColor(_ statusCode: Int?) -> Color {
+        guard let statusCode else { return .secondary }
         return (200..<300).contains(statusCode) ? .green : .red
     }
 }

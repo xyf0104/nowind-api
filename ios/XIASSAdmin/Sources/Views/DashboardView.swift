@@ -21,9 +21,15 @@ struct DashboardView: View {
                     ProgressView("正在读取运行数据…")
                         .frame(maxWidth: .infinity, minHeight: 220)
                 } else {
-                    Text("高频管理")
-                        .font(.title3.weight(.bold))
-                        .padding(.horizontal, 4)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("高频管理")
+                            .font(.title3.weight(.bold))
+                        Spacer()
+                        Text("常用功能直接进入")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 4)
 
                     LazyVGrid(columns: columns, spacing: 12) {
                         NavigationLink { AccountsView() } label: {
@@ -93,22 +99,37 @@ struct DashboardView: View {
 
     private var serviceHeader: some View {
         GlassCard(tint: AppTheme.primary) {
-            HStack(alignment: .center, spacing: 12) {
-                GlassIcon(name: "shield.checkered", tint: AppTheme.primary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("管理控制台")
-                        .font(.headline)
-                    Text(session.connectionAddress)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
+                    GlassIcon(name: "shield.checkered", tint: AppTheme.primary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("移动管理控制台")
+                            .font(.headline)
+                        Text(session.connectionAddress)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Label("已连接", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
                 }
-                Spacer(minLength: 8)
-                Label("已连接", systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
+                HStack(spacing: 12) {
+                    dashboardPulse("活跃请求", value: DisplayFormat.integer(realtime?.activeRequests))
+                    dashboardPulse("每分钟", value: DisplayFormat.decimal(realtime?.requestsPerMinute, digits: 0))
+                    dashboardPulse("错误率", value: realtime?.errorRate.map { "\(DisplayFormat.decimal($0, digits: 1))%" } ?? "--")
+                }
             }
         }
+    }
+
+    private func dashboardPulse(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(value).font(.subheadline.monospacedDigit().weight(.semibold)).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func load(notify: Bool = false) async {
