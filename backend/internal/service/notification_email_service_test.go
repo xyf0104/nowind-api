@@ -69,6 +69,47 @@ func TestNotificationEmailTemplateOverrideAndRestore(t *testing.T) {
 	require.ErrorIs(t, err, ErrSettingNotFound)
 }
 
+func TestNotificationEmailCustomerBalanceTemplatesUseRMB(t *testing.T) {
+	ctx := context.Background()
+	svc := NewNotificationEmailService(newNotificationEmailMemorySettingRepo(), nil)
+
+	for _, event := range []string{
+		NotificationEmailEventBalanceLow,
+		NotificationEmailEventBalanceRechargeSuccess,
+	} {
+		for _, locale := range []string{"en", "zh"} {
+			preview, err := svc.PreviewTemplate(ctx, NotificationEmailPreviewInput{
+				Event:  event,
+				Locale: locale,
+			})
+			require.NoError(t, err)
+			require.Contains(t, preview.HTML, "¥")
+			require.NotContains(t, preview.HTML, "$12.34")
+			require.NotContains(t, preview.HTML, "$20.00")
+			require.NotContains(t, preview.HTML, "$50.00")
+		}
+	}
+}
+
+func TestNotificationEmailSavedCustomerTemplateMigratesDollarPlaceholdersToRMB(t *testing.T) {
+	ctx := context.Background()
+	repo := newNotificationEmailMemorySettingRepo()
+	svc := NewNotificationEmailService(repo, nil)
+
+	updated, err := svc.UpdateTemplate(
+		ctx,
+		NotificationEmailEventBalanceLow,
+		"zh",
+		"余额提醒 ${{current_balance}}",
+		"<p>当前 ${{current_balance}}，阈值 $ {{ threshold }}</p>",
+	)
+	require.NoError(t, err)
+	require.Contains(t, updated.Subject, "¥{{current_balance}}")
+	require.Contains(t, updated.HTML, "¥{{current_balance}}")
+	require.Contains(t, updated.HTML, "¥{{ threshold }}")
+	require.NotContains(t, updated.Subject+updated.HTML, "$")
+}
+
 func TestNotificationEmailTemplateRejectsUnsupportedPlaceholder(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(newNotificationEmailMemorySettingRepo(), nil)
