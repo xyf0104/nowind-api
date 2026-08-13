@@ -687,7 +687,7 @@ import GrokQuotaProbeCell from './GrokQuotaProbeCell.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
-const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
+const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number; versionKey: string }>()
 const USAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 // How long a quota-reset response may suppress the row-patch usage refetch.
 const SUPPRESS_USAGE_REFRESH_WINDOW_MS = 5 * 1000
@@ -738,6 +738,7 @@ const pendingAutoLoadSource = ref<'passive' | 'active' | undefined>(undefined)
 let desktopViewportMediaQuery: MediaQueryList | null = null
 let desktopViewportListener: ((event: MediaQueryListEvent) => void) | null = null
 let visibilityObserver: IntersectionObserver | null = null
+let usageRequestGeneration = 0
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
@@ -801,12 +802,16 @@ const openAIWeeklyEstimateText = computed(() => {
   const estimate = accountCost / (utilization / 100)
   if (!Number.isFinite(estimate) || estimate <= 0) return '-'
 
-  const roundingUnit = estimate >= 1000 ? 100 : estimate >= 100 ? 10 : 1
-  const rounded = Math.round(estimate / roundingUnit) * roundingUnit
+  const rounded = Math.round(estimate)
   return `$${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(rounded)}`
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
+const usageCacheVersionKey = computed(() => (
+  props.account.platform === 'openai' && props.account.type === 'oauth'
+    ? openAIUsageRefreshKey.value
+    : ''
+))
 
 const shouldAutoLoadUsageOnMount = computed(() => {
   return shouldFetchUsage.value
@@ -1346,13 +1351,16 @@ const isAnthropicOAuthOrSetupToken = computed(() => {
   return props.account.platform === 'anthropic' && (props.account.type === 'oauth' || props.account.type === 'setup-token')
 })
 
-const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean }) => {
+const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean; force?: boolean }) => {
   if (!shouldFetchUsage.value) return
+
+  const requestGeneration = ++usageRequestGeneration
+  const requestedVersionKey = usageCacheVersionKey.value
 
   // Check cache
   if (!options?.bypassCache) {
     const cached = _usageCache.get(props.account.id)
-    if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL) {
+    if (cached && cached.versionKey === requestedVersionKey && Date.now() - cached.ts < USAGE_CACHE_TTL) {
       usageInfo.value = cached.data
       loading.value = false
       return
@@ -1363,21 +1371,25 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   error.value = null
 
   try {
-    const fetchFn = () => options?.source
-      ? adminAPI.accounts.getUsage(props.account.id, options.source)
+    const fetchFn = () => options?.source || options?.force
+      ? adminAPI.accounts.getUsage(props.account.id, options.source, options.force)
       : adminAPI.accounts.getUsage(props.account.id)
     const result = await enqueueUsageRequest(props.account, fetchFn)
-    if (!unmounted.value) {
+    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
       usageInfo.value = result
-      _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+      _usageCache.set(props.account.id, {
+        data: result,
+        ts: Date.now(),
+        versionKey: requestedVersionKey
+      })
     }
   } catch (e: any) {
-    if (!unmounted.value) {
+    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
       error.value = t('common.error')
       console.error('Failed to load usage:', e)
     }
   } finally {
-    if (!unmounted.value) loading.value = false
+    if (!unmounted.value && requestGeneration === usageRequestGeneration) loading.value = false
   }
 }
 
@@ -1432,13 +1444,25 @@ const attachVisibilityObserver = () => {
 }
 
 const loadActiveUsage = async () => {
+  const requestGeneration = ++usageRequestGeneration
+  const requestedVersionKey = usageCacheVersionKey.value
   activeQueryLoading.value = true
   try {
-    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
+    const result = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
+    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
+      usageInfo.value = result
+      _usageCache.set(props.account.id, {
+        data: result,
+        ts: Date.now(),
+        versionKey: requestedVersionKey
+      })
+    }
   } catch (e: any) {
-    console.error('Failed to load active usage:', e)
+    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
+      console.error('Failed to load active usage:', e)
+    }
   } finally {
-    activeQueryLoading.value = false
+    if (!unmounted.value) activeQueryLoading.value = false
   }
 }
 
@@ -1489,7 +1513,11 @@ const handleGrokProbed = (result: GrokQuotaProbeResult) => {
     error_code: result.billing || snapshot ? undefined : current.error_code
   }
   usageInfo.value = merged
-  _usageCache.set(props.account.id, { data: merged, ts: Date.now() })
+  _usageCache.set(props.account.id, {
+    data: merged,
+    ts: Date.now(),
+    versionKey: usageCacheVersionKey.value
+  })
 }
 
 // ===== API Key quota progress bars =====
@@ -1716,7 +1744,11 @@ watch(
 
     const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
     _usageCache.delete(props.account.id)
-    loadUsage({ source, bypassCache: true }).catch((e) => {
+    loadUsage({
+      source,
+      bypassCache: true,
+      force: props.account.platform === 'openai' && props.account.type === 'oauth'
+    }).catch((e) => {
       console.error('Failed to refresh usage after manual refresh:', e)
     })
   }

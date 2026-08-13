@@ -31,7 +31,9 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
       queuedKeyCount: ref(3),
       statusText: ref('等待取号'),
       statusClass: ref('text-cyan-600'),
-      canRefresh: ref(false),
+      sessionExpiresAt: ref('2026-08-14T00:15:00.000Z'),
+      sessionExpiryText: ref('12:34'),
+      canRefresh: ref(true),
       canChangeNumber: ref(false),
       canCancel: ref(false),
       isRefreshing: ref(false),
@@ -105,6 +107,21 @@ describe('PixlabSMSReceiver', () => {
     expect(wrapper.text()).toContain('749433060')
     await wrapper.get('[title="点击复制完整国际号码"]').trigger('click')
     expect(copyToClipboardMock).toHaveBeenCalledWith('+27749433060', '手机号已复制')
+  })
+
+  it('renders the countdown supplied by the current server session', async () => {
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: true },
+      global: { stubs: { BaseDialog: true, Icon: true } }
+    })
+
+    await wrapper.get('[data-testid="request-sms-phone"]').trigger('click')
+    await flushPromises()
+
+    const countdown = wrapper.get('[data-testid="sms-session-countdown"]')
+    expect(countdown.text()).toContain('号码有效期')
+    expect(countdown.text()).toContain('12:34')
+    expect(countdown.get('time').attributes('datetime')).toBe('2026-08-14T00:15:00.000Z')
   })
 
 })

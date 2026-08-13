@@ -214,18 +214,24 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
   const countryFlag = ref('')
   const code = ref('--')
   const queuedKeyCount = ref(0)
+	const activeSessionCount = ref(0)
 	const activeSessionID = ref(readActiveSession(scope))
 	const available = ref(false)
 	const feeAmount = ref(0)
 	const balance = ref<number | null>(null)
 	const chargeState = ref<'held' | 'captured' | 'released' | ''>('')
   const actionAvailableAt = ref('')
+  const sessionExpiresAtMs = ref<number | null>(null)
+  const serverClockOffsetMs = ref(0)
   const currentTime = ref(Date.now())
   const isRefreshing = ref(false)
   const isChangingNumber = ref(false)
   const isCancelling = ref(false)
   let pollingTimer: number | undefined
-  let cooldownTimer: number | undefined
+  let clockTimer: number | undefined
+  let sessionRefreshRequest: { sessionID: string; promise: Promise<SMSReceiveOutcome> } | undefined
+  let expirySyncInFlight = false
+  let nextExpirySyncAt = 0
 
   const statusText = computed(() => {
     const labels: Record<SMSPhase, string> = {
@@ -248,7 +254,17 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
   })
 
   const hasActiveSession = computed(() => Boolean(activeSessionID.value))
-  const canRefresh = computed(() => hasActiveSession.value && !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && !['starting', 'received', 'expired'].includes(phase.value))
+  const canRefresh = computed(() => !isRefreshing.value && !isChangingNumber.value && !isCancelling.value && phase.value !== 'starting')
+  const sessionExpiresAt = computed(() => sessionExpiresAtMs.value === null ? '' : new Date(sessionExpiresAtMs.value).toISOString())
+  const sessionExpiryRemainingSeconds = computed(() => {
+    if (!hasActiveSession.value || sessionExpiresAtMs.value === null) return 0
+    return Math.max(0, Math.ceil((sessionExpiresAtMs.value - currentTime.value) / 1_000))
+  })
+  const sessionExpiryText = computed(() => {
+    const seconds = sessionExpiryRemainingSeconds.value
+    const minutes = Math.floor(seconds / 60)
+    return `${minutes.toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`
+  })
   const memberMutationRemainingSeconds = computed(() => {
     if (!isMember || !actionAvailableAt.value) return 0
     const availableAt = Date.parse(actionAvailableAt.value)
@@ -275,6 +291,7 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
   async function refreshQueueStatus(): Promise<smsReceiverAPI.SMSReceiverQueueStatus> {
 		const status = await api.getStatus()
 		queuedKeyCount.value = status.queued_count
+		activeSessionCount.value = status.active_count
 		available.value = status.available === true
 		if (typeof status.fee_amount === 'number') feeAmount.value = status.fee_amount
 		if (typeof status.balance === 'number') balance.value = status.balance
@@ -300,25 +317,71 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
 
   function stop(): void {
     stopPolling()
-    if (cooldownTimer) clearInterval(cooldownTimer)
-    cooldownTimer = undefined
+    if (clockTimer) clearInterval(clockTimer)
+    clockTimer = undefined
   }
 
-  function startCooldownTicker(): void {
-    if (!isMember || !actionAvailableAt.value || memberMutationRemainingSeconds.value <= 0) return
-    if (cooldownTimer) return
-    cooldownTimer = window.setInterval(() => {
-      currentTime.value = Date.now()
-      if (memberMutationRemainingSeconds.value <= 0 && cooldownTimer) {
-        clearInterval(cooldownTimer)
-        cooldownTimer = undefined
+  function startClockTicker(): void {
+    const hasMemberCooldown = isMember && Boolean(actionAvailableAt.value) && memberMutationRemainingSeconds.value > 0
+    const hasSessionExpiry = hasActiveSession.value && sessionExpiresAtMs.value !== null
+    if ((!hasMemberCooldown && !hasSessionExpiry) || clockTimer) return
+    clockTimer = window.setInterval(() => {
+      currentTime.value = Date.now() + serverClockOffsetMs.value
+
+      const sessionID = activeSessionID.value
+      if (
+        sessionID
+        && sessionExpiresAtMs.value !== null
+        && sessionExpiryRemainingSeconds.value === 0
+        && !expirySyncInFlight
+        && Date.now() >= nextExpirySyncAt
+      ) {
+        expirySyncInFlight = true
+        nextExpirySyncAt = Date.now() + POLL_INTERVAL_MS
+        void refreshExpiredSession(sessionID).finally(() => {
+          expirySyncInFlight = false
+        })
+      }
+
+      const keepMemberClock = isMember && memberMutationRemainingSeconds.value > 0
+      const keepExpiryClock = Boolean(activeSessionID.value) && sessionExpiresAtMs.value !== null
+      if (!keepMemberClock && !keepExpiryClock && clockTimer) {
+        clearInterval(clockTimer)
+        clockTimer = undefined
       }
     }, 1_000)
+  }
+
+  function parseServerTimestamp(value: string | null | undefined): number | null {
+    if (typeof value !== 'string') return null
+    const normalized = value.trim()
+    if (!normalized) return null
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)) return null
+    const parsed = Date.parse(normalized)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  function applySessionExpiry(result: SMSReceiverSession, previousSessionID: string): void {
+    const serverTime = parseServerTimestamp(result.server_time)
+    if (serverTime !== null) serverClockOffsetMs.value = serverTime - Date.now()
+
+    if (Object.prototype.hasOwnProperty.call(result, 'expires_at')) {
+      sessionExpiresAtMs.value = parseServerTimestamp(result.expires_at)
+      if (sessionExpiresAtMs.value !== null && sessionExpiresAtMs.value > Date.now() + serverClockOffsetMs.value) {
+        nextExpirySyncAt = 0
+      }
+    } else if (result.session_id && result.session_id !== previousSessionID) {
+      sessionExpiresAtMs.value = null
+    }
+    currentTime.value = Date.now() + serverClockOffsetMs.value
   }
 
   function clearActiveSession(): void {
     stop()
     activeSessionID.value = ''
+		sessionExpiresAtMs.value = null
+		actionAvailableAt.value = ''
+		nextExpirySyncAt = 0
 		writeActiveSession(scope, '')
   }
 
@@ -332,6 +395,7 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
     region.value = '--'
     countryFlag.value = ''
     code.value = '--'
+    sessionExpiresAtMs.value = null
   }
 
 	function applyPhone(result: SMSReceiverSession): void {
@@ -353,16 +417,10 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
 			chargeState.value = result.charge_state
 		}
 		actionAvailableAt.value = result.action_available_at || ''
-		currentTime.value = Date.now()
-		if (actionAvailableAt.value) {
-			startCooldownTicker()
-		} else if (cooldownTimer) {
-			clearInterval(cooldownTimer)
-			cooldownTimer = undefined
-		}
 	}
 
 	function applyResponse(result: SMSReceiverSession): SMSReceiveOutcome {
+		const previousSessionID = activeSessionID.value
 		queuedKeyCount.value = result.queued_count
 		applyBilling(result)
     applyPhone(result)
@@ -387,9 +445,19 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
       activeSessionID.value = result.session_id
 			writeActiveSession(scope, result.session_id)
     }
+    applySessionExpiry(result, previousSessionID)
     phase.value = 'waiting'
+    startClockTicker()
     startPolling()
     return 'waiting'
+  }
+
+  async function refreshExpiredSession(sessionID: string): Promise<void> {
+    stopPolling()
+    if (activeSessionID.value === sessionID) {
+      await refreshSession(sessionID, true).catch(() => undefined)
+    }
+    await refreshQueueStatus().catch(() => undefined)
   }
 
   function startPolling(): void {
@@ -397,7 +465,7 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
     if (!activeSessionID.value) return
     pollingTimer = window.setInterval(() => {
       if (phase.value !== 'waiting') {
-        stop()
+        stopPolling()
         return
       }
       void refresh(true).catch(() => undefined)
@@ -413,7 +481,7 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
     activeSessionID.value = sessionID
     phase.value = 'starting'
     try {
-		return applyResponse(await api.resume(sessionID))
+		return await refreshSession(sessionID, true)
     } catch (error) {
       if (errorReason(error) === 'SMS_SESSION_NOT_FOUND') clearActiveSession()
       phase.value = 'error'
@@ -447,23 +515,42 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
   async function refresh(silent = false): Promise<SMSReceiveOutcome> {
 		const sessionID = activeSessionID.value || readActiveSession(scope)
     if (!sessionID) {
-      resetDisplay('unavailable')
-      return 'unavailable'
+      if (!silent) isRefreshing.value = true
+      try {
+        await refreshQueueStatus()
+        return 'unavailable'
+      } finally {
+        if (!silent) isRefreshing.value = false
+      }
     }
     activeSessionID.value = sessionID
-    if (!silent) isRefreshing.value = true
-    try {
-      const result = phase.value === 'error' || phase.value === 'starting'
-			? await api.resume(sessionID)
-			: await api.check(sessionID)
-      return applyResponse(result)
-    } catch (error) {
-      if (errorReason(error) === 'SMS_SESSION_NOT_FOUND') clearActiveSession()
-      phase.value = 'error'
-      throw error
-    } finally {
-      if (!silent) isRefreshing.value = false
+    return refreshSession(sessionID, silent)
+  }
+
+  function refreshSession(sessionID: string, silent: boolean): Promise<SMSReceiveOutcome> {
+    if (sessionRefreshRequest?.sessionID === sessionID) {
+      if (silent) return sessionRefreshRequest.promise
+      isRefreshing.value = true
+      return sessionRefreshRequest.promise.finally(() => { isRefreshing.value = false })
     }
+    if (!silent) isRefreshing.value = true
+    const promise = (async () => {
+      try {
+        const result = phase.value === 'error' || phase.value === 'starting'
+					? await api.resume(sessionID)
+					: await api.check(sessionID)
+        return applyResponse(result)
+      } catch (error) {
+        if (errorReason(error) === 'SMS_SESSION_NOT_FOUND') clearActiveSession()
+        phase.value = 'error'
+        throw error
+      } finally {
+        if (!silent) isRefreshing.value = false
+        if (sessionRefreshRequest?.sessionID === sessionID) sessionRefreshRequest = undefined
+      }
+    })()
+    sessionRefreshRequest = { sessionID, promise }
+    return promise
   }
 
   async function changeNumber(): Promise<SMSReceiveOutcome> {
@@ -515,11 +602,15 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
 		countryFlag,
     code,
 		queuedKeyCount,
+		activeSessionCount,
 		available,
 		feeAmount,
 		balance,
 		chargeState,
 		actionAvailableAt,
+		sessionExpiresAt,
+		sessionExpiryRemainingSeconds,
+		sessionExpiryText,
 		memberMutationRemainingSeconds,
     hasActiveSession,
     statusText,

@@ -14,6 +14,8 @@ export interface SMSReceiverSession {
   number?: string
   country?: string
   code?: string
+  expires_at?: string | null
+  server_time?: string | null
   queued_count: number
   fee_amount?: number
   charge_state?: 'held' | 'captured' | 'released' | ''

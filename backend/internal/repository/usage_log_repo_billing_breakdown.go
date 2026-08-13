@@ -53,15 +53,15 @@ func (r *usageLogRepository) GetAccountBillingUsers(ctx context.Context, account
 }
 
 // GetAccountBillingModels returns one user's identity and requested-model totals for an account.
-func (r *usageLogRepository) GetAccountBillingModels(ctx context.Context, accountID, userID int64, startTime, endTime time.Time) (*usagestats.AccountBillingSelectedUser, []usagestats.AccountBillingModel, error) {
-	selectedUser := &usagestats.AccountBillingSelectedUser{}
-	if err := scanSingleRow(ctx, r.sql, `
+func (r *usageLogRepository) GetAccountBillingModels(ctx context.Context, accountID, userID int64, startTime, endTime time.Time) (selectedUser *usagestats.AccountBillingSelectedUser, models []usagestats.AccountBillingModel, err error) {
+	selectedUser = &usagestats.AccountBillingSelectedUser{}
+	if scanErr := scanSingleRow(ctx, r.sql, `
 		SELECT
 			$1::bigint,
 			COALESCE((SELECT username FROM users WHERE id = $1), ''),
 			COALESCE((SELECT email FROM users WHERE id = $1), '')
-	`, []any{userID}, &selectedUser.UserID, &selectedUser.Username, &selectedUser.Email); err != nil {
-		return nil, nil, err
+	`, []any{userID}, &selectedUser.UserID, &selectedUser.Username, &selectedUser.Email); scanErr != nil {
+		return nil, nil, scanErr
 	}
 
 	modelExpr := resolveModelDimensionExpressionWithAlias(usagestats.ModelSourceUpstream, "ul")
@@ -84,9 +84,15 @@ func (r *usageLogRepository) GetAccountBillingModels(ctx context.Context, accoun
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+			selectedUser = nil
+			models = nil
+		}
+	}()
 
-	models := make([]usagestats.AccountBillingModel, 0)
+	models = make([]usagestats.AccountBillingModel, 0)
 	for rows.Next() {
 		var row usagestats.AccountBillingModel
 		if err := rows.Scan(&row.Model, &row.Requests, &row.Tokens, &row.AccountCost, &row.UserCost); err != nil {

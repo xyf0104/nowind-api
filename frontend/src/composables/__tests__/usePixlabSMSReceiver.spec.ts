@@ -25,7 +25,160 @@ describe('usePixlabSMSReceiver', () => {
     receiver = usePixlabSMSReceiver()
   })
 
-  afterEach(() => receiver.stop())
+  afterEach(() => {
+    receiver.stop()
+    vi.useRealTimers()
+  })
+
+  it('refreshes queue status without calling a session endpoint when no session exists', async () => {
+    vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 4, active_count: 0 })
+
+    await expect(receiver.refresh()).resolves.toBe('unavailable')
+
+    expect(smsReceiverAPI.getStatus).toHaveBeenCalledTimes(1)
+    expect(smsReceiverAPI.resume).not.toHaveBeenCalled()
+    expect(smsReceiverAPI.check).not.toHaveBeenCalled()
+    expect(receiver.queuedKeyCount.value).toBe(4)
+    expect(receiver.activeSessionCount.value).toBe(0)
+    expect(receiver.phase.value).toBe('idle')
+  })
+
+  it('refreshes an active session and applies the latest phone, status, and code', async () => {
+    receiver.stop()
+    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, 'server-session-refresh')
+    receiver = usePixlabSMSReceiver()
+    vi.mocked(smsReceiverAPI.check).mockResolvedValue({
+      status: 'RECEIVED',
+      number: '27749433060',
+      country: '南非',
+      code: '318204',
+      queued_count: 3
+    })
+
+    await expect(receiver.refresh()).resolves.toBe('received')
+
+    expect(smsReceiverAPI.check).toHaveBeenCalledWith('server-session-refresh')
+    expect(receiver.phoneForCopy.value).toBe('+27749433060')
+    expect(receiver.region.value).toBe('南非')
+    expect(receiver.code.value).toBe('318204')
+    expect(receiver.phase.value).toBe('received')
+    expect(localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)).toBeNull()
+  })
+
+  it('deduplicates concurrent refreshes for the same active session', async () => {
+    receiver.stop()
+    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, 'server-session-concurrent')
+    receiver = usePixlabSMSReceiver()
+    let resolveCheck: ((value: Awaited<ReturnType<typeof smsReceiverAPI.check>>) => void) | undefined
+    vi.mocked(smsReceiverAPI.check).mockImplementation(() => new Promise((resolve) => {
+      resolveCheck = resolve
+    }))
+
+    const first = receiver.refresh()
+    const second = receiver.refresh()
+
+    expect(smsReceiverAPI.check).toHaveBeenCalledTimes(1)
+    resolveCheck?.({
+      session_id: 'server-session-concurrent',
+      status: 'WAITING',
+      number: '27749433060',
+      country: '南非',
+      queued_count: 2,
+      expires_at: '2026-08-14T00:15:00.000Z'
+    })
+
+    await expect(Promise.all([first, second])).resolves.toEqual(['waiting', 'waiting'])
+    expect(smsReceiverAPI.check).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the server expiry timestamp and refreshes an expired session only once', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-14T00:05:00.000Z'))
+    vi.mocked(smsReceiverAPI.getStatus)
+      .mockResolvedValueOnce({ queued_count: 1, active_count: 0 })
+      .mockResolvedValueOnce({ queued_count: 1, active_count: 0 })
+    vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'server-session-expiry',
+      status: 'WAITING',
+      number: '27749433060',
+      country: '南非',
+      queued_count: 0,
+      expires_at: '2026-08-14T00:00:05.000Z',
+      server_time: '2026-08-14T00:00:00.000Z'
+    })
+    vi.mocked(smsReceiverAPI.check).mockResolvedValue({
+      status: 'EXPIRED',
+      queued_count: 1
+    })
+
+    await receiver.start()
+    expect(receiver.sessionExpiresAt.value).toBe('2026-08-14T00:00:05.000Z')
+    expect(receiver.sessionExpiryText.value).toBe('00:05')
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(smsReceiverAPI.check).toHaveBeenCalledTimes(1)
+    expect(smsReceiverAPI.getStatus).toHaveBeenCalledTimes(2)
+    expect(receiver.phase.value).toBe('expired')
+    expect(receiver.hasActiveSession.value).toBe(false)
+    expect(receiver.sessionExpiresAt.value).toBe('')
+    expect(receiver.queuedKeyCount.value).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(smsReceiverAPI.check).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries expiry synchronization after a transient network failure', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-14T00:00:00.000Z'))
+    vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 1, active_count: 0 })
+    vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'server-session-retry',
+      status: 'WAITING',
+      number: '27749433060',
+      country: '南非',
+      queued_count: 0,
+      expires_at: '2026-08-14T00:00:02.000Z',
+      server_time: '2026-08-14T00:00:00.000Z'
+    })
+    vi.mocked(smsReceiverAPI.check).mockRejectedValueOnce(new Error('network unavailable'))
+    vi.mocked(smsReceiverAPI.resume).mockResolvedValueOnce({
+      status: 'EXPIRED',
+      queued_count: 1,
+      server_time: '2026-08-14T00:00:07.000Z'
+    })
+
+    await receiver.start()
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(smsReceiverAPI.check).toHaveBeenCalledTimes(1)
+    expect(receiver.phase.value).toBe('error')
+    expect(receiver.hasActiveSession.value).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(smsReceiverAPI.resume).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(smsReceiverAPI.resume).toHaveBeenCalledTimes(1)
+    expect(receiver.phase.value).toBe('expired')
+    expect(receiver.hasActiveSession.value).toBe(false)
+  })
+
+  it('rejects non-RFC3339 expiry values instead of treating numeric timestamps as valid', async () => {
+    vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 1, active_count: 0 })
+    vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'server-session-invalid-expiry',
+      status: 'WAITING',
+      queued_count: 0,
+      expires_at: 1_786_665_600 as unknown as string,
+      server_time: '2026-08-14T00:00:00.000Z'
+    })
+
+    await receiver.start()
+
+    expect(receiver.sessionExpiresAt.value).toBe('')
+    expect(receiver.sessionExpiryText.value).toBe('00:00')
+  })
 
   it('stores submitted card keys on the server and keeps only an opaque session locally', async () => {
     vi.mocked(smsReceiverAPI.addCardKeys).mockResolvedValue({ added_count: 2, queued_count: 2 })

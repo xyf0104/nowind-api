@@ -23,7 +23,8 @@
               class="sms-header-button"
               title="刷新接码服务状态"
               :disabled="isLoadingStatus"
-              @click="loadStatus"
+              data-testid="refresh-sms-status"
+              @click="loadStatus()"
             >
               <Icon name="refresh" size="sm" :class="{ 'animate-spin': isLoadingStatus }" />
               <span>刷新状态</span>
@@ -122,6 +123,12 @@
                 {{ hasCode ? '验证码已送达，可直接复制到授权页面。' : '请在授权页面完成手机号验证，验证码到达后会显示在这里。' }}
               </p>
             </section>
+          </div>
+
+          <div v-if="sessionExpiresAt" class="sms-expiry" data-testid="sms-session-countdown">
+            <span><Icon name="infoCircle" size="xs" />号码有效期</span>
+            <time :datetime="sessionExpiresAt">{{ sessionExpiryText }}</time>
+            <small>到期后自动同步状态并释放会话</small>
           </div>
 
           <div class="sms-action-area">
@@ -415,6 +422,9 @@ const {
   balance,
   hasActiveSession,
   statusText,
+  activeSessionCount,
+  sessionExpiresAt,
+  sessionExpiryText,
   canRefresh,
   canChangeNumber,
   canCancel,
@@ -424,7 +434,7 @@ const {
   isCancelling
 } = receiver
 
-const activeCount = ref(0)
+const activeCount = activeSessionCount
 const cardKeysInput = ref('')
 const isLoadingStatus = ref(false)
 const isStarting = ref(false)
@@ -508,7 +518,7 @@ function describeError(error: unknown, fallback: string): string {
   return fallback
 }
 
-async function loadStatus(): Promise<void> {
+async function loadStatus(refreshCurrentSession = true): Promise<void> {
   if (isLocalPreview.value) {
     previewSession()
     appStore.showInfo('本地预览状态已刷新。')
@@ -522,10 +532,15 @@ async function loadStatus(): Promise<void> {
 
   isLoadingStatus.value = true
   try {
-    const status = await receiver.refreshQueueStatus()
-    activeCount.value = status.active_count
-    if (typeof status.fee_amount === 'number' && document.activeElement?.id !== 'sms-member-fee-input') {
-      memberFeeInput.value = status.fee_amount.toFixed(2)
+    if (refreshCurrentSession && hasActiveSession.value) {
+      await receiver.refresh()
+      await receiver.refreshQueueStatus()
+    } else {
+      const status = await receiver.refreshQueueStatus()
+      activeCount.value = status.active_count
+    }
+    if (typeof feeAmount.value === 'number' && document.activeElement?.id !== 'sms-member-fee-input') {
+      memberFeeInput.value = feeAmount.value.toFixed(2)
     }
   } catch (error) {
     appStore.showError(describeError(error, '无法读取接码服务状态。'))
@@ -575,7 +590,7 @@ async function begin(): Promise<void> {
   isStarting.value = true
   try {
     const outcome = await receiver.start()
-    await loadStatus()
+    await loadStatus(false)
     if (outcome === 'unavailable') {
       appStore.showInfo(isAdmin.value ? '暂无待用卡密，请先在右侧添加卡密。' : '暂时没有可用号码，请稍后刷新重试。')
     } else if (outcome === 'received') {
@@ -599,7 +614,7 @@ async function refreshCode(): Promise<void> {
 
   try {
     const outcome = await receiver.refresh()
-    await loadStatus()
+    await loadStatus(false)
     appStore.showInfo(outcome === 'received' ? '已收到验证码。' : '已查询当前号码，暂未收到验证码。')
   } catch (error) {
     appStore.showError(describeError(error, '查询验证码失败，请稍后重试。'))
@@ -616,7 +631,7 @@ async function changeNumber(): Promise<void> {
 
   try {
     const outcome = await receiver.changeNumber()
-    await loadStatus()
+    await loadStatus(false)
     appStore.showSuccess(outcome === 'received' ? '新号码已收到验证码。' : '已更换号码，正在继续监听。')
   } catch (error) {
     appStore.showError(describeError(error, '更换号码失败，请稍后重试。'))
@@ -639,7 +654,7 @@ async function cancelSession(): Promise<void> {
 
   try {
     const outcome = await receiver.cancel()
-    await loadStatus()
+    await loadStatus(false)
     appStore.showInfo(outcome === 'received' ? '验证码已收到，当前会话已按实际结果结算。' : '已取消当前会话，未使用卡密已退回队列。')
   } catch (error) {
     appStore.showError(describeError(error, '取消会话失败，请稍后重试。'))
@@ -662,7 +677,7 @@ async function saveKeys(): Promise<void> {
   try {
     const added = await receiver.appendCardKeys(rawKeys)
     cardKeysInput.value = ''
-    await loadStatus()
+    await loadStatus(false)
     appStore.showSuccess(added > 0 ? `已加密保存 ${added} 个接码卡密。` : '没有发现可添加的新卡密。')
   } catch (error) {
     appStore.showError(describeError(error, '保存卡密失败，请稍后重试。'))
@@ -695,7 +710,7 @@ async function requestClearQueue(): Promise<void> {
   isClearingKeys.value = true
   try {
     const deleted = await receiver.clearQueuedCardKeys()
-    await loadStatus()
+    await loadStatus(false)
     appStore.showInfo(deleted > 0 ? `已清空 ${deleted} 个待用接码卡密。` : '当前没有待用接码卡密。')
   } catch (error) {
     appStore.showError(describeError(error, '清空卡密失败，请稍后重试。'))
@@ -735,7 +750,7 @@ function goToRecharge(): void {
 }
 
 async function handleRechargeSuccess(): Promise<void> {
-  await loadStatus()
+  await loadStatus(false)
 }
 
 function formatMoney(value: number | null): string {
@@ -758,11 +773,11 @@ onMounted(async () => {
   }
 
   if (!authStore.isAuthenticated) return
-  await loadStatus()
+  await loadStatus(false)
   if (hasActiveSession.value) {
     try {
       await receiver.start()
-      await loadStatus()
+      await loadStatus(false)
     } catch (error) {
       appStore.showError(describeError(error, '无法恢复上次的接码会话。'))
     }
@@ -918,6 +933,11 @@ onBeforeUnmount(() => {
 .sms-code-card__hint { display: flex; align-items: flex-start; gap: 6px; margin: 5px 0 0; color: #7f95ad; font-size: 11px; line-height: 1.55; }
 .sms-code-card__hint svg { flex: 0 0 auto; margin-top: 2px; color: #64c9ee; }
 
+.sms-expiry { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 10px; margin: 0 21px 14px; padding: 9px 11px; border: 1px solid rgba(101, 156, 212, .24); border-radius: 8px; color: #9eb3ca; background: rgba(5, 22, 42, .52); font-size: 11px; }
+.sms-expiry > span { display: inline-flex; align-items: center; gap: 6px; color: #a8c4dc; font-weight: 650; }
+.sms-expiry time { color: #71dcff; font: 750 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.sms-expiry small { min-width: 0; color: #7188a1; text-align: right; }
+
 .sms-action-area { padding: 0 21px 20px; }
 .sms-action-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .sms-action { display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 9px; align-items: center; min-height: 66px; padding: 10px 11px; border: 1px solid rgba(99, 151, 207, .24); border-radius: 8px; color: #c8d9eb; background: rgba(17, 47, 77, .5); text-align: left; }
@@ -1029,6 +1049,8 @@ onBeforeUnmount(() => {
   .sms-panel__head, .sms-receiver-content, .sms-action-area { padding-left: 15px; padding-right: 15px; }
   .sms-panel__head { padding-top: 15px; padding-bottom: 15px; }
   .sms-receiver-content { grid-template-columns: 1fr; gap: 10px; padding-top: 15px; padding-bottom: 15px; }
+  .sms-expiry { grid-template-columns: auto auto; margin-left: 15px; margin-right: 15px; }
+  .sms-expiry small { grid-column: 1 / -1; text-align: left; }
   .sms-copy-value--phone strong { font-size: 23px; }
   .sms-copy-value--code strong { font-size: 33px; }
   .sms-action-grid { gap: 8px; }

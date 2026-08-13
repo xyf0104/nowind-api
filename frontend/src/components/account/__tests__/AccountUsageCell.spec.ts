@@ -396,7 +396,7 @@ describe('AccountUsageCell', () => {
 
     // 手动刷新再拉一次
     expect(getUsage).toHaveBeenCalledTimes(2)
-    expect(getUsage).toHaveBeenCalledWith(2010)
+    expect(getUsage).toHaveBeenNthCalledWith(2, 2010, undefined, true)
     // 单一数据源：始终使用 /usage API 值
     expect(wrapper.text()).toContain('5h|18|900')
   })
@@ -688,9 +688,126 @@ describe('AccountUsageCell', () => {
     expect(estimate.classes()).toContain('sm:border-t-0')
     expect(estimate.classes()).not.toContain('min-w-[116px]')
     expect(estimate.text()).toContain('usage.weeklyEstimate')
-    expect(estimate.text()).toContain('$3,000')
+    expect(estimate.text()).toContain('$2,977')
     expect(estimate.get('span:last-child').classes()).toContain('text-emerald-600')
     expect(estimate.get('span:last-child').classes()).toContain('dark:text-emerald-400')
+  })
+
+  it('OpenAI OAuth 刷新后按最新账号已用和 7d 百分比实时重算周额度', async () => {
+    getUsage
+      .mockResolvedValueOnce({
+        seven_day: {
+          utilization: 12,
+          resets_at: '2099-03-13T12:00:00Z',
+          remaining_seconds: 3600,
+          window_stats: {
+            requests: 3000,
+            tokens: 400_000_000,
+            cost: 360,
+            standard_cost: 360,
+            user_cost: 80
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        seven_day: {
+          utilization: 13,
+          resets_at: '2099-03-13T12:00:00Z',
+          remaining_seconds: 3500,
+          window_stats: {
+            requests: 3464,
+            tokens: 426_000_000,
+            cost: 413.92,
+            standard_cost: 413.92,
+            user_cost: 96.09
+          }
+        }
+      })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2104, platform: 'openai', type: 'oauth', extra: {} }),
+        manualRefreshToken: 0
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,000')
+
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledTimes(2)
+    expect(getUsage).toHaveBeenNthCalledWith(2, 2104, undefined, true)
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+  })
+
+  it('OpenAI OAuth 并发刷新时忽略较晚返回的旧请求', async () => {
+    let resolveInitial: ((value: any) => void) | undefined
+    const initialRequest = new Promise((resolve) => {
+      resolveInitial = resolve
+    })
+    getUsage
+      .mockReturnValueOnce(initialRequest)
+      .mockResolvedValueOnce({
+        seven_day: {
+          utilization: 13,
+          resets_at: '2099-03-13T12:00:00Z',
+          remaining_seconds: 3500,
+          window_stats: {
+            requests: 3464,
+            tokens: 426_000_000,
+            cost: 413.92,
+            standard_cost: 413.92,
+            user_cost: 96.09
+          }
+        }
+      })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2105, platform: 'openai', type: 'oauth', extra: {} }),
+        manualRefreshToken: 0
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+
+    resolveInitial?.({
+      seven_day: {
+        utilization: 12,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 3000,
+          tokens: 400_000_000,
+          cost: 360,
+          standard_cost: 360,
+          user_cost: 80
+        }
+      }
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).not.toContain('$3,000')
   })
 
   it('OpenAI OAuth 缺少 5h 限额时智能隐藏 5h 并保留 7d 与周额度', async () => {

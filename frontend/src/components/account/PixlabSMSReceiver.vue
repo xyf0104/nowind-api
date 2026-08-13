@@ -96,6 +96,17 @@
       </button>
     </div>
 
+    <div
+      v-if="!needsManualStart && sessionExpiresAt"
+      class="mt-2 flex items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50/70 px-3 py-2 text-xs dark:border-blue-900/80 dark:bg-blue-950/30"
+      data-testid="sms-session-countdown"
+    >
+      <span class="text-blue-700 dark:text-blue-300">号码有效期</span>
+      <time :datetime="sessionExpiresAt" class="font-mono font-semibold tabular-nums text-gray-900 dark:text-gray-100">
+        {{ sessionExpiryText }}
+      </time>
+    </div>
+
     <div v-if="!needsManualStart" class="mt-3 flex flex-wrap items-center gap-2">
       <button
         type="button"
@@ -214,6 +225,8 @@ const {
   queuedKeyCount,
   statusText,
   statusClass,
+  sessionExpiresAt,
+  sessionExpiryText,
   canRefresh,
   canChangeNumber,
   canCancel,
