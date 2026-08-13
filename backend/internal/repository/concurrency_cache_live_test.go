@@ -76,7 +76,8 @@ func TestGroupAccountConcurrencySnapshotIsScopedAndRejectsLegacyMembers(t *testi
 	redisServer := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
 	ctx := context.Background()
 
 	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 101, "request-a"))
@@ -107,7 +108,8 @@ func TestGroupSlotReleaseUsesAccountScopedMember(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
 	ctx := context.Background()
 
 	require.NoError(t, cache.TrackGroupSlot(ctx, 10, 101, "same-request"))

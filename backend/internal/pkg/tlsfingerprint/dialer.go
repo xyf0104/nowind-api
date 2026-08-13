@@ -323,13 +323,6 @@ func (d *Dialer) DialTLSContext(ctx context.Context, network, addr string) (net.
 	return performTLSHandshakeWithTimeout(ctx, conn, d.profile, addr, d.tlsHandshakeTimeout)
 }
 
-// performTLSHandshake performs the uTLS handshake on an established connection.
-// It builds a ClientHello spec from the profile, applies it, and completes the handshake.
-// On failure, conn is closed and an error is returned.
-func performTLSHandshake(ctx context.Context, conn net.Conn, profile *Profile, addr string) (net.Conn, error) {
-	return performTLSHandshakeWithTimeout(ctx, conn, profile, addr, 0)
-}
-
 func performTLSHandshakeWithTimeout(ctx context.Context, conn net.Conn, profile *Profile, addr string, timeout time.Duration) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
