@@ -177,7 +177,7 @@ function formatPhone(number: string, reportedRegion: string): {
     const localNumber = digits.slice(callingCode.length)
     return {
       display: `+${callingCode} ${localNumber}`,
-      copyValue: localNumber,
+      copyValue: `+${callingCode}${localNumber}`,
       region: reportedCountry?.name || fallbackRegion,
       flag: reportedCountry?.flag || countryFlags[normalizedRegion] || callingCodeFlags[callingCode] || '',
       callingCode,
@@ -187,7 +187,7 @@ function formatPhone(number: string, reportedRegion: string): {
 
   return {
     display: `+${digits}`,
-    copyValue: digits,
+    copyValue: `+${digits}`,
     region: reportedCountry?.name || reportedRegion || '自动识别',
     flag: reportedCountry?.flag || countryFlags[normalizedRegion] || '',
     callingCode: '',

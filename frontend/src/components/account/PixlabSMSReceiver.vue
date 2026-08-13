@@ -56,7 +56,7 @@
             type="button"
             class="group flex min-w-0 flex-1 items-center justify-between gap-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             :disabled="!phoneForCopy"
-            :title="phoneForCopy ? '点击复制本地号码' : '等待获取手机号'"
+            :title="phoneForCopy ? '点击复制完整国际号码' : '等待获取手机号'"
             @click="copyPhone"
           >
             <span class="truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ localPhoneNumber }}</span>

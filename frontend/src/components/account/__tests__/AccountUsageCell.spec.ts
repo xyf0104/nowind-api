@@ -54,6 +54,23 @@ function makeAccount(overrides: Partial<Account>): Account {
   }
 }
 
+const billingUsageProgressBarStub = {
+  props: ['label', 'utilization', 'resetsAt', 'windowStats', 'highlightBilling', 'wide'],
+  emits: ['open-billing-details'],
+  template: `
+    <button
+      type="button"
+      class="usage-bar"
+      :data-window="label"
+      :data-highlight-billing="String(highlightBilling)"
+      :data-wide="String(wide)"
+      @click="$emit('open-billing-details')"
+    >
+      {{ label }}|{{ utilization }}|{{ windowStats?.cost }}
+    </button>
+  `
+}
+
 describe('AccountUsageCell', () => {
   beforeEach(() => {
     getUsage.mockReset()
@@ -384,7 +401,7 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('5h|18|900')
   })
 
-  it('OpenAI OAuth 在无 codex 快照时会回退显示 usage 接口窗口', async () => {
+  it('OpenAI OAuth 在无 codex 快照时会回退显示 usage 接口，并隐藏利用率为 0 的 5h', async () => {
 	getUsage.mockResolvedValue({
 	  five_hour: {
 	    utilization: 0,
@@ -435,11 +452,11 @@ describe('AccountUsageCell', () => {
 	await flushPromises()
 
 	expect(getUsage).toHaveBeenCalledWith(2002)
-	expect(wrapper.text()).toContain('5h|0|27700')
+    expect(wrapper.text()).not.toContain('5h|0|27700')
 	expect(wrapper.text()).toContain('7d|0|27700')
   })
 
-  it('OpenAI OAuth 在行数据刷新但仍无 codex 快照时会重新拉取 usage', async () => {
+  it('OpenAI OAuth 在行数据刷新后会重拉 usage，并在 5h 从 0% 恢复为正数时重新显示', async () => {
 	getUsage
 	  .mockResolvedValueOnce({
 	    five_hour: {
@@ -458,7 +475,7 @@ describe('AccountUsageCell', () => {
 	  })
 	  .mockResolvedValueOnce({
 	    five_hour: {
-	      utilization: 0,
+	      utilization: 25,
 	      resets_at: null,
 	      remaining_seconds: 0,
 	      window_stats: {
@@ -494,7 +511,7 @@ describe('AccountUsageCell', () => {
 	})
 
 	await flushPromises()
-	expect(wrapper.text()).toContain('5h|0|100')
+    expect(wrapper.text()).not.toContain('5h|0|100')
 	expect(getUsage).toHaveBeenCalledTimes(1)
 
 	await wrapper.setProps({
@@ -509,7 +526,7 @@ describe('AccountUsageCell', () => {
 
 	await flushPromises()
 	expect(getUsage).toHaveBeenCalledTimes(2)
-	expect(wrapper.text()).toContain('5h|0|200')
+    expect(wrapper.text()).toContain('5h|25|200')
   })
 
   it('OpenAI 重置响应更新账号行时不会额外拉取 usage', async () => {
@@ -615,7 +632,317 @@ describe('AccountUsageCell', () => {
   expect(wrapper.text()).toContain('7d|100|106540000')
   })
 
-  it('Key 账号会展示 today stats 徽章并带 A/U 提示', async () => {
+  it('OpenAI OAuth 保留原版左侧用量布局并在右侧显示周额度', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: null,
+      seven_day: {
+        utilization: 6,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 1500,
+          tokens: 1_000_000,
+          cost: 178.6,
+          standard_cost: 178.6,
+          user_cost: 42.37
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2101,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const originalUsage = wrapper.get('[data-test="openai-oauth-original-usage"]')
+    expect(originalUsage.classes()).toContain('space-y-1')
+    const usageLayout = wrapper.get('[data-test="openai-oauth-usage-layout"]')
+    expect(usageLayout.classes()).toContain('w-full')
+    expect(usageLayout.classes()).toContain('justify-center')
+    expect(usageLayout.classes()).toContain('px-2')
+    expect(wrapper.get('[data-window="7d"]').attributes('data-wide')).toBe('true')
+    const estimate = wrapper.get('[data-test="oauth-weekly-estimate"]')
+    expect(estimate.classes()).toContain('flex-col')
+    expect(estimate.classes()).toContain('items-center')
+    expect(estimate.classes()).toContain('text-center')
+    expect(estimate.classes()).not.toContain('min-w-[116px]')
+    expect(estimate.text()).toContain('usage.weeklyEstimate')
+    expect(estimate.text()).toContain('$3,000')
+    expect(estimate.get('span:last-child').classes()).toContain('text-emerald-600')
+    expect(estimate.get('span:last-child').classes()).toContain('dark:text-emerald-400')
+  })
+
+  it('OpenAI OAuth 缺少 5h 限额时智能隐藏 5h 并保留 7d 与周额度', async () => {
+    getUsage.mockResolvedValue({
+      seven_day: {
+        utilization: 25,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 50,
+          tokens: 50_000,
+          cost: 25,
+          standard_cost: 25,
+          user_cost: 12.5
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2103,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.find('[data-window="5h"]').exists()).toBe(false)
+    expect(wrapper.get('[data-window="7d"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$100')
+  })
+
+  it('OpenAI OAuth 仅在最近 12 小时有调用和计费时高亮', async () => {
+    getUsage.mockResolvedValue({
+      seven_day: {
+        utilization: 25,
+        resets_at: null,
+        remaining_seconds: 0,
+        window_stats: {
+          requests: 1500,
+          tokens: 50_000,
+          cost: 25,
+          standard_cost: 25,
+          user_cost: 12.5
+        }
+      }
+    })
+
+    const recentWrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2110,
+          platform: 'openai',
+          type: 'oauth',
+          last_used_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(recentWrapper.get('[data-window="7d"]').attributes('data-highlight-billing')).toBe('true')
+
+    getUsage.mockResolvedValue({
+      seven_day: {
+        utilization: 25,
+        resets_at: null,
+        remaining_seconds: 0,
+        window_stats: {
+          requests: 1500,
+          tokens: 50_000,
+          cost: 25,
+          standard_cost: 25,
+          user_cost: 12.5
+        }
+      }
+    })
+    const staleWrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2111,
+          platform: 'openai',
+          type: 'oauth',
+          last_used_at: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(staleWrapper.get('[data-window="7d"]').attributes('data-highlight-billing')).toBe('false')
+  })
+
+  it('OpenAI OAuth 的 5h/7d 用户扣费点击会发出对应的精确窗口', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: {
+        utilization: 10,
+        resets_at: null,
+        remaining_seconds: 0,
+        window_stats: {
+          requests: 5,
+          tokens: 500,
+          cost: 5,
+          standard_cost: 5,
+          user_cost: 2
+        }
+      },
+      seven_day: {
+        utilization: 20,
+        resets_at: null,
+        remaining_seconds: 0,
+        window_stats: {
+          requests: 20,
+          tokens: 2000,
+          cost: 20,
+          standard_cost: 20,
+          user_cost: 8
+        }
+      }
+    })
+
+    const account = makeAccount({
+      id: 2104,
+      platform: 'openai',
+      type: 'oauth',
+      extra: {}
+    })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-window="5h"]').trigger('click')
+    await wrapper.get('[data-window="7d"]').trigger('click')
+
+    const events = wrapper.emitted<{
+      account: Account
+      windowLabel: string
+      startTime: string
+      endTime: string
+    }[]>('open-billing-details')
+    expect(events).toHaveLength(2)
+    expect(events?.[0]?.[0].account).toEqual(account)
+    expect(events?.[0]?.[0].windowLabel).toBe('5h')
+    expect(
+      new Date(events?.[0]?.[0].endTime ?? 0).getTime() -
+      new Date(events?.[0]?.[0].startTime ?? 0).getTime()
+    ).toBe(5 * 60 * 60 * 1000)
+    expect(events?.[1]?.[0].account).toEqual(account)
+    expect(events?.[1]?.[0].windowLabel).toBe('7d')
+    expect(
+      new Date(events?.[1]?.[0].endTime ?? 0).getTime() -
+      new Date(events?.[1]?.[0].startTime ?? 0).getTime()
+    ).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  it('API Key 和 setup-token 账号都支持用户扣费钻取', async () => {
+    const apiKeyWrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2105,
+          platform: 'anthropic',
+          type: 'apikey'
+        }),
+        todayStats: {
+          requests: 1,
+          tokens: 100,
+          cost: 1,
+          standard_cost: 1,
+          user_cost: 1
+        }
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await apiKeyWrapper.get('[data-test="today-user-billing"]').trigger('click')
+    const apiKeyEvents = apiKeyWrapper.emitted('open-billing-details')
+    expect(apiKeyEvents).toHaveLength(1)
+    expect(apiKeyEvents?.[0]?.[0]).toMatchObject({ account: expect.objectContaining({ id: 2105 }), windowLabel: '1d' })
+
+    getUsage.mockResolvedValue({
+      five_hour: {
+        utilization: 10,
+        resets_at: null,
+        remaining_seconds: 0,
+        window_stats: {
+          requests: 1,
+          tokens: 100,
+          cost: 1,
+          standard_cost: 1,
+          user_cost: 1
+        }
+      },
+      seven_day: null
+    })
+    const setupTokenWrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2106,
+          platform: 'anthropic',
+          type: 'setup-token',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          GrokQuotaProbeCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const setupTokenUsage = setupTokenWrapper.get('[data-window="5h"]')
+    await setupTokenUsage.trigger('click')
+    const setupTokenEvents = setupTokenWrapper.emitted('open-billing-details')
+    expect(setupTokenEvents).toHaveLength(1)
+    expect(setupTokenEvents?.[0]?.[0]).toMatchObject({ account: expect.objectContaining({ id: 2106 }), windowLabel: '5h' })
+  })
+
+  it('Key 账号统一显示中文请求、账号计费与人民币用户扣费', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {
 		    account: makeAccount({
@@ -641,14 +968,53 @@ describe('AccountUsageCell', () => {
 
 		await flushPromises()
 
-		expect(wrapper.text()).toContain('1.0M req')
-		expect(wrapper.text()).toContain('1.0B')
-		expect(wrapper.text()).toContain('A $12.35')
-		expect(wrapper.text()).toContain('U $6.79')
+      expect(wrapper.text()).toContain('1000000 usage.requestCountUnit')
+      expect(wrapper.text()).toContain('1.0B')
+      expect(wrapper.text()).toContain('usage.accountBilled $12.35')
+      expect(wrapper.text()).toContain('usage.userBilled ¥6.79')
+      expect(wrapper.text()).not.toContain('A $')
+      expect(wrapper.text()).not.toContain('U $')
 
-		const badges = wrapper.findAll('span[title]')
-		expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(true)
-		expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(true)
+      const accountBadge = wrapper.get('[title="usage.accountBilled"]')
+      const userBadge = wrapper.get('[data-test="today-user-billing"]')
+      expect(accountBadge.classes()).toContain('text-gray-500')
+      expect(userBadge.classes()).toContain('text-gray-500')
+      await userBadge.trigger('click')
+      expect(wrapper.emitted('open-billing-details')).toHaveLength(1)
+  })
+
+  it('非 OAuth 账号最近 12 小时有调用和计费时也使用红黄强调', async () => {
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 3002,
+          platform: 'anthropic',
+          type: 'apikey',
+          last_used_at: new Date(Date.now() - 30 * 60 * 1000).toISOString()
+        }),
+        todayStats: {
+          requests: 1500,
+          tokens: 1_000_000,
+          cost: 12.345,
+          standard_cost: 12.345,
+          user_cost: 6.789
+        }
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const billed = wrapper.get('[title="usage.accountBilled"]')
+    const deducted = wrapper.get('[data-test="today-user-billing"]')
+    expect(billed.classes()).toContain('text-red-600')
+    expect(deducted.classes()).toContain('text-amber-600')
+    expect(wrapper.find('[data-test="oauth-weekly-estimate"]').exists()).toBe(false)
   })
 
   it('Grok OAuth 会展示本地 user billed 用量并把耗尽配额显示为 0% 剩余', async () => {
@@ -692,15 +1058,16 @@ describe('AccountUsageCell', () => {
     await flushPromises()
 
     expect(getUsage).toHaveBeenCalledWith(3861)
-    expect(wrapper.text()).toContain('4 req')
+    expect(wrapper.text()).toContain('4 usage.requestCountUnit')
     expect(wrapper.text()).toContain('1.2K')
-    expect(wrapper.text()).toContain('A $0.12')
-    expect(wrapper.text()).toContain('U $0.34')
+    expect(wrapper.text()).toContain('usage.accountBilled $0.12')
+    expect(wrapper.text()).toContain('usage.userBilled ¥0.34')
     expect(wrapper.text()).toContain('admin.accounts.usageWindow.grokRequests|0|2026-07-09T16:00:00Z')
 
-    const badges = wrapper.findAll('span[title]')
-    expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(true)
-    expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(true)
+    expect(wrapper.get('[title="usage.accountBilled"]').exists()).toBe(true)
+    const userBilling = wrapper.get('[data-test="grok-user-billing"]')
+    await userBilling.trigger('click')
+    expect(wrapper.emitted('open-billing-details')).toHaveLength(1)
   })
 
   it('Grok OAuth 配额条按剩余容量显示 100% 满格和 25% 低量', async () => {
@@ -1377,10 +1744,10 @@ describe('AccountUsageCell', () => {
 
 		await flushPromises()
 
-		expect(wrapper.text()).toContain('0 req')
-		expect(wrapper.text()).toContain('0')
-		expect(wrapper.text()).toContain('A $0.00')
-		expect(wrapper.text()).toContain('U $0.00')
+      expect(wrapper.text()).toContain('0 usage.requestCountUnit')
+      expect(wrapper.text()).toContain('0')
+      expect(wrapper.text()).toContain('usage.accountBilled $0.00')
+      expect(wrapper.text()).toContain('usage.userBilled ¥0.00')
   })
 
   it('Anthropic OAuth 会渲染 7d F (Fable) 进度条，且 7d S 逻辑保留', async () => {

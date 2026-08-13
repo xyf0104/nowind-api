@@ -590,11 +590,24 @@ func buildCodexSparkWindowExtraUpdates(usage *OpenAIQuotaUsage, now time.Time) m
 	}
 
 	normalized := snap.Normalize()
-	if normalized == nil {
+	if normalized == nil || (normalized.Used5hPercent == nil && normalized.Reset5hSeconds == nil &&
+		normalized.Window5hMinutes == nil && normalized.Used7dPercent == nil &&
+		normalized.Reset7dSeconds == nil && normalized.Window7dMinutes == nil) {
 		return nil
 	}
 
-	updates := make(map[string]any)
+	// Treat the current upstream response as the source of truth for window
+	// presence. Explicit nulls replace stale values from a previous plan.
+	updates := map[string]any{
+		"codex_5h_used_percent":        nil,
+		"codex_5h_reset_after_seconds": nil,
+		"codex_5h_window_minutes":      nil,
+		"codex_5h_reset_at":            nil,
+		"codex_7d_used_percent":        nil,
+		"codex_7d_reset_after_seconds": nil,
+		"codex_7d_window_minutes":      nil,
+		"codex_7d_reset_at":            nil,
+	}
 	if normalized.Used5hPercent != nil {
 		updates["codex_5h_used_percent"] = *normalized.Used5hPercent
 	}
@@ -618,9 +631,6 @@ func buildCodexSparkWindowExtraUpdates(usage *OpenAIQuotaUsage, now time.Time) m
 	}
 	if r := codexResetAtRFC3339(now, normalized.Reset7dSeconds); r != nil {
 		updates["codex_7d_reset_at"] = *r
-	}
-	if len(updates) == 0 {
-		return nil
 	}
 	updates["codex_usage_updated_at"] = now.Format(time.RFC3339)
 	return updates

@@ -383,3 +383,56 @@ type AccountUsageStatsResponse struct {
 	Endpoints         []EndpointStat        `json:"endpoints"`
 	UpstreamEndpoints []EndpointStat        `json:"upstream_endpoints"`
 }
+
+// AccountBillingBreakdownRange describes the exact half-open usage window.
+type AccountBillingBreakdownRange struct {
+	StartTime string `json:"start_time"`
+	EndTime   string `json:"end_time"`
+	Timezone  string `json:"timezone"`
+}
+
+// AccountBillingBreakdownSummary aggregates the rows in the current drill-down level.
+type AccountBillingBreakdownSummary struct {
+	Requests    int64   `json:"requests"`
+	Tokens      int64   `json:"tokens"`
+	AccountCost float64 `json:"account_cost"`
+	UserCost    float64 `json:"user_cost"`
+}
+
+// AccountBillingUser is one user's spend through an account.
+type AccountBillingUser struct {
+	UserID      int64   `json:"user_id"`
+	Username    string  `json:"username"`
+	Email       string  `json:"email"`
+	Requests    int64   `json:"requests"`
+	Tokens      int64   `json:"tokens"`
+	AccountCost float64 `json:"account_cost"`
+	UserCost    float64 `json:"user_cost"`
+}
+
+// AccountBillingSelectedUser identifies the selected user in the model drill-down response.
+type AccountBillingSelectedUser struct {
+	UserID   int64  `json:"user_id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
+// AccountBillingModel is one requested-model subtotal for a selected user and account.
+type AccountBillingModel struct {
+	Model       string  `json:"model"`
+	Requests    int64   `json:"requests"`
+	Tokens      int64   `json:"tokens"`
+	AccountCost float64 `json:"account_cost"`
+	UserCost    float64 `json:"user_cost"`
+}
+
+// AccountBillingBreakdownResponse returns either Users or SelectedUser plus Models.
+// Slice pointers preserve an explicit empty array while omitting the inactive drill-down branch.
+type AccountBillingBreakdownResponse struct {
+	Range        AccountBillingBreakdownRange   `json:"range"`
+	AccountID    int64                          `json:"account_id"`
+	Summary      AccountBillingBreakdownSummary `json:"summary"`
+	Users        *[]AccountBillingUser          `json:"users,omitempty"`
+	SelectedUser *AccountBillingSelectedUser    `json:"selected_user,omitempty"`
+	Models       *[]AccountBillingModel         `json:"models,omitempty"`
+}

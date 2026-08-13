@@ -292,11 +292,9 @@ func (s *OpenAIGatewayService) BindGrokMediaVideoRequestAccount(
 	if cacheKey == "" || accountID <= 0 {
 		return fmt.Errorf("grok video request binding is invalid")
 	}
-	ttl := openaiStickySessionTTL
-	if s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
-		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
-	}
-	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, accountID, ttl)
+	// Video result polling is a task/response binding rather than ordinary
+	// conversation stickiness, so it keeps the longer response-binding TTL.
+	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, accountID, s.openAIWSResponseStickyTTL())
 }
 
 func (s *OpenAIGatewayService) ResolveGrokMediaVideoRequestAccount(

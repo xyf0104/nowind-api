@@ -1349,6 +1349,40 @@ export interface WindowStats {
   user_cost?: number
 }
 
+export interface OAuthAccountBillingSummary {
+  requests: number
+  tokens: number
+  account_cost: number
+  user_cost: number
+}
+
+export interface OAuthAccountBillingUser extends OAuthAccountBillingSummary {
+  user_id: number
+  email: string
+  username: string
+}
+
+export interface OAuthAccountBillingModel extends OAuthAccountBillingSummary {
+  model: string
+}
+
+export interface OAuthAccountBillingBreakdown {
+  account_id: number
+  range: {
+    start_time: string
+    end_time: string
+    timezone: string
+  }
+  summary: OAuthAccountBillingSummary
+  users?: OAuthAccountBillingUser[]
+  selected_user?: {
+    user_id: number
+    email: string
+    username: string
+  }
+  models?: OAuthAccountBillingModel[]
+}
+
 export interface UsageProgress {
   utilization: number // Percentage (0-100+, 100 = 100%)
   resets_at: string | null

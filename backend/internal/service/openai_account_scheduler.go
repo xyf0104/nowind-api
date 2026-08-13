@@ -412,22 +412,31 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 
-	if !req.StickyWeighted {
-		selection, escapedSticky, err := s.selectBySessionHash(ctx, req)
-		if err != nil {
-			return nil, decision, err
+	selection, escapedSticky, err := s.selectBySessionHash(ctx, req)
+	if err != nil {
+		return nil, decision, err
+	}
+	if selection != nil && selection.Account != nil {
+		decision.Layer = openAIAccountScheduleLayerSessionSticky
+		decision.StickySessionHit = true
+		decision.SelectedAccountID = selection.Account.ID
+		decision.SelectedAccountType = selection.Account.Type
+		return selection, decision, nil
+	}
+	if escapedSticky {
+		req.PreserveStickyBinding = true
+		req.ExcludedIDs = cloneExcludedAccountIDs(req.ExcludedIDs)
+		if req.ExcludedIDs == nil {
+			req.ExcludedIDs = make(map[int64]struct{}, 1)
 		}
-		if selection != nil && selection.Account != nil {
-			decision.Layer = openAIAccountScheduleLayerSessionSticky
-			decision.StickySessionHit = true
-			decision.SelectedAccountID = selection.Account.ID
-			decision.SelectedAccountType = selection.Account.Type
-			return selection, decision, nil
-		}
-		if escapedSticky {
-			req.PreserveStickyBinding = true
+		if req.StickyAccountID > 0 {
+			req.ExcludedIDs[req.StickyAccountID] = struct{}{}
 		}
 	}
+	// No valid ordinary sticky hit remains for this request. Any fallback is a
+	// normal priority-ordered selection; a movable previous-response hint may
+	// still contribute weight inside that priority tier.
+	req.StickyAccountID = 0
 
 	selection, candidateCount, topK, loadSkew, err := s.selectByLoadBalance(ctx, req)
 	decision.Layer = openAIAccountScheduleLayerLoadBalance
@@ -895,12 +904,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			candidates = append(candidates, candidate)
 		}
 	}
-	// Priority is an operator command for a new conversation, not merely one
-	// weighted score input. Existing sticky conversations retain their account,
-	// while an unbound conversation only competes inside the best priority tier.
-	if !openAIRequestHasStickyAnchor(req) {
-		candidates = highestPriorityOpenAICandidates(candidates)
-	}
+	// Ordinary session stickiness is resolved before load balancing. Remaining
+	// candidates therefore compete only inside the active priority tier.
+	candidates = highestPriorityOpenAICandidates(candidates)
 
 	plan := openAIAccountLoadPlan{
 		allCandidates:             allCandidates,
@@ -1285,6 +1291,7 @@ func (s *defaultOpenAIAccountScheduler) consumeOpenAISelectionDBRecheck(budget *
 func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
+	allowedPriority *int,
 ) (*AccountSelectionResult, error) {
 	if !req.StickyWeighted {
 		return nil, nil
@@ -1316,6 +1323,9 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 			if accountID == req.StickyAccountID && strings.TrimSpace(req.SessionHash) != "" {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, req.SessionHash)
 			}
+			continue
+		}
+		if allowedPriority != nil && account.Priority != *allowedPriority {
 			continue
 		}
 		if !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -1405,7 +1415,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, int, int, float64, error) {
-	budget := newOpenAISelectionProbeBudget()
 	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -1476,54 +1485,75 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 	}
 
-	if req.SubscriptionPriority {
-		subscriptionAccounts, regularAccounts := partitionOpenAIChatGPTSubscriptionAccounts(filtered)
-		if len(subscriptionAccounts) > 0 {
-			attempt := s.trySelectByLoadBalancePool(ctx, req, subscriptionAccounts, loadMap, budget)
-			if attempt.err != nil && (!attempt.noCompactCandidates || len(regularAccounts) <= 0) {
+	// Priority is an administrator-defined hard routing order. Health, load,
+	// subscription preference and sticky weights are evaluated only inside one
+	// tier; lower tiers are attempted only after no account in a higher tier can
+	// acquire a slot for this request.
+	priorityTiers := partitionOpenAIAccountsByPriority(filtered)
+	var firstWaitable []openAIAccountLoadSelectionAttempt
+	var firstWaitableBudget *openAISelectionProbeBudget
+	compactBlocked := false
+	for _, tier := range priorityTiers {
+		budget := newOpenAISelectionProbeBudget()
+		pools := [][]*Account{tier}
+		if req.SubscriptionPriority {
+			subscriptionAccounts, regularAccounts := partitionOpenAIChatGPTSubscriptionAccounts(tier)
+			if len(subscriptionAccounts) > 0 {
+				pools = [][]*Account{subscriptionAccounts}
+				if len(regularAccounts) > 0 {
+					pools = append(pools, regularAccounts)
+				}
+			}
+		}
+
+		tierWaitable := make([]openAIAccountLoadSelectionAttempt, 0, len(pools))
+		for _, pool := range pools {
+			attempt := s.trySelectByLoadBalancePool(ctx, req, pool, loadMap, budget)
+			compactBlocked = compactBlocked || attempt.compactBlocked || attempt.noCompactCandidates
+			if attempt.err != nil && !attempt.noCompactCandidates {
 				return nil, attempt.candidateCount, attempt.topK, attempt.loadSkew, attempt.err
 			}
 			if attempt.result != nil {
 				return attempt.result, attempt.candidateCount, attempt.topK, attempt.loadSkew, nil
 			}
-			if len(regularAccounts) > 0 {
-				regularAttempt := s.trySelectByLoadBalancePool(ctx, req, regularAccounts, loadMap, budget)
-				if regularAttempt.err != nil && !regularAttempt.noCompactCandidates {
-					return nil, regularAttempt.candidateCount, regularAttempt.topK, regularAttempt.loadSkew, regularAttempt.err
-				}
-				if regularAttempt.result != nil {
-					return regularAttempt.result, regularAttempt.candidateCount, regularAttempt.topK, regularAttempt.loadSkew, nil
-				}
-				var result *AccountSelectionResult
-				candidateCount, topK, loadSkew := regularAttempt.candidateCount, regularAttempt.topK, regularAttempt.loadSkew
-				fallbackErr := regularAttempt.err
-				if regularAttempt.err == nil {
-					result, candidateCount, topK, loadSkew, fallbackErr = s.finishLoadBalanceSelectionFallback(ctx, req, regularAttempt, budget, filterStats)
-					if fallbackErr == nil && result != nil {
-						return result, candidateCount, topK, loadSkew, nil
-					}
-				}
-				// 常规池既无法获取也无法排队（含仅剩不支持 compact 的候选）时，
-				// 回退到订阅池的等待计划：busy-but-waitable 的订阅账号不应因常规池存在
-				// 而被丢弃，否则开启订阅优先反而让本可排队成功的请求硬失败。
-				subResult, subCandidateCount, subTopK, subLoadSkew, subErr := s.finishLoadBalanceSelectionFallback(ctx, req, attempt, budget, filterStats)
-				if subErr == nil && subResult != nil {
-					return subResult, subCandidateCount, subTopK, subLoadSkew, nil
-				}
-				return result, candidateCount, topK, loadSkew, fallbackErr
+			if !attempt.noCompactCandidates && len(attempt.selectionOrder) > 0 {
+				tierWaitable = append(tierWaitable, attempt)
 			}
-			return s.finishLoadBalanceSelectionFallback(ctx, req, attempt, budget, filterStats)
+		}
+		if len(firstWaitable) == 0 && len(tierWaitable) > 0 {
+			firstWaitable = tierWaitable
+			firstWaitableBudget = budget
 		}
 	}
 
-	attempt := s.trySelectByLoadBalancePool(ctx, req, filtered, loadMap, budget)
-	if attempt.err != nil {
-		return nil, attempt.candidateCount, attempt.topK, attempt.loadSkew, attempt.err
+	// If every eligible tier is currently busy, wait only on the highest
+	// priority tier that can serve the request.
+	for _, attempt := range firstWaitable {
+		result, candidateCount, topK, loadSkew, fallbackErr := s.finishLoadBalanceSelectionFallback(ctx, req, attempt, firstWaitableBudget, filterStats)
+		if fallbackErr == nil && result != nil {
+			return result, candidateCount, topK, loadSkew, nil
+		}
 	}
-	if attempt.result != nil {
-		return attempt.result, attempt.candidateCount, attempt.topK, attempt.loadSkew, nil
+	return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("priority_tiers_exhausted"))
+}
+
+func partitionOpenAIAccountsByPriority(accounts []*Account) [][]*Account {
+	sorted := append([]*Account(nil), accounts...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return openAIAccountSchedulingPriority(sorted[i]) < openAIAccountSchedulingPriority(sorted[j])
+	})
+	tiers := make([][]*Account, 0)
+	for _, account := range sorted {
+		if account == nil {
+			continue
+		}
+		if len(tiers) == 0 || openAIAccountSchedulingPriority(tiers[len(tiers)-1][0]) != openAIAccountSchedulingPriority(account) {
+			tiers = append(tiers, []*Account{account})
+			continue
+		}
+		tiers[len(tiers)-1] = append(tiers[len(tiers)-1], account)
 	}
-	return s.finishLoadBalanceSelectionFallback(ctx, req, attempt, budget, filterStats)
+	return tiers
 }
 
 func partitionOpenAIChatGPTSubscriptionAccounts(accounts []*Account) ([]*Account, []*Account) {
@@ -1663,7 +1693,15 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, attempt.compactBlocked, filterStats.summary("selection_order_empty"))
 	}
 
-	if stickyFallback, stickyErr := s.tryFallbackToWeightedSticky(ctx, req); stickyErr != nil {
+	var allowedPriority *int
+	for _, candidate := range attempt.selectionOrder {
+		if candidate.account != nil {
+			priority := candidate.account.Priority
+			allowedPriority = &priority
+			break
+		}
+	}
+	if stickyFallback, stickyErr := s.tryFallbackToWeightedSticky(ctx, req, allowedPriority); stickyErr != nil {
 		return nil, candidateCount, topK, loadSkew, stickyErr
 	} else if stickyFallback != nil {
 		return stickyFallback, candidateCount, topK, loadSkew, nil
@@ -2359,7 +2397,10 @@ func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAcc
 
 func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
-		return time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
+		configured := time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
+		if configured < openaiStickySessionTTL {
+			return configured
+		}
 	}
 	return openaiStickySessionTTL
 }

@@ -216,10 +216,33 @@ func TestBuildCodexUsageExtraUpdates_WithoutNormalizedWindowFields(t *testing.T)
 	if got := updates["codex_usage_updated_at"]; got != "2026-02-20T09:15:00Z" {
 		t.Fatalf("codex_usage_updated_at = %v, want %s", got, "2026-02-20T09:15:00Z")
 	}
-	if _, ok := updates["codex_5h_reset_at"]; ok {
-		t.Fatalf("did not expect codex_5h_reset_at in updates: %v", updates["codex_5h_reset_at"])
+	if got := updates["codex_5h_reset_at"]; got != nil {
+		t.Fatalf("codex_5h_reset_at = %v, want nil", got)
 	}
-	if _, ok := updates["codex_7d_reset_at"]; ok {
-		t.Fatalf("did not expect codex_7d_reset_at in updates: %v", updates["codex_7d_reset_at"])
+	if got := updates["codex_7d_reset_at"]; got != nil {
+		t.Fatalf("codex_7d_reset_at = %v, want nil", got)
+	}
+}
+
+func TestBuildCodexUsageExtraUpdates_ClearsMissingFiveHourWindow(t *testing.T) {
+	primaryUsed := 6.0
+	primaryReset := 6 * 24 * 60 * 60
+	primaryWindow := 7 * 24 * 60
+	snapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:       &primaryUsed,
+		PrimaryResetAfterSeconds: &primaryReset,
+		PrimaryWindowMinutes:     &primaryWindow,
+		UpdatedAt:                "2026-08-13T10:00:00Z",
+	}
+
+	updates := buildCodexUsageExtraUpdates(snapshot, time.Time{})
+	if got := updates["codex_5h_used_percent"]; got != nil {
+		t.Fatalf("codex_5h_used_percent = %v, want nil", got)
+	}
+	if got := updates["codex_5h_reset_at"]; got != nil {
+		t.Fatalf("codex_5h_reset_at = %v, want nil", got)
+	}
+	if got := updates["codex_7d_used_percent"]; got != 6.0 {
+		t.Fatalf("codex_7d_used_percent = %v, want 6", got)
 	}
 }

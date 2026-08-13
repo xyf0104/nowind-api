@@ -47,7 +47,9 @@
           :utilization="usageInfo.five_hour.utilization"
           :resets-at="usageInfo.five_hour.resets_at"
           :window-stats="usageInfo.five_hour.window_stats"
+          :highlight-billing="shouldHighlightBilling(usageInfo.five_hour.window_stats)"
           color="indigo"
+          @open-billing-details="openBillingDetails('5h', usageInfo.five_hour.resets_at, 5 * 60 * 60 * 1000)"
         />
 
         <!-- 7d Window (OAuth only) -->
@@ -120,56 +122,86 @@
 
     <!-- OpenAI OAuth accounts: single source from /usage API -->
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
-      <div v-if="hasOpenAIUsageFallback" class="space-y-1">
-        <UsageProgressBar
-          v-if="usageInfo?.five_hour"
-          label="5h"
-          :utilization="usageInfo.five_hour.utilization"
-          :resets-at="usageInfo.five_hour.resets_at"
-          :window-stats="usageInfo.five_hour.window_stats"
-          :show-now-when-idle="true"
-          color="indigo"
-        />
-        <UsageProgressBar
-          v-if="usageInfo?.seven_day"
-          label="7d"
-          :utilization="usageInfo.seven_day.utilization"
-          :resets-at="usageInfo.seven_day.resets_at"
-          :window-stats="usageInfo.seven_day.window_stats"
-          :show-now-when-idle="true"
-          color="emerald"
-        />
-        <!--
-          Upstream codex /wham/usage quota query + reset. The local active-sampling
-          refresh button is rendered via the pre-actions slot so the user sees a
-          single row of related buttons instead of two stacked rows.
-        -->
-        <OpenAIQuotaResetCell :account="account" @account-updated="handleQuotaResetAccountUpdated">
-          <template #pre-actions>
-            <button
-              type="button"
-              class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="activeQueryLoading"
-              @click="loadActiveUsage"
-            >
-              <svg
-                class="h-2.5 w-2.5"
-                :class="{ 'animate-spin': activeQueryLoading }"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+      <div
+        v-if="hasOpenAIUsageFallback"
+        class="flex w-full max-w-full items-center justify-center gap-x-5 px-2"
+        data-test="openai-oauth-usage-layout"
+      >
+        <div class="min-w-0 space-y-1" data-test="openai-oauth-original-usage">
+          <UsageProgressBar
+            v-if="openAIFiveHour"
+            label="5h"
+            :utilization="openAIFiveHour.utilization"
+            :resets-at="openAIFiveHour.resets_at"
+            :window-stats="openAIFiveHour.window_stats"
+            :show-now-when-idle="true"
+            :highlight-billing="shouldHighlightBilling(openAIFiveHour.window_stats)"
+            :wide="true"
+            color="indigo"
+            @open-billing-details="openBillingDetails('5h', openAIFiveHour.resets_at, 5 * 60 * 60 * 1000)"
+          />
+          <UsageProgressBar
+            v-if="usageInfo?.seven_day"
+            label="7d"
+            :utilization="usageInfo.seven_day.utilization"
+            :resets-at="usageInfo.seven_day.resets_at"
+            :window-stats="usageInfo.seven_day.window_stats"
+            :show-now-when-idle="true"
+            :highlight-billing="shouldHighlightBilling(usageInfo.seven_day.window_stats)"
+            :wide="true"
+            color="emerald"
+            @open-billing-details="openBillingDetails('7d', usageInfo.seven_day.resets_at, 7 * 24 * 60 * 60 * 1000)"
+          />
+          <!--
+            Upstream codex /wham/usage quota query + reset. The local active-sampling
+            refresh button is rendered via the pre-actions slot so the user sees a
+            single row of related buttons instead of two stacked rows.
+          -->
+          <OpenAIQuotaResetCell
+            :account="account"
+            :spread-actions="true"
+            @account-updated="handleQuotaResetAccountUpdated"
+          >
+            <template #pre-actions>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="activeQueryLoading"
+                @click="loadActiveUsage"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                />
-              </svg>
-              {{ t('admin.accounts.usageWindow.activeQuery') }}
-            </button>
-          </template>
-        </OpenAIQuotaResetCell>
+                <svg
+                  class="h-2.5 w-2.5"
+                  :class="{ 'animate-spin': activeQueryLoading }"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                  />
+                </svg>
+                {{ t('admin.accounts.usageWindow.activeQuery') }}
+              </button>
+            </template>
+          </OpenAIQuotaResetCell>
+        </div>
+
+        <div
+          v-if="usageInfo?.seven_day"
+          class="flex min-w-[70px] shrink-0 flex-col items-center justify-center gap-0.5 self-center border-l border-gray-200 py-1 pl-5 text-center text-[10px] dark:border-dark-700"
+          data-test="oauth-weekly-estimate"
+          :title="t('usage.weeklyEstimateHint')"
+        >
+          <span class="whitespace-nowrap font-medium text-gray-800 dark:text-white">
+            {{ t('usage.weeklyEstimate') }}
+          </span>
+          <span class="whitespace-nowrap text-xs font-semibold leading-none text-emerald-600 dark:text-emerald-400">
+            {{ openAIWeeklyEstimateText }}
+          </span>
+        </div>
       </div>
       <div v-else-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
@@ -368,21 +400,27 @@
         <div v-if="grokLocalUsage" class="mb-0.5 flex items-center">
           <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
             <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
-              {{ formatWindowRequests(grokLocalUsage) }} req
+              {{ formatWindowRequests(grokLocalUsage) }} {{ t('usage.requestCountUnit') }}
             </span>
             <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
               {{ formatWindowTokens(grokLocalUsage) }}
             </span>
-            <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
-              A ${{ formatWindowCost(grokLocalUsage) }}
-            </span>
             <span
-              v-if="grokLocalUsage.user_cost != null"
-              class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
-              :title="t('usage.userBilled')"
+              :class="billingAccountClass(grokLocalUsage)"
+              :title="t('usage.accountBilled')"
             >
-              U ${{ formatWindowUserCost(grokLocalUsage) }}
+              {{ t('usage.accountBilled') }} ${{ formatWindowCost(grokLocalUsage) }}
             </span>
+            <button
+              v-if="grokLocalUsage.user_cost != null"
+              type="button"
+              :class="billingUserButtonClass(grokLocalUsage)"
+              :title="t('usage.openBillingBreakdown')"
+              data-test="grok-user-billing"
+              @click.stop="openGrokBillingDetails"
+            >
+              {{ t('usage.userBilled') }} ¥{{ formatWindowUserCost(grokLocalUsage) }}
+            </button>
           </div>
         </div>
         <UsageProgressBar
@@ -487,21 +525,24 @@
         >
           <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
             <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
-              {{ formatKeyRequests }} req
+              {{ formatKeyRequests }} {{ t('usage.requestCountUnit') }}
             </span>
             <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
               {{ formatKeyTokens }}
             </span>
-            <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
-              A ${{ formatKeyCost }}
+            <span :class="billingAccountClass(todayStats)" :title="t('usage.accountBilled')">
+              {{ t('usage.accountBilled') }} ${{ formatKeyCost }}
             </span>
-            <span
+            <button
               v-if="todayStats.user_cost != null"
-              class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
-              :title="t('usage.userBilled')"
+              type="button"
+              :class="billingUserButtonClass(todayStats)"
+              :title="t('usage.openBillingBreakdown')"
+              data-test="today-user-billing"
+              @click.stop="openTodayBillingDetails"
             >
-              U ${{ formatKeyUserCost }}
-            </span>
+              {{ t('usage.userBilled') }} ¥{{ formatKeyUserCost }}
+            </button>
           </div>
         </div>
         <div
@@ -531,7 +572,9 @@
             :utilization="bar.utilization"
             :resets-at="bar.resetsAt"
             :window-stats="bar.windowStats"
+            :highlight-billing="shouldHighlightBilling(bar.windowStats)"
             :color="bar.color"
+            @open-billing-details="openBillingDetails(bar.label, bar.resetsAt, 24 * 60 * 60 * 1000)"
           />
           <p class="mt-1 text-[9px] leading-tight text-gray-400 dark:text-gray-500 italic">
             * {{ t('admin.accounts.gemini.quotaPolicy.simulatedNote') || 'Simulated quota' }}
@@ -567,21 +610,24 @@
       >
         <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
           <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
-            {{ formatKeyRequests }} req
+            {{ formatKeyRequests }} {{ t('usage.requestCountUnit') }}
           </span>
           <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
             {{ formatKeyTokens }}
           </span>
-          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
-            A ${{ formatKeyCost }}
+          <span :class="billingAccountClass(todayStats)" :title="t('usage.accountBilled')">
+            {{ t('usage.accountBilled') }} ${{ formatKeyCost }}
           </span>
-          <span
+          <button
             v-if="todayStats.user_cost != null"
-            class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
-            :title="t('usage.userBilled')"
+            type="button"
+            :class="billingUserButtonClass(todayStats)"
+            :title="t('usage.openBillingBreakdown')"
+            data-test="today-user-billing"
+            @click.stop="openTodayBillingDetails"
           >
-            U ${{ formatKeyUserCost }}
-          </span>
+            {{ t('usage.userBilled') }} ¥{{ formatKeyUserCost }}
+          </button>
         </div>
       </div>
       <!-- Loading skeleton for today stats -->
@@ -662,6 +708,12 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   'account-updated': [account: Account]
+  'open-billing-details': [payload: {
+    account: Account
+    windowLabel: string
+    startTime: string
+    endTime: string
+  }]
 }>()
 
 const { t } = useI18n()
@@ -731,6 +783,27 @@ const geminiUsageAvailable = computed(() => {
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
+})
+
+const openAIFiveHour = computed(() => {
+  const fiveHour = usageInfo.value?.five_hour
+  return fiveHour != null && Number(fiveHour.utilization) > 0 ? fiveHour : null
+})
+
+const openAIWeeklyEstimateText = computed(() => {
+  const sevenDay = usageInfo.value?.seven_day
+  const utilization = Number(sevenDay?.utilization)
+  const accountCost = Number(sevenDay?.window_stats?.cost)
+  if (!Number.isFinite(utilization) || utilization <= 0 || !Number.isFinite(accountCost) || accountCost <= 0) {
+    return '-'
+  }
+
+  const estimate = accountCost / (utilization / 100)
+  if (!Number.isFinite(estimate) || estimate <= 0) return '-'
+
+  const roundingUnit = estimate >= 1000 ? 100 : estimate >= 100 ? 10 : 1
+  const rounded = Math.round(estimate / roundingUnit) * roundingUnit
+  return `$${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(rounded)}`
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
@@ -1179,7 +1252,7 @@ const grokRetryAfterLabel = computed(() => {
   return `${minutes}m`
 })
 
-const formatWindowRequests = (stats: WindowStats) => formatCompactNumber(stats.requests, { allowBillions: false })
+const formatWindowRequests = (stats: WindowStats) => String(Math.max(0, Math.trunc(stats.requests)))
 const formatWindowTokens = (stats: WindowStats) => formatCompactNumber(stats.tokens)
 const formatWindowCost = (stats: WindowStats) => stats.cost.toFixed(2)
 const formatWindowUserCost = (stats: WindowStats) => (stats.user_cost ?? 0).toFixed(2)
@@ -1493,11 +1566,100 @@ const handleQuotaResetAccountUpdated = (account: Account) => {
   emit('account-updated', account)
 }
 
+const openBillingDetails = (windowLabel: string, resetsAt: string | null | undefined, fallbackWindowMs: number) => {
+  const end = new Date()
+  const resetAt = resetsAt ? new Date(resetsAt) : null
+  const hasFutureReset = resetAt != null && !Number.isNaN(resetAt.getTime()) && resetAt > end
+  const start = hasFutureReset
+    ? new Date(resetAt.getTime() - fallbackWindowMs)
+    : new Date(end.getTime() - fallbackWindowMs)
+
+  emit('open-billing-details', {
+    account: props.account,
+    windowLabel,
+    startTime: start.toISOString(),
+    endTime: end.toISOString()
+  })
+}
+
+const openTodayBillingDetails = () => {
+  const end = new Date()
+  const start = new Date(end)
+  start.setHours(0, 0, 0, 0)
+  emit('open-billing-details', {
+    account: props.account,
+    windowLabel: '1d',
+    startTime: start.toISOString(),
+    endTime: end.toISOString()
+  })
+}
+
+const openGrokBillingDetails = () => {
+  if (
+    (props.todayStats && grokLocalUsage.value === props.todayStats) ||
+    grokLocalUsage.value === usageInfo.value?.grok_local_usage
+  ) {
+    openTodayBillingDetails()
+    return
+  }
+
+  const end = new Date()
+  let windowLabel = '24h'
+  let durationMs = 24 * 60 * 60 * 1000
+  if (grokLocalUsage.value === usageInfo.value?.grok_local_usage_7d) {
+    windowLabel = '7d'
+    durationMs = 7 * 24 * 60 * 60 * 1000
+  } else if (grokLocalUsage.value === usageInfo.value?.grok_local_usage_monthly) {
+    windowLabel = '30d'
+    durationMs = 30 * 24 * 60 * 60 * 1000
+  }
+  emit('open-billing-details', {
+    account: props.account,
+    windowLabel,
+    startTime: new Date(end.getTime() - durationMs).toISOString(),
+    endTime: end.toISOString()
+  })
+}
+
 // ===== Key account today stats formatters =====
+
+const BILLING_HIGHLIGHT_WINDOW_MS = 12 * 60 * 60 * 1000
+const billingBadgeBaseClass = 'rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800'
+
+const shouldHighlightBilling = (stats?: WindowStats | null): boolean => {
+  if (!stats || stats.requests <= 0 || (stats.cost <= 0 && (stats.user_cost ?? 0) <= 0)) {
+    return false
+  }
+
+  const lastUsedAt = props.account.last_used_at
+  if (!lastUsedAt) return false
+  const lastUsedTime = new Date(lastUsedAt).getTime()
+  if (!Number.isFinite(lastUsedTime)) return false
+  return Date.now() - lastUsedTime <= BILLING_HIGHLIGHT_WINDOW_MS
+}
+
+const billingAccountClass = (stats?: WindowStats | null) => [
+  billingBadgeBaseClass,
+  shouldHighlightBilling(stats)
+    ? 'font-medium text-red-600 dark:text-red-400'
+    : 'text-gray-500 dark:text-gray-400'
+]
+
+const billingUserClass = (stats?: WindowStats | null) => [
+  billingBadgeBaseClass,
+  shouldHighlightBilling(stats)
+    ? 'font-medium text-amber-600 dark:text-amber-400'
+    : 'text-gray-500 dark:text-gray-400'
+]
+
+const billingUserButtonClass = (stats?: WindowStats | null) => [
+  ...billingUserClass(stats),
+  'transition-colors hover:bg-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:hover:bg-gray-700'
+]
 
 const formatKeyRequests = computed(() => {
   if (!props.todayStats) return ''
-  return formatCompactNumber(props.todayStats.requests, { allowBillions: false })
+  return String(Math.max(0, Math.trunc(props.todayStats.requests)))
 })
 
 const formatKeyTokens = computed(() => {

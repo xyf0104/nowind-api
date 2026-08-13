@@ -11,7 +11,7 @@
       owns that real estate. This cell is purely about the rate-limit reset
       credit: query its count, consume one if needed.
     -->
-    <div class="flex flex-wrap items-center gap-1.5">
+    <div :class="['flex flex-wrap items-center', spreadActions ? 'gap-4' : 'gap-1.5']">
       <slot name="pre-actions" />
 
       <button
@@ -151,6 +151,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const props = defineProps<{
   account: Account
+  spreadActions?: boolean
 }>()
 
 const emit = defineEmits<{

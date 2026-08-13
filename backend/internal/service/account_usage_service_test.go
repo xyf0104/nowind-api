@@ -256,3 +256,18 @@ func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildCodexUsageProgressFromExtra_NullWindowIsAbsent(t *testing.T) {
+	t.Parallel()
+	extra := map[string]any{
+		"codex_5h_used_percent": nil,
+		"codex_5h_reset_at":     nil,
+		"codex_7d_used_percent": 6.0,
+	}
+	if progress := buildCodexUsageProgressFromExtra(extra, "5h", time.Now()); progress != nil {
+		t.Fatalf("expected absent 5h window, got %#v", progress)
+	}
+	if progress := buildCodexUsageProgressFromExtra(extra, "7d", time.Now()); progress == nil {
+		t.Fatal("expected 7d window to remain visible")
+	}
+}

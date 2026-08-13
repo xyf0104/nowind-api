@@ -24,7 +24,8 @@ import type {
   UpstreamBillingProbeResult,
   UpstreamBillingProbeSettings,
   OllamaCloudUsageSettings,
-  OllamaCloudUsageState
+  OllamaCloudUsageState,
+  OAuthAccountBillingBreakdown
 } from '@/types'
 
 /**
@@ -291,6 +292,24 @@ export async function getStats(id: number, days: number = 30): Promise<AccountUs
   const { data } = await apiClient.get<AccountUsageStatsResponse>(`/admin/accounts/${id}/stats`, {
     params: { days }
   })
+  return data
+}
+
+export async function getOAuthBillingBreakdown(
+  id: number,
+  params: {
+    start_time?: string
+    end_time?: string
+    start_date?: string
+    end_date?: string
+    user_id?: number
+    timezone?: string
+  }
+): Promise<OAuthAccountBillingBreakdown> {
+  const { data } = await apiClient.get<OAuthAccountBillingBreakdown>(
+    `/admin/accounts/${id}/billing-breakdown`,
+    { params }
+  )
   return data
 }
 
@@ -988,6 +1007,7 @@ export const accountsAPI = {
   refreshCredentials,
   applyOAuthCredentials,
   getStats,
+  getOAuthBillingBreakdown,
   clearError,
   getUsage,
   getTodayStats,

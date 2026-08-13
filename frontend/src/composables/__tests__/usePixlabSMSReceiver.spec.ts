@@ -44,7 +44,7 @@ describe('usePixlabSMSReceiver', () => {
     expect(smsReceiverAPI.addCardKeys).toHaveBeenCalledWith('CARD-A\nCARD-B')
     expect(smsReceiverAPI.redeem).toHaveBeenCalledTimes(1)
     expect(receiver.phoneDisplay.value).toBe('+86 13812345678')
-    expect(receiver.phoneForCopy.value).toBe('13812345678')
+    expect(receiver.phoneForCopy.value).toBe('+8613812345678')
     expect(receiver.countryCallingCode.value).toBe('86')
     expect(receiver.localPhoneNumber.value).toBe('13812345678')
     expect(receiver.queuedKeyCount.value).toBe(1)
@@ -72,7 +72,7 @@ describe('usePixlabSMSReceiver', () => {
     expect(receiver.queuedKeyCount.value).toBe(0)
   })
 
-  it('expands country codes to a complete region name and keeps only the local number copyable', async () => {
+  it('expands country codes to a complete region name and keeps the full international number copyable', async () => {
     vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 1, active_count: 0 })
     vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
       session_id: 'server-session-region',
@@ -86,7 +86,7 @@ describe('usePixlabSMSReceiver', () => {
 
     expect(receiver.countryCallingCode.value).toBe('1')
     expect(receiver.localPhoneNumber.value).toBe('2025550123')
-    expect(receiver.phoneForCopy.value).toBe('2025550123')
+    expect(receiver.phoneForCopy.value).toBe('+12025550123')
     expect(receiver.region.value).toBe('美国')
     expect(receiver.countryFlag.value).toBe('🇺🇸')
   })
@@ -105,9 +105,28 @@ describe('usePixlabSMSReceiver', () => {
 
     expect(receiver.countryCallingCode.value).toBe('57')
     expect(receiver.localPhoneNumber.value).toBe('3242390811')
-    expect(receiver.phoneForCopy.value).toBe('3242390811')
+    expect(receiver.phoneForCopy.value).toBe('+573242390811')
     expect(receiver.region.value).toBe('哥伦比亚')
     expect(receiver.countryFlag.value).toBe('🇨🇴')
+  })
+
+  it('formats a South African number as +27 plus the local number for copying', async () => {
+    vi.mocked(smsReceiverAPI.getStatus).mockResolvedValue({ queued_count: 1, active_count: 0 })
+    vi.mocked(smsReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'server-session-south-africa',
+      status: 'WAITING',
+      number: '27749433060',
+      country: '南非',
+      queued_count: 0
+    })
+
+    await receiver.start()
+
+    expect(receiver.countryCallingCode.value).toBe('27')
+    expect(receiver.localPhoneNumber.value).toBe('749433060')
+    expect(receiver.phoneForCopy.value).toBe('+27749433060')
+    expect(receiver.region.value).toBe('南非')
+    expect(receiver.countryFlag.value).toBe('🇿🇦')
   })
 
   it('uses one server-side change request and replaces the opaque session ID', async () => {
@@ -131,7 +150,7 @@ describe('usePixlabSMSReceiver', () => {
     expect(smsReceiverAPI.change).toHaveBeenCalledWith('server-session-old')
     expect(smsReceiverAPI.cancel).not.toHaveBeenCalled()
     expect(localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)).toBe('server-session-new')
-    expect(receiver.phoneForCopy.value).toBe('13912345678')
+    expect(receiver.phoneForCopy.value).toBe('+8613912345678')
     expect(receiver.queuedKeyCount.value).toBe(0)
   })
 

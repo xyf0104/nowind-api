@@ -3,25 +3,42 @@
     <!-- Window stats row (above progress bar) -->
     <div
       v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
-      class="mb-0.5 flex items-center"
+      :class="[wide ? 'mb-1' : 'mb-0.5', 'flex items-center']"
     >
       <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
         <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
-          {{ formatRequests }} req
+          {{ formatExactRequests }} {{ t('usage.requestCountUnit') }}
         </span>
         <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
           {{ formatTokens }}
         </span>
-        <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
-          A ${{ formatAccountCost }}
-        </span>
         <span
-          v-if="windowStats?.user_cost != null"
-          class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
-          :title="t('usage.userBilled')"
+          :class="[
+            'rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800',
+            highlightBilling
+              ? 'font-medium text-red-600 dark:text-red-400'
+              : 'text-gray-500 dark:text-gray-400'
+          ]"
+          :title="t('usage.accountBilled')"
+          data-test="account-billing"
         >
-          U ${{ formatUserCost }}
+          {{ t('usage.accountBilled') }} ${{ formatAccountCost }}
         </span>
+        <button
+          v-if="windowStats?.user_cost != null"
+          type="button"
+          :class="[
+            'rounded bg-gray-100 px-1.5 py-0.5 transition-colors hover:bg-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-gray-800 dark:hover:bg-gray-700',
+            highlightBilling
+              ? 'font-medium text-amber-600 dark:text-amber-400'
+              : 'text-gray-500 dark:text-gray-400'
+          ]"
+          :title="t('usage.openBillingBreakdown')"
+          data-test="user-billing"
+          @click.stop="emit('open-billing-details')"
+        >
+          {{ t('usage.userBilled') }} ¥{{ formatUserCost }}
+        </button>
       </div>
     </div>
 
@@ -35,7 +52,12 @@
       </span>
 
       <!-- Progress bar container -->
-      <div class="h-1.5 w-8 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+      <div
+        :class="[
+          'h-1.5 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700',
+          wide ? 'w-16' : 'w-8'
+        ]"
+      >
         <div
           :class="['h-full transition-all duration-300', barClass]"
           :style="{ width: barWidth }"
@@ -70,6 +92,12 @@ const props = defineProps<{
   windowStats?: WindowStats | null
   showNowWhenIdle?: boolean
   remainingCapacity?: boolean
+  highlightBilling?: boolean
+  wide?: boolean
+}>()
+
+const emit = defineEmits<{
+  'open-billing-details': []
 }>()
 
 const { t } = useI18n()
@@ -198,9 +226,9 @@ const formatResetTime = computed(() => {
 })
 
 // Window stats formatters
-const formatRequests = computed(() => {
-  if (!props.windowStats) return ''
-  return formatCompactNumber(props.windowStats.requests, { allowBillions: false })
+const formatExactRequests = computed(() => {
+  if (!props.windowStats) return '0'
+  return String(Math.max(0, Math.trunc(props.windowStats.requests)))
 })
 
 const formatTokens = computed(() => {

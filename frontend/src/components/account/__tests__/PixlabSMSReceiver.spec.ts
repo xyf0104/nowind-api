@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PixlabSMSReceiver from '../PixlabSMSReceiver.vue'
 
-const { receiverMocks } = vi.hoisted(() => ({
+const { receiverMocks, copyToClipboardMock } = vi.hoisted(() => ({
   receiverMocks: {
     start: vi.fn(),
     stop: vi.fn(),
@@ -12,7 +12,8 @@ const { receiverMocks } = vi.hoisted(() => ({
     refreshQueueStatus: vi.fn(),
     appendCardKeys: vi.fn(),
     clearQueuedCardKeys: vi.fn()
-  }
+  },
+  copyToClipboardMock: vi.fn().mockResolvedValue(true)
 }))
 
 vi.mock('@/composables/usePixlabSMSReceiver', async () => {
@@ -21,11 +22,11 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
     usePixlabSMSReceiver: () => ({
       phase: ref('idle'),
       phoneDisplay: ref('--'),
-      phoneForCopy: ref(''),
-      countryCallingCode: ref(''),
-      localPhoneNumber: ref('--'),
-      region: ref('--'),
-      countryFlag: ref(''),
+      phoneForCopy: ref('+27749433060'),
+      countryCallingCode: ref('27'),
+      localPhoneNumber: ref('749433060'),
+      region: ref('南非'),
+      countryFlag: ref('🇿🇦'),
       code: ref('--'),
       queuedKeyCount: ref(3),
       statusText: ref('等待取号'),
@@ -50,12 +51,13 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/composables/useClipboard', () => ({
-  useClipboard: () => ({ copyToClipboard: vi.fn().mockResolvedValue(true) })
+  useClipboard: () => ({ copyToClipboard: copyToClipboardMock })
 }))
 
 describe('PixlabSMSReceiver', () => {
   beforeEach(() => {
     Object.values(receiverMocks).forEach((mock) => mock.mockReset())
+    copyToClipboardMock.mockClear()
     receiverMocks.start.mockResolvedValue('waiting')
   })
 
@@ -88,6 +90,21 @@ describe('PixlabSMSReceiver', () => {
     await wrapper.setProps({ active: true })
     expect(wrapper.get('[data-testid="request-sms-phone"]').attributes('disabled')).toBeUndefined()
     expect(receiverMocks.start).not.toHaveBeenCalled()
+  })
+
+  it('copies the complete international number while keeping country code and local number separated on screen', async () => {
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: true },
+      global: { stubs: { BaseDialog: true, Icon: true } }
+    })
+
+    await wrapper.get('[data-testid="request-sms-phone"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('+27')
+    expect(wrapper.text()).toContain('749433060')
+    await wrapper.get('[title="点击复制完整国际号码"]').trigger('click')
+    expect(copyToClipboardMock).toHaveBeenCalledWith('+27749433060', '手机号已复制')
   })
 
 })

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -82,6 +83,11 @@ type UsageLogRepository interface {
 
 type accountWindowStatsBatchReader interface {
 	GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error)
+}
+
+type accountBillingBreakdownRepository interface {
+	GetAccountBillingUsers(ctx context.Context, accountID int64, startTime, endTime time.Time) ([]usagestats.AccountBillingUser, error)
+	GetAccountBillingModels(ctx context.Context, accountID, userID int64, startTime, endTime time.Time) (*usagestats.AccountBillingSelectedUser, []usagestats.AccountBillingModel, error)
 }
 
 // apiUsageCache 缓存从 Anthropic API 获取的使用率数据（utilization, resets_at）
@@ -1447,7 +1453,7 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 	}
 
 	usedRaw, ok := extra[usedPercentKey]
-	if !ok {
+	if !ok || usedRaw == nil {
 		return nil
 	}
 
@@ -1499,6 +1505,80 @@ func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountI
 		return nil, fmt.Errorf("get account usage stats failed: %w", err)
 	}
 	return stats, nil
+}
+
+// GetAccountBillingBreakdown returns the user or final-upstream-model cost breakdown for an account.
+func (s *AccountUsageService) GetAccountBillingBreakdown(ctx context.Context, accountID int64, startTime, endTime time.Time, userID *int64, userTimezone string) (*usagestats.AccountBillingBreakdownResponse, error) {
+	if accountID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_ACCOUNT_ID", "account_id must be greater than 0")
+	}
+	if !startTime.Before(endTime) {
+		return nil, infraerrors.BadRequest("INVALID_TIME_RANGE", "start_time must be before end_time")
+	}
+	if userID != nil && *userID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_USER_ID", "user_id must be greater than 0")
+	}
+
+	if _, err := s.accountRepo.GetByID(ctx, accountID); err != nil {
+		return nil, err
+	}
+	billingRepo, ok := s.usageLogRepo.(accountBillingBreakdownRepository)
+	if !ok {
+		return nil, fmt.Errorf("usage repository does not support account billing breakdown")
+	}
+
+	result := &usagestats.AccountBillingBreakdownResponse{
+		Range: usagestats.AccountBillingBreakdownRange{
+			StartTime: startTime.Format(time.RFC3339),
+			EndTime:   endTime.Format(time.RFC3339),
+			Timezone:  userTimezone,
+		},
+		AccountID: accountID,
+	}
+	if userID == nil {
+		users, err := billingRepo.GetAccountBillingUsers(ctx, accountID, startTime, endTime)
+		if err != nil {
+			return nil, fmt.Errorf("get account billing users: %w", err)
+		}
+		if users == nil {
+			users = make([]usagestats.AccountBillingUser, 0)
+		}
+		result.Summary = summarizeAccountBillingUsers(users)
+		result.Users = &users
+		return result, nil
+	}
+
+	selectedUser, models, err := billingRepo.GetAccountBillingModels(ctx, accountID, *userID, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("get account billing models: %w", err)
+	}
+	if models == nil {
+		models = make([]usagestats.AccountBillingModel, 0)
+	}
+	result.Summary = summarizeAccountBillingModels(models)
+	result.SelectedUser = selectedUser
+	result.Models = &models
+	return result, nil
+}
+
+func summarizeAccountBillingUsers(rows []usagestats.AccountBillingUser) (summary usagestats.AccountBillingBreakdownSummary) {
+	for i := range rows {
+		summary.Requests += rows[i].Requests
+		summary.Tokens += rows[i].Tokens
+		summary.AccountCost += rows[i].AccountCost
+		summary.UserCost += rows[i].UserCost
+	}
+	return summary
+}
+
+func summarizeAccountBillingModels(rows []usagestats.AccountBillingModel) (summary usagestats.AccountBillingBreakdownSummary) {
+	for i := range rows {
+		summary.Requests += rows[i].Requests
+		summary.Tokens += rows[i].Tokens
+		summary.AccountCost += rows[i].AccountCost
+		summary.UserCost += rows[i].UserCost
+	}
+	return summary
 }
 
 // fetchOAuthUsageRaw 从 Anthropic API 获取原始响应（不构建 UsageInfo）

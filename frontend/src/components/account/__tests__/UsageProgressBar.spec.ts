@@ -147,7 +147,7 @@ describe('UsageProgressBar', () => {
     expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
   })
 
-  it('用 USD 显示窗口账号成本和用户成本', () => {
+  it('所有账号统一显示中文请求、账号计费和可点击的人民币用户扣费', async () => {
     const wrapper = mount(UsageProgressBar, {
       props: {
         label: '5h',
@@ -163,8 +163,119 @@ describe('UsageProgressBar', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('A $1.25')
-    expect(wrapper.text()).toContain('U $0.75')
-    expect(wrapper.text()).not.toContain('¥')
+    expect(wrapper.text()).toContain('2 usage.requestCountUnit')
+    expect(wrapper.text()).toContain('usage.accountBilled $1.25')
+    expect(wrapper.text()).toContain('usage.userBilled ¥0.75')
+    expect(wrapper.text()).not.toContain('A $')
+    expect(wrapper.text()).not.toContain('U $')
+    expect(wrapper.get('[data-test="account-billing"]').classes()).toContain('text-gray-500')
+    expect(wrapper.get('[data-test="user-billing"]').classes()).toContain('text-gray-500')
+    await wrapper.get('[data-test="user-billing"]').trigger('click')
+    expect(wrapper.emitted('open-billing-details')).toHaveLength(1)
   })
+
+  it('OAuth 保持原统计行，只替换请求、计费标签、币种和颜色', async () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '5h',
+        utilization: 10,
+        color: 'indigo',
+        oauthBillingDetails: true,
+        highlightBilling: true,
+        windowStats: {
+          requests: 1500,
+          tokens: 191_200_000,
+          cost: 10,
+          standard_cost: 10,
+          user_cost: 42.37
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('1500 usage.requestCountUnit')
+    expect(wrapper.text()).toContain('191.2M')
+    expect(wrapper.text()).toContain('usage.accountBilled $10.00')
+    expect(wrapper.text()).toContain('usage.userBilled ¥42.37')
+    expect(wrapper.text()).not.toContain('A $10.00')
+    expect(wrapper.text()).not.toContain('U $42.37')
+    expect(wrapper.text()).not.toContain('1.5K req')
+    expect(wrapper.get('[title="usage.accountBilled"]').classes()).toContain('text-red-600')
+    expect(wrapper.get('[data-test="user-billing"]').classes()).toContain('text-amber-600')
+
+    await wrapper.get('[data-test="user-billing"]').trigger('click')
+    expect(wrapper.emitted('open-billing-details')).toHaveLength(1)
+  })
+
+  it('无近期计费时保留中文标签、恢复原版灰色且仍可点击', async () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 10,
+        color: 'emerald',
+        oauthBillingDetails: true,
+        highlightBilling: false,
+        windowStats: {
+          requests: 1500,
+          tokens: 191_200_000,
+          cost: 178.6,
+          standard_cost: 178.6,
+          user_cost: 42.37
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('1500 usage.requestCountUnit')
+    expect(wrapper.text()).toContain('usage.accountBilled $178.60')
+    expect(wrapper.text()).toContain('usage.userBilled ¥42.37')
+    expect(wrapper.get('[data-test="account-billing"]').classes()).toContain('text-gray-500')
+    expect(wrapper.get('[data-test="user-billing"]').classes()).toContain('text-gray-500')
+    expect(wrapper.get('[data-test="account-billing"]').classes()).not.toContain('text-red-600')
+    expect(wrapper.get('[data-test="user-billing"]').classes()).not.toContain('text-amber-600')
+    await wrapper.get('[data-test="user-billing"]').trigger('click')
+    expect(wrapper.emitted('open-billing-details')).toHaveLength(1)
+  })
+
+  it('仅在明确启用时加宽进度条', () => {
+    const wideWrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 25,
+        color: 'emerald',
+        wide: true
+      }
+    })
+    const defaultWrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 25,
+        color: 'emerald'
+      }
+    })
+
+    expect(wideWrapper.get('.h-1\\.5').classes()).toContain('w-16')
+    expect(defaultWrapper.get('.h-1\\.5').classes()).toContain('w-8')
+  })
+
+  it('加宽模式保持统计行、进度行和操作行一致间距并按实际百分比填充', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 6,
+        color: 'emerald',
+        wide: true,
+        windowStats: {
+          requests: 1500,
+          tokens: 16_100_000,
+          cost: 178.6,
+          standard_cost: 178.6,
+          user_cost: 42.37
+        }
+      }
+    })
+
+    expect(wrapper.get('.mb-1').exists()).toBe(true)
+    expect(wrapper.text()).toContain('6%')
+    expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 6%')
+  })
+
 })

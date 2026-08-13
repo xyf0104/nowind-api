@@ -781,7 +781,15 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 	}
 
 	baseTime := codexSnapshotBaseTime(snapshot, fallbackNow)
-	updates := make(map[string]any)
+	updates := map[string]any{
+		"codex_primary_used_percent":           nil,
+		"codex_primary_reset_after_seconds":    nil,
+		"codex_primary_window_minutes":         nil,
+		"codex_secondary_used_percent":         nil,
+		"codex_secondary_reset_after_seconds":  nil,
+		"codex_secondary_window_minutes":       nil,
+		"codex_primary_over_secondary_percent": nil,
+	}
 
 	// 保存原始 primary/secondary 字段，便于排查问题
 	if snapshot.PrimaryUsedPercent != nil {
@@ -809,6 +817,17 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 
 	// 归一化到 5h/7d 规范字段
 	if normalized := snapshot.Normalize(); normalized != nil {
+		// A fresh upstream snapshot is authoritative for which quota windows exist.
+		// Persist explicit nulls for absent windows so an account that changes plans
+		// does not keep showing or scheduling against stale 5h/7d data.
+		updates["codex_5h_used_percent"] = nil
+		updates["codex_5h_reset_after_seconds"] = nil
+		updates["codex_5h_window_minutes"] = nil
+		updates["codex_5h_reset_at"] = nil
+		updates["codex_7d_used_percent"] = nil
+		updates["codex_7d_reset_after_seconds"] = nil
+		updates["codex_7d_window_minutes"] = nil
+		updates["codex_7d_reset_at"] = nil
 		if normalized.Used5hPercent != nil {
 			updates["codex_5h_used_percent"] = *normalized.Used5hPercent
 		}

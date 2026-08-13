@@ -82,7 +82,7 @@
                 class="sms-copy-value sms-copy-value--phone"
                 :class="{ 'is-empty': !phoneForCopy }"
                 :disabled="!phoneForCopy"
-                :title="phoneForCopy ? '复制本地号码（不含国家区号）' : '尚未领取号码'"
+                :title="phoneForCopy ? '复制完整国际号码' : '尚未领取号码'"
                 @click="copyPhone"
               >
                 <strong class="sms-phone-number">
@@ -492,7 +492,7 @@ function previewSession(number = '+1 816 215 0598', nextCode = '--'): void {
   phase.value = nextCode === '--' ? 'waiting' : 'received'
   countryCallingCode.value = '1'
   localPhoneNumber.value = digits.slice(1)
-  phoneForCopy.value = localPhoneNumber.value
+  phoneForCopy.value = `+${digits}`
   region.value = '美国'
   countryFlag.value = '🇺🇸'
   code.value = nextCode
@@ -592,7 +592,7 @@ async function begin(): Promise<void> {
 
 async function refreshCode(): Promise<void> {
   if (isLocalPreview.value) {
-    previewSession(phoneForCopy.value ? `+${countryCallingCode.value} ${phoneForCopy.value}` : '+1 816 215 0598', '846 217')
+    previewSession(phoneForCopy.value || '+1 816 215 0598', '846 217')
     appStore.showSuccess('本地预览：已模拟收到验证码。')
     return
   }
