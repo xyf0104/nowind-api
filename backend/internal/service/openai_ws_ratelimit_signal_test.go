@@ -48,6 +48,15 @@ func (r *openAIWSRateLimitSignalRepo) UpdateExtra(_ context.Context, _ int64, up
 	return nil
 }
 
+func (r *openAIWSRateLimitSignalRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+	copied := make(map[string]any, len(updates))
+	for k, v := range updates {
+		copied[k] = v
+	}
+	r.updateExtra = append(r.updateExtra, copied)
+	return true, nil
+}
+
 func (r *openAICodexSnapshotAsyncRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	if r.rateLimitCh != nil {
 		r.rateLimitCh <- resetAt
@@ -64,6 +73,17 @@ func (r *openAICodexSnapshotAsyncRepo) UpdateExtra(_ context.Context, _ int64, u
 		r.updateExtraCh <- copied
 	}
 	return nil
+}
+
+func (r *openAICodexSnapshotAsyncRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+	if r.updateExtraCh != nil {
+		copied := make(map[string]any, len(updates))
+		for k, v := range updates {
+			copied[k] = v
+		}
+		r.updateExtraCh <- copied
+	}
+	return true, nil
 }
 
 func (r *openAICodexExtraListRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {

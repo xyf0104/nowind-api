@@ -2564,7 +2564,24 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	}
 
 	// 使用 JSONB 合并操作实现原子更新，避免读-改-写的并发丢失更新问题
-	payload, err := json.Marshal(updates)
+	payloadUpdates := any(updates)
+	orderedCodexSnapshot := false
+	if _, hasSnapshotTime := updates["codex_usage_updated_at"]; hasSnapshotTime {
+		codexUpdates, otherUpdates, _, err := splitOpenAICodexSnapshotUpdates(updates)
+		if err != nil {
+			return err
+		}
+		if len(otherUpdates) == 0 {
+			_, err := r.UpdateOpenAICodexSnapshot(ctx, id, codexUpdates)
+			return err
+		}
+		orderedCodexSnapshot = true
+		payloadUpdates = map[string]any{
+			"codex": codexUpdates,
+			"other": otherUpdates,
+		}
+	}
+	payload, err := json.Marshal(payloadUpdates)
 	if err != nil {
 		return err
 	}
@@ -2588,6 +2605,13 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	extraExpression := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
+	if orderedCodexSnapshot {
+		extraExpression = "COALESCE(extra, '{}'::jsonb)" +
+			" || COALESCE($1::jsonb -> 'other', '{}'::jsonb)" +
+			" || CASE WHEN COALESCE((" + openAICodexCurrentTimestampExpression + ")::timestamptz" +
+			" <= (($1::jsonb #>> '{codex,codex_usage_updated_at}')::timestamptz), TRUE)" +
+			" THEN COALESCE($1::jsonb -> 'codex', '{}'::jsonb) ELSE '{}'::jsonb END"
+	}
 	if clearProbeSnapshot {
 		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
 	}
@@ -2629,6 +2653,106 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	return nil
+}
+
+const openAICodexCurrentTimestampExpression = `
+	jsonb_path_query_first_tz(
+		jsonb_build_object(
+			'value',
+			replace(regexp_replace(regexp_replace(
+				extra ->> 'codex_usage_updated_at',
+				'(\.[0-9]{6})[0-9]+(Z|[+-][0-9]{2}:[0-9]{2})$',
+				'\1\2'
+			), 'Z$', '+00:00'), 'T', ' ')
+		),
+		'$.value.datetime()',
+		'{}'::jsonb,
+		true
+	) #>> '{}'
+`
+
+const updateOpenAICodexSnapshotQuery = `
+	UPDATE accounts
+	SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb,
+		updated_at = NOW()
+	WHERE id = $2
+		AND deleted_at IS NULL
+		AND COALESCE(
+			(` + openAICodexCurrentTimestampExpression + `)::timestamptz <= $3::timestamptz,
+			TRUE
+		)
+`
+
+// UpdateOpenAICodexSnapshot atomically merges a Codex quota snapshot only when
+// its observation time is not earlier than the snapshot currently in the row.
+// Missing or malformed legacy timestamps are replaceable; malformed incoming
+// timestamps are rejected before any database write.
+func (r *accountRepository) UpdateOpenAICodexSnapshot(ctx context.Context, id int64, updates map[string]any) (bool, error) {
+	if r == nil || r.sql == nil {
+		return false, errors.New("account repository SQL executor is not configured")
+	}
+	if len(updates) == 0 {
+		return false, errors.New("openai codex snapshot is empty")
+	}
+	codexUpdates, otherUpdates, updatedAt, err := splitOpenAICodexSnapshotUpdates(updates)
+	if err != nil {
+		return false, err
+	}
+	if len(otherUpdates) > 0 {
+		return false, errors.New("ordered openai codex snapshot contains non-codex fields")
+	}
+	payload, err := json.Marshal(codexUpdates)
+	if err != nil {
+		return false, err
+	}
+
+	exec := r.sql
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		exec = tx.Client()
+	}
+	result, err := exec.ExecContext(ctx, updateOpenAICodexSnapshotQuery, string(payload), id, updatedAt)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, nil
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		r.syncSchedulerAccountSnapshot(ctx, id)
+	}
+	return true, nil
+}
+
+func splitOpenAICodexSnapshotUpdates(updates map[string]any) (map[string]any, map[string]any, time.Time, error) {
+	rawUpdatedAt, ok := updates["codex_usage_updated_at"]
+	if !ok {
+		return nil, nil, time.Time{}, errors.New("openai codex snapshot timestamp is missing")
+	}
+	updatedAtText, ok := rawUpdatedAt.(string)
+	if !ok || strings.TrimSpace(updatedAtText) == "" {
+		return nil, nil, time.Time{}, errors.New("openai codex snapshot timestamp must be an RFC3339 string")
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(updatedAtText))
+	if err != nil {
+		return nil, nil, time.Time{}, errors.New("openai codex snapshot timestamp is invalid")
+	}
+	updatedAt = updatedAt.UTC().Truncate(time.Microsecond)
+
+	codexUpdates := make(map[string]any)
+	otherUpdates := make(map[string]any)
+	for key, value := range updates {
+		if strings.HasPrefix(key, "codex_") {
+			codexUpdates[key] = value
+		} else {
+			otherUpdates[key] = value
+		}
+	}
+	codexUpdates["codex_usage_updated_at"] = updatedAt.Format(time.RFC3339Nano)
+	return codexUpdates, otherUpdates, updatedAt, nil
 }
 
 // UpdateUpstreamBillingProbeSnapshot stores a probe result only while the

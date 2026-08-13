@@ -39,6 +39,17 @@ func (r *sparkShadowUsageTestRepo) UpdateExtra(_ context.Context, _ int64, updat
 	return nil
 }
 
+func (r *sparkShadowUsageTestRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+	if r.updateExtraCh != nil {
+		copied := make(map[string]any, len(updates))
+		for k, v := range updates {
+			copied[k] = v
+		}
+		r.updateExtraCh <- copied
+	}
+	return true, nil
+}
+
 // TestGetOpenAIUsage_SparkShadow_WritesExtraAndReturnsNonEmptyWindows covers
 // two assertions required by Task 3.2:
 //

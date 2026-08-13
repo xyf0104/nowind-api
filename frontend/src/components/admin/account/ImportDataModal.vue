@@ -137,7 +137,7 @@
           v-model="onlineForm.rawText" 
           rows="5" 
           class="input font-mono text-sm"
-          placeholder="jojo-codex 0.28x-WFDdCl    sk-t62AsevLAoVjKRcSXzqqGJSXVfUziFAgCADpk1BESp0vrbvW&#10;jojo-codex 0.28x-A7DMDp    sk-j0e9MwIoPdOUMYzF8jpebBdQMDVmWwa4DQa9GTz4fPuKYWbk"
+          placeholder="账号名称一    sk-example-not-a-real-key-001&#10;账号名称二    sk-example-not-a-real-key-002"
         ></textarea>
       </div>
 

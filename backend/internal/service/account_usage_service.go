@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -308,6 +309,12 @@ type AccountUsageService struct {
 	tlsFPProfileService     *TLSFingerprintProfileService
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
+	openAIProbeStates       sync.Map
+}
+
+type openAIProbeState struct {
+	mu         sync.Mutex
+	generation atomic.Uint64
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -618,30 +625,96 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	applyExtraToUsage(usage, account.Extra, now)
 
 	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
+		probeState := s.openAIProbeState(account.ID)
+		probeGeneration := probeState.generation.Add(1)
+		probeState.mu.Lock()
+		defer probeState.mu.Unlock()
+		if probeState.generation.Load() != probeGeneration {
+			if force {
+				return nil, fmt.Errorf("force refresh openai codex quota superseded by a newer request")
+			}
+			return usage, nil
+		}
 		if account.IsShadow() {
 			// Spark shadow accounts fetch usage from /wham/usage (bengalfox channel)
 			// via the shared OpenAIQuotaService, which resolves credentials from the
 			// parent account.  The result is written to the shadow row's own codex_*
 			// Extra keys and immediately reflected in the returned UsageInfo.
-			if s.openAIQuotaService != nil {
-				if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err == nil {
-					if updates := buildCodexSparkWindowExtraUpdates(quotaUsage, now); len(updates) > 0 {
-						mergeAccountExtra(account, updates)
-						s.persistOpenAICodexProbeSnapshot(account.ID, updates)
-						if usage.UpdatedAt == nil {
-							usage.UpdatedAt = &now
-						}
-						applyExtraToUsage(usage, account.Extra, now)
-					}
+			if s.openAIQuotaService == nil {
+				if force {
+					return nil, fmt.Errorf("force refresh openai codex quota failed: quota service unavailable")
 				}
-			}
-		} else {
-			if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
+			} else if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err != nil {
+				if force {
+					return nil, fmt.Errorf("force refresh openai codex quota failed: %w", err)
+				}
+			} else {
+				observedAt := time.Now().UTC().Truncate(time.Microsecond)
+				updates := buildCodexSparkWindowExtraUpdates(quotaUsage, observedAt)
+				if len(updates) == 0 {
+					if force {
+						return nil, fmt.Errorf("force refresh openai codex quota failed: upstream returned no quota snapshot")
+					}
+					return usage, nil
+				}
+				updates["codex_usage_updated_at"] = observedAt.Format(time.RFC3339Nano)
+				if probeState.generation.Load() != probeGeneration {
+					return nil, fmt.Errorf("force refresh openai codex quota superseded by a newer request")
+				}
+				if force && !hasCodexWindowSnapshot(updates, "7d") {
+					return nil, fmt.Errorf("force refresh openai codex quota failed: upstream returned no 7d quota snapshot")
+				}
+				applied, err := s.persistOpenAICodexProbeSnapshot(account.ID, updates)
+				if err != nil {
+					if force {
+						return nil, fmt.Errorf("force refresh openai codex quota failed: persist snapshot: %w", err)
+					}
+					return usage, nil
+				}
+				if !applied {
+					if force {
+						return nil, fmt.Errorf("force refresh openai codex quota superseded by a newer snapshot")
+					}
+					return usage, nil
+				}
 				mergeAccountExtra(account, updates)
 				if usage.UpdatedAt == nil {
 					usage.UpdatedAt = &now
 				}
 				applyExtraToUsage(usage, account.Extra, now)
+			}
+		} else {
+			if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err != nil {
+				if force {
+					return nil, fmt.Errorf("force refresh openai codex quota failed: %w", err)
+				}
+			} else if len(updates) > 0 {
+				if probeState.generation.Load() != probeGeneration {
+					return nil, fmt.Errorf("force refresh openai codex quota superseded by a newer request")
+				}
+				if force && !hasCodexWindowSnapshot(updates, "7d") {
+					return nil, fmt.Errorf("force refresh openai codex quota failed: upstream returned no 7d quota snapshot")
+				}
+				applied, err := s.persistOpenAICodexProbeSnapshot(account.ID, updates)
+				if err != nil {
+					if force {
+						return nil, fmt.Errorf("force refresh openai codex quota failed: persist snapshot: %w", err)
+					}
+					return usage, nil
+				}
+				if !applied {
+					if force {
+						return nil, fmt.Errorf("force refresh openai codex quota superseded by a newer snapshot")
+					}
+					return usage, nil
+				}
+				mergeAccountExtra(account, updates)
+				if usage.UpdatedAt == nil {
+					usage.UpdatedAt = &now
+				}
+				applyExtraToUsage(usage, account.Extra, now)
+			} else if force {
+				return nil, fmt.Errorf("force refresh openai codex quota failed: upstream returned no quota snapshot")
 			}
 		}
 	}
@@ -724,6 +797,17 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 	return true
 }
 
+func (s *AccountUsageService) openAIProbeState(accountID int64) *openAIProbeState {
+	fallback := &openAIProbeState{}
+	state, _ := s.openAIProbeStates.LoadOrStore(accountID, fallback)
+	probeState, ok := state.(*openAIProbeState)
+	if ok {
+		return probeState
+	}
+	s.openAIProbeStates.Store(accountID, fallback)
+	return fallback
+}
+
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
@@ -802,25 +886,38 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 		return nil, err
 	}
 	if len(updates) > 0 {
-		s.persistOpenAICodexProbeSnapshot(account.ID, updates)
 		return updates, nil
 	}
 	return nil, nil
 }
 
-func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) {
+func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) (bool, error) {
 	if s == nil || s.accountRepo == nil || accountID <= 0 {
-		return
+		return false, nil
 	}
 	if len(updates) == 0 {
-		return
+		return false, nil
 	}
 
-	go func() {
-		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer updateCancel()
-		_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
-	}()
+	updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer updateCancel()
+	return persistOrderedOpenAICodexSnapshot(updateCtx, s.accountRepo, accountID, updates)
+}
+
+func persistOrderedOpenAICodexSnapshot(ctx context.Context, repo AccountRepository, accountID int64, updates map[string]any) (bool, error) {
+	orderedRepo, ok := repo.(OpenAICodexSnapshotRepository)
+	if !ok {
+		return false, fmt.Errorf("account repository does not support ordered openai codex snapshots")
+	}
+	return orderedRepo.UpdateOpenAICodexSnapshot(ctx, accountID, updates)
+}
+
+func hasCodexWindowSnapshot(updates map[string]any, window string) bool {
+	if len(updates) == 0 {
+		return false
+	}
+	value, ok := updates["codex_"+window+"_used_percent"]
+	return ok && value != nil
 }
 
 func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error) {
@@ -855,6 +952,11 @@ func applyExtraToUsage(usage *UsageInfo, extra map[string]any, now time.Time) {
 	if usage == nil {
 		return
 	}
+	// A refreshed upstream snapshot is authoritative for window presence. Clear
+	// the previous view first so an absent 5h/7d window cannot retain an old
+	// percentage and then receive the current database cost.
+	usage.FiveHour = nil
+	usage.SevenDay = nil
 	if progress := buildCodexUsageProgressFromExtra(extra, "5h", now); progress != nil {
 		usage.FiveHour = progress
 	}

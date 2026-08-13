@@ -72,6 +72,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		&service.UsageCleanupService{},
 		idempotencyCleanupSvc,
 		&service.BatchImageCleanupService{},
+		nil, // pixlabSMS
 		nil, // batchImageWorker
 		pricingSvc,
 		emailQueueSvc,

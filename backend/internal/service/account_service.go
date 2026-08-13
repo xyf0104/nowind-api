@@ -125,6 +125,12 @@ type AccountRepository interface {
 	ListShadowsByParent(ctx context.Context, parentID int64) ([]*Account, error)
 }
 
+// OpenAICodexSnapshotRepository persists one complete Codex quota observation
+// without allowing an older observation to replace a newer database snapshot.
+type OpenAICodexSnapshotRepository interface {
+	UpdateOpenAICodexSnapshot(ctx context.Context, id int64, updates map[string]any) (bool, error)
+}
+
 type AccountIDFilteredLister interface {
 	ListWithFiltersByIDs(ctx context.Context, params pagination.PaginationParams, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error)
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -38,6 +39,11 @@ const (
 	// limit. A card is rotated after every claim and is never claimed a sixth
 	// time, even if its previous sessions were cancelled without a code.
 	PixlabSMSCardKeyMaxClaims = 5
+	// PixlabSMSCleanupInterval keeps abandoned browser sessions from holding a
+	// card or a member balance indefinitely.
+	PixlabSMSCleanupInterval   = 30 * time.Second
+	pixlabSMSTerminalResultTTL = 24 * time.Hour
+	pixlabSMSCleanupLeaseTTL   = time.Minute
 )
 
 var (
@@ -120,11 +126,15 @@ type PixlabSMSService struct {
 	client       *http.Client
 	baseURL      string
 	sessionLocks [64]sync.Mutex
+	cleanupMu    sync.Mutex
+	cleanupStop  context.CancelFunc
+	cleanupDone  chan struct{}
 }
 
 func NewPixlabSMSService(db *sql.DB, encryptor SecretEncryptor, billingCache *BillingCacheService) *PixlabSMSService {
 	svc := newPixlabSMSService(db, encryptor, &http.Client{Timeout: 20 * time.Second}, pixlabSMSAPIBaseURL)
 	svc.billingCache = billingCache
+	svc.startCleanupWorker()
 	return svc
 }
 
@@ -137,6 +147,57 @@ func newPixlabSMSService(db *sql.DB, encryptor SecretEncryptor, client *http.Cli
 		encryptor: encryptor,
 		client:    client,
 		baseURL:   strings.TrimRight(baseURL, "/"),
+	}
+}
+
+func (s *PixlabSMSService) startCleanupWorker() {
+	if s == nil || s.db == nil || s.encryptor == nil {
+		return
+	}
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+	if s.cleanupStop != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.cleanupStop = cancel
+	s.cleanupDone = done
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(PixlabSMSCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 20*time.Second)
+				if err := s.cleanupExpiredSessions(cleanupCtx); err != nil && !errors.Is(err, context.Canceled) {
+					slog.Warn("pixlab_sms_expired_session_cleanup_failed", "error", err)
+				}
+				cleanupCancel()
+			}
+		}
+	}()
+}
+
+func (s *PixlabSMSService) Stop() {
+	if s == nil {
+		return
+	}
+	s.cleanupMu.Lock()
+	cancel := s.cleanupStop
+	done := s.cleanupDone
+	s.cleanupStop = nil
+	s.cleanupDone = nil
+	s.cleanupMu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if done != nil {
+		<-done
 	}
 }
 
@@ -218,11 +279,6 @@ func (s *PixlabSMSService) AddCardKeys(ctx context.Context, raw string) (int, *P
 func (s *PixlabSMSService) QueueStatus(ctx context.Context, ownerUserID int64) (*PixlabSMSQueueStatus, error) {
 	if s == nil || s.db == nil {
 		return nil, infraerrors.InternalServer("SMS_RECEIVER_UNAVAILABLE", "接码服务尚未初始化")
-	}
-	// The administrator status view is the inventory authority, so one refresh
-	// also clears expired member sessions left behind by closed browsers.
-	if err := s.releaseExpiredSessions(ctx, 0); err != nil {
-		return nil, err
 	}
 	return s.queueStatus(ctx, ownerUserID)
 }
@@ -543,10 +599,6 @@ func (s *PixlabSMSService) MemberStatus(ctx context.Context, userID int64) (*Pix
 	if userID <= 0 {
 		return nil, infraerrors.Unauthorized("SMS_OWNER_REQUIRED", "无法识别当前用户")
 	}
-	if err := s.releaseExpiredSessions(ctx, userID); err != nil {
-		return nil, err
-	}
-
 	fee, err := s.MemberFee(ctx)
 	if err != nil {
 		return nil, err
@@ -563,8 +615,15 @@ func (s *PixlabSMSService) MemberStatus(ctx context.Context, userID int64) (*Pix
 	}
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM xiass_sms_card_keys
-		WHERE owner_user_id = $1 AND status = 'active'`, userID).Scan(&status.ActiveCount); err != nil {
+		FROM xiass_sms_card_keys AS card
+		WHERE card.owner_user_id = $1 AND card.status = 'active'
+			AND EXISTS (
+				SELECT 1
+				FROM xiass_sms_member_charges AS charge
+				WHERE charge.session_id = card.session_id
+					AND charge.user_id = $1
+					AND charge.status = 'held'
+			)`, userID).Scan(&status.ActiveCount); err != nil {
 		return nil, fmt.Errorf("count member sms sessions: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx, `
@@ -600,6 +659,7 @@ func (s *PixlabSMSService) Redeem(ctx context.Context, ownerUserID int64) (*Pixl
 			UPDATE xiass_sms_card_keys AS card
 			SET status = 'active', owner_user_id = $1, session_id = $2,
 				consumed_at = NOW(), last_claimed_at = NOW(),
+				cleanup_attempted_at = NULL, cleanup_lease_token = NULL, cleanup_lease_until = NULL,
 				claim_count = card.claim_count + 1, updated_at = NOW()
 			FROM next_key
 			WHERE card.id = next_key.id
@@ -638,6 +698,9 @@ func (s *PixlabSMSService) Redeem(ctx context.Context, ownerUserID int64) (*Pixl
 					}
 					return nil, resumeErr
 				}
+				// The conflicting row belongs to the member site. Never recover or
+				// settle it through an OAuth/admin request.
+				return nil, ErrPixlabSMSActive
 			}
 			return nil, fmt.Errorf("claim sms card key: %w", err)
 		}
@@ -663,23 +726,51 @@ func (s *PixlabSMSService) Redeem(ctx context.Context, ownerUserID int64) (*Pixl
 				return nil, err
 			}
 		}
-		return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, false)
+		return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, false, false)
 	}
 }
 
 func (s *PixlabSMSService) activeSessionID(ctx context.Context, ownerUserID int64) (string, error) {
 	var sessionID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id
-		FROM xiass_sms_card_keys
-		WHERE owner_user_id = $1 AND status = 'active'
-		ORDER BY consumed_at DESC NULLS LAST, id DESC
+		SELECT card.session_id
+		FROM xiass_sms_card_keys AS card
+		WHERE card.owner_user_id = $1 AND card.status = 'active'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM xiass_sms_member_charges AS charge
+				WHERE charge.session_id = card.session_id
+					AND charge.user_id = card.owner_user_id
+					AND charge.status = 'held'
+			)
+		ORDER BY card.consumed_at DESC NULLS LAST, card.id DESC
 		LIMIT 1`, ownerUserID).Scan(&sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("load active sms session: %w", err)
+	}
+	return strings.TrimSpace(sessionID), nil
+}
+
+func (s *PixlabSMSService) activeMemberSessionID(ctx context.Context, userID int64) (string, error) {
+	var sessionID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT card.session_id
+		FROM xiass_sms_card_keys AS card
+		JOIN xiass_sms_member_charges AS charge
+			ON charge.session_id = card.session_id
+			AND charge.user_id = card.owner_user_id
+			AND charge.status = 'held'
+		WHERE card.owner_user_id = $1 AND card.status = 'active'
+		ORDER BY card.consumed_at DESC NULLS LAST, card.id DESC
+		LIMIT 1`, userID).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load active member sms session: %w", err)
 	}
 	return strings.TrimSpace(sessionID), nil
 }
@@ -702,8 +793,26 @@ func (s *PixlabSMSService) RedeemForMember(ctx context.Context, userID int64) (*
 	if userID <= 0 {
 		return nil, infraerrors.Unauthorized("SMS_OWNER_REQUIRED", "无法识别当前用户")
 	}
-	if err := s.releaseExpiredSessions(ctx, userID); err != nil {
+	// Browser storage is only a convenience. Recover the server-side session
+	// before reserving another card so a cleared browser cannot strand a number
+	// or a held member charge.
+	existingSessionID, err := s.activeMemberSessionID(ctx, userID)
+	if err != nil {
 		return nil, err
+	}
+	if existingSessionID != "" {
+		existing, resumeErr := s.withActiveSession(ctx, userID, existingSessionID, "resume", true)
+		if resumeErr != nil {
+			// A transient provider failure must leave the existing session active;
+			// claiming another card here would double-reserve the member's balance.
+			if !errors.Is(resumeErr, ErrPixlabSMSSession) {
+				return nil, resumeErr
+			}
+		} else if existing.SessionID != "" || pixlabHasVerificationCode(existing.Code) {
+			return s.memberResult(ctx, userID, existingSessionID, existing)
+		}
+		// An explicitly terminal session without a code has already been
+		// released and refunded by ResumeForMember, so a new claim may proceed.
 	}
 	for {
 		sessionID, encryptedKey, err := s.claimMemberSession(ctx, userID)
@@ -712,7 +821,7 @@ func (s *PixlabSMSService) RedeemForMember(ctx context.Context, userID int64) (*
 		}
 		key, err := s.encryptor.Decrypt(encryptedKey)
 		if err != nil {
-			if settleErr := s.settleSession(ctx, sessionID, userID, true, pixlabSettlementRelease); settleErr != nil {
+			if settleErr := s.settleSession(ctx, sessionID, userID, true, pixlabSettlementRelease, nil); settleErr != nil {
 				return nil, settleErr
 			}
 			return nil, fmt.Errorf("decrypt claimed member sms card key: %w", err)
@@ -720,12 +829,12 @@ func (s *PixlabSMSService) RedeemForMember(ctx context.Context, userID int64) (*
 		provider, err := s.callProvider(ctx, "redeem", key)
 		if err != nil {
 			if isPixlabCardUsageLimitError(err) {
-				if settleErr := s.settleSession(ctx, sessionID, userID, true, pixlabSettlementExhaust); settleErr != nil {
+				if settleErr := s.settleSession(ctx, sessionID, userID, true, pixlabSettlementExhaust, nil); settleErr != nil {
 					return nil, settleErr
 				}
 				continue
 			}
-			if settleErr := s.settleSession(ctx, sessionID, userID, true, pixlabSettlementRelease); settleErr != nil {
+			if settleErr := s.settleSession(ctx, sessionID, userID, true, pixlabSettlementRelease, nil); settleErr != nil {
 				return nil, settleErr
 			}
 			return nil, err
@@ -735,7 +844,7 @@ func (s *PixlabSMSService) RedeemForMember(ctx context.Context, userID int64) (*
 				return nil, err
 			}
 		}
-		result, err := s.finishProviderResponse(ctx, sessionID, userID, provider, true)
+		result, err := s.finishProviderResponse(ctx, sessionID, userID, provider, true, false)
 		if err != nil {
 			return nil, err
 		}
@@ -745,6 +854,9 @@ func (s *PixlabSMSService) RedeemForMember(ctx context.Context, userID int64) (*
 
 func (s *PixlabSMSService) ResumeForMember(ctx context.Context, userID int64, sessionID string) (*PixlabSMSMemberResult, error) {
 	result, err := s.withActiveSession(ctx, userID, sessionID, "resume", true)
+	if errors.Is(err, ErrPixlabSMSSession) {
+		return s.loadTerminalMemberResult(ctx, userID, sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -753,6 +865,9 @@ func (s *PixlabSMSService) ResumeForMember(ctx context.Context, userID int64, se
 
 func (s *PixlabSMSService) CheckForMember(ctx context.Context, userID int64, sessionID string) (*PixlabSMSMemberResult, error) {
 	result, err := s.withActiveSession(ctx, userID, sessionID, "check", true)
+	if errors.Is(err, ErrPixlabSMSSession) {
+		return s.loadTerminalMemberResult(ctx, userID, sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -804,11 +919,19 @@ func (s *PixlabSMSService) CancelForMember(ctx context.Context, userID int64, se
 }
 
 func (s *PixlabSMSService) Resume(ctx context.Context, ownerUserID int64, sessionID string) (*PixlabSMSResult, error) {
-	return s.withActiveSession(ctx, ownerUserID, sessionID, "resume", false)
+	result, err := s.withActiveSession(ctx, ownerUserID, sessionID, "resume", false)
+	if errors.Is(err, ErrPixlabSMSSession) {
+		return s.loadTerminalResult(ctx, ownerUserID, sessionID, false)
+	}
+	return result, err
 }
 
 func (s *PixlabSMSService) Check(ctx context.Context, ownerUserID int64, sessionID string) (*PixlabSMSResult, error) {
-	return s.withActiveSession(ctx, ownerUserID, sessionID, "check", false)
+	result, err := s.withActiveSession(ctx, ownerUserID, sessionID, "check", false)
+	if errors.Is(err, ErrPixlabSMSSession) {
+		return s.loadTerminalResult(ctx, ownerUserID, sessionID, false)
+	}
+	return result, err
 }
 
 func (s *PixlabSMSService) Cancel(ctx context.Context, ownerUserID int64, sessionID string) (*PixlabSMSResult, error) {
@@ -827,7 +950,7 @@ func (s *PixlabSMSService) cancel(ctx context.Context, ownerUserID int64, sessio
 	lock.Lock()
 	defer lock.Unlock()
 
-	result, err := s.withActiveSessionLocked(ctx, ownerUserID, sessionID, "cancel", settleMemberFee)
+	result, err := s.withActiveSessionLocked(ctx, ownerUserID, sessionID, "cancel", settleMemberFee, false)
 	if err != nil {
 		return nil, err
 	}
@@ -844,7 +967,7 @@ func (s *PixlabSMSService) cancel(ctx context.Context, ownerUserID int64, sessio
 	// explicit release before the next redemption.
 	if !pixlabHasVerificationCode(result.Code) && pixlabTerminalStatus(result.Status, "") == "" {
 		if settleMemberFee {
-			if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementRelease); err != nil {
+			if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementRelease, nil); err != nil {
 				return nil, err
 			}
 		} else if err := s.releaseSession(ctx, sessionID, ownerUserID); err != nil {
@@ -898,6 +1021,10 @@ func (s *PixlabSMSService) ChangeNumber(ctx context.Context, ownerUserID int64, 
 }
 
 func (s *PixlabSMSService) withActiveSession(ctx context.Context, ownerUserID int64, sessionID, action string, settleMemberFee bool) (*PixlabSMSResult, error) {
+	return s.withActiveSessionMode(ctx, ownerUserID, sessionID, action, settleMemberFee, false)
+}
+
+func (s *PixlabSMSService) withActiveSessionMode(ctx context.Context, ownerUserID int64, sessionID, action string, settleMemberFee, persistTerminal bool) (*PixlabSMSResult, error) {
 	if ownerUserID <= 0 {
 		return nil, infraerrors.Unauthorized("SMS_OWNER_REQUIRED", "无法识别当前管理员")
 	}
@@ -908,44 +1035,45 @@ func (s *PixlabSMSService) withActiveSession(ctx context.Context, ownerUserID in
 	lock := s.sessionLock(sessionID)
 	lock.Lock()
 	defer lock.Unlock()
-	return s.withActiveSessionLocked(ctx, ownerUserID, sessionID, action, settleMemberFee)
+	return s.withActiveSessionLocked(ctx, ownerUserID, sessionID, action, settleMemberFee, persistTerminal)
 }
 
-func (s *PixlabSMSService) withActiveSessionLocked(ctx context.Context, ownerUserID int64, sessionID, action string, settleMemberFee bool) (*PixlabSMSResult, error) {
+func (s *PixlabSMSService) withActiveSessionLocked(ctx context.Context, ownerUserID int64, sessionID, action string, settleMemberFee, persistTerminal bool) (*PixlabSMSResult, error) {
 	var encryptedKey string
 	var consumedAt time.Time
 	err := s.db.QueryRowContext(ctx, `
-		SELECT encrypted_key, consumed_at
-		FROM xiass_sms_card_keys
-		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`, sessionID, ownerUserID).Scan(&encryptedKey, &consumedAt)
+		SELECT card.encrypted_key, card.consumed_at
+		FROM xiass_sms_card_keys AS card
+		WHERE card.session_id = $1 AND card.owner_user_id = $2 AND card.status = 'active'
+			AND EXISTS (
+				SELECT 1
+				FROM xiass_sms_member_charges AS charge
+				WHERE charge.session_id = card.session_id
+					AND charge.user_id = card.owner_user_id
+					AND charge.status = 'held'
+			) = $3`, sessionID, ownerUserID, settleMemberFee).Scan(&encryptedKey, &consumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrPixlabSMSSession
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load sms session: %w", err)
 	}
-	if !time.Now().Before(consumedAt.Add(PixlabSMSSessionValidity)) {
-		expired, err := s.expireSession(ctx, sessionID, ownerUserID, settleMemberFee)
-		if err != nil {
-			return nil, err
-		}
-		if expired {
-			queue, err := s.queueStatus(ctx, ownerUserID)
-			if err != nil {
-				return nil, err
-			}
-			return &PixlabSMSResult{Status: "EXPIRED", QueuedCount: queue.QueuedCount, ServerTime: time.Now().UTC()}, nil
-		}
-	}
 	key, err := s.encryptor.Decrypt(encryptedKey)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt sms session: %w", err)
 	}
+	if !time.Now().Before(consumedAt.Add(PixlabSMSSessionValidity)) {
+		return s.checkExpiredSessionLocked(ctx, sessionID, ownerUserID, key, settleMemberFee, persistTerminal)
+	}
 	provider, err := s.callProvider(ctx, action, key)
 	if err != nil {
+		if provider != nil && (pixlabProviderHasTrustedCode(provider) ||
+			(pixlabSuccess(provider.Success) && pixlabTerminalStatus(provider.Status, "") != "")) {
+			return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, settleMemberFee, persistTerminal)
+		}
 		if isPixlabCardUsageLimitError(err) {
 			if settleMemberFee {
-				if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementExhaust); err != nil {
+				if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementExhaust, nil); err != nil {
 					return nil, err
 				}
 			} else if err := s.exhaustSession(ctx, sessionID, ownerUserID); err != nil {
@@ -961,7 +1089,175 @@ func (s *PixlabSMSService) withActiveSessionLocked(ctx context.Context, ownerUse
 		// session active so the operator can refresh or cancel it later.
 		return nil, err
 	}
-	return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, settleMemberFee)
+	return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, settleMemberFee, persistTerminal)
+}
+
+// checkExpiredSessionLocked asks Pixlab once more before local expiry can
+// release a card. A late code is finalized and returned to the caller; a
+// successful no-code response confirms local expiry. Transient failures keep
+// the session active so the caller can retry.
+func (s *PixlabSMSService) checkExpiredSessionLocked(ctx context.Context, sessionID string, ownerUserID int64, key string, settleMemberFee, persistTerminal bool) (*PixlabSMSResult, error) {
+	provider, err := s.callProvider(ctx, "check", key)
+	if err != nil {
+		if isPixlabCardUsageLimitError(err) {
+			if settleMemberFee {
+				if settleErr := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementExhaust, nil); settleErr != nil {
+					return nil, settleErr
+				}
+			} else if exhaustErr := s.exhaustSession(ctx, sessionID, ownerUserID); exhaustErr != nil {
+				return nil, exhaustErr
+			}
+			queue, queueErr := s.queueStatus(ctx, ownerUserID)
+			if queueErr != nil {
+				return nil, queueErr
+			}
+			return &PixlabSMSResult{Status: "EXHAUSTED", QueuedCount: queue.QueuedCount, ServerTime: time.Now().UTC()}, nil
+		}
+		// An HTTP rejection can still carry Pixlab's code or explicit terminal
+		// state. A known "session is gone" message also confirms expiry; other
+		// failures remain retryable and keep the active session intact.
+		if provider == nil {
+			return nil, err
+		}
+		if pixlabProviderHasTrustedCode(provider) {
+			return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, settleMemberFee, persistTerminal)
+		}
+		trustedTerminalStatus := pixlabSuccess(provider.Success) && pixlabTerminalStatus(provider.Status, "") != ""
+		if !trustedTerminalStatus && !isPixlabTerminalSessionMessage(pixlabProviderMessage(provider)) {
+			return nil, err
+		}
+	}
+	if pixlabProviderHasTrustedCode(provider) {
+		return s.finishProviderResponse(ctx, sessionID, ownerUserID, provider, settleMemberFee, persistTerminal)
+	}
+	if _, err := s.expireSession(ctx, sessionID, ownerUserID, settleMemberFee); err != nil {
+		return nil, err
+	}
+	queue, err := s.queueStatus(ctx, ownerUserID)
+	if err != nil {
+		return nil, err
+	}
+	return &PixlabSMSResult{
+		Status:      "EXPIRED",
+		QueuedCount: queue.QueuedCount,
+		ServerTime:  time.Now().UTC(),
+	}, nil
+}
+
+func (s *PixlabSMSService) cleanupExpiredSessions(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM xiass_sms_terminal_results WHERE expires_at <= NOW()`); err != nil {
+		return fmt.Errorf("delete expired sms terminal results: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			card.session_id,
+			card.owner_user_id,
+			EXISTS (
+				SELECT 1
+				FROM xiass_sms_member_charges AS charge
+				WHERE charge.session_id = card.session_id
+					AND charge.user_id = card.owner_user_id
+					AND charge.status = 'held'
+			) AS member_session
+		FROM xiass_sms_card_keys AS card
+		WHERE card.status = 'active'
+			AND card.session_id IS NOT NULL
+			AND card.owner_user_id IS NOT NULL
+			AND card.consumed_at + ($1 * INTERVAL '1 second') <= NOW()
+			AND (card.cleanup_lease_until IS NULL OR card.cleanup_lease_until <= NOW())
+		ORDER BY card.cleanup_attempted_at NULLS FIRST, card.consumed_at, card.id
+		LIMIT 50`, int64(PixlabSMSSessionValidity/time.Second))
+	if err != nil {
+		return fmt.Errorf("load expired sms sessions: %w", err)
+	}
+	type expiredSession struct {
+		sessionID string
+		ownerID   int64
+		member    bool
+	}
+	sessions := make([]expiredSession, 0)
+	for rows.Next() {
+		var session expiredSession
+		if err := rows.Scan(&session.sessionID, &session.ownerID, &session.member); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan expired sms session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close expired sms sessions: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate expired sms sessions: %w", err)
+	}
+
+	var firstErr error
+	for _, session := range sessions {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		leaseToken := uuid.NewString()
+		leaseResult, err := s.db.ExecContext(ctx, `
+			UPDATE xiass_sms_card_keys
+			SET cleanup_attempted_at = NOW(),
+				cleanup_lease_token = $3,
+				cleanup_lease_until = NOW() + ($4 * INTERVAL '1 second'),
+				updated_at = NOW()
+			WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'
+				AND consumed_at + ($5 * INTERVAL '1 second') <= NOW()
+				AND (cleanup_lease_until IS NULL OR cleanup_lease_until <= NOW())`,
+			session.sessionID,
+			session.ownerID,
+			leaseToken,
+			int64(pixlabSMSCleanupLeaseTTL/time.Second),
+			int64(PixlabSMSSessionValidity/time.Second),
+		)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("mark expired sms cleanup attempt %s: %w", session.sessionID, err)
+			}
+			continue
+		}
+		acquired, err := leaseResult.RowsAffected()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("read expired sms cleanup lease %s: %w", session.sessionID, err)
+			}
+			continue
+		}
+		if acquired != 1 {
+			continue
+		}
+		sessionCtx, sessionCancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err = s.withActiveSessionMode(sessionCtx, session.ownerID, session.sessionID, "check", session.member, true)
+		sessionCancel()
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		releaseErr := s.releaseCleanupLease(releaseCtx, leaseToken)
+		releaseCancel()
+		if releaseErr != nil && firstErr == nil {
+			firstErr = fmt.Errorf("release expired sms cleanup lease %s: %w", session.sessionID, releaseErr)
+		}
+		if err == nil || errors.Is(err, ErrPixlabSMSSession) {
+			continue
+		}
+		// Provider/network failures preserve the active session. Continue with
+		// other expired rows and retry this one on the next cleanup tick.
+		if firstErr == nil {
+			firstErr = fmt.Errorf("finalize expired sms session %s: %w", session.sessionID, err)
+		}
+	}
+	return firstErr
+}
+
+func (s *PixlabSMSService) releaseCleanupLease(ctx context.Context, leaseToken string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE xiass_sms_card_keys
+		SET cleanup_lease_token = NULL, cleanup_lease_until = NULL, updated_at = NOW()
+		WHERE cleanup_lease_token = $1`, leaseToken)
+	if err != nil {
+		return fmt.Errorf("release sms cleanup lease: %w", err)
+	}
+	return nil
 }
 
 func (s *PixlabSMSService) sessionLock(sessionID string) *sync.Mutex {
@@ -970,14 +1266,22 @@ func (s *PixlabSMSService) sessionLock(sessionID string) *sync.Mutex {
 	return &s.sessionLocks[hash.Sum32()%uint32(len(s.sessionLocks))]
 }
 
-func (s *PixlabSMSService) finishProviderResponse(ctx context.Context, sessionID string, ownerUserID int64, provider *pixlabSMSProviderResponse, settleMemberFee bool) (*PixlabSMSResult, error) {
+func (s *PixlabSMSService) finishProviderResponse(ctx context.Context, sessionID string, ownerUserID int64, provider *pixlabSMSProviderResponse, settleMemberFee, persistTerminal bool) (*PixlabSMSResult, error) {
 	if provider == nil {
 		return nil, infraerrors.ServiceUnavailable("SMS_PROVIDER_INVALID_RESPONSE", "接码服务返回了无效数据")
 	}
 	responseSessionID := sessionID
-	if pixlabHasVerificationCode(provider.Code) {
-		if settleMemberFee {
-			if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementCapture); err != nil {
+	if pixlabProviderHasTrustedCode(provider) {
+		var encryptedResult *string
+		if persistTerminal {
+			encoded, err := s.encodeTerminalResult(provider)
+			if err != nil {
+				return nil, err
+			}
+			encryptedResult = &encoded
+		}
+		if settleMemberFee || persistTerminal {
+			if err := s.settleSession(ctx, sessionID, ownerUserID, settleMemberFee, pixlabSettlementCapture, encryptedResult); err != nil {
 				return nil, err
 			}
 		} else if err := s.finishSession(ctx, sessionID, ownerUserID); err != nil {
@@ -988,7 +1292,7 @@ func (s *PixlabSMSService) finishProviderResponse(ctx context.Context, sessionID
 		// Expiry, cancellation, and provider-side failures return a card to
 		// rotation until it has used all five permitted claims.
 		if settleMemberFee {
-			if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementRelease); err != nil {
+			if err := s.settleSession(ctx, sessionID, ownerUserID, true, pixlabSettlementRelease, nil); err != nil {
 				return nil, err
 			}
 		} else if err := s.releaseSession(ctx, sessionID, ownerUserID); err != nil {
@@ -1017,6 +1321,102 @@ func (s *PixlabSMSService) finishProviderResponse(ctx context.Context, sessionID
 		result.ExpiresAt = expiresAt
 	}
 	return result, nil
+}
+
+func (s *PixlabSMSService) encodeTerminalResult(provider *pixlabSMSProviderResponse) (string, error) {
+	if provider == nil || !pixlabProviderHasTrustedCode(provider) {
+		return "", ErrPixlabSMSSession
+	}
+	payload, err := json.Marshal(PixlabSMSResult{
+		Status:     "RECEIVED",
+		Number:     provider.Number,
+		Country:    provider.Country,
+		Code:       provider.Code,
+		ServerTime: time.Now().UTC(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode sms terminal result: %w", err)
+	}
+	encryptedPayload, err := s.encryptor.Encrypt(string(payload))
+	if err != nil {
+		return "", fmt.Errorf("encrypt sms terminal result: %w", err)
+	}
+	return encryptedPayload, nil
+}
+
+type pixlabSMSTerminalPrepare func(context.Context, *sql.Tx, *PixlabSMSResult) error
+
+func (s *PixlabSMSService) loadTerminalResult(ctx context.Context, ownerUserID int64, sessionID string, memberSession bool) (*PixlabSMSResult, error) {
+	return s.consumeTerminalResult(ctx, ownerUserID, sessionID, memberSession, nil)
+}
+
+func (s *PixlabSMSService) loadTerminalMemberResult(ctx context.Context, userID int64, sessionID string) (*PixlabSMSMemberResult, error) {
+	var prepared *PixlabSMSMemberResult
+	_, err := s.consumeTerminalResult(ctx, userID, sessionID, true, func(ctx context.Context, tx *sql.Tx, result *PixlabSMSResult) error {
+		memberResult, err := s.memberResultWithQueryer(ctx, tx, userID, sessionID, result)
+		if err != nil {
+			return err
+		}
+		prepared = memberResult
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return prepared, nil
+}
+
+func (s *PixlabSMSService) consumeTerminalResult(ctx context.Context, ownerUserID int64, sessionID string, memberSession bool, prepare pixlabSMSTerminalPrepare) (*PixlabSMSResult, error) {
+	if s == nil || s.db == nil || s.encryptor == nil || ownerUserID <= 0 {
+		return nil, ErrPixlabSMSSession
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || len(sessionID) > 64 {
+		return nil, ErrPixlabSMSSession
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin sms terminal result consumption: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var encryptedPayload string
+	err = tx.QueryRowContext(ctx, `
+		SELECT encrypted_payload
+		FROM xiass_sms_terminal_results
+		WHERE session_id = $1 AND owner_user_id = $2 AND member_session = $3
+			AND expires_at > NOW()
+		FOR UPDATE`, sessionID, ownerUserID, memberSession).Scan(&encryptedPayload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrPixlabSMSSession
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load sms terminal result: %w", err)
+	}
+	payload, err := s.encryptor.Decrypt(encryptedPayload)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt sms terminal result: %w", err)
+	}
+	var result PixlabSMSResult
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		return nil, fmt.Errorf("decode sms terminal result: %w", err)
+	}
+	result.SessionID = ""
+	result.ServerTime = time.Now().UTC()
+	if prepare != nil {
+		if err := prepare(ctx, tx, &result); err != nil {
+			return nil, err
+		}
+	}
+	if err := execExactlyOne(ctx, tx, `
+		DELETE FROM xiass_sms_terminal_results
+		WHERE session_id = $1 AND owner_user_id = $2 AND member_session = $3`, sessionID, ownerUserID, memberSession); err != nil {
+		return nil, fmt.Errorf("consume sms terminal result: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit sms terminal result consumption: %w", err)
+	}
+	return &result, nil
 }
 
 // syncRedeemedSessionStart stores Pixlab's authoritative UTC creation time.
@@ -1090,7 +1490,7 @@ const (
 
 // settleSession commits every state transition for one provider session in a
 // single transaction. Member charge state and card state can never diverge.
-func (s *PixlabSMSService) settleSession(ctx context.Context, sessionID string, ownerUserID int64, settleMemberFee bool, settlement pixlabSettlement) error {
+func (s *PixlabSMSService) settleSession(ctx context.Context, sessionID string, ownerUserID int64, settleMemberFee bool, settlement pixlabSettlement, encryptedTerminalResult *string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin sms session settlement: %w", err)
@@ -1099,6 +1499,19 @@ func (s *PixlabSMSService) settleSession(ctx context.Context, sessionID string, 
 	if settleMemberFee {
 		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, ownerUserID); err != nil {
 			return fmt.Errorf("lock member sms session settlement: %w", err)
+		}
+	}
+
+	if encryptedTerminalResult != nil {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO xiass_sms_terminal_results (
+				session_id, owner_user_id, member_session, encrypted_payload, expires_at
+			) VALUES ($1, $2, $3, $4, NOW() + ($5 * INTERVAL '1 second'))
+			ON CONFLICT (session_id) DO UPDATE SET
+				encrypted_payload = EXCLUDED.encrypted_payload,
+				expires_at = EXCLUDED.expires_at`,
+			sessionID, ownerUserID, settleMemberFee, *encryptedTerminalResult, int64(pixlabSMSTerminalResultTTL/time.Second)); err != nil {
+			return fmt.Errorf("store sms terminal result: %w", err)
 		}
 	}
 
@@ -1240,54 +1653,6 @@ func (s *PixlabSMSService) releaseSession(ctx context.Context, sessionID string,
 	}
 	if updated != 1 {
 		return ErrPixlabSMSSession
-	}
-	return nil
-}
-
-// releaseExpiredSessions clears only sessions beyond Pixlab's documented
-// number lifetime. Fresh sessions remain active across transient provider
-// failures, while held member charges are refunded before their card returns
-// to rotation.
-func (s *PixlabSMSService) releaseExpiredSessions(ctx context.Context, ownerUserID int64) error {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT card.session_id, card.owner_user_id
-		FROM xiass_sms_card_keys AS card
-		WHERE card.status = 'active'
-			AND card.session_id IS NOT NULL
-			AND card.owner_user_id IS NOT NULL
-			AND card.consumed_at + ($1 * INTERVAL '1 second') <= NOW()
-			AND ($2 = 0 OR card.owner_user_id = $2)
-		ORDER BY card.id`, int64(PixlabSMSSessionValidity/time.Second), ownerUserID)
-	if err != nil {
-		return fmt.Errorf("load expired sms sessions: %w", err)
-	}
-	type expiredSession struct {
-		sessionID string
-		ownerID   int64
-	}
-	expired := make([]expiredSession, 0)
-	for rows.Next() {
-		var session expiredSession
-		if err := rows.Scan(&session.sessionID, &session.ownerID); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("scan expired sms session: %w", err)
-		}
-		expired = append(expired, session)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close expired sms sessions: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate expired sms sessions: %w", err)
-	}
-	for _, session := range expired {
-		lock := s.sessionLock(session.sessionID)
-		lock.Lock()
-		_, expireErr := s.expireSession(ctx, session.sessionID, session.ownerID, true)
-		lock.Unlock()
-		if expireErr != nil {
-			return expireErr
-		}
 	}
 	return nil
 }
@@ -1448,6 +1813,7 @@ func (s *PixlabSMSService) claimMemberSession(ctx context.Context, userID int64)
 		UPDATE xiass_sms_card_keys AS card
 		SET status = 'active', owner_user_id = $1, session_id = $2,
 			consumed_at = NOW(), last_claimed_at = NOW(),
+			cleanup_attempted_at = NULL, cleanup_lease_token = NULL, cleanup_lease_until = NULL,
 			claim_count = card.claim_count + 1, updated_at = NOW()
 		FROM next_key
 		WHERE card.id = next_key.id
@@ -1483,12 +1849,20 @@ func (s *PixlabSMSService) claimMemberSession(ctx context.Context, userID int64)
 	return sessionID, encryptedKey, nil
 }
 
+type pixlabSMSQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (s *PixlabSMSService) memberResult(ctx context.Context, userID int64, sourceSessionID string, result *PixlabSMSResult) (*PixlabSMSMemberResult, error) {
+	return s.memberResultWithQueryer(ctx, s.db, userID, sourceSessionID, result)
+}
+
+func (s *PixlabSMSService) memberResultWithQueryer(ctx context.Context, queryer pixlabSMSQueryer, userID int64, sourceSessionID string, result *PixlabSMSResult) (*PixlabSMSMemberResult, error) {
 	if result == nil {
 		return nil, infraerrors.ServiceUnavailable("SMS_PROVIDER_INVALID_RESPONSE", "接码服务返回了无效数据")
 	}
 	var balance float64
-	if err := s.db.QueryRowContext(ctx, `
+	if err := queryer.QueryRowContext(ctx, `
 		SELECT balance FROM users WHERE id = $1 AND deleted_at IS NULL`, userID).Scan(&balance); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, infraerrors.NotFound("USER_NOT_FOUND", "用户不存在")
@@ -1497,7 +1871,7 @@ func (s *PixlabSMSService) memberResult(ctx context.Context, userID int64, sourc
 	}
 	chargeState := ""
 	feeAmount := 0.0
-	if err := s.db.QueryRowContext(ctx, `
+	if err := queryer.QueryRowContext(ctx, `
 		SELECT status, amount
 		FROM xiass_sms_member_charges
 		WHERE session_id = $1 AND user_id = $2`, sourceSessionID, userID).Scan(&chargeState, &feeAmount); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -1506,7 +1880,7 @@ func (s *PixlabSMSService) memberResult(ctx context.Context, userID int64, sourc
 	var actionAvailableAt *time.Time
 	if result.SessionID != "" {
 		var claimedAt time.Time
-		err := s.db.QueryRowContext(ctx, `
+		err := queryer.QueryRowContext(ctx, `
 			SELECT consumed_at
 			FROM xiass_sms_card_keys
 			WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`, result.SessionID, userID).Scan(&claimedAt)
@@ -1614,14 +1988,14 @@ func (s *PixlabSMSService) callProvider(ctx context.Context, action, cardKey str
 		if message := pixlabProviderMessage(provider); isPixlabCardUsageLimitMessage(message) {
 			return nil, infraerrors.BadRequest("SMS_PROVIDER_REJECTED", message)
 		}
-		return nil, infraerrors.ServiceUnavailable("SMS_PROVIDER_HTTP_ERROR", "接码服务请求失败，请稍后重试")
+		return provider, infraerrors.ServiceUnavailable("SMS_PROVIDER_HTTP_ERROR", "接码服务请求失败，请稍后重试")
 	}
 	if !pixlabSuccess(provider.Success) {
 		message := pixlabProviderMessage(provider)
 		if message == "" {
 			message = "接码服务未能完成该操作"
 		}
-		return nil, infraerrors.BadRequest("SMS_PROVIDER_REJECTED", message)
+		return provider, infraerrors.BadRequest("SMS_PROVIDER_REJECTED", message)
 	}
 	provider.Status = strings.ToUpper(strings.TrimSpace(provider.Status))
 	if provider.Status == "" {
@@ -1649,6 +2023,16 @@ func isPixlabCardUsageLimitMessage(raw string) bool {
 		strings.Contains(message, "单卡连续换号") ||
 		strings.Contains(message, "触发熔断") ||
 		strings.Contains(compact, "6次")
+}
+
+func isPixlabTerminalSessionMessage(raw string) bool {
+	message := strings.ToLower(strings.TrimSpace(raw))
+	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "").Replace(message)
+	return strings.Contains(message, "session is no longer available") ||
+		strings.Contains(message, "session expired") ||
+		strings.Contains(compact, "会话不存在") ||
+		strings.Contains(compact, "会话已过期") ||
+		strings.Contains(compact, "号码已失效")
 }
 
 func pixlabProviderMessage(provider *pixlabSMSProviderResponse) string {
@@ -1708,4 +2092,8 @@ func pixlabTerminalStatus(status, code string) string {
 func pixlabHasVerificationCode(code string) bool {
 	trimmed := strings.TrimSpace(code)
 	return trimmed != "" && trimmed != "--"
+}
+
+func pixlabProviderHasTrustedCode(provider *pixlabSMSProviderResponse) bool {
+	return provider != nil && pixlabSuccess(provider.Success) && pixlabHasVerificationCode(provider.Code)
 }

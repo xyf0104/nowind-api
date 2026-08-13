@@ -143,3 +143,4 @@ aicodex
 output/
 /restore-quarantine-*/
 /failed-restore-*/
+.codex-tmp/

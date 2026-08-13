@@ -711,7 +711,7 @@ describe('AccountUsageCell', () => {
       })
       .mockResolvedValueOnce({
         seven_day: {
-          utilization: 13,
+          utilization: 12.935,
           resets_at: '2099-03-13T12:00:00Z',
           remaining_seconds: 3500,
           window_stats: {
@@ -747,6 +747,48 @@ describe('AccountUsageCell', () => {
 
     expect(getUsage).toHaveBeenCalledTimes(2)
     expect(getUsage).toHaveBeenNthCalledWith(2, 2104, undefined, true)
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+  })
+
+  it('OpenAI OAuth 强制刷新失败时保留上一份完整周额度快照', async () => {
+    getUsage
+      .mockResolvedValueOnce({
+        seven_day: {
+          utilization: 13,
+          resets_at: '2099-03-13T12:00:00Z',
+          remaining_seconds: 3500,
+          window_stats: {
+            requests: 3464,
+            tokens: 426_000_000,
+            cost: 413.92,
+            standard_cost: 413.92,
+            user_cost: 96.09
+          }
+        }
+      })
+      .mockRejectedValueOnce(new Error('forced quota probe failed'))
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2106, platform: 'openai', type: 'oauth', extra: {} }),
+        manualRefreshToken: 0
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenNthCalledWith(2, 2106, undefined, true)
     expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
   })
 

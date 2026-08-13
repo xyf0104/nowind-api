@@ -24,6 +24,17 @@ func (r *accountUsageCodexProbeRepo) UpdateExtra(_ context.Context, _ int64, upd
 	return nil
 }
 
+func (r *accountUsageCodexProbeRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+	if r.updateExtraCh != nil {
+		copied := make(map[string]any, len(updates))
+		for k, v := range updates {
+			copied[k] = v
+		}
+		r.updateExtraCh <- copied
+	}
+	return true, nil
+}
+
 func (r *accountUsageCodexProbeRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	if r.rateLimitCh != nil {
 		r.rateLimitCh <- resetAt
@@ -149,10 +160,17 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *
 		rateLimitCh:   make(chan time.Time, 1),
 	}
 	svc := &AccountUsageService{accountRepo: repo}
-	svc.persistOpenAICodexProbeSnapshot(321, map[string]any{
-		"codex_7d_used_percent": 100.0,
-		"codex_7d_reset_at":     time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339),
+	applied, err := svc.persistOpenAICodexProbeSnapshot(321, map[string]any{
+		"codex_usage_updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"codex_7d_used_percent":  100.0,
+		"codex_7d_reset_at":      time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339),
 	})
+	if err != nil {
+		t.Fatalf("persistOpenAICodexProbeSnapshot() error = %v", err)
+	}
+	if !applied {
+		t.Fatal("persistOpenAICodexProbeSnapshot() applied = false, want true")
+	}
 
 	select {
 	case updates := <-repo.updateExtraCh:

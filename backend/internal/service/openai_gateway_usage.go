@@ -745,7 +745,7 @@ func ParseCodexRateLimitHeaders(headers http.Header) *OpenAICodexUsageSnapshot {
 		return nil
 	}
 
-	snapshot.UpdatedAt = time.Now().Format(time.RFC3339)
+	snapshot.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
 	return snapshot
 }
 
@@ -756,7 +756,7 @@ func codexSnapshotBaseTime(snapshot *OpenAICodexUsageSnapshot, fallback time.Tim
 	if snapshot.UpdatedAt == "" {
 		return fallback
 	}
-	base, err := time.Parse(time.RFC3339, snapshot.UpdatedAt)
+	base, err := time.Parse(time.RFC3339Nano, snapshot.UpdatedAt)
 	if err != nil {
 		return fallback
 	}
@@ -813,7 +813,7 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 	if snapshot.PrimaryOverSecondaryPercent != nil {
 		updates["codex_primary_over_secondary_percent"] = *snapshot.PrimaryOverSecondaryPercent
 	}
-	updates["codex_usage_updated_at"] = baseTime.Format(time.RFC3339)
+	updates["codex_usage_updated_at"] = baseTime.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
 
 	// 归一化到 5h/7d 规范字段
 	if normalized := snapshot.Normalize(); normalized != nil {
@@ -882,7 +882,9 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	go func() {
 		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
+		if _, err := persistOrderedOpenAICodexSnapshot(updateCtx, s.accountRepo, accountID, updates); err != nil {
+			logger.LegacyPrintf("service.openai_gateway", "persist ordered Codex snapshot failed: account_id=%d err=%v", accountID, err)
+		}
 	}()
 }
 

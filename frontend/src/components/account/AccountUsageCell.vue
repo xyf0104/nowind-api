@@ -795,11 +795,14 @@ const openAIWeeklyEstimateText = computed(() => {
   const sevenDay = usageInfo.value?.seven_day
   const utilization = Number(sevenDay?.utilization)
   const accountCost = Number(sevenDay?.window_stats?.cost)
-  if (!Number.isFinite(utilization) || utilization <= 0 || !Number.isFinite(accountCost) || accountCost <= 0) {
+  const displayedUtilization = Math.round(utilization)
+  if (!Number.isFinite(displayedUtilization) || displayedUtilization <= 0 || !Number.isFinite(accountCost) || accountCost <= 0) {
     return '-'
   }
 
-  const estimate = accountCost / (utilization / 100)
+  // Keep the estimate consistent with the integer percentage shown by
+  // UsageProgressBar (for example, 12.935% is displayed and calculated as 13%).
+  const estimate = accountCost / (displayedUtilization / 100)
   if (!Number.isFinite(estimate) || estimate <= 0) return '-'
 
   const rounded = Math.round(estimate)

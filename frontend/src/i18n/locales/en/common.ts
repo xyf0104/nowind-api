@@ -18,6 +18,7 @@ export default {
     update: 'Update',
     confirm: 'Confirm',
     reset: 'Reset',
+    retry: 'Retry',
     search: 'Search',
     filter: 'Filter',
     export: 'Export',

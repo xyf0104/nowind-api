@@ -165,6 +165,11 @@ func (r *openAI429SnapshotRepo) UpdateExtra(_ context.Context, _ int64, updates 
 	return nil
 }
 
+func (r *openAI429SnapshotRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+	r.updatedExtra = updates
+	return true, nil
+}
+
 func (r *openAI429SnapshotRepo) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	r.bulkUpdatedIDs = append([]int64(nil), ids...)
 	r.bulkUpdatedPayload = updates
