@@ -107,7 +107,7 @@
                   {{ formatTokens(item.total_tokens) }}
                 </td>
                 <td class="py-1.5 text-right text-green-600 dark:text-green-400">
-                  ${{ formatCost(item.actual_cost) }}
+                  {{ actualCostSymbol }}{{ formatCost(item.actual_cost) }}
                 </td>
                 <td class="py-1.5 text-right text-gray-400 dark:text-gray-500">
                   ${{ formatCost(item.cost) }}
@@ -118,6 +118,7 @@
                   <UserBreakdownSubTable
                     :items="breakdownItems"
                     :loading="breakdownLoading"
+                    :actual-cost-currency="actualCostCurrency"
                   />
                 </td>
               </tr>
@@ -161,6 +162,7 @@ const props = withDefaults(
     showMetricToggle?: boolean
     showSourceToggle?: boolean
     enableBreakdown?: boolean
+    actualCostCurrency?: 'rmb' | 'usd'
     startDate?: string
     endDate?: string
     filters?: Record<string, any>
@@ -174,7 +176,8 @@ const props = withDefaults(
     source: 'inbound',
     showMetricToggle: false,
     showSourceToggle: false,
-    enableBreakdown: true
+    enableBreakdown: true,
+    actualCostCurrency: 'rmb'
   }
 )
 
@@ -186,6 +189,8 @@ const emit = defineEmits<{
 const expandedKey = ref<string | null>(null)
 const breakdownItems = ref<UserBreakdownItem[]>([])
 const breakdownLoading = ref(false)
+const actualCostCurrency = computed(() => props.actualCostCurrency)
+const actualCostSymbol = computed(() => (actualCostCurrency.value === 'usd' ? '$' : '¥'))
 
 const toggleBreakdown = async (endpoint: string) => {
   if (expandedKey.value === endpoint) {
@@ -269,7 +274,7 @@ const doughnutOptions = computed(() => ({
           const total = context.dataset.data.reduce((a: number, b: number) => a + b, 0)
           const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'
           const formattedValue = props.metric === 'actual_cost'
-            ? `$${formatCost(value)}`
+            ? `${actualCostSymbol.value}${formatCost(value)}`
             : formatTokens(value)
           return `${context.label}: ${formattedValue} (${percentage}%)`
         }

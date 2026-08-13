@@ -6,13 +6,13 @@
     @close="emit('close')"
   >
     <div v-if="account" class="space-y-4">
-      <div class="flex flex-col gap-3 border-b border-gray-200 pb-4 dark:border-dark-700 xl:flex-row xl:items-start xl:justify-between">
+      <div class="flex flex-col gap-3 border-b border-gray-200 pb-4 text-center dark:border-dark-700 xl:flex-row xl:items-start xl:justify-between xl:text-left">
         <div class="min-w-0">
           <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ account.name }}</p>
           <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ rangeDescription }}</p>
         </div>
         <div class="flex min-w-0 flex-col gap-2">
-          <div class="flex flex-wrap items-center gap-1.5">
+          <div class="flex flex-wrap items-center justify-center gap-1.5 xl:justify-start">
             <button
               type="button"
               :class="rangeButtonClass(usingExactWindow)"
@@ -31,7 +31,7 @@
               {{ t(preset.labelKey) }}
             </button>
           </div>
-          <div class="flex flex-wrap items-end gap-2">
+          <div class="flex flex-wrap items-end justify-center gap-2 xl:justify-start">
             <label class="min-w-[180px] flex-1">
               <span class="mb-1 block text-[11px] text-gray-500 dark:text-gray-400">{{ t('usage.startTime') }}</span>
               <input
@@ -67,25 +67,25 @@
       </div>
 
       <div class="grid grid-cols-2 divide-x divide-gray-200 overflow-hidden rounded-md border border-gray-200 bg-gray-50 dark:divide-dark-600 dark:border-dark-600 dark:bg-dark-800 sm:grid-cols-4">
-        <div class="px-3 py-2.5">
+        <div class="px-3 py-2.5 text-center sm:text-left">
           <p class="text-[11px] text-gray-500 dark:text-gray-400">{{ t('usage.requestCount') }}</p>
           <p class="mt-0.5 text-sm font-semibold text-gray-900 dark:text-white">{{ formatInteger(summary.requests) }}</p>
         </div>
-        <div class="border-t border-gray-200 px-3 py-2.5 dark:border-dark-600 sm:border-t-0">
+        <div class="border-t border-gray-200 px-3 py-2.5 text-center dark:border-dark-600 sm:border-t-0 sm:text-left">
           <p class="text-[11px] text-gray-500 dark:text-gray-400">Token</p>
           <p class="mt-0.5 text-sm font-semibold text-gray-900 dark:text-white">{{ formatCompactNumber(summary.tokens) }}</p>
         </div>
-        <div class="border-t border-gray-200 px-3 py-2.5 dark:border-dark-600 sm:border-t-0">
+        <div class="border-t border-gray-200 px-3 py-2.5 text-center dark:border-dark-600 sm:border-t-0 sm:text-left">
           <p class="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">{{ t('usage.accountBilled') }}</p>
           <p class="mt-0.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">${{ formatMoney(summary.account_cost) }}</p>
         </div>
-        <div class="border-t border-gray-200 px-3 py-2.5 dark:border-dark-600 sm:border-t-0">
+        <div class="border-t border-gray-200 px-3 py-2.5 text-center dark:border-dark-600 sm:border-t-0 sm:text-left">
           <p class="text-[11px] font-medium text-amber-700 dark:text-amber-300">{{ t('usage.userBilled') }}</p>
           <p class="mt-0.5 text-sm font-semibold text-amber-700 dark:text-amber-300">¥{{ formatMoney(summary.user_cost) }}</p>
         </div>
       </div>
 
-      <div v-if="selectedUser" class="flex items-center gap-2 border-b border-gray-200 pb-3 dark:border-dark-700">
+      <div v-if="selectedUser" class="flex items-center gap-2 border-b border-gray-200 pb-3 text-center dark:border-dark-700 md:text-left">
         <button
           type="button"
           class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 dark:text-gray-400 dark:hover:bg-dark-700 dark:hover:text-white"
@@ -94,11 +94,11 @@
         >
           <Icon name="arrowLeft" size="sm" />
         </button>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ selectedUser.username || selectedUser.email }}</p>
           <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ selectedUser.email }}</p>
         </div>
-        <span class="ml-auto shrink-0 text-xs text-gray-500 dark:text-gray-400">{{ t('usage.modelBillingDetails') }}</span>
+        <span class="hidden shrink-0 text-xs text-gray-500 dark:text-gray-400 md:ml-auto md:inline">{{ t('usage.modelBillingDetails') }}</span>
       </div>
 
       <div v-if="loading" class="flex min-h-48 items-center justify-center">
@@ -124,7 +124,7 @@
           :key="rowKey(row)"
           type="button"
           :disabled="Boolean(selectedUser)"
-          class="grid min-h-14 w-full grid-cols-2 gap-x-3 gap-y-1 border-t border-gray-100 px-4 py-3 text-left transition-colors first:border-t-0 hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent dark:border-dark-700 dark:hover:bg-dark-800/60 dark:disabled:hover:bg-transparent md:grid-cols-[minmax(220px,1fr)_110px_120px_130px_130px] md:items-center md:gap-0"
+          class="grid min-h-14 w-full grid-cols-2 gap-x-3 gap-y-1 border-t border-gray-100 px-4 py-3 text-center transition-colors first:border-t-0 hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent dark:border-dark-700 dark:hover:bg-dark-800/60 dark:disabled:hover:bg-transparent md:grid-cols-[minmax(220px,1fr)_110px_120px_130px_130px] md:items-center md:gap-0 md:text-left"
           @click="openUser(row)"
         >
           <span class="col-span-2 min-w-0 md:col-span-1">
@@ -132,9 +132,9 @@
             <span v-if="!selectedUser" class="block truncate text-[11px] text-gray-500 dark:text-gray-400">{{ rowSubtitle(row) }}</span>
           </span>
           <span class="text-xs text-gray-600 dark:text-gray-300 md:text-right">{{ formatInteger(row.requests) }} {{ t('usage.requestCountUnit') }}</span>
-          <span class="text-right text-xs text-gray-500 dark:text-gray-400">{{ formatCompactNumber(row.tokens) }} Token</span>
+          <span class="text-center text-xs text-gray-500 dark:text-gray-400 md:text-right">{{ formatCompactNumber(row.tokens) }} Token</span>
           <span class="text-xs font-medium text-emerald-600 dark:text-emerald-400 md:text-right">{{ t('usage.accountBilled') }} ${{ formatMoney(row.account_cost) }}</span>
-          <span class="text-right text-xs font-medium text-amber-700 dark:text-amber-300">{{ t('usage.userBilled') }} ¥{{ formatMoney(row.user_cost) }}</span>
+          <span class="text-center text-xs font-medium text-amber-700 dark:text-amber-300 md:text-right">{{ t('usage.userBilled') }} ¥{{ formatMoney(row.user_cost) }}</span>
         </button>
       </div>
     </div>

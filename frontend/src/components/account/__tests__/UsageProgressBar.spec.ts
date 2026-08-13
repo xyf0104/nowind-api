@@ -168,6 +168,8 @@ describe('UsageProgressBar', () => {
     expect(wrapper.text()).toContain('usage.userBilled ¥0.75')
     expect(wrapper.text()).not.toContain('A $')
     expect(wrapper.text()).not.toContain('U $')
+    expect(wrapper.get('[data-test="window-stats-grid"]').classes()).toContain('grid-cols-2')
+    expect(wrapper.get('[data-test="window-stats-grid"]').classes()).toContain('sm:flex')
     expect(wrapper.get('[data-test="account-billing"]').classes()).toContain('text-gray-500')
     expect(wrapper.get('[data-test="user-billing"]').classes()).toContain('text-gray-500')
     await wrapper.get('[data-test="user-billing"]').trigger('click')

@@ -102,7 +102,7 @@ describe('AccountStatsModal', () => {
     getStats.mockResolvedValue(stats)
   })
 
-  it('renders usage costs and chart cost labels in USD', async () => {
+  it('renders account costs in USD and user deductions in RMB', async () => {
     const wrapper = mount(AccountStatsModal, {
       props: {
         show: false,
@@ -131,15 +131,18 @@ describe('AccountStatsModal', () => {
 
     expect(getStats).toHaveBeenCalledWith(42, 30)
     expect(wrapper.text()).toContain('$12.34')
-    expect(wrapper.text()).toContain('$9.87')
+    expect(wrapper.text()).toContain('¥9.87')
     expect(wrapper.text()).toContain('$20.00')
-    expect(wrapper.text()).not.toContain('¥')
 
     const options = (wrapper.vm as any).$?.setupState.lineChartOptions
     expect(options.plugins.tooltip.callbacks.label({
       dataset: { label: 'usage.accountBilled (USD)' },
       raw: 0.125
     })).toBe('usage.accountBilled (USD): $0.125')
+    expect(options.plugins.tooltip.callbacks.label({
+      dataset: { label: 'usage.userBilled (RMB)' },
+      raw: 0.125
+    })).toBe('usage.userBilled (RMB): ¥0.125')
     expect(options.scales.y.ticks.callback(0.125)).toBe('$0.125')
   })
 })

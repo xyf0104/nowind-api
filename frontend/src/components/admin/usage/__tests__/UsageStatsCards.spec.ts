@@ -82,13 +82,14 @@ describe('UsageStatsCards', () => {
     wrapper.unmount()
   })
 
-  it('shows usage, account, and standard costs in USD', () => {
+  it('shows user deduction in RMB while account and standard costs stay in USD', () => {
     const wrapper = mount(UsageStatsCards, {
       props: { stats },
       global: { stubs: { Icon: true, HelpTooltip: true } },
     })
 
-    expect(wrapper.text()).toContain('$0.0010')
-    expect(wrapper.text()).not.toContain('¥')
+    expect(wrapper.text()).toContain('¥0.0010')
+    expect(wrapper.text()).toContain('Cost $0.0010')
+    expect(wrapper.text()).toContain('Standard $0.0010')
   })
 })

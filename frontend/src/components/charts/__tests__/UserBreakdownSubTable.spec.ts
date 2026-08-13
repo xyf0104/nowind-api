@@ -14,7 +14,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 describe('UserBreakdownSubTable', () => {
-  it('renders user, account, and standard usage costs in USD', () => {
+  it('renders user deduction in RMB and account/standard usage costs in USD', () => {
     const wrapper = mount(UserBreakdownSubTable, {
       props: {
         items: [
@@ -40,9 +40,8 @@ describe('UserBreakdownSubTable', () => {
     })
 
     const row = wrapper.get('tbody tr')
-    expect(row.text()).toContain('$0.250')
+    expect(row.text()).toContain('¥0.250')
     expect(row.text()).toContain('$0.375')
     expect(row.text()).toContain('$0.500')
-    expect(row.text()).not.toContain('¥')
   })
 })

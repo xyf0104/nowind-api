@@ -21,7 +21,7 @@ vi.mock('vue-chartjs', () => ({
 }))
 
 describe('EndpointDistributionChart', () => {
-  it('renders endpoint costs and actual-cost tooltip values in USD', () => {
+  it('renders user deductions in RMB and standard costs in USD', () => {
     const wrapper = mount(EndpointDistributionChart, {
       props: {
         endpointStats: [
@@ -45,15 +45,14 @@ describe('EndpointDistributionChart', () => {
     })
 
     const row = wrapper.get('tbody tr')
-    expect(row.text()).toContain('$0.250')
+    expect(row.text()).toContain('¥0.250')
     expect(row.text()).toContain('$0.500')
-    expect(row.text()).not.toContain('¥')
 
     const options = (wrapper.vm as any).$?.setupState.doughnutOptions
     expect(options.plugins.tooltip.callbacks.label({
       label: '/v1/messages',
       raw: 0.25,
       dataset: { data: [0.25] }
-    })).toBe('/v1/messages: $0.250 (100.0%)')
+    })).toBe('/v1/messages: ¥0.250 (100.0%)')
   })
 })

@@ -69,13 +69,13 @@
               </div>
             </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white">
-              ¥{{ formatCost(stats.summary.total_cost) }}
+              ${{ formatCost(stats.summary.total_cost) }}
             </p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.stats.accumulatedCost') }}
               <span class="text-gray-400 dark:text-gray-500">
                 ({{ t('usage.userBilled') }}: ¥{{ formatCost(stats.summary.total_user_cost) }} ·
-                {{ t('admin.accounts.stats.standardCost') }}: ¥{{
+                {{ t('admin.accounts.stats.standardCost') }}: ${{
                   formatCost(stats.summary.total_standard_cost)
                 }})
               </span>
@@ -120,7 +120,7 @@
               </div>
             </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white">
-              ¥{{ formatCost(stats.summary.avg_daily_cost) }}
+              ${{ formatCost(stats.summary.avg_daily_cost) }}
             </p>
              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{
@@ -195,7 +195,7 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >¥{{ formatCost(stats.summary.today?.cost || 0) }}</span
+                  >${{ formatCost(stats.summary.today?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
@@ -250,7 +250,7 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-orange-600 dark:text-orange-400"
-                  >¥{{ formatCost(stats.summary.highest_cost_day?.cost || 0) }}</span
+                  >${{ formatCost(stats.summary.highest_cost_day?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
@@ -305,7 +305,7 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >¥{{ formatCost(stats.summary.highest_request_day?.cost || 0) }}</span
+                  >${{ formatCost(stats.summary.highest_request_day?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
@@ -415,7 +415,7 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >¥{{ formatCost(stats.summary.today?.cost || 0) }}</span
+                  >${{ formatCost(stats.summary.today?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
@@ -445,18 +445,24 @@
         </div>
 
         <!-- Model Distribution -->
-        <ModelDistributionChart :model-stats="stats.models" :loading="false" />
+        <ModelDistributionChart
+          :model-stats="stats.models"
+          :loading="false"
+          actual-cost-currency="usd"
+        />
 
         <EndpointDistributionChart
           :endpoint-stats="stats.endpoints || []"
           :loading="false"
           :title="t('usage.inboundEndpoint')"
+          actual-cost-currency="usd"
         />
 
         <EndpointDistributionChart
           :endpoint-stats="stats.upstream_endpoints || []"
           :loading="false"
           :title="t('usage.upstreamEndpoint')"
+          actual-cost-currency="usd"
         />
       </template>
 
@@ -559,7 +565,7 @@ const trendChartData = computed(() => {
         yAxisID: 'y'
       },
       {
-        label: t('usage.userBilled') + ' (USD)',
+        label: t('usage.userBilled') + ' (RMB)',
         data: stats.value.history.map((h) => h.user_cost),
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.08)',
@@ -607,8 +613,11 @@ const lineChartOptions = computed(() => ({
         label: (context: any) => {
           const label = context.dataset.label || ''
           const value = context.raw
-          if (label.includes('USD')) {
+          if (label.includes('RMB')) {
             return `${label}: ¥${formatCost(value)}`
+          }
+          if (label.includes('USD')) {
+            return `${label}: $${formatCost(value)}`
           }
           return `${label}: ${formatNumber(value)}`
         }
@@ -641,7 +650,7 @@ const lineChartOptions = computed(() => ({
         font: {
           size: 10
         },
-        callback: (value: string | number) => '¥' + formatCost(Number(value))
+        callback: (value: string | number) => '$' + formatCost(Number(value))
       },
       title: {
         display: true,

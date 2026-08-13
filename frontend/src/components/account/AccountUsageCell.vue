@@ -124,10 +124,10 @@
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
       <div
         v-if="hasOpenAIUsageFallback"
-        class="flex w-full max-w-full items-center justify-center gap-x-5 px-2"
+        class="flex w-full max-w-full flex-col items-stretch justify-center gap-y-2 sm:flex-row sm:items-center sm:gap-x-5 sm:gap-y-0 sm:px-2"
         data-test="openai-oauth-usage-layout"
       >
-        <div class="min-w-0 space-y-1" data-test="openai-oauth-original-usage">
+        <div class="min-w-0 w-full space-y-1 sm:w-auto" data-test="openai-oauth-original-usage">
           <UsageProgressBar
             v-if="openAIFiveHour"
             label="5h"
@@ -191,7 +191,7 @@
 
         <div
           v-if="usageInfo?.seven_day"
-          class="flex min-w-[70px] shrink-0 flex-col items-center justify-center gap-0.5 self-center border-l border-gray-200 py-1 pl-5 text-center text-[10px] dark:border-dark-700"
+          class="flex w-full min-w-0 shrink-0 flex-col items-center justify-center gap-0.5 self-center border-t border-gray-200 pt-2 text-center text-[10px] dark:border-dark-700 sm:w-auto sm:min-w-[70px] sm:border-l sm:border-t-0 sm:py-1 sm:pl-5 sm:pt-1"
           data-test="oauth-weekly-estimate"
           :title="t('usage.weeklyEstimateHint')"
         >

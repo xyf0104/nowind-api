@@ -206,6 +206,27 @@ describe('OAuthBillingBreakdownDialog', () => {
     expect(wrapper.text()).not.toContain('gpt-5.6')
   })
 
+  it('keeps the mobile billing summary and detail rows centered without changing desktop alignment', async () => {
+    getOAuthBillingBreakdown.mockResolvedValueOnce(usersResponse())
+
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const summaryCards = wrapper.findAll('.grid.grid-cols-2 > div')
+    expect(summaryCards).toHaveLength(4)
+    for (const card of summaryCards) {
+      expect(card.classes()).toContain('text-center')
+      expect(card.classes()).toContain('sm:text-left')
+    }
+
+    const detailRow = buttonContaining(wrapper, 'Alice')
+    expect(detailRow.classes()).toContain('text-center')
+    expect(detailRow.classes()).toContain('md:text-left')
+    expect(detailRow.findAll('span').some((span) => span.classes().includes('md:text-right'))).toBe(true)
+    expect(detailRow.text()).toContain('usage.accountBilled $8.25')
+    expect(detailRow.text()).toContain('usage.userBilled ¥10.50')
+  })
+
   it('supports an exact custom minute range', async () => {
     getOAuthBillingBreakdown
       .mockResolvedValueOnce(usersResponse())

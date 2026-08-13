@@ -209,12 +209,11 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('Account rate')
     expect(text).toContain('User billed')
     expect(text).toContain('Account billed')
-    expect(text).toContain('$0.092883')
+    expect(text).toContain('¥0.092883')
     expect(text).toContain('$5.0000 / 1M tokens')
     expect(text).toContain('$30.0000 / 1M tokens')
     expect(text).toContain('$0.069568')
     expect(text).toContain('A $0.092883')
-    expect(text).not.toContain('¥')
   })
 
   it('shows Grok video metadata without misclassifying the legacy image counter', async () => {

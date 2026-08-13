@@ -43,7 +43,7 @@
       <div v-if="props.stats.user_cost != null" class="flex items-center gap-1">
         <span class="text-gray-500 dark:text-gray-400">{{ t('usage.userBilled') }}:</span>
         <span class="font-medium text-gray-700 dark:text-gray-300">{{
-          formatCurrency(props.stats.user_cost, 'USD')
+          formatCurrency(props.stats.user_cost, 'CNY')
         }}</span>
       </div>
     </div>

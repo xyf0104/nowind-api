@@ -4,7 +4,9 @@ import { mount } from '@vue/test-utils'
 import AccountTodayStatsCell from '../AccountTodayStatsCell.vue'
 
 const { formatCurrency } = vi.hoisted(() => ({
-  formatCurrency: vi.fn((value: number, currency: string) => `$${value.toFixed(2)} ${currency}`)
+  formatCurrency: vi.fn((value: number, currency: string) =>
+    `${currency === 'CNY' ? '¥' : '$'}${value.toFixed(2)} ${currency}`
+  )
 }))
 
 vi.mock('@/utils/format', () => ({
@@ -23,7 +25,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 describe('AccountTodayStatsCell', () => {
-  it('formats account and user usage costs explicitly as USD', () => {
+  it('formats account usage in USD and user deductions in RMB', () => {
     const wrapper = mount(AccountTodayStatsCell, {
       props: {
         stats: {
@@ -36,9 +38,8 @@ describe('AccountTodayStatsCell', () => {
     })
 
     expect(formatCurrency).toHaveBeenCalledWith(1.25, 'USD')
-    expect(formatCurrency).toHaveBeenCalledWith(0.75, 'USD')
+    expect(formatCurrency).toHaveBeenCalledWith(0.75, 'CNY')
     expect(wrapper.text()).toContain('$1.25 USD')
-    expect(wrapper.text()).toContain('$0.75 USD')
-    expect(wrapper.text()).not.toContain('¥')
+    expect(wrapper.text()).toContain('¥0.75 CNY')
   })
 })

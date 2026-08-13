@@ -3,18 +3,21 @@
     <!-- Window stats row (above progress bar) -->
     <div
       v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
-      :class="[wide ? 'mb-1' : 'mb-0.5', 'flex items-center']"
+      :class="[wide ? 'mb-1' : 'mb-0.5', 'flex w-full items-center']"
     >
-      <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
-        <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+      <div
+        class="grid w-full grid-cols-2 items-center gap-1 text-[9px] text-gray-500 dark:text-gray-400 sm:flex sm:w-auto sm:gap-1.5"
+        data-test="window-stats-grid"
+      >
+        <span class="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-center dark:bg-gray-800">
           {{ formatExactRequests }} {{ t('usage.requestCountUnit') }}
         </span>
-        <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+        <span class="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-center dark:bg-gray-800">
           {{ formatTokens }}
         </span>
         <span
           :class="[
-            'rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800',
+            'whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-center dark:bg-gray-800',
             highlightBilling
               ? 'font-medium text-red-600 dark:text-red-400'
               : 'text-gray-500 dark:text-gray-400'
@@ -28,7 +31,7 @@
           v-if="windowStats?.user_cost != null"
           type="button"
           :class="[
-            'rounded bg-gray-100 px-1.5 py-0.5 transition-colors hover:bg-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-gray-800 dark:hover:bg-gray-700',
+            'whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-center transition-colors hover:bg-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-gray-800 dark:hover:bg-gray-700',
             highlightBilling
               ? 'font-medium text-amber-600 dark:text-amber-400'
               : 'text-gray-500 dark:text-gray-400'
@@ -43,7 +46,7 @@
     </div>
 
     <!-- Progress bar row -->
-    <div class="flex items-center gap-1">
+    <div class="flex items-center justify-center gap-1 sm:justify-start">
       <!-- Label badge (fixed width for alignment) -->
       <span
         :class="['w-[32px] shrink-0 rounded px-1 text-center text-[10px] font-medium', labelClass]"

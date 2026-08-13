@@ -23,7 +23,7 @@
             {{ formatTokens(user.total_tokens) }}
           </td>
           <td class="py-1 text-right text-green-600 dark:text-green-400">
-            ${{ formatCost(user.actual_cost) }}
+            {{ actualCostSymbol }}{{ formatCost(user.actual_cost) }}
           </td>
           <td v-if="showAccountCost" class="py-1 text-right text-orange-500 dark:text-orange-400">
             ${{ formatCost(user.account_cost) }}
@@ -49,12 +49,15 @@ const props = withDefaults(defineProps<{
   items: UserBreakdownItem[]
   loading?: boolean
   showAccountCost?: boolean
+  actualCostCurrency?: 'rmb' | 'usd'
 }>(), {
   loading: false,
   showAccountCost: true,
+  actualCostCurrency: 'rmb',
 })
 
 const showAccountCost = computed(() => props.showAccountCost)
+const actualCostSymbol = computed(() => (props.actualCostCurrency === 'usd' ? '$' : '¥'))
 
 const formatTokens = (value: number): string => {
   if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`

@@ -143,7 +143,7 @@
                   {{ formatTokens(model.total_tokens) }}
                 </td>
                 <td class="py-1.5 text-right text-green-600 dark:text-green-400">
-                  ${{ formatCost(model.actual_cost) }}
+                  {{ actualCostSymbol }}{{ formatCost(model.actual_cost) }}
                 </td>
                 <td v-if="showAccountCost" class="py-1.5 text-right text-orange-500 dark:text-orange-400">
                   ${{ formatCost(model.account_cost) }}
@@ -158,6 +158,7 @@
                     :items="breakdownItems"
                     :loading="breakdownLoading"
                     :show-account-cost="showAccountCost"
+                    :actual-cost-currency="actualCostCurrency"
                   />
                 </td>
               </tr>
@@ -226,7 +227,7 @@
                 {{ formatTokens(item.tokens) }}
               </td>
               <td class="py-1.5 text-right text-green-600 dark:text-green-400">
-                ${{ formatCost(item.actual_cost) }}
+                {{ actualCostSymbol }}{{ formatCost(item.actual_cost) }}
               </td>
             </tr>
           </tbody>
@@ -275,6 +276,7 @@ const props = withDefaults(defineProps<{
   showMetricToggle?: boolean
   enableBreakdown?: boolean
   showAccountCost?: boolean
+  actualCostCurrency?: 'rmb' | 'usd'
   rankingLoading?: boolean
   rankingError?: boolean
   startDate?: string
@@ -295,6 +297,7 @@ const props = withDefaults(defineProps<{
   showMetricToggle: false,
   enableBreakdown: true,
   showAccountCost: true,
+  actualCostCurrency: 'rmb',
   rankingLoading: false,
   rankingError: false
 })
@@ -336,6 +339,8 @@ const emit = defineEmits<{
 
 const enableRankingView = computed(() => props.enableRankingView)
 const showAccountCost = computed(() => props.showAccountCost)
+const actualCostCurrency = computed(() => props.actualCostCurrency)
+const actualCostSymbol = computed(() => (actualCostCurrency.value === 'usd' ? '$' : '¥'))
 const distributionColspan = computed(() => showAccountCost.value ? 6 : 5)
 const activeView = ref<'model_distribution' | 'spending_ranking'>('model_distribution')
 
@@ -451,7 +456,7 @@ const doughnutOptions = computed(() => ({
           const total = context.dataset.data.reduce((a: number, b: number) => a + b, 0)
           const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'
           const formattedValue = props.metric === 'actual_cost'
-            ? `$${formatCost(value)}`
+            ? `${actualCostSymbol.value}${formatCost(value)}`
             : formatTokens(value)
           return `${context.label}: ${formattedValue} (${percentage}%)`
         }
@@ -473,7 +478,7 @@ const rankingDoughnutOptions = computed(() => ({
           const value = context.raw as number
           const total = context.dataset.data.reduce((a: number, b: number) => a + b, 0)
           const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'
-          return `${context.label}: $${formatCost(value)} (${percentage}%)`
+          return `${context.label}: ${actualCostSymbol.value}${formatCost(value)} (${percentage}%)`
         }
       }
     }
