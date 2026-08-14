@@ -9,7 +9,7 @@ fragment; manually entered keys are posted only to the loopback helper.
 
 Before applying a configuration, the helper:
 
-1. Locates the user-level Codex `config.toml` and supports validated manual App selection when automatic discovery is unavailable.
+1. Locates the user-level Codex `config.toml` and supports validated manual App selection or a pasted App path when automatic discovery is unavailable.
 2. Validates the existing TOML.
 3. Stops Codex cleanly before changing configuration or conversation metadata.
 4. Creates a byte-for-byte configuration backup with a SHA-256 manifest.
@@ -48,6 +48,10 @@ Before applying a configuration, the helper:
     flashes during shutdown and launch verification.
 15. SQLite file URIs normalize Windows drive letters and percent-encode Unicode
     profile paths, including Codex homes under non-ASCII Windows user names.
+16. Windows discovery prioritizes the registered `OpenAI.Codex` AppX package
+    (whose current desktop process is `ChatGPT.exe`) and rejects Antigravity,
+    editor-extension, desktop-managed CLI, npm, Cargo, Scoop, and Chocolatey
+    `codex.exe` paths as desktop App candidates.
 
 Restore operations validate the selected backup and create another safety
 backup before replacing the current configuration. The local page also exposes

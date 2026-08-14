@@ -69,16 +69,23 @@ func selectCodexInstallation() (CodexInstallation, error) {
 	if err != nil {
 		return CodexInstallation{}, errors.New("no Codex App was selected")
 	}
-	appPath := strings.TrimRight(strings.TrimSpace(string(output)), "/")
+	return selectCodexInstallationPath(string(output))
+}
+
+func selectCodexInstallationPath(value string) (CodexInstallation, error) {
+	appPath := strings.TrimRight(strings.TrimSpace(value), "/")
+	if marker := strings.Index(appPath, ".app/"); marker >= 0 {
+		appPath = appPath[:marker+4]
+	}
 	if !isCodexBundle(appPath) {
-		return CodexInstallation{}, errors.New("the selected application is not Codex App")
+		return CodexInstallation{}, errors.New("所选路径不是 Codex App 或 ChatGPT App")
 	}
 	executable := filepath.Join(appPath, "Contents", "MacOS", "ChatGPT")
 	if _, err := os.Stat(executable); err != nil {
 		executable = filepath.Join(appPath, "Contents", "MacOS", "Codex")
 	}
 	if info, err := os.Stat(executable); err != nil || info.IsDir() {
-		return CodexInstallation{}, errors.New("the selected Codex App executable does not exist")
+		return CodexInstallation{}, errors.New("所选 Codex App 的可执行文件不存在")
 	}
 	return CodexInstallation{
 		AppPath:    appPath,

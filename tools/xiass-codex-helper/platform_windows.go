@@ -19,6 +19,12 @@ import (
 
 func detectCodexInstallation() CodexInstallation {
 	launchTargets := windowsCodexLaunchTargets()
+	// The Store build currently ships as OpenAI.Codex while its main process is
+	// ChatGPT.exe. Prefer its registered AppX target before inspecting generic
+	// codex.exe processes, which may belong to an editor extension or CLI.
+	if installation, ok := windowsStoreCodexInstallation(launchTargets); ok {
+		return installation
+	}
 	candidates := make([]string, 0)
 	for _, executable := range runningCodexExecutables() {
 		if isWindowsCodexExecutable(executable) {
@@ -134,8 +140,20 @@ func registeredCodexExecutables() []string {
 }
 
 func windowsCodexLaunchTargets() []string {
-	command := `$targets = @(); Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'OpenAI.Codex' -or $_.PackageFamilyName -match '(?i)^OpenAI\.Codex_' } | ForEach-Object { $package = $_; try { $manifest = $package | Get-AppxPackageManifest -ErrorAction Stop; foreach ($app in @($manifest.Package.Applications.Application)) { if ($app.Id) { $targets += $package.PackageFamilyName + '!' + $app.Id } } } catch {} }; if ($targets.Count -eq 0) { $targets += @(Get-StartApps -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'Codex' -and $_.AppID -match '(?i)^OpenAI\.Codex_' } | Select-Object -ExpandProperty AppID) }; $targets | Where-Object { $_ } | Sort-Object -Unique`
+	command := `$targets = @(); $packages = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'OpenAI.Codex' -or $_.PackageFamilyName -match '(?i)^OpenAI\.Codex_' }); foreach ($package in $packages) { $before = $targets.Count; try { $manifest = $package | Get-AppxPackageManifest -ErrorAction Stop; foreach ($app in @($manifest.Package.Applications.Application)) { if ($app.Id) { $targets += $package.PackageFamilyName + '!' + $app.Id } } } catch {}; if ($targets.Count -eq $before) { $targets += @(Get-StartApps -ErrorAction SilentlyContinue | Where-Object { $_.AppID -like ($package.PackageFamilyName + '!*') } | Select-Object -ExpandProperty AppID) }; if ($targets.Count -eq $before -and $package.PackageFamilyName) { $targets += $package.PackageFamilyName + '!App' } }; if ($targets.Count -eq 0) { $targets += @(Get-StartApps -ErrorAction SilentlyContinue | Where-Object { ($_.Name -ieq 'Codex' -or $_.Name -ieq 'ChatGPT') -and $_.AppID -match '(?i)^OpenAI\.Codex_' } | Select-Object -ExpandProperty AppID) }; $targets | Where-Object { $_ } | Sort-Object -Unique`
 	return filterOfficialWindowsCodexLaunchTargets(windowsPowerShellLines(command))
+}
+
+func windowsStoreCodexInstallation(launchTargets []string) (CodexInstallation, bool) {
+	for _, launchTarget := range filterOfficialWindowsCodexLaunchTargets(launchTargets) {
+		return CodexInstallation{
+			AppPath:      "Microsoft Store / WindowsApps / OpenAI Codex (ChatGPT.exe)",
+			LaunchTarget: launchTarget,
+			Running:      isWindowsCodexAppRunning(),
+			Found:        true,
+		}, true
+	}
+	return CodexInstallation{}, false
 }
 
 func filterOfficialWindowsCodexLaunchTargets(targets []string) []string {
@@ -162,12 +180,38 @@ func selectCodexInstallation() (CodexInstallation, error) {
 	if len(selected) == 0 {
 		return CodexInstallation{}, errors.New("no Codex App was selected")
 	}
-	executable := normalizeWindowsExecutable(selected[0])
+	return selectCodexInstallationPath(selected[0])
+}
+
+func selectCodexInstallationPath(value string) (CodexInstallation, error) {
+	executable := normalizeWindowsExecutable(value)
+	if executable == "" {
+		return CodexInstallation{}, errors.New("请输入 Codex App 或 ChatGPT.exe 的完整路径")
+	}
+	if isOfficialWindowsCodexPackagePath(executable) || isWindowsAppsRoot(executable) {
+		launchTargets := windowsCodexLaunchTargets()
+		if installation, ok := windowsStoreCodexInstallation(launchTargets); ok {
+			return installation, nil
+		}
+		return CodexInstallation{}, errors.New("已识别 WindowsApps 路径，但没有找到已注册的 OpenAI Codex 应用，请先从 Microsoft Store 安装或启动一次")
+	}
+	if info, err := os.Stat(executable); err == nil && info.IsDir() {
+		for _, relative := range []string{"ChatGPT.exe", "Codex.exe", filepath.Join("app", "ChatGPT.exe"), filepath.Join("app", "Codex.exe")} {
+			candidate := filepath.Join(executable, relative)
+			if candidateInfo, candidateErr := os.Stat(candidate); candidateErr == nil && !candidateInfo.IsDir() && isWindowsCodexExecutable(candidate) {
+				executable = candidate
+				break
+			}
+		}
+	}
 	if info, err := os.Stat(executable); err != nil || info.IsDir() {
-		return CodexInstallation{}, errors.New("the selected Codex App does not exist")
+		return CodexInstallation{}, errors.New("找不到该 Codex App 路径，请粘贴 Codex.exe、ChatGPT.exe 或 OpenAI.Codex 的 WindowsApps 路径")
 	}
 	if !isWindowsCodexExecutable(executable) {
-		return CodexInstallation{}, errors.New("the selected application is not Codex App")
+		if isWindowsEmbeddedCodexCLI(executable) {
+			return CodexInstallation{}, errors.New("该路径是 Antigravity、编辑器扩展或命令行内置的 Codex CLI，不是 Codex 桌面应用")
+		}
+		return CodexInstallation{}, errors.New("所选程序不是 Codex 桌面应用，请选择 Codex.exe 或 OpenAI.Codex 包内的 ChatGPT.exe")
 	}
 	if isWindowsPackagedExecutable(executable) {
 		launchTargets := windowsCodexLaunchTargets()
@@ -188,6 +232,16 @@ func selectCodexInstallation() (CodexInstallation, error) {
 		Running:    isWindowsExecutableRunning(executable),
 		Found:      true,
 	}, nil
+}
+
+func isOfficialWindowsCodexPackagePath(value string) bool {
+	lower := strings.ToLower(filepath.Clean(value))
+	return strings.Contains(lower, `\windowsapps\openai.codex_`)
+}
+
+func isWindowsAppsRoot(value string) bool {
+	lower := strings.TrimRight(strings.ToLower(filepath.Clean(value)), `\/`)
+	return strings.HasSuffix(lower, `\windowsapps`)
 }
 
 func appendWindowsCandidate(candidates *[]string, root string, parts ...string) {
@@ -476,6 +530,9 @@ func isWindowsCodexExecutable(executable string) bool {
 			return false
 		}
 	}
+	if isWindowsEmbeddedCodexCLI(executable) {
+		return false
+	}
 	if isWindowsPackagedExecutable(executable) {
 		return strings.Contains(lower, "openai.codex_") || strings.Contains(lower, `\codex_`)
 	}
@@ -494,6 +551,20 @@ func isWindowsCodexExecutable(executable string) bool {
 	command := `(Get-Item -LiteralPath '` + escapedPath + `').VersionInfo.ProductName`
 	output := windowsPowerShellLines(command)
 	return len(output) > 0 && strings.Contains(strings.ToLower(strings.Join(output, " ")), "codex")
+}
+
+func isWindowsEmbeddedCodexCLI(executable string) bool {
+	lower := strings.ToLower(filepath.Clean(executable))
+	if strings.Contains(lower, `\.antigravity-ide\`) || strings.Contains(lower, `\antigravity\`) {
+		return true
+	}
+	if strings.Contains(lower, `\extensions\`) && strings.Contains(lower, `openai.chatgpt-`) {
+		return true
+	}
+	if strings.Contains(lower, `\appdata\local\openai\codex\bin\`) {
+		return true
+	}
+	return strings.Contains(lower, `\bin\windows-`) && strings.EqualFold(filepath.Base(executable), "codex.exe")
 }
 
 func isWindowsPackagedExecutable(executable string) bool {

@@ -23,10 +23,27 @@ func TestWindowsCodexExecutableRejectsCommonCLIPaths(t *testing.T) {
 		`C:\Users\Test\scoop\apps\codex\current\codex.exe`,
 		`C:\Program Files\Codex++\Codex.exe`,
 		`C:\Users\Test\AppData\Local\Programs\CodexPlusPlus\Codex.exe`,
+		`C:\Users\Administrator\.antigravity-ide\extensions\openai.chatgpt-26.721.30844-win32-x64\bin\windows-x86_64\codex.exe`,
+		`C:\Users\Administrator\.vscode\extensions\openai.chatgpt-26.721.30844-win32-x64\bin\windows-x86_64\codex.exe`,
+		`C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\3cff67e9f778ef0e\codex.exe`,
 	} {
 		if isWindowsCodexExecutable(candidate) {
 			t.Fatalf("CLI path was detected as Codex App: %s", candidate)
 		}
+	}
+}
+
+func TestWindowsOfficialStorePackagePathRecognition(t *testing.T) {
+	for _, candidate := range []string{
+		`C:\Program Files\WindowsApps\OpenAI.Codex_26.810.4967.0_x64__2p2nqsd0c76g0`,
+		`C:\Program Files\WindowsApps\OpenAI.Codex_26.810.4967.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`,
+	} {
+		if !isOfficialWindowsCodexPackagePath(candidate) {
+			t.Fatalf("official Store package path was not recognized: %s", candidate)
+		}
+	}
+	if isOfficialWindowsCodexPackagePath(`C:\Users\Administrator\.antigravity-ide\extensions\openai.chatgpt-26.721.30844-win32-x64\bin\windows-x86_64\codex.exe`) {
+		t.Fatal("Antigravity extension was recognized as an official Store package")
 	}
 }
 
@@ -39,6 +56,22 @@ func TestFilterOfficialWindowsCodexLaunchTargetsRejectsCodexPlusPlus(t *testing.
 	})
 	if len(targets) != 1 || targets[0] != `OpenAI.Codex_2p2nqsd0c76g0!App` {
 		t.Fatalf("official launch targets = %v", targets)
+	}
+}
+
+func TestWindowsStoreCodexInstallationUsesOfficialLaunchTarget(t *testing.T) {
+	installation, ok := windowsStoreCodexInstallation([]string{
+		`BigPizzaV3.CodexPlusPlus_abcd1234!App`,
+		`OpenAI.Codex_2p2nqsd0c76g0!App`,
+	})
+	if !ok || !installation.Found {
+		t.Fatalf("Store Codex installation was not detected: %+v", installation)
+	}
+	if installation.LaunchTarget != `OpenAI.Codex_2p2nqsd0c76g0!App` {
+		t.Fatalf("Store launch target = %q", installation.LaunchTarget)
+	}
+	if installation.Executable != "" {
+		t.Fatalf("protected Store executable should not be launched directly: %q", installation.Executable)
 	}
 }
 

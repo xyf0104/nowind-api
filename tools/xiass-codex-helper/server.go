@@ -41,6 +41,7 @@ type helperServer struct {
 	shutdownOnce               sync.Once
 	detect                     func() CodexInstallation
 	selectApp                  func() (CodexInstallation, error)
+	selectAppPath              func(string) (CodexInstallation, error)
 	prepare                    func() error
 	stop                       func(CodexInstallation) error
 	start                      func(CodexInstallation) error
@@ -106,6 +107,7 @@ func newHelperServer(manager *ConfigManager, site string, state string) (*helper
 		shutdown:                   make(chan struct{}),
 		detect:                     detectCodexInstallation,
 		selectApp:                  selectCodexInstallation,
+		selectAppPath:              selectCodexInstallationPath,
 		prepare:                    prepareCodexOperation,
 		stop:                       stopCodex,
 		start:                      startCodex,
@@ -194,7 +196,22 @@ func (s *helperServer) handleSelectApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
 		return
 	}
-	installation, err := s.selectApp()
+	var request struct {
+		Path string `json:"path"`
+	}
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var (
+		installation CodexInstallation
+		err          error
+	)
+	if strings.TrimSpace(request.Path) != "" {
+		installation, err = s.selectAppPath(request.Path)
+	} else {
+		installation, err = s.selectApp()
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

@@ -266,6 +266,42 @@ func TestHelperServerSelectsCodexAppAtRuntime(t *testing.T) {
 	}
 }
 
+func TestHelperServerAcceptsPastedCodexAppPath(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation { return CodexInstallation{} }
+	var receivedPath string
+	helper.selectAppPath = func(path string) (CodexInstallation, error) {
+		receivedPath = path
+		return CodexInstallation{
+			AppPath:      "Microsoft Store / WindowsApps / OpenAI Codex (ChatGPT.exe)",
+			LaunchTarget: `OpenAI.Codex_2p2nqsd0c76g0!App`,
+			Found:        true,
+		}, nil
+	}
+	handler := helper.routes()
+
+	path := `C:\Program Files\WindowsApps\OpenAI.Codex_26.810.4967.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+	body, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := postHelperJSON(t, handler, "/api/select-app", helper.state, body, http.StatusOK)
+	if receivedPath != path {
+		t.Fatalf("pasted path = %q, want %q", receivedPath, path)
+	}
+	if ok, _ := selected["ok"].(bool); !ok {
+		t.Fatalf("select pasted app response = %+v", selected)
+	}
+	status := getJSON(t, handler, "/api/status")
+	codex, _ := status["codex"].(map[string]any)
+	if codex["launch_target"] != `OpenAI.Codex_2p2nqsd0c76g0!App` {
+		t.Fatalf("selected launch target = %v", codex["launch_target"])
+	}
+}
+
 func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	const state = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1"
 	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), "", state)
@@ -288,6 +324,9 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="manual-base-url"`) || !strings.Contains(body, `id="manual-api-key"`) {
 		t.Fatal("helper index does not expose manual API configuration")
+	}
+	if !strings.Contains(body, `id="codex-app-path"`) || !strings.Contains(body, `id="use-app-path-button"`) {
+		t.Fatal("helper index does not expose a pasteable Codex App path")
 	}
 	if !strings.Contains(body, `id="repair-history-button"`) || !strings.Contains(body, `id="history-backup-select"`) {
 		t.Fatal("helper index does not expose history compatibility repair and recovery controls")
