@@ -5,7 +5,11 @@
     width="extra-wide"
     @close="emit('close')"
   >
-    <div v-if="account" class="space-y-4">
+    <div
+      v-if="account"
+      class="min-w-0 max-w-full space-y-4 overflow-x-hidden touch-pan-y"
+      data-test="billing-dialog-content"
+    >
       <div class="flex flex-col gap-3 border-b border-gray-200 pb-4 text-center dark:border-dark-700 xl:flex-row xl:items-start xl:justify-between xl:text-left">
         <div class="min-w-0">
           <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ account.name }}</p>
@@ -31,32 +35,35 @@
               {{ t(preset.labelKey) }}
             </button>
           </div>
-          <div class="flex flex-wrap items-end justify-center gap-2 xl:justify-start">
-            <label class="min-w-[180px] flex-1">
+          <div
+            class="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_minmax(180px,1fr)_auto]"
+            data-test="billing-time-controls"
+          >
+            <label class="min-w-0">
               <span class="mb-1 block text-[11px] text-gray-500 dark:text-gray-400">{{ t('usage.startTime') }}</span>
               <input
                 v-model="startDateTime"
                 type="datetime-local"
                 step="60"
-                class="input h-9 w-full text-xs"
+                class="input h-9 min-w-0 max-w-full text-xs"
                 data-test="billing-start-time"
                 @keydown.enter="applyCustomRange"
               />
             </label>
-            <label class="min-w-[180px] flex-1">
+            <label class="min-w-0">
               <span class="mb-1 block text-[11px] text-gray-500 dark:text-gray-400">{{ t('usage.endTime') }}</span>
               <input
                 v-model="endDateTime"
                 type="datetime-local"
                 step="60"
-                class="input h-9 w-full text-xs"
+                class="input h-9 min-w-0 max-w-full text-xs"
                 data-test="billing-end-time"
                 @keydown.enter="applyCustomRange"
               />
             </label>
             <button
               type="button"
-              class="btn btn-primary h-9 shrink-0 px-4 text-xs"
+              class="btn btn-primary h-9 w-full px-4 text-xs sm:col-span-2 xl:col-span-1 xl:w-auto"
               data-test="billing-apply-time"
               @click="applyCustomRange"
             >

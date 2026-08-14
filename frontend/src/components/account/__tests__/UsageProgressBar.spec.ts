@@ -280,4 +280,44 @@ describe('UsageProgressBar', () => {
     expect(wrapper.get('.h-1\\.5 > div').attributes('style')).toContain('width: 6%')
   })
 
+  it('集成右侧信息时第一行通栏，右侧内容跨进度和操作两行', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 35,
+        color: 'emerald',
+        wide: true,
+        windowStats: {
+          requests: 9137,
+          tokens: 1_200_000_000,
+          cost: 1085.93,
+          standard_cost: 1085.93,
+          user_cost: 262.73
+        }
+      },
+      slots: {
+        footer: '<div data-test="footer-content">查询 / 次数 / 重置</div>',
+        aside: '<div data-test="aside-content">周额度约 $3,103</div>'
+      }
+    })
+
+    const layout = wrapper.get('[data-test="usage-window-integrated-layout"]')
+    expect(layout.classes()).toContain('grid-cols-1')
+    expect(layout.classes()).toContain('w-full')
+    expect(layout.classes()).toContain('sm:inline-grid')
+    expect(layout.classes()).toContain('sm:w-[18.5rem]')
+    expect(layout.classes()).toContain('sm:grid-cols-[auto_5rem]')
+    const stats = wrapper.get('[data-test="window-stats-grid"]')
+    expect(stats.classes()).toContain('grid-cols-2')
+    expect(stats.classes()).toContain('sm:grid-cols-[4rem_2rem_6rem_5.75rem]')
+    expect(wrapper.get('[data-test="usage-progress-row"]').classes()).toContain('gap-1')
+    expect(wrapper.get('[data-test="usage-progress-row"]').classes()).toContain('sm:row-start-2')
+    expect(wrapper.get('[data-test="usage-window-footer"]').classes()).toContain('sm:row-start-3')
+    const aside = wrapper.get('[data-test="usage-window-aside"]')
+    expect(aside.classes()).toContain('border-t')
+    expect(aside.classes()).toContain('sm:border-t-0')
+    expect(aside.classes()).toContain('sm:row-start-2')
+    expect(aside.classes()).toContain('sm:row-span-2')
+  })
+
 })

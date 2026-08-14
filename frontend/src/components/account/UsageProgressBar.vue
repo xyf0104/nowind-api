@@ -1,12 +1,27 @@
 <template>
-  <div>
+  <div
+    :class="[
+      hasIntegratedAside
+        ? 'grid w-full max-w-full grid-cols-1 items-center gap-y-1 sm:inline-grid sm:w-[18.5rem] sm:grid-cols-[auto_5rem] sm:gap-x-3'
+        : ''
+    ]"
+    :data-test="hasIntegratedAside ? 'usage-window-integrated-layout' : undefined"
+  >
     <!-- Window stats row (above progress bar) -->
     <div
       v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
-      :class="[wide ? 'mb-1' : 'mb-0.5', 'flex w-full items-center']"
+      :class="[
+        hasIntegratedAside ? 'mb-0 sm:col-span-2' : wide ? 'mb-1' : 'mb-0.5',
+        'flex w-full items-center'
+      ]"
     >
       <div
-        class="grid w-full grid-cols-2 items-center gap-1 text-[9px] text-gray-500 dark:text-gray-400 sm:flex sm:w-auto sm:gap-1.5"
+        :class="[
+          'grid w-full items-center text-[9px] text-gray-500 dark:text-gray-400',
+          wide
+            ? 'grid-cols-2 gap-1 sm:grid-cols-[4rem_2rem_6rem_5.75rem]'
+            : 'grid-cols-2 gap-1 sm:flex sm:w-auto sm:gap-1.5'
+        ]"
         data-test="window-stats-grid"
       >
         <span class="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 text-center dark:bg-gray-800">
@@ -46,7 +61,17 @@
     </div>
 
     <!-- Progress bar row -->
-    <div class="flex items-center justify-center gap-1 sm:justify-start">
+    <div
+      :class="[
+        'flex items-center justify-center gap-1 sm:justify-start',
+        hasIntegratedAside
+          ? hasWindowStats
+            ? 'sm:col-start-1 sm:row-start-2'
+            : 'sm:col-start-1 sm:row-start-1'
+          : ''
+      ]"
+      data-test="usage-progress-row"
+    >
       <!-- Label badge (fixed width for alignment) -->
       <span
         :class="['w-[32px] shrink-0 rounded px-1 text-center text-[10px] font-medium', labelClass]"
@@ -77,11 +102,33 @@
         {{ formatResetTime }}
       </span>
     </div>
+
+    <div
+      v-if="$slots.footer"
+      :class="[
+        'min-w-0 sm:col-start-1',
+        hasWindowStats ? 'sm:row-start-3' : 'sm:row-start-2'
+      ]"
+      data-test="usage-window-footer"
+    >
+      <slot name="footer" />
+    </div>
+
+    <div
+      v-if="$slots.aside"
+      :class="[
+        'flex min-h-0 min-w-0 items-center justify-center overflow-hidden border-t border-gray-200 pt-1.5 dark:border-dark-700 sm:col-start-2 sm:h-full sm:border-t-0 sm:pt-0',
+        hasWindowStats ? 'sm:row-start-2 sm:row-span-2' : 'sm:row-start-1 sm:row-span-2'
+      ]"
+      data-test="usage-window-aside"
+    >
+      <slot name="aside" />
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, useSlots, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import type { WindowStats } from '@/types'
@@ -104,6 +151,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const slots = useSlots()
+
+const hasIntegratedAside = computed(() => Boolean(slots.footer && slots.aside))
+const hasWindowStats = computed(() => Boolean(
+  props.windowStats && (props.windowStats.requests > 0 || props.windowStats.tokens > 0)
+))
 
 // Reactive clock for countdown — only runs when a reset time is shown,
 // to avoid creating many idle timers across large account lists.

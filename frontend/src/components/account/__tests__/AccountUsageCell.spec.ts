@@ -58,16 +58,19 @@ const billingUsageProgressBarStub = {
   props: ['label', 'utilization', 'resetsAt', 'windowStats', 'highlightBilling', 'wide'],
   emits: ['open-billing-details'],
   template: `
-    <button
-      type="button"
-      class="usage-bar"
-      :data-window="label"
-      :data-highlight-billing="String(highlightBilling)"
-      :data-wide="String(wide)"
-      @click="$emit('open-billing-details')"
-    >
-      {{ label }}|{{ utilization }}|{{ windowStats?.cost }}
-    </button>
+    <div class="usage-bar">
+      <button
+        type="button"
+        :data-window="label"
+        :data-highlight-billing="String(highlightBilling)"
+        :data-wide="String(wide)"
+        @click="$emit('open-billing-details')"
+      >
+        {{ label }}|{{ utilization }}|{{ windowStats?.cost }}
+      </button>
+      <div data-test="stub-footer"><slot name="footer" /></div>
+      <div data-test="stub-aside"><slot name="aside" /></div>
+    </div>
   `
 }
 
@@ -632,7 +635,7 @@ describe('AccountUsageCell', () => {
   expect(wrapper.text()).toContain('7d|100|106540000')
   })
 
-  it('OpenAI OAuth 保留原版左侧用量布局并在右侧显示周额度', async () => {
+  it('OpenAI OAuth 保留原版用量布局并让周额度跨第二、三行显示', async () => {
     getUsage.mockResolvedValue({
       five_hour: null,
       seven_day: {
@@ -672,21 +675,20 @@ describe('AccountUsageCell', () => {
     const originalUsage = wrapper.get('[data-test="openai-oauth-original-usage"]')
     expect(originalUsage.classes()).toContain('space-y-1')
     const usageLayout = wrapper.get('[data-test="openai-oauth-usage-layout"]')
-    expect(usageLayout.classes()).toContain('w-full')
-    expect(usageLayout.classes()).toContain('justify-center')
-    expect(usageLayout.classes()).toContain('flex-col')
-    expect(usageLayout.classes()).toContain('sm:flex-row')
-    expect(usageLayout.classes()).toContain('sm:px-2')
+    expect(usageLayout.classes()).toContain('inline-flex')
+    expect(usageLayout.classes()).toContain('max-w-full')
+    expect(usageLayout.classes()).not.toContain('w-[32rem]')
     expect(wrapper.get('[data-window="7d"]').attributes('data-wide')).toBe('true')
     const estimate = wrapper.get('[data-test="oauth-weekly-estimate"]')
-    expect(estimate.classes()).toContain('flex-col')
+    expect(estimate.classes()).toContain('flex-row')
+    expect(estimate.classes()).toContain('sm:flex-col')
     expect(estimate.classes()).toContain('items-center')
     expect(estimate.classes()).toContain('text-center')
     expect(estimate.classes()).toContain('w-full')
-    expect(estimate.classes()).toContain('border-t')
-    expect(estimate.classes()).toContain('sm:border-l')
-    expect(estimate.classes()).toContain('sm:border-t-0')
-    expect(estimate.classes()).not.toContain('min-w-[116px]')
+    expect(estimate.classes()).toContain('overflow-hidden')
+    expect(estimate.classes()).toContain('whitespace-nowrap')
+    expect(wrapper.get('[data-test="stub-footer"]').findComponent({ name: 'OpenAIQuotaResetCell' }).exists()).toBe(true)
+    expect(wrapper.get('[data-test="stub-aside"]').find('[data-test="oauth-weekly-estimate"]').exists()).toBe(true)
     expect(estimate.text()).toContain('usage.weeklyEstimate')
     expect(estimate.text()).toContain('$2,977')
     expect(estimate.get('span:last-child').classes()).toContain('text-emerald-600')

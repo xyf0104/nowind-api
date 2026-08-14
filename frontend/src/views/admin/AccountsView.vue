@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <TablePageLayout>
+    <TablePageLayout class="accounts-page">
       <template #filters>
         <div class="flex flex-wrap-reverse items-start justify-between gap-3">
           <AccountTableFilters
@@ -2328,5 +2328,24 @@ onUnmounted(() => {
 
 .account-tools-menu-icon {
   @apply inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md;
+}
+
+@media (max-width: 767px) {
+  .accounts-page {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+    overscroll-behavior-x: none;
+    touch-action: pan-y;
+  }
+
+  .accounts-page :deep(.layout-section-scrollable),
+  .accounts-page :deep(.table-scroll-container),
+  .accounts-page :deep([data-field='usage']),
+  .accounts-page :deep([data-field='usage'] > div) {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
 }
 </style>

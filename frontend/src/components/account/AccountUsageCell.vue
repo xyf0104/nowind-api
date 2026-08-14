@@ -124,10 +124,10 @@
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
       <div
         v-if="hasOpenAIUsageFallback"
-        class="flex w-full max-w-full flex-col items-stretch justify-center gap-y-2 sm:flex-row sm:items-center sm:gap-x-5 sm:gap-y-0 sm:px-2"
+        class="inline-flex max-w-full"
         data-test="openai-oauth-usage-layout"
       >
-        <div class="min-w-0 w-full space-y-1 sm:w-auto" data-test="openai-oauth-original-usage">
+        <div class="min-w-0 space-y-1" data-test="openai-oauth-original-usage">
           <UsageProgressBar
             v-if="openAIFiveHour"
             label="5h"
@@ -151,13 +151,63 @@
             :wide="true"
             color="emerald"
             @open-billing-details="openBillingDetails('7d', usageInfo.seven_day.resets_at, 7 * 24 * 60 * 60 * 1000)"
-          />
-          <!--
-            Upstream codex /wham/usage quota query + reset. The local active-sampling
-            refresh button is rendered via the pre-actions slot so the user sees a
-            single row of related buttons instead of two stacked rows.
-          -->
+          >
+            <template #footer>
+              <!--
+                Upstream codex /wham/usage quota query + reset. The local active-sampling
+                refresh button is rendered via the pre-actions slot so the user sees a
+                single row of related buttons instead of two stacked rows.
+              -->
+              <OpenAIQuotaResetCell
+                :account="account"
+                :spread-actions="true"
+                @account-updated="handleQuotaResetAccountUpdated"
+              >
+                <template #pre-actions>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                    :disabled="activeQueryLoading"
+                    @click="loadActiveUsage"
+                  >
+                    <svg
+                      class="h-2.5 w-2.5"
+                      :class="{ 'animate-spin': activeQueryLoading }"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                      />
+                    </svg>
+                    {{ t('admin.accounts.usageWindow.activeQuery') }}
+                  </button>
+                </template>
+              </OpenAIQuotaResetCell>
+            </template>
+
+            <template #aside>
+              <div
+                class="flex h-full max-h-full w-full min-w-0 flex-row items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-center text-[10px] leading-tight sm:flex-col sm:gap-0.5"
+                data-test="oauth-weekly-estimate"
+                :title="t('usage.weeklyEstimateHint')"
+              >
+                <span class="max-w-full whitespace-nowrap font-medium text-gray-800 dark:text-white">
+                  {{ t('usage.weeklyEstimate') }}
+                </span>
+                <span class="max-w-full whitespace-nowrap text-xs font-semibold leading-none text-emerald-600 dark:text-emerald-400">
+                  {{ openAIWeeklyEstimateText }}
+                </span>
+              </div>
+            </template>
+          </UsageProgressBar>
+
           <OpenAIQuotaResetCell
+            v-else
             :account="account"
             :spread-actions="true"
             @account-updated="handleQuotaResetAccountUpdated"
@@ -187,20 +237,6 @@
               </button>
             </template>
           </OpenAIQuotaResetCell>
-        </div>
-
-        <div
-          v-if="usageInfo?.seven_day"
-          class="flex w-full min-w-0 shrink-0 flex-col items-center justify-center gap-0.5 self-center border-t border-gray-200 pt-2 text-center text-[10px] dark:border-dark-700 sm:w-auto sm:min-w-[70px] sm:border-l sm:border-t-0 sm:py-1 sm:pl-5 sm:pt-1"
-          data-test="oauth-weekly-estimate"
-          :title="t('usage.weeklyEstimateHint')"
-        >
-          <span class="whitespace-nowrap font-medium text-gray-800 dark:text-white">
-            {{ t('usage.weeklyEstimate') }}
-          </span>
-          <span class="whitespace-nowrap text-xs font-semibold leading-none text-emerald-600 dark:text-emerald-400">
-            {{ openAIWeeklyEstimateText }}
-          </span>
         </div>
       </div>
       <div v-else-if="loading" class="space-y-1.5">

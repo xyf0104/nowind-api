@@ -227,6 +227,40 @@ describe('OAuthBillingBreakdownDialog', () => {
     expect(detailRow.text()).toContain('usage.userBilled ¥10.50')
   })
 
+  it('stacks minute filters on phones and prevents horizontal modal scrolling', async () => {
+    getOAuthBillingBreakdown.mockResolvedValueOnce(usersResponse())
+
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const content = wrapper.get('[data-test="billing-dialog-content"]')
+    expect(content.classes()).toEqual(expect.arrayContaining([
+      'min-w-0',
+      'max-w-full',
+      'overflow-x-hidden',
+      'touch-pan-y'
+    ]))
+
+    const controls = wrapper.get('[data-test="billing-time-controls"]')
+    expect(controls.classes()).toEqual(expect.arrayContaining([
+      'grid-cols-1',
+      'sm:grid-cols-2',
+      'xl:grid-cols-[minmax(180px,1fr)_minmax(180px,1fr)_auto]'
+    ]))
+    for (const label of controls.findAll('label')) {
+      expect(label.classes()).toContain('min-w-0')
+    }
+    for (const input of controls.findAll('input')) {
+      expect(input.classes()).toEqual(expect.arrayContaining(['min-w-0', 'max-w-full']))
+    }
+    expect(wrapper.get('[data-test="billing-apply-time"]').classes()).toEqual(expect.arrayContaining([
+      'w-full',
+      'sm:col-span-2',
+      'xl:col-span-1',
+      'xl:w-auto'
+    ]))
+  })
+
   it('supports an exact custom minute range', async () => {
     getOAuthBillingBreakdown
       .mockResolvedValueOnce(usersResponse())
