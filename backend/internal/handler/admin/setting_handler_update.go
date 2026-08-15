@@ -525,6 +525,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
+	// 全局关闭 TOTP 会把所有已启用 TOTP 的账号降级为单因子登录，因此 true→false
+	// 必须无条件要求当前管理员会话已有 step-up 授权。字段省略时保持旧值且不触发。
+	if _, sent := sentFields["totp_enabled"]; sent && previousSettings.TotpEnabled && !req.TotpEnabled {
+		if !middleware.EnforceStepUpAlways(c, h.totpService, h.userService) {
+			return
+		}
+	}
 
 	// 验证参数
 	if req.DefaultConcurrency < 1 {

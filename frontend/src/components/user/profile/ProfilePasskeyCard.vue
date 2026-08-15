@@ -130,12 +130,23 @@
     </div>
 
     <!-- 删除确认：吊销凭据需验证当前密码，防止被窃会话静默移除 Passkey -->
-    <div v-if="deleteTarget" class="fixed inset-0 z-50 overflow-y-auto">
-      <div class="flex min-h-full items-center justify-center p-4">
-        <div class="fixed inset-0 bg-black/50 transition-opacity" @click="closeDeleteDialog"></div>
-        <div
-          class="relative w-full max-w-md transform rounded-xl bg-white p-6 shadow-xl transition-all dark:bg-dark-800"
-        >
+    <Teleport to="body">
+      <div
+        v-if="deleteTarget"
+        class="security-dialog-overlay fixed inset-0 z-[100000200] overflow-y-auto"
+        data-testid="passkey-delete-dialog"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div class="flex min-h-full items-center justify-center p-4">
+          <div
+            class="fixed inset-0 bg-black/50 transition-opacity"
+            aria-hidden="true"
+            @click="closeDeleteDialog"
+          ></div>
+          <div
+            class="security-dialog-surface relative w-full max-w-md transform rounded-xl bg-white p-6 shadow-xl transition-all dark:bg-dark-800"
+          >
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
             {{ t('profile.passkey.deleteTitle') }}
           </h3>
@@ -170,9 +181,10 @@
               </button>
             </div>
           </form>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 

@@ -58,21 +58,18 @@ main() {
     echo "=========================================="
     echo ""
 
+    # Refuse to prepare over an existing or partially prepared deployment. In
+    # particular, never replace an existing .env and its installation secrets.
+    if [ -e ".env" ] || [ -L ".env" ] || [ -e "docker-compose.yml" ] || [ -L "docker-compose.yml" ]; then
+        print_error "Existing deployment files detected in the current directory."
+        print_info "Use an empty directory or update the existing deployment without regenerating .env."
+        exit 1
+    fi
+
     # Check if openssl is available
     if ! command_exists openssl; then
         print_error "openssl is not installed. Please install openssl first."
         exit 1
-    fi
-
-    # Check if deployment already exists
-    if [ -f "docker-compose.yml" ] && [ -f ".env" ]; then
-        print_warning "Deployment files already exist in current directory."
-        read -p "Overwrite existing files? (y/N): " -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Cancelled."
-            exit 0
-        fi
     fi
 
     # Download docker-compose.local.yml and save as docker-compose.yml

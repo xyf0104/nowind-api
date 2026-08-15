@@ -357,4 +357,25 @@ describe('DataTable', () => {
 
     expect(wrapper.emitted('update:selectedKeys')?.at(-1)?.[0]).toEqual([99, 1, 2])
   })
+
+  it('activates clickable mobile rows with Enter and Space', async () => {
+    stubMobileMatchMedia()
+    const row = { id: 1, name: 'One' }
+    const wrapper = mount(DataTable, {
+      props: {
+        columns: [{ key: 'name', label: 'Name' }],
+        data: [row],
+        rowKey: 'id',
+        clickableRows: true
+      }
+    })
+
+    const card = wrapper.get('[role="button"]')
+    expect(card.attributes('tabindex')).toBe('0')
+
+    await card.trigger('keydown', { key: 'Enter' })
+    await card.trigger('keydown', { key: ' ' })
+
+    expect(wrapper.emitted('rowClick')).toEqual([[row], [row]])
+  })
 })

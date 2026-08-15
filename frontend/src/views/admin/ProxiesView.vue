@@ -162,30 +162,19 @@
           <template #cell-address="{ row }">
             <div class="flex items-center gap-1.5">
               <code class="code text-xs">{{ row.host }}:{{ row.port }}</code>
-              <div class="relative">
+              <div>
                 <button
                   type="button"
-                  class="rounded p-0.5 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400"
+                  class="copy-format-menu-trigger rounded p-0.5 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400"
                   :title="t('admin.proxies.copyProxyUrl')"
+                  :data-test="`copy-format-trigger-${row.id}`"
+                  aria-haspopup="menu"
+                  :aria-expanded="copyMenuProxyId === row.id"
                   @click.stop="copyProxyUrl(row)"
-                  @contextmenu.prevent="toggleCopyMenu(row.id)"
+                  @contextmenu.prevent.stop="toggleCopyMenu(row, $event)"
                 >
                   <Icon name="copy" size="sm" />
                 </button>
-                <!-- 右键展开格式选择菜单 -->
-                <div
-                  v-if="copyMenuProxyId === row.id"
-                  class="absolute left-0 top-full z-50 mt-1 w-auto min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-500 dark:bg-dark-700"
-                >
-                  <button
-                    v-for="fmt in getCopyFormats(row)"
-                    :key="fmt.label"
-                    class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-gray-100 dark:hover:bg-dark-600"
-                    @click.stop="copyFormat(fmt.value)"
-                  >
-                    <span class="truncate font-mono text-gray-600 dark:text-gray-300">{{ fmt.label }}</span>
-                  </button>
-                </div>
               </div>
             </div>
           </template>
@@ -394,6 +383,29 @@
     </TablePageLayout>
 
     <SoftRouterProxyPanel v-else @changed="loadProxies" />
+
+    <Teleport to="body">
+      <div
+        v-if="copyMenuProxy"
+        ref="copyMenuRef"
+        class="copy-format-menu fixed z-[100000020] overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-500 dark:bg-dark-700"
+        :style="copyMenuStyle"
+        role="menu"
+        :data-test="`copy-format-menu-${copyMenuProxy.id}`"
+        @click.stop
+      >
+        <button
+          v-for="format in getCopyFormats(copyMenuProxy)"
+          :key="format.label"
+          type="button"
+          role="menuitem"
+          class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-gray-100 dark:hover:bg-dark-600"
+          @click.stop="copyFormat(format.value)"
+        >
+          <span class="min-w-0 flex-1 truncate font-mono text-gray-600 dark:text-gray-300">{{ format.label }}</span>
+        </button>
+      </div>
+    </Teleport>
 
     <!-- Create Proxy Modal -->
     <BaseDialog
@@ -992,7 +1004,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
@@ -1069,6 +1081,12 @@ const proxies = ref<Proxy[]>([])
 const activeTab = ref<'proxies' | 'soft-router'>('proxies')
 const visiblePasswordIds = reactive(new Set<number>())
 const copyMenuProxyId = ref<number | null>(null)
+const copyMenuTrigger = ref<HTMLElement | null>(null)
+const copyMenuRef = ref<HTMLElement | null>(null)
+const copyMenuStyle = ref<Record<string, string>>({})
+const copyMenuProxy = computed(() =>
+  proxies.value.find(proxy => proxy.id === copyMenuProxyId.value) ?? null
+)
 const loading = ref(false)
 const searchQuery = ref('')
 const filters = reactive({
@@ -2068,31 +2086,164 @@ function getCopyFormats(row: any) {
 
 function copyProxyUrl(row: any) {
   copyToClipboard(buildProxyUrl(row), t('admin.proxies.urlCopied'))
-  copyMenuProxyId.value = null
+  closeCopyMenu()
 }
 
-function toggleCopyMenu(id: number) {
-  copyMenuProxyId.value = copyMenuProxyId.value === id ? null : id
+const COPY_MENU_GAP = 6
+const COPY_MENU_VIEWPORT_PADDING = 8
+const COPY_MENU_MIN_WIDTH = 180
+const COPY_MENU_MAX_WIDTH = 360
+
+function getCopyMenuViewport() {
+  const viewport = window.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? window.innerWidth
+  const height = viewport?.height ?? window.innerHeight
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height
+  }
+}
+
+function updateCopyMenuPosition() {
+  if (copyMenuProxyId.value === null) return
+
+  const trigger = copyMenuTrigger.value
+  if (!trigger?.isConnected) {
+    closeCopyMenu()
+    return
+  }
+
+  const viewport = getCopyMenuViewport()
+  const triggerRect = trigger.getBoundingClientRect()
+  const menu = copyMenuRef.value
+  const availableWidth = Math.max(0, viewport.width - COPY_MENU_VIEWPORT_PADDING * 2)
+  const naturalWidth = menu?.scrollWidth || menu?.offsetWidth || 240
+  const width = Math.min(
+    Math.max(COPY_MENU_MIN_WIDTH, naturalWidth),
+    COPY_MENU_MAX_WIDTH,
+    availableWidth
+  )
+  const minimumLeft = viewport.left + COPY_MENU_VIEWPORT_PADDING
+  const maximumLeft = Math.max(
+    minimumLeft,
+    viewport.right - COPY_MENU_VIEWPORT_PADDING - width
+  )
+  const left = Math.min(Math.max(triggerRect.left, minimumLeft), maximumLeft)
+  const formatCount = copyMenuProxy.value ? getCopyFormats(copyMenuProxy.value).length : 1
+  const naturalHeight = menu?.scrollHeight
+    || menu?.offsetHeight
+    || formatCount * 32 + 8
+  const spaceBelow = Math.max(
+    0,
+    viewport.bottom - COPY_MENU_VIEWPORT_PADDING - triggerRect.bottom - COPY_MENU_GAP
+  )
+  const spaceAbove = Math.max(
+    0,
+    triggerRect.top - viewport.top - COPY_MENU_VIEWPORT_PADDING - COPY_MENU_GAP
+  )
+  const openAbove = spaceBelow < naturalHeight && spaceAbove > spaceBelow
+  const viewportAvailableHeight = Math.max(
+    0,
+    viewport.height - COPY_MENU_VIEWPORT_PADDING * 2
+  )
+  const availableHeight = Math.min(
+    openAbove ? spaceAbove : spaceBelow,
+    viewportAvailableHeight
+  )
+  const visibleHeight = Math.min(naturalHeight, availableHeight)
+  const preferredTop = openAbove
+    ? triggerRect.top - COPY_MENU_GAP - visibleHeight
+    : triggerRect.bottom + COPY_MENU_GAP
+  const minimumTop = viewport.top + COPY_MENU_VIEWPORT_PADDING
+  const maximumTop = Math.max(
+    minimumTop,
+    viewport.bottom - COPY_MENU_VIEWPORT_PADDING - visibleHeight
+  )
+  const top = Math.min(Math.max(preferredTop, minimumTop), maximumTop)
+
+  copyMenuStyle.value = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.floor(availableHeight)}px`
+  }
+}
+
+function toggleCopyMenu(row: Proxy, event: MouseEvent) {
+  if (copyMenuProxyId.value === row.id) {
+    closeCopyMenu()
+    return
+  }
+
+  const trigger = event.currentTarget as HTMLElement | null
+  if (!trigger) {
+    closeCopyMenu()
+    return
+  }
+
+  copyMenuProxyId.value = row.id
+  copyMenuTrigger.value = trigger
+  nextTick(() => {
+    updateCopyMenuPosition()
+    copyMenuRef.value?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
+  })
 }
 
 function copyFormat(value: string) {
   copyToClipboard(value, t('admin.proxies.urlCopied'))
-  copyMenuProxyId.value = null
+  closeCopyMenu()
 }
 
-function closeCopyMenu() {
+function closeCopyMenu(restoreFocus = false) {
+  const trigger = copyMenuTrigger.value
   copyMenuProxyId.value = null
+  copyMenuTrigger.value = null
+  copyMenuStyle.value = {}
+
+  if (restoreFocus && trigger?.isConnected) {
+    nextTick(() => trigger.focus())
+  }
+}
+
+function handleCopyMenuClickOutside(event: MouseEvent) {
+  const target = event.target as Node | null
+  if (!target) return
+  if (copyMenuTrigger.value?.contains(target) || copyMenuRef.value?.contains(target)) return
+  closeCopyMenu()
+}
+
+function handleCopyMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && copyMenuProxyId.value !== null) {
+    closeCopyMenu(true)
+  }
 }
 
 onMounted(() => {
   loadProxies()
   loadBackupProxyOptions()
-  document.addEventListener('click', closeCopyMenu)
+  document.addEventListener('click', handleCopyMenuClickOutside)
+  document.addEventListener('keydown', handleCopyMenuKeydown)
+  window.addEventListener('scroll', updateCopyMenuPosition, true)
+  window.addEventListener('resize', updateCopyMenuPosition)
+  window.visualViewport?.addEventListener('scroll', updateCopyMenuPosition)
+  window.visualViewport?.addEventListener('resize', updateCopyMenuPosition)
 })
 
 onUnmounted(() => {
   clearTimeout(searchTimeout)
   abortController?.abort()
-  document.removeEventListener('click', closeCopyMenu)
+  document.removeEventListener('click', handleCopyMenuClickOutside)
+  document.removeEventListener('keydown', handleCopyMenuKeydown)
+  window.removeEventListener('scroll', updateCopyMenuPosition, true)
+  window.removeEventListener('resize', updateCopyMenuPosition)
+  window.visualViewport?.removeEventListener('scroll', updateCopyMenuPosition)
+  window.visualViewport?.removeEventListener('resize', updateCopyMenuPosition)
 })
 </script>

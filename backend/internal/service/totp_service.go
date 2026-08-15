@@ -34,12 +34,12 @@ type TotpCache interface {
 
 	// Login session methods (for 2FA login flow)
 	GetLoginSession(ctx context.Context, tempToken string) (*TotpLoginSession, error)
+	ConsumeLoginSession(ctx context.Context, tempToken string) (*TotpLoginSession, error)
 	SetLoginSession(ctx context.Context, tempToken string, session *TotpLoginSession, ttl time.Duration) error
 	DeleteLoginSession(ctx context.Context, tempToken string) error
 
 	// Rate limiting
-	IncrementVerifyAttempts(ctx context.Context, userID int64) (int, error)
-	GetVerifyAttempts(ctx context.Context, userID int64) (int, error)
+	ReserveVerifyAttempt(ctx context.Context, userID int64, maxAttempts int, ttl time.Duration) (bool, error)
 	ClearVerifyAttempts(ctx context.Context, userID int64) error
 
 	// Step-up grant methods (敏感操作 sudo 窗口)
@@ -127,7 +127,10 @@ func NewTotpService(
 
 // GetStatus returns the TOTP status for a user
 func (s *TotpService) GetStatus(ctx context.Context, userID int64) (*TotpStatus, error) {
-	featureEnabled := s.settingService.IsTotpEnabled(ctx)
+	featureEnabled, err := s.settingService.IsTotpEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -170,7 +173,11 @@ func (s *TotpService) verifyIdentity(ctx context.Context, user *User, emailCode,
 // If email verification is enabled, emailCode is required; otherwise password is required
 func (s *TotpService) InitiateSetup(ctx context.Context, userID int64, emailCode, password string) (*TotpSetupResponse, error) {
 	// Check if TOTP feature is enabled globally
-	if !s.settingService.IsTotpEnabled(ctx) {
+	featureEnabled, err := s.settingService.IsTotpEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !featureEnabled {
 		return nil, ErrTotpNotEnabled
 	}
 
@@ -225,7 +232,11 @@ func (s *TotpService) InitiateSetup(ctx context.Context, userID int64, emailCode
 // CompleteSetup completes the TOTP setup by verifying the code
 func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode, setupToken string) error {
 	// Check if TOTP feature is enabled globally
-	if !s.settingService.IsTotpEnabled(ctx) {
+	featureEnabled, err := s.settingService.IsTotpEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	if !featureEnabled {
 		return ErrTotpNotEnabled
 	}
 
@@ -249,14 +260,9 @@ func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode,
 		return ErrTotpInvalidCode
 	}
 
-	setupSecretPrefix := "N/A"
-	if len(session.Secret) >= 4 {
-		setupSecretPrefix = session.Secret[:4]
-	}
 	slog.Debug("totp_complete_setup_before_encrypt",
 		"user_id", userID,
-		"secret_len", len(session.Secret),
-		"secret_prefix", setupSecretPrefix)
+		"secret_len", len(session.Secret))
 
 	// Encrypt the secret
 	encryptedSecret, err := s.encryptor.Encrypt(session.Secret)
@@ -275,16 +281,11 @@ func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode,
 			"user_id", userID,
 			"error", decErr)
 	} else {
-		decryptedPrefix := "N/A"
-		if len(decrypted) >= 4 {
-			decryptedPrefix = decrypted[:4]
-		}
 		slog.Debug("totp_complete_setup_verified",
 			"user_id", userID,
 			"original_len", len(session.Secret),
 			"decrypted_len", len(decrypted),
-			"match", session.Secret == decrypted,
-			"decrypted_prefix", decryptedPrefix)
+			"match", session.Secret == decrypted)
 	}
 
 	// Update user with encrypted TOTP secret
@@ -334,12 +335,6 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		"user_id", userID,
 		"code_len", len(code))
 
-	// Check rate limiting
-	attempts, err := s.cache.GetVerifyAttempts(ctx, userID)
-	if err == nil && attempts >= maxTotpAttempts {
-		return ErrTotpTooManyAttempts
-	}
-
 	// Get user
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -370,14 +365,19 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		return infraerrors.InternalServer("TOTP_VERIFY_ERROR", "failed to verify totp code")
 	}
 
-	secretPrefix := "N/A"
-	if len(secret) >= 4 {
-		secretPrefix = secret[:4]
-	}
 	slog.Debug("totp_verify_decrypted",
 		"user_id", userID,
-		"secret_len", len(secret),
-		"secret_prefix", secretPrefix)
+		"secret_len", len(secret))
+
+	// 原子占用一次验证码校验额度，避免多个并发请求在旧的“先读后增”窗口内
+	// 同时越过上限。成功验证码会在下方清空计数。
+	allowed, err := s.cache.ReserveVerifyAttempt(ctx, userID, maxTotpAttempts, totpAttemptsTTL)
+	if err != nil {
+		return ErrServiceUnavailable.WithCause(fmt.Errorf("reserve totp verify attempt: %w", err))
+	}
+	if !allowed {
+		return ErrTotpTooManyAttempts
+	}
 
 	// Verify the code
 	valid := totp.Validate(code, secret)
@@ -385,12 +385,9 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		"user_id", userID,
 		"valid", valid,
 		"secret_len", len(secret),
-		"secret_prefix", secretPrefix,
 		"server_time", time.Now().UTC().Format(time.RFC3339))
 
 	if !valid {
-		// Increment failed attempts
-		_, _ = s.cache.IncrementVerifyAttempts(ctx, userID)
 		return ErrTotpInvalidCode
 	}
 
@@ -469,6 +466,16 @@ func (s *TotpService) createLoginSession(
 // GetLoginSession retrieves a login session
 func (s *TotpService) GetLoginSession(ctx context.Context, tempToken string) (*TotpLoginSession, error) {
 	return s.cache.GetLoginSession(ctx, tempToken)
+}
+
+// ConsumeLoginSession atomically claims a verified 2FA login session.
+// Concurrent submissions of the same temp token can therefore issue at most one session.
+func (s *TotpService) ConsumeLoginSession(ctx context.Context, tempToken string) (*TotpLoginSession, error) {
+	session, err := s.cache.ConsumeLoginSession(ctx, tempToken)
+	if err != nil {
+		return nil, ErrServiceUnavailable.WithCause(fmt.Errorf("consume totp login session: %w", err))
+	}
+	return session, nil
 }
 
 // DeleteLoginSession deletes a login session

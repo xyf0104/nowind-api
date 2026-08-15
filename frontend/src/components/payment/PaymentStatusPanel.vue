@@ -356,7 +356,7 @@ function reopenPopup() {
 }
 
 function setOutcome(next: PaymentOutcome) {
-  if (outcome.value === next) return
+  if (disposed || outcome.value === next) return
   outcome.value = next
   emit('settled', next)
 }
@@ -416,19 +416,20 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
   }
 }
 
+let disposed = false
 let pollInFlight = false
 async function pollStatus() {
-  if (!props.orderId || outcome.value) return
+  if (disposed || !props.orderId || outcome.value) return
   // 防重入：接口（含 verifyOrder 二次确认）响应慢于 3 秒轮询间隔时避免并发重叠请求。
   if (pollInFlight) return
   pollInFlight = true
   try {
     let order = await paymentStore.pollOrderStatus(props.orderId)
-    if (!order) return
+    if (disposed || !order) return
     // 已进入终态则不再处理迟到的响应。
     if (outcome.value) return
     order = await tryRecoverPendingOrder(order)
-    if (outcome.value) return
+    if (disposed || outcome.value) return
     if (isSuccessStatus(order.status)) {
       cleanup()
       paidOrder.value = order
@@ -503,5 +504,8 @@ onMounted(() => {
   })
   alipayLauncher.launch()
 })
-onUnmounted(() => cleanup())
+onUnmounted(() => {
+  disposed = true
+  cleanup()
+})
 </script>

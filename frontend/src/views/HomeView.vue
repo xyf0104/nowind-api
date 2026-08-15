@@ -514,6 +514,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import DarkVideoBackground from '@/components/common/DarkVideoBackground.vue'
+import BrandIcon from '@/components/icons/BrandIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
 import { getCurrentTheme, toggleTheme as toggleAppTheme } from '@/utils/theme'
@@ -567,6 +568,7 @@ function initTheme() {
 
 const homeCanvasRef = ref<HTMLCanvasElement | null>(null)
 let homeAnimationId = 0
+let homeResizeHandler: (() => void) | null = null
 
 interface HomeParticle {
   x: number; y: number; vx: number; vy: number; radius: number; opacity: number
@@ -587,6 +589,7 @@ function initHomeParticles() {
     ctx.scale(dpr, dpr)
   }
   resize()
+  homeResizeHandler = resize
   window.addEventListener('resize', resize)
 
   const count = Math.min(100, Math.floor(window.innerWidth / 12))
@@ -657,6 +660,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   cancelAnimationFrame(homeAnimationId)
+  if (homeResizeHandler) {
+    window.removeEventListener('resize', homeResizeHandler)
+    homeResizeHandler = null
+  }
 })
 </script>
 

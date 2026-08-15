@@ -915,15 +915,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIWSSessionStickyTTL())
 					return selection, nil
 				}
-				waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, stickyAccountID)
-				if waitingCount < cfg.StickySessionMaxWaiting {
-					return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-						AccountID:      stickyAccountID,
-						MaxConcurrency: account.Concurrency,
-						Timeout:        cfg.StickySessionWaitTimeout,
-						MaxWaiting:     cfg.StickySessionMaxWaiting,
-					})
-				}
+				_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIWSSessionStickyTTL())
+				return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+					AccountID:      stickyAccountID,
+					MaxConcurrency: account.Concurrency,
+					Timeout:        cfg.StickySessionWaitTimeout,
+					MaxWaiting:     cfg.StickySessionMaxWaiting,
+				})
 			}
 		}
 	}

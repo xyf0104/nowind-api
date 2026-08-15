@@ -50,6 +50,14 @@ var (
 	)
 )
 
+type maintenanceOperation uint8
+
+const (
+	maintenanceIdle maintenanceOperation = iota
+	maintenanceBackup
+	maintenanceRestore
+)
+
 // ─── 接口定义 ───
 
 // DBDumper abstracts database dump/restore operations
@@ -128,9 +136,8 @@ type BackupService struct {
 	storeFactory            BackupObjectStoreFactory
 	dumper                  DBDumper
 
-	opMu      sync.Mutex // 保护 backingUp/restoring 标志
-	backingUp bool
-	restoring bool
+	opMu              sync.Mutex // 保护 activeMaintenance
+	activeMaintenance maintenanceOperation
 
 	storeMu sync.Mutex // 保护 store/s3Cfg 缓存
 	store   BackupObjectStore
@@ -432,8 +439,8 @@ func (s *BackupService) runScheduledBackup() {
 	logger.LegacyPrintf("service.backup", "[Backup] 开始执行定时备份, 过期天数: %d", expireDays)
 	record, err := s.CreateBackup(ctx, "scheduled", expireDays)
 	if err != nil {
-		if errors.Is(err, ErrBackupInProgress) {
-			logger.LegacyPrintf("service.backup", "[Backup] 定时备份跳过: 已有备份正在进行中")
+		if errors.Is(err, ErrBackupInProgress) || errors.Is(err, ErrRestoreInProgress) {
+			logger.LegacyPrintf("service.backup", "[Backup] 定时备份跳过: 已有备份或恢复正在进行中")
 		} else {
 			logger.LegacyPrintf("service.backup", "[Backup] 定时备份失败: %v", err)
 		}
@@ -452,6 +459,29 @@ func (s *BackupService) runScheduledBackup() {
 
 // ─── 备份/恢复核心 ───
 
+func (s *BackupService) beginMaintenance(operation maintenanceOperation) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	switch s.activeMaintenance {
+	case maintenanceBackup:
+		return ErrBackupInProgress
+	case maintenanceRestore:
+		return ErrRestoreInProgress
+	}
+
+	s.activeMaintenance = operation
+	return nil
+}
+
+func (s *BackupService) finishMaintenance(operation maintenanceOperation) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if s.activeMaintenance == operation {
+		s.activeMaintenance = maintenanceIdle
+	}
+}
+
 // CreateBackup 创建全量数据库备份并上传到 S3（流式处理）
 // expireDays: 备份过期天数，0=永不过期，默认14天
 func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, expireDays int) (*BackupRecord, error) {
@@ -459,18 +489,10 @@ func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, ex
 		return nil, infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
 	}
 
-	s.opMu.Lock()
-	if s.backingUp {
-		s.opMu.Unlock()
-		return nil, ErrBackupInProgress
+	if err := s.beginMaintenance(maintenanceBackup); err != nil {
+		return nil, err
 	}
-	s.backingUp = true
-	s.opMu.Unlock()
-	defer func() {
-		s.opMu.Lock()
-		s.backingUp = false
-		s.opMu.Unlock()
-	}()
+	defer s.finishMaintenance(maintenanceBackup)
 
 	s3Cfg, err := s.loadS3Config(ctx)
 	if err != nil {
@@ -576,21 +598,15 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 		return nil, infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
 	}
 
-	s.opMu.Lock()
-	if s.backingUp {
-		s.opMu.Unlock()
-		return nil, ErrBackupInProgress
+	if err := s.beginMaintenance(maintenanceBackup); err != nil {
+		return nil, err
 	}
-	s.backingUp = true
-	s.opMu.Unlock()
 
 	// 初始化阶段出错时自动重置标志
 	launched := false
 	defer func() {
 		if !launched {
-			s.opMu.Lock()
-			s.backingUp = false
-			s.opMu.Unlock()
+			s.finishMaintenance(maintenanceBackup)
 		}
 	}()
 
@@ -641,11 +657,7 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer func() {
-			s.opMu.Lock()
-			s.backingUp = false
-			s.opMu.Unlock()
-		}()
+		defer s.finishMaintenance(maintenanceBackup)
 		defer func() {
 			if r := recover(); r != nil {
 				logger.LegacyPrintf("service.backup", "[Backup] panic recovered: %v", r)
@@ -740,18 +752,10 @@ func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupOb
 
 // RestoreBackup 从 S3 下载备份并流式恢复到数据库
 func (s *BackupService) RestoreBackup(ctx context.Context, backupID string) error {
-	s.opMu.Lock()
-	if s.restoring {
-		s.opMu.Unlock()
-		return ErrRestoreInProgress
+	if err := s.beginMaintenance(maintenanceRestore); err != nil {
+		return err
 	}
-	s.restoring = true
-	s.opMu.Unlock()
-	defer func() {
-		s.opMu.Lock()
-		s.restoring = false
-		s.opMu.Unlock()
-	}()
+	defer s.finishMaintenance(maintenanceRestore)
 
 	record, err := s.GetBackupRecord(ctx, backupID)
 	if err != nil {
@@ -798,21 +802,15 @@ func (s *BackupService) StartRestore(ctx context.Context, backupID string) (*Bac
 		return nil, infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
 	}
 
-	s.opMu.Lock()
-	if s.restoring {
-		s.opMu.Unlock()
-		return nil, ErrRestoreInProgress
+	if err := s.beginMaintenance(maintenanceRestore); err != nil {
+		return nil, err
 	}
-	s.restoring = true
-	s.opMu.Unlock()
 
 	// 初始化阶段出错时自动重置标志
 	launched := false
 	defer func() {
 		if !launched {
-			s.opMu.Lock()
-			s.restoring = false
-			s.opMu.Unlock()
+			s.finishMaintenance(maintenanceRestore)
 		}
 	}()
 
@@ -842,11 +840,7 @@ func (s *BackupService) StartRestore(ctx context.Context, backupID string) (*Bac
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer func() {
-			s.opMu.Lock()
-			s.restoring = false
-			s.opMu.Unlock()
-		}()
+		defer s.finishMaintenance(maintenanceRestore)
 		defer func() {
 			if r := recover(); r != nil {
 				logger.LegacyPrintf("service.backup", "[Backup] restore panic recovered: %v", r)

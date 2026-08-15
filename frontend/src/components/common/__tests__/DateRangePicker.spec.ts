@@ -4,6 +4,33 @@ import { nextTick, ref } from 'vue'
 
 import DateRangePicker from '../DateRangePicker.vue'
 
+const originalInnerWidth = window.innerWidth
+const originalVisualViewport = window.visualViewport
+
+const setViewportWidth = (width: number) => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value: width
+  })
+}
+
+const setVisualViewport = (value: Partial<VisualViewport> | undefined) => {
+  Object.defineProperty(window, 'visualViewport', {
+    configurable: true,
+    value: value
+      ? {
+          offsetLeft: 0,
+          offsetTop: 0,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          ...value
+        }
+      : undefined
+  })
+}
+
 const messages: Record<string, string> = {
   'dates.today': 'Today',
   'dates.yesterday': 'Yesterday',
@@ -36,6 +63,9 @@ const formatLocalDate = (date: Date): string => {
 describe('DateRangePicker', () => {
   afterEach(() => {
     document.body.innerHTML = ''
+    setViewportWidth(originalInnerWidth)
+    setVisualViewport(originalVisualViewport)
+    vi.restoreAllMocks()
   })
 
   it('uses last 24 hours as the default recognized preset', () => {
@@ -103,5 +133,50 @@ describe('DateRangePicker', () => {
         preset: 'last24Hours'
       }
     ])
+  })
+
+  it('fits a 320px viewport and keeps the panel reachable above a reduced visual viewport', async () => {
+    setViewportWidth(320)
+    setVisualViewport({
+      offsetLeft: 0,
+      offsetTop: 100,
+      width: 320,
+      height: 240
+    })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 250,
+      top: 250,
+      right: 120,
+      bottom: 290,
+      left: 20,
+      width: 100,
+      height: 40,
+      toJSON: () => ({})
+    })
+    const today = formatLocalDate(new Date())
+    const wrapper = mount(DateRangePicker, {
+      props: {
+        startDate: today,
+        endDate: today
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await nextTick()
+    const dropdown = document.body.querySelector<HTMLElement>('.date-picker-dropdown')
+
+    expect(dropdown?.style.left).toBe('8px')
+    expect(dropdown?.style.width).toBe('304px')
+    expect(dropdown?.style.top).toBe('108px')
+    expect(dropdown?.style.maxHeight).toBe('134px')
+    expect(Number.parseFloat(dropdown?.style.left || '0') + Number.parseFloat(dropdown?.style.width || '0')).toBe(312)
+
+    wrapper.unmount()
   })
 })

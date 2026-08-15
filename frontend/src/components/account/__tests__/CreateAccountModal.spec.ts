@@ -61,7 +61,11 @@ import CreateAccountModal from '../CreateAccountModal.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
-  props: { show: { type: Boolean, default: false } },
+  props: {
+    show: { type: Boolean, default: false },
+    title: { type: String, default: '' },
+    width: { type: String, default: 'normal' },
+  },
   template: '<div v-if="show"><slot /><slot name="footer" /></div>',
 })
 
@@ -158,6 +162,16 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       warnings: [],
     })
     createOpenAICodexPATMock.mockReset().mockResolvedValue({})
+  })
+
+  it('uses the supported wide BaseDialog API for Gemini help', () => {
+    const wrapper = mountModal()
+    const helpDialog = wrapper.findAllComponents(BaseDialogStub).find(
+      dialog => dialog.props('title') === 'admin.accounts.gemini.helpDialog.title'
+    )
+
+    expect(helpDialog).toBeDefined()
+    expect(helpDialog?.props('width')).toBe('wide')
   })
 
   it('sends false explicitly for normal OpenAI account creation by default', async () => {

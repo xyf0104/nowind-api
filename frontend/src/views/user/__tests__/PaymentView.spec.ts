@@ -244,10 +244,13 @@ async function mountSubscriptionConfirm(options: Parameters<typeof checkoutInfoW
   return wrapper
 }
 
-async function mountSubscriptionPlanList(planCount: number) {
+async function mountSubscriptionPlanList(planCount: number, renewGroup?: string) {
   vi.useRealTimers()
   routeState.path = '/purchase'
-  routeState.query = { tab: 'subscription' }
+  routeState.query = {
+    tab: 'subscription',
+    ...(renewGroup ? { group: renewGroup } : {}),
+  }
   routerReplace.mockReset().mockResolvedValue(undefined)
   routerPush.mockReset().mockResolvedValue(undefined)
   routerResolve.mockClear()
@@ -296,6 +299,15 @@ describe('PaymentView subscription plan grid', () => {
       'sm:grid-cols-2',
       'lg:grid-cols-3',
     ]))
+  })
+
+  it('constrains the renewal plan modal to a scrollable short-viewport panel', async () => {
+    const wrapper = await mountSubscriptionPlanList(2, '3')
+
+    expect(wrapper.get('[data-test="renewal-modal"]').classes()).toContain('overflow-y-auto')
+    expect(wrapper.get('[data-test="renewal-modal-panel"]').classes()).toEqual(
+      expect.arrayContaining(['max-h-[calc(100dvh-2rem)]', 'overflow-y-auto'])
+    )
   })
 })
 

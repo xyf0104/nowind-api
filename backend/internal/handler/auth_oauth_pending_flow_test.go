@@ -2532,6 +2532,7 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 		service.SettingKeyRegistrationEnabled:              "true",
 		service.SettingKeyInvitationCodeEnabled:            boolSettingValue(options.invitationEnabled),
 		service.SettingKeyEmailVerifyEnabled:               boolSettingValue(options.emailVerifyEnabled),
+		service.SettingKeyTotpEnabled:                      "false",
 		service.SettingKeyRegistrationEmailSuffixWhitelist: "[]",
 	}
 	for key, value := range options.settingValues {
@@ -2803,6 +2804,10 @@ func (s *oauthPendingFlowRefreshTokenCacheStub) StoreRefreshToken(context.Contex
 }
 
 func (s *oauthPendingFlowRefreshTokenCacheStub) GetRefreshToken(context.Context, string) (*service.RefreshTokenData, error) {
+	return nil, service.ErrRefreshTokenNotFound
+}
+
+func (s *oauthPendingFlowRefreshTokenCacheStub) ConsumeRefreshToken(context.Context, string) (*service.RefreshTokenData, error) {
 	return nil, service.ErrRefreshTokenNotFound
 }
 
@@ -3449,6 +3454,15 @@ func (s *oauthPendingFlowTotpCacheStub) GetLoginSession(_ context.Context, tempT
 	return s.loginSessions[tempToken], nil
 }
 
+func (s *oauthPendingFlowTotpCacheStub) ConsumeLoginSession(_ context.Context, tempToken string) (*service.TotpLoginSession, error) {
+	if s == nil || s.loginSessions == nil {
+		return nil, nil
+	}
+	session := s.loginSessions[tempToken]
+	delete(s.loginSessions, tempToken)
+	return session, nil
+}
+
 func (s *oauthPendingFlowTotpCacheStub) SetLoginSession(_ context.Context, tempToken string, session *service.TotpLoginSession, _ time.Duration) error {
 	if s.loginSessions == nil {
 		s.loginSessions = map[string]*service.TotpLoginSession{}
@@ -3462,19 +3476,15 @@ func (s *oauthPendingFlowTotpCacheStub) DeleteLoginSession(_ context.Context, te
 	return nil
 }
 
-func (s *oauthPendingFlowTotpCacheStub) IncrementVerifyAttempts(_ context.Context, userID int64) (int, error) {
+func (s *oauthPendingFlowTotpCacheStub) ReserveVerifyAttempt(_ context.Context, userID int64, maxAttempts int, _ time.Duration) (bool, error) {
 	if s.verifyAttempts == nil {
 		s.verifyAttempts = map[int64]int{}
 	}
-	s.verifyAttempts[userID]++
-	return s.verifyAttempts[userID], nil
-}
-
-func (s *oauthPendingFlowTotpCacheStub) GetVerifyAttempts(_ context.Context, userID int64) (int, error) {
-	if s == nil || s.verifyAttempts == nil {
-		return 0, nil
+	if s.verifyAttempts[userID] >= maxAttempts {
+		return false, nil
 	}
-	return s.verifyAttempts[userID], nil
+	s.verifyAttempts[userID]++
+	return true, nil
 }
 
 func (s *oauthPendingFlowTotpCacheStub) ClearVerifyAttempts(_ context.Context, userID int64) error {

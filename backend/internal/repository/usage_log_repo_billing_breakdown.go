@@ -8,6 +8,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
+// Billing drill-down must retain successful requests whose account-side cost is
+// positive even when a free multiplier or subscription makes the user charge 0.
+const usageLogBillingActivityFilterUL = "(ul.actual_cost > 0 OR COALESCE(ul.account_stats_cost, ul.total_cost) > 0)"
+
 // GetAccountBillingUsers returns per-user billing totals for one account and exact half-open range.
 func (r *usageLogRepository) GetAccountBillingUsers(ctx context.Context, accountID int64, startTime, endTime time.Time) (results []usagestats.AccountBillingUser, err error) {
 	query := fmt.Sprintf(`
@@ -25,7 +29,7 @@ func (r *usageLogRepository) GetAccountBillingUsers(ctx context.Context, account
 			AND %s
 		GROUP BY ul.user_id, u.username, u.email
 		ORDER BY user_cost DESC, requests DESC, ul.user_id ASC
-	`, usageLogAccountCostExpression("ul"), usageLogSuccessFilterUL)
+	`, usageLogAccountCostExpression("ul"), usageLogBillingActivityFilterUL)
 
 	rows, err := r.sql.QueryContext(ctx, query, accountID, startTime, endTime)
 	if err != nil {
@@ -78,7 +82,7 @@ func (r *usageLogRepository) GetAccountBillingModels(ctx context.Context, accoun
 			AND %s
 		GROUP BY %s
 		ORDER BY user_cost DESC, requests DESC, model ASC
-	`, modelExpr, usageLogAccountCostExpression("ul"), usageLogSuccessFilterUL, modelExpr)
+	`, modelExpr, usageLogAccountCostExpression("ul"), usageLogBillingActivityFilterUL, modelExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, accountID, userID, startTime, endTime)
 	if err != nil {

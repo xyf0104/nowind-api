@@ -100,6 +100,39 @@ describe('PaymentStatusPanel', () => {
     expect(wrapper.emitted('success')).toHaveLength(1)
   })
 
+  it('ignores a successful poll response that resolves after unmount', async () => {
+    let resolvePoll: ((order: ReturnType<typeof orderFactory>) => void) | undefined
+    pollOrderStatus.mockReturnValueOnce(new Promise<ReturnType<typeof orderFactory>>((resolve) => {
+      resolvePoll = resolve
+    }))
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'https://pay.example.com/qr/42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'alipay',
+        orderType: 'balance',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    vi.advanceTimersByTime(3000)
+    expect(pollOrderStatus).toHaveBeenCalledWith(42)
+
+    wrapper.unmount()
+    resolvePoll?.(orderFactory('COMPLETED'))
+    await flushPromises()
+
+    expect(wrapper.emitted('settled')).toBeUndefined()
+    expect(wrapper.emitted('success')).toBeUndefined()
+  })
+
   it('shows reopen button in QR mode when payUrl is also available', async () => {
     const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
 

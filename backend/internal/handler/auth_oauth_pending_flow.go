@@ -1656,7 +1656,12 @@ func (h *AuthHandler) bindPendingOAuthLogin(c *gin.Context, provider string) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if h.totpService != nil && h.settingSvc.IsTotpEnabled(c.Request.Context()) && user.TotpEnabled {
+	totpEnabled, err := h.settingSvc.IsTotpEnabled(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if h.totpService != nil && totpEnabled && user.TotpEnabled {
 		tempToken, err := h.totpService.CreatePendingOAuthBindLoginSession(
 			c.Request.Context(),
 			user.ID,

@@ -287,7 +287,12 @@ async function changeNumber(): Promise<void> {
 
 async function cancel(): Promise<void> {
   try {
-    await receiver.cancel()
+    const outcome = await receiver.cancel()
+    if (outcome === 'received') {
+      hasManuallyStarted.value = true
+      appStore.showSuccess('验证码已到达，已为您保留。')
+      return
+    }
     hasManuallyStarted.value = false
     appStore.showInfo('已取消当前手机号。')
   } catch (error) {

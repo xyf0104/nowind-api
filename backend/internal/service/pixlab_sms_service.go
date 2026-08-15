@@ -1014,8 +1014,15 @@ func (s *PixlabSMSService) requireMemberMutationDelay(ctx context.Context, userI
 // The released card remains in the rotation and the least-recently-used card
 // is selected next unless the current card has reached its five-claim limit.
 func (s *PixlabSMSService) ChangeNumber(ctx context.Context, ownerUserID int64, sessionID string) (*PixlabSMSResult, error) {
-	if _, err := s.Cancel(ctx, ownerUserID, sessionID); err != nil {
+	cancelled, err := s.Cancel(ctx, ownerUserID, sessionID)
+	if err != nil {
 		return nil, err
+	}
+	// A verification code delivered during cancellation is terminal and must be
+	// returned to the caller. Redeeming again here would both hide that code and
+	// consume another card claim.
+	if cancelled != nil && (pixlabHasVerificationCode(cancelled.Code) || strings.EqualFold(cancelled.Status, "RECEIVED")) {
+		return cancelled, nil
 	}
 	return s.Redeem(ctx, ownerUserID)
 }

@@ -158,6 +158,28 @@ func (d *blockingDumper) Restore(_ context.Context, data io.Reader) error {
 	return nil
 }
 
+type blockingRestoreDumper struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *blockingRestoreDumper) Dump(_ context.Context) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("data")), nil
+}
+
+func (d *blockingRestoreDumper) Restore(ctx context.Context, data io.Reader) error {
+	if _, err := io.Copy(io.Discard, data); err != nil {
+		return err
+	}
+	close(d.started)
+	select {
+	case <-d.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type mockObjectStore struct {
 	objects map[string][]byte
 	mu      sync.Mutex
@@ -436,9 +458,9 @@ func TestBackupService_CreateBackup_ConcurrentBlocked(t *testing.T) {
 	store := newMockObjectStore()
 	svc := newTestBackupService(repo, dumper, store)
 
-	// 手动设置 backingUp 标志
+	// 手动设置维护锁为备份占用
 	svc.opMu.Lock()
-	svc.backingUp = true
+	svc.activeMaintenance = maintenanceBackup
 	svc.opMu.Unlock()
 
 	_, err := svc.CreateBackup(context.Background(), "manual", 14)
@@ -646,6 +668,57 @@ func TestStartBackup_ConcurrentBlocked(t *testing.T) {
 	require.ErrorIs(t, err, ErrBackupInProgress)
 
 	close(dumper.blockCh)
+	svc.wg.Wait()
+}
+
+func TestBackupService_MaintenanceLock_BackupBlocksRestore(t *testing.T) {
+	repo := newMockSettingRepo()
+	seedS3Config(t, repo)
+	store := newMockObjectStore()
+	svc := newTestBackupService(repo, &mockDumper{dumpData: []byte("restore source")}, store)
+
+	restoreSource, err := svc.CreateBackup(context.Background(), "manual", 14)
+	require.NoError(t, err)
+
+	backupDumper := &blockingDumper{blockCh: make(chan struct{}), data: []byte("new backup")}
+	svc.dumper = backupDumper
+	_, err = svc.StartBackup(context.Background(), "manual", 14)
+	require.NoError(t, err)
+
+	err = svc.RestoreBackup(context.Background(), restoreSource.ID)
+	require.ErrorIs(t, err, ErrBackupInProgress)
+
+	close(backupDumper.blockCh)
+	svc.wg.Wait()
+}
+
+func TestBackupService_MaintenanceLock_RestoreBlocksBackup(t *testing.T) {
+	repo := newMockSettingRepo()
+	seedS3Config(t, repo)
+	store := newMockObjectStore()
+	svc := newTestBackupService(repo, &mockDumper{dumpData: []byte("restore source")}, store)
+
+	restoreSource, err := svc.CreateBackup(context.Background(), "manual", 14)
+	require.NoError(t, err)
+
+	restoreDumper := &blockingRestoreDumper{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	svc.dumper = restoreDumper
+	_, err = svc.StartRestore(context.Background(), restoreSource.ID)
+	require.NoError(t, err)
+
+	select {
+	case <-restoreDumper.started:
+	case <-time.After(time.Second):
+		t.Fatal("restore did not start")
+	}
+
+	_, err = svc.CreateBackup(context.Background(), "manual", 14)
+	require.ErrorIs(t, err, ErrRestoreInProgress)
+
+	close(restoreDumper.release)
 	svc.wg.Wait()
 }
 

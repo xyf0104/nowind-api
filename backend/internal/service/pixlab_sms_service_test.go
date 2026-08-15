@@ -1469,6 +1469,57 @@ func TestPixlabSMSServiceCancelRequeuesCardWithoutVerificationCode(t *testing.T)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestPixlabSMSServiceChangeNumberReturnsCodeArrivingDuringCancel(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	providerCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/cancel", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"number":"27749433060","country":"南非","status":"RECEIVED","code":"654321"}`))
+	}))
+	t.Cleanup(provider.Close)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT card.encrypted_key, card.consumed_at
+		FROM xiass_sms_card_keys AS card
+		WHERE card.session_id = $1 AND card.owner_user_id = $2 AND card.status = 'active'
+			AND EXISTS (
+				SELECT 1
+				FROM xiass_sms_member_charges AS charge
+				WHERE charge.session_id = card.session_id
+					AND charge.user_id = card.owner_user_id
+					AND charge.status = 'held'
+			) = $3`)).
+		WithArgs("late-admin-code", int64(42), false).
+		WillReturnRows(sqlmock.NewRows([]string{"encrypted_key", "consumed_at"}).AddRow("enc:RECEIVED-CARD", time.Now()))
+	mock.ExpectExec(regexp.QuoteMeta(`
+		DELETE FROM xiass_sms_card_keys
+		WHERE session_id = $1 AND owner_user_id = $2 AND status = 'active'`)).
+		WithArgs("late-admin-code", int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'queued'),
+			COUNT(*) FILTER (WHERE status = 'active' AND ($1 = 0 OR owner_user_id = $1))
+		FROM xiass_sms_card_keys`)).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"queued", "active"}).AddRow(3, 0))
+
+	svc := newPixlabSMSService(db, pixlabSMSPrefixEncryptor{}, provider.Client(), provider.URL)
+	result, err := svc.ChangeNumber(context.Background(), 42, "late-admin-code")
+	require.NoError(t, err)
+	require.Equal(t, "RECEIVED", result.Status)
+	require.Equal(t, "654321", result.Code)
+	require.Empty(t, result.SessionID)
+	require.Equal(t, 1, providerCalls, "a late code must not trigger a second card redemption")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestPixlabSMSServiceRedeemForMemberCapturesFeeOnlyAfterCode(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

@@ -35,7 +35,7 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
       sessionExpiryText: ref('12:34'),
       canRefresh: ref(true),
       canChangeNumber: ref(false),
-      canCancel: ref(false),
+      canCancel: ref(true),
       isRefreshing: ref(false),
       isChangingNumber: ref(false),
       isCancelling: ref(false),
@@ -122,6 +122,24 @@ describe('PixlabSMSReceiver', () => {
     expect(countdown.text()).toContain('号码有效期')
     expect(countdown.text()).toContain('12:34')
     expect(countdown.get('time').attributes('datetime')).toBe('2026-08-14T00:15:00.000Z')
+  })
+
+  it('keeps a verification code visible when it arrives during cancellation', async () => {
+    receiverMocks.cancel.mockResolvedValue('received')
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: true },
+      global: { stubs: { BaseDialog: true, Icon: true } }
+    })
+
+    await wrapper.get('[data-testid="request-sms-phone"]').trigger('click')
+    await flushPromises()
+    const cancelButton = wrapper.findAll('button').find((button) => button.text().includes('取消'))
+    expect(cancelButton).toBeDefined()
+    await cancelButton!.trigger('click')
+    await flushPromises()
+
+    expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="request-sms-phone"]').exists()).toBe(false)
   })
 
 })

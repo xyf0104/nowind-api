@@ -45,7 +45,7 @@ package service
 //     过滤 + 调度器内抢槽后终检共用，named reason 进入 openAISelectionFilterStats。
 //   - isOpenAICompatibleAccountEligibleForRequest：legacy 引擎与 DB recheck 共用。
 //   - resolveAccountByPreviousResponseIDForCapability：previous_response 粘连
-//     两阶段校验；与 quota auto-pause 同语义，跳过复用但不删除绑定。
+//     两阶段校验；临时否决时保留绑定并阻止不可迁移链路落入普通调度。
 //   - handler 槽位获取后终检（OpenAIProfitControlVeto）：快速抢槽与 WaitPlan
 //     排队成功后复核，越线则释放槽位、加入本请求排除集重新选号，全池耗尽才
 //     返回标准 no available accounts。

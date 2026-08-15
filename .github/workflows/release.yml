@@ -33,6 +33,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Update VERSION file
@@ -48,7 +49,7 @@ jobs:
           echo "Updated VERSION file to: $VERSION"
 
       - name: Verify XIASS release contract
-        run: python3 tools/check_release_contract.py --skip-migrations
+        run: python3 tools/check_release_contract.py
 
       - name: Upload VERSION artifact
         uses: actions/upload-artifact@v4
@@ -81,6 +82,18 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: frontend
 
+      - name: Lint frontend
+        run: pnpm run lint:check
+        working-directory: frontend
+
+      - name: Typecheck frontend
+        run: pnpm run typecheck
+        working-directory: frontend
+
+      - name: Test frontend
+        run: pnpm run test:run
+        working-directory: frontend
+
       - name: Build frontend
         run: pnpm run build
         working-directory: frontend
@@ -92,8 +105,75 @@ jobs:
           path: backend/internal/web/dist/
           retention-days: 1
 
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache-dependency-path: backend/go.sum
+
+      - name: Unit tests
+        run: make test-unit
+        working-directory: backend
+
+      - name: Integration tests
+        run: make test-integration
+        working-directory: backend
+
+  test-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/xiass-codex-helper/go.mod
+          check-latest: false
+          cache-dependency-path: tools/xiass-codex-helper/go.sum
+
+      - name: Test XIASS Codex Helper
+        run: go test ./...
+        working-directory: tools/xiass-codex-helper
+
+  test-deploy-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Verify deploy script syntax
+        run: |
+          bash -n deploy/install.sh
+          bash -n deploy/docker-deploy.sh
+          bash -n deploy/tests/install-github-token-test.sh
+          bash -n deploy/test-install-download-integrity.sh
+          bash -n deploy/test-docker-deploy-existing-install.sh
+
+      - name: Test install download integrity
+        run: bash deploy/test-install-download-integrity.sh
+
+      - name: Test install GitHub authentication isolation
+        run: bash deploy/tests/install-github-token-test.sh
+
+      - name: Test existing deployment protection
+        run: bash deploy/test-docker-deploy-existing-install.sh
+
   release:
-    needs: [update-version, build-frontend]
+    needs: [update-version, build-frontend, test-backend, test-helper, test-deploy-scripts]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

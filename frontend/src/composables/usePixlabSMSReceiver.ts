@@ -293,7 +293,12 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
 		queuedKeyCount.value = status.queued_count
 		activeSessionCount.value = status.active_count
 		available.value = status.available === true
-		if (typeof status.fee_amount === 'number') feeAmount.value = status.fee_amount
+			// The queue status carries the administrator's current price, while an
+			// active member session carries its immutable price snapshot. Do not let
+			// a status refresh relabel an in-progress session after the price changes.
+			if (typeof status.fee_amount === 'number' && (!isMember || !hasActiveSession.value)) {
+				feeAmount.value = status.fee_amount
+			}
 		if (typeof status.balance === 'number') balance.value = status.balance
 		return status
   }

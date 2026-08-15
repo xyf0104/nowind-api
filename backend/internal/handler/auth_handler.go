@@ -261,8 +261,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Check if TOTP 2FA is enabled for this user
-	if h.totpService != nil && h.settingSvc.IsTotpEnabled(c.Request.Context()) && user.TotpEnabled {
+	// Check if TOTP 2FA is enabled for this user. A settings-store failure must
+	// stop login instead of silently downgrading a TOTP account to password-only.
+	totpEnabled, err := h.settingSvc.IsTotpEnabled(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if h.totpService != nil && totpEnabled && user.TotpEnabled {
 		// Create a temporary login session for 2FA
 		tempToken, err := h.totpService.CreateLoginSession(c.Request.Context(), user.ID, user.Email)
 		if err != nil {
@@ -352,6 +358,20 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		return
 	}
 
+	// Claim the temporary session only after the code and account checks pass,
+	// but before any OAuth side effects or token signing. Only one concurrent
+	// request can proceed beyond this point.
+	claimedSession, err := h.totpService.ConsumeLoginSession(c.Request.Context(), req.TempToken)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if claimedSession == nil {
+		response.BadRequest(c, "Invalid or expired 2FA session")
+		return
+	}
+	session = claimedSession
+
 	if session.PendingOAuthBind != nil {
 		pendingSvc, err := h.pendingIdentityService()
 		if err != nil {
@@ -408,9 +428,6 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 			return
 		}
 	}
-
-	// Delete the login session (only after all checks pass)
-	_ = h.totpService.DeleteLoginSession(c.Request.Context(), req.TempToken)
 
 	if session.PendingOAuthBind == nil {
 		h.authService.RecordSuccessfulLogin(c.Request.Context(), user.ID)

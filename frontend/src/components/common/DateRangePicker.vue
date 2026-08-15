@@ -116,6 +116,26 @@ const dropdownStyle = ref<Record<string, string>>({})
 const localStartDate = ref(props.startDate)
 const localEndDate = ref(props.endDate)
 const activePreset = ref<string | null>('last24Hours')
+const viewportPadding = 8
+const dropdownGap = 8
+const preferredDropdownWidth = 320
+
+const getViewportBounds = () => {
+  const viewport = window.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? window.innerWidth
+  const height = viewport?.height ?? window.innerHeight
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height
+  }
+}
 
 const today = computed(() => {
   // Use local timezone to avoid UTC timezone issues
@@ -275,27 +295,36 @@ const onDateChange = () => {
 const updateDropdownPosition = () => {
   if (!isOpen.value || !containerRef.value) return
 
+  const viewport = getViewportBounds()
   const triggerRect = containerRef.value.getBoundingClientRect()
-  const dropdownWidth = dropdownRef.value?.offsetWidth || 320
-  const dropdownHeight = dropdownRef.value?.offsetHeight || 0
-  const viewportPadding = 8
-  const gap = 8
-
-  const maxLeft = Math.max(viewportPadding, window.innerWidth - dropdownWidth - viewportPadding)
-  const left = Math.min(Math.max(triggerRect.left, viewportPadding), maxLeft)
-  let top = triggerRect.bottom + gap
-
-  if (
-    dropdownHeight > 0 &&
-    top + dropdownHeight > window.innerHeight - viewportPadding &&
-    triggerRect.top - dropdownHeight - gap >= viewportPadding
-  ) {
-    top = triggerRect.top - dropdownHeight - gap
-  }
+  const dropdownWidth = Math.max(
+    0,
+    Math.min(preferredDropdownWidth, viewport.width - viewportPadding * 2)
+  )
+  const dropdownHeight = dropdownRef.value?.scrollHeight || dropdownRef.value?.offsetHeight || 320
+  const minimumLeft = viewport.left + viewportPadding
+  const maximumLeft = Math.max(minimumLeft, viewport.right - dropdownWidth - viewportPadding)
+  const left = Math.min(Math.max(triggerRect.left, minimumLeft), maximumLeft)
+  const spaceBelow = Math.max(
+    0,
+    viewport.bottom - triggerRect.bottom - dropdownGap - viewportPadding
+  )
+  const spaceAbove = Math.max(
+    0,
+    triggerRect.top - viewport.top - dropdownGap - viewportPadding
+  )
+  const openAbove = spaceBelow < dropdownHeight && spaceAbove > spaceBelow
+  const availableHeight = openAbove ? spaceAbove : spaceBelow
+  const visibleHeight = Math.min(dropdownHeight, availableHeight)
+  const top = openAbove
+    ? Math.max(viewport.top + viewportPadding, triggerRect.top - dropdownGap - visibleHeight)
+    : triggerRect.bottom + dropdownGap
 
   dropdownStyle.value = {
     left: `${Math.round(left)}px`,
-    top: `${Math.round(top)}px`
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(dropdownWidth)}px`,
+    maxHeight: `${Math.floor(availableHeight)}px`
   }
 }
 
@@ -357,6 +386,8 @@ onMounted(() => {
   document.addEventListener('keydown', handleEscape)
   window.addEventListener('resize', updateDropdownPosition)
   window.addEventListener('scroll', updateDropdownPosition, true)
+  window.visualViewport?.addEventListener('resize', updateDropdownPosition)
+  window.visualViewport?.addEventListener('scroll', updateDropdownPosition)
   // Initialize active preset detection
   onDateChange()
 })
@@ -366,6 +397,8 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleEscape)
   window.removeEventListener('resize', updateDropdownPosition)
   window.removeEventListener('scroll', updateDropdownPosition, true)
+  window.visualViewport?.removeEventListener('resize', updateDropdownPosition)
+  window.visualViewport?.removeEventListener('scroll', updateDropdownPosition)
 })
 </script>
 
@@ -404,9 +437,10 @@ onUnmounted(() => {
   @apply rounded-xl;
   @apply border border-gray-200 dark:border-dark-700;
   @apply shadow-lg shadow-black/10 dark:shadow-black/30;
-  @apply overflow-hidden;
-  @apply min-w-[320px];
+  @apply min-w-0 overflow-y-auto;
+  width: min(320px, calc(100vw - 1rem));
   max-width: calc(100vw - 1rem);
+  overscroll-behavior: contain;
 }
 
 .date-picker-presets {
@@ -434,7 +468,7 @@ onUnmounted(() => {
 }
 
 .date-picker-field {
-  @apply flex-1;
+  @apply min-w-0 flex-1;
 }
 
 .date-picker-label {
@@ -442,7 +476,7 @@ onUnmounted(() => {
 }
 
 .date-picker-input {
-  @apply w-full rounded-md px-2 py-1.5 text-sm;
+  @apply min-w-0 w-full rounded-md px-2 py-1.5 text-sm;
   @apply bg-gray-50 dark:bg-dark-700;
   @apply border border-gray-200 dark:border-dark-600;
   @apply text-gray-900 dark:text-gray-100;

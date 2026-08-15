@@ -65,14 +65,12 @@
           </div>
         </div>
 
-        <!-- Options (Remember & Forgot) -->
-        <div class="flex items-center justify-between pt-1">
-          <label class="flex items-center text-sm text-gray-400 cursor-pointer">
-            <input type="checkbox" class="form-checkbox bg-transparent border-gray-500 rounded focus:ring-0 w-4 h-4 mr-2 checked:bg-white checked:text-black transition-colors" />
-            <span class="text-sm font-normal text-gray-300">保持登录 30 天</span>
-          </label>
+        <!-- Forgot Password -->
+        <div
+          v-if="passwordResetEnabled && !backendModeEnabled"
+          class="flex justify-end pt-1"
+        >
           <router-link
-            v-if="passwordResetEnabled && !backendModeEnabled"
             to="/forgot-password"
             class="text-sm text-white hover:underline font-medium"
           >

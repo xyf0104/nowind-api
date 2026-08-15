@@ -33,3 +33,14 @@ describe('site_logo sanitization', () => {
     }
   })
 })
+
+describe('HomeView runtime wiring', () => {
+  it('registers the provider icon component used by the home page', () => {
+    expect(homeViewSource).toContain("import BrandIcon from '@/components/icons/BrandIcon.vue'")
+  })
+
+  it('removes the particle resize listener when the home page unmounts', () => {
+    expect(homeViewSource).toContain("window.addEventListener('resize', resize)")
+    expect(homeViewSource).toContain("window.removeEventListener('resize', homeResizeHandler)")
+  })
+})

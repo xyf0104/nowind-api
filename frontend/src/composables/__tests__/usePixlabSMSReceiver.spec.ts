@@ -8,7 +8,15 @@ vi.mock('@/api/admin/smsReceiver', () => ({
   resume: vi.fn(),
   check: vi.fn(),
   change: vi.fn(),
-  cancel: vi.fn()
+  cancel: vi.fn(),
+  memberSMSReceiverAPI: {
+    getStatus: vi.fn(),
+    redeem: vi.fn(),
+    resume: vi.fn(),
+    check: vi.fn(),
+    change: vi.fn(),
+    cancel: vi.fn()
+  }
 }))
 
 import * as smsReceiverAPI from '@/api/admin/smsReceiver'
@@ -305,6 +313,29 @@ describe('usePixlabSMSReceiver', () => {
     expect(localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)).toBe('server-session-new')
     expect(receiver.phoneForCopy.value).toBe('+8613912345678')
     expect(receiver.queuedKeyCount.value).toBe(0)
+  })
+
+  it('keeps the active member session price snapshot when queue status has a newer price', async () => {
+    receiver.stop()
+    receiver = usePixlabSMSReceiver('member')
+    vi.mocked(smsReceiverAPI.memberSMSReceiverAPI.getStatus)
+      .mockResolvedValueOnce({ queued_count: 2, active_count: 0, available: true, fee_amount: 3 })
+      .mockResolvedValueOnce({ queued_count: 2, active_count: 1, available: true, fee_amount: 4 })
+    vi.mocked(smsReceiverAPI.memberSMSReceiverAPI.redeem).mockResolvedValue({
+      session_id: 'member-price-snapshot',
+      status: 'WAITING',
+      number: '27749433060',
+      country: '南非',
+      queued_count: 1,
+      fee_amount: 2,
+      charge_state: 'held'
+    })
+
+    await expect(receiver.start()).resolves.toBe('waiting')
+    expect(receiver.feeAmount.value).toBe(2)
+
+    await receiver.refreshQueueStatus()
+    expect(receiver.feeAmount.value).toBe(2)
   })
 
   it('clears a locally stored session when the server retires a limit-reached card', async () => {

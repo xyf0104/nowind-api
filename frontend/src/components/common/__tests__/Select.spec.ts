@@ -13,6 +13,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 const originalInnerWidth = window.innerWidth
+const originalVisualViewport = window.visualViewport
 let unmountWrapper: (() => void) | undefined
 
 const setViewportWidth = (width: number) => {
@@ -22,16 +23,33 @@ const setViewportWidth = (width: number) => {
   })
 }
 
-const mockTriggerRect = (left: number, width: number) => {
+const setVisualViewport = (value: Partial<VisualViewport> | undefined) => {
+  Object.defineProperty(window, 'visualViewport', {
+    configurable: true,
+    value: value
+      ? {
+          offsetLeft: 0,
+          offsetTop: 0,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          ...value,
+        }
+      : undefined,
+  })
+}
+
+const mockTriggerRect = (left: number, width: number, top = 20, height = 40) => {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
     x: left,
-    y: 20,
-    top: 20,
+    y: top,
+    top,
     right: left + width,
-    bottom: 60,
+    bottom: top + height,
     left,
     width,
-    height: 40,
+    height,
     toJSON: () => ({}),
   })
 }
@@ -61,6 +79,7 @@ afterEach(() => {
   unmountWrapper = undefined
   document.body.innerHTML = ''
   setViewportWidth(originalInnerWidth)
+  setVisualViewport(originalVisualViewport)
   vi.restoreAllMocks()
 })
 
@@ -123,5 +142,46 @@ describe('Select dropdown viewport constraints', () => {
     expect(dropdown?.style.left).toBe('8px')
     expect(dropdown?.style.minWidth).toBe('164px')
     expect(dropdown?.style.maxWidth).toBe('164px')
+  })
+
+  it('selects a small non-searchable option list with keyboard controls on the trigger', async () => {
+    const wrapper = mount(Select, {
+      props: {
+        modelValue: null,
+        options: [
+          { value: 'first', label: 'First' },
+          { value: 'second', label: 'Second' },
+        ],
+      },
+    })
+    unmountWrapper = () => wrapper.unmount()
+    const trigger = wrapper.get('button')
+
+    await trigger.trigger('keydown', { key: 'ArrowDown' })
+    await nextTick()
+    await trigger.trigger('keydown', { key: 'ArrowDown' })
+    await trigger.trigger('keydown', { key: 'Enter' })
+
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['second'])
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('chooses the larger visualViewport side and constrains the scrollable popup height', async () => {
+    setViewportWidth(1024)
+    setVisualViewport({
+      offsetLeft: 0,
+      offsetTop: 100,
+      width: 320,
+      height: 240,
+    })
+    mockTriggerRect(20, 100, 250, 40)
+
+    const dropdown = await openSelect()
+    await nextTick()
+
+    expect(dropdown?.style.top).toBe('108px')
+    expect(dropdown?.style.maxHeight).toBe('138px')
+    expect(dropdown?.className).toContain('select-dropdown-portal')
+    expect(dropdown?.querySelector('.select-options')).not.toBeNull()
   })
 })

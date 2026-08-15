@@ -16,8 +16,7 @@
         error && 'select-trigger-error',
         disabled && 'select-trigger-disabled'
       ]"
-      @keydown.down.prevent="onTriggerKeyDown"
-      @keydown.up.prevent="onTriggerKeyDown"
+      @keydown="onTriggerKeyDown"
     >
       <span class="select-value">
         <slot name="selected" :option="selectedOption">
@@ -184,8 +183,28 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const optionsListRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<'bottom' | 'top'>('bottom')
 const triggerRect = ref<DOMRect | null>(null)
+const dropdownAvailableHeight = ref<number | null>(null)
+const dropdownMeasuredHeight = ref(0)
 const dropdownViewportPadding = 8
 const dropdownMinimumWidth = 200
+const dropdownGap = 4
+
+const getViewportBounds = () => {
+  const viewport = window.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? window.innerWidth
+  const height = viewport?.height ?? window.innerHeight
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height
+  }
+}
 
 // i18n placeholders
 const placeholderText = computed(() => props.placeholder ?? t('common.selectOption'))
@@ -202,12 +221,14 @@ const dropdownStyle = computed(() => {
   if (!triggerRect.value) return {}
 
   const rect = triggerRect.value
-  const availableViewportWidth = Math.max(0, window.innerWidth - dropdownViewportPadding * 2)
+  const viewport = getViewportBounds()
+  const availableViewportWidth = Math.max(0, viewport.width - dropdownViewportPadding * 2)
   const preferredMinWidth = Math.max(dropdownMinimumWidth, rect.width)
   const minWidth = Math.min(preferredMinWidth, availableViewportWidth)
-  const viewportRight = window.innerWidth - dropdownViewportPadding
+  const viewportLeft = viewport.left + dropdownViewportPadding
+  const viewportRight = viewport.right - dropdownViewportPadding
   const left = Math.max(
-    dropdownViewportPadding,
+    viewportLeft,
     Math.min(rect.left, viewportRight - minWidth)
   )
   const availableWidth = Math.max(0, viewportRight - left)
@@ -219,10 +240,21 @@ const dropdownStyle = computed(() => {
     zIndex: '100000020'
   }
 
+  if (dropdownAvailableHeight.value !== null) {
+    style.maxHeight = `${Math.max(0, Math.floor(dropdownAvailableHeight.value))}px`
+  }
+
   if (dropdownPosition.value === 'top') {
-    style.bottom = `${window.innerHeight - rect.top + 4}px`
+    const visibleHeight = Math.min(
+      dropdownMeasuredHeight.value || dropdownAvailableHeight.value || 0,
+      dropdownAvailableHeight.value || 0
+    )
+    style.top = `${Math.max(
+      viewport.top + dropdownViewportPadding,
+      rect.top - dropdownGap - visibleHeight
+    )}px`
   } else {
-    style.top = `${rect.bottom + 4}px`
+    style.top = `${rect.bottom + dropdownGap}px`
   }
 
   return style
@@ -305,7 +337,7 @@ const findNextEnabledIndex = (startIndex: number): number => {
   if (opts.length === 0) return -1
   for (let offset = 0; offset < opts.length; offset++) {
     const idx = (startIndex + offset) % opts.length
-    if (!isOptionDisabled(opts[idx])) return idx
+    if (!isOptionDisabled(opts[idx]) && !isGroupHeaderOption(opts[idx])) return idx
   }
   return -1
 }
@@ -315,7 +347,7 @@ const findPrevEnabledIndex = (startIndex: number): number => {
   if (opts.length === 0) return -1
   for (let offset = 0; offset < opts.length; offset++) {
     const idx = (startIndex - offset + opts.length) % opts.length
-    if (!isOptionDisabled(opts[idx])) return idx
+    if (!isOptionDisabled(opts[idx]) && !isGroupHeaderOption(opts[idx])) return idx
   }
   return -1
 }
@@ -338,15 +370,31 @@ const calculateDropdownPosition = () => {
 
   nextTick(() => {
     if (!dropdownRef.value || !triggerRect.value) return
-    const dropdownHeight = dropdownRef.value.offsetHeight || 240
-    const spaceBelow = window.innerHeight - triggerRect.value.bottom
-    const spaceAbove = triggerRect.value.top
+    const viewport = getViewportBounds()
+    const renderedOptionsHeight = optionsListRef.value?.offsetHeight || 0
+    const naturalOptionsHeight = optionsListRef.value?.scrollHeight || renderedOptionsHeight
+    const dropdownChromeHeight = Math.max(
+      0,
+      dropdownRef.value.offsetHeight - renderedOptionsHeight
+    )
+    const dropdownHeight = Math.max(
+      dropdownRef.value.scrollHeight,
+      dropdownChromeHeight + naturalOptionsHeight,
+      240
+    )
+    const spaceBelow = Math.max(
+      0,
+      viewport.bottom - triggerRect.value.bottom - dropdownGap - dropdownViewportPadding
+    )
+    const spaceAbove = Math.max(
+      0,
+      triggerRect.value.top - viewport.top - dropdownGap - dropdownViewportPadding
+    )
+    const openAbove = spaceBelow < dropdownHeight && spaceAbove > spaceBelow
 
-    if (spaceBelow < dropdownHeight && spaceAbove > dropdownHeight) {
-      dropdownPosition.value = 'top'
-    } else {
-      dropdownPosition.value = 'bottom'
-    }
+    dropdownMeasuredHeight.value = dropdownHeight
+    dropdownPosition.value = openAbove ? 'top' : 'bottom'
+    dropdownAvailableHeight.value = openAbove ? spaceAbove : spaceBelow
   })
 }
 
@@ -373,14 +421,25 @@ watch(isOpen, (open) => {
       nextTick(() => searchInputRef.value?.focus())
     }
     // Add scroll listener to update position
-    window.addEventListener('scroll', updateTriggerRect, { capture: true, passive: true })
+    window.addEventListener('scroll', calculateDropdownPosition, { capture: true, passive: true })
     window.addEventListener('resize', calculateDropdownPosition)
+    window.visualViewport?.addEventListener('resize', calculateDropdownPosition)
+    window.visualViewport?.addEventListener('scroll', calculateDropdownPosition)
   } else {
     searchQuery.value = ''
     focusedIndex.value = -1
-    window.removeEventListener('scroll', updateTriggerRect, { capture: true })
+    dropdownAvailableHeight.value = null
+    dropdownMeasuredHeight.value = 0
+    window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
+    window.visualViewport?.removeEventListener('resize', calculateDropdownPosition)
+    window.visualViewport?.removeEventListener('scroll', calculateDropdownPosition)
   }
+})
+
+watch(filteredOptions, () => {
+  if (!isOpen.value) return
+  nextTick(calculateDropdownPosition)
 })
 
 const selectOption = (option: any) => {
@@ -398,10 +457,14 @@ const clearSelection = () => {
 }
 
 // Keyboards
-const onTriggerKeyDown = () => {
-  if (!isOpen.value) {
+const onTriggerKeyDown = (event: KeyboardEvent) => {
+  if (!isOpen.value && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    event.preventDefault()
     isOpen.value = true
+    return
   }
+
+  if (isOpen.value) onDropdownKeyDown(event)
 }
 
 const onDropdownKeyDown = (e: KeyboardEvent) => {
@@ -466,8 +529,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
-  window.removeEventListener('scroll', updateTriggerRect, { capture: true })
+  window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
   window.removeEventListener('resize', calculateDropdownPosition)
+  window.visualViewport?.removeEventListener('resize', calculateDropdownPosition)
+  window.visualViewport?.removeEventListener('scroll', calculateDropdownPosition)
 })
 </script>
 
@@ -514,6 +579,7 @@ onUnmounted(() => {
 <style>
 .select-dropdown-portal {
   @apply w-[480px] max-w-[90vw];
+  @apply flex flex-col;
   @apply bg-white dark:bg-dark-800;
   @apply rounded-xl;
   @apply border border-gray-200 dark:border-dark-700;
@@ -524,6 +590,7 @@ onUnmounted(() => {
 
 .select-dropdown-portal .select-search {
   @apply flex items-center gap-2 px-4 py-3;
+  @apply flex-shrink-0;
   @apply border-b border-gray-100 dark:border-dark-700;
 }
 
@@ -535,7 +602,7 @@ onUnmounted(() => {
 }
 
 .select-dropdown-portal .select-options {
-  @apply max-h-80 overflow-y-auto p-2 outline-none;
+  @apply min-h-0 flex-1 max-h-80 overflow-y-auto p-2 outline-none;
 }
 
 .select-dropdown-portal .select-option {

@@ -1,8 +1,9 @@
 <template>
   <div>
     <!-- Multi-select Dropdown -->
-    <div class="relative mb-3">
+    <div ref="containerRef" class="relative mb-3">
       <div
+        ref="triggerRef"
         @click="toggleDropdown"
         class="cursor-pointer rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-dark-500 dark:bg-dark-700"
       >
@@ -33,63 +34,68 @@
         </div>
       </div>
       <!-- Dropdown List -->
-      <div
-        v-if="showDropdown"
-        class="absolute left-0 right-0 top-full z-50 mt-1 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-dark-600 dark:bg-dark-700"
-      >
-        <div class="sticky top-0 border-b border-gray-200 bg-white p-2 dark:border-dark-600 dark:bg-dark-700">
-          <input
-            v-model="searchQuery"
-            type="text"
-            class="input w-full text-sm"
-            :placeholder="t('admin.accounts.searchModels')"
-            @click.stop
-          />
-        </div>
-        <div class="max-h-52 overflow-auto">
-          <div
-            v-for="model in filteredModels"
-            :key="model.value"
-            data-testid="model-option"
-            class="group flex items-center hover:bg-gray-100 dark:hover:bg-dark-600"
-          >
-            <button
-              type="button"
-              data-testid="select-model"
-              class="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm"
-              @click="toggleModel(model.value)"
+      <Teleport to="body">
+        <div
+          v-if="showDropdown"
+          ref="dropdownRef"
+          data-testid="model-dropdown"
+          class="flex flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-dark-600 dark:bg-dark-700"
+          :style="dropdownStyle"
+        >
+          <div class="shrink-0 border-b border-gray-200 bg-white p-2 dark:border-dark-600 dark:bg-dark-700">
+            <input
+              v-model="searchQuery"
+              type="text"
+              class="input w-full text-sm"
+              :placeholder="t('admin.accounts.searchModels')"
+              @click.stop
+            />
+          </div>
+          <div class="min-h-0 max-h-52 overflow-auto">
+            <div
+              v-for="model in filteredModels"
+              :key="model.value"
+              data-testid="model-option"
+              class="group flex items-center hover:bg-gray-100 dark:hover:bg-dark-600"
             >
-              <span
-                :class="[
-                  'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                  modelValue.includes(model.value)
-                    ? 'border-primary-500 bg-primary-500 text-white'
-                    : 'border-gray-300 dark:border-dark-500'
-                ]"
+              <button
+                type="button"
+                data-testid="select-model"
+                class="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm"
+                @click="toggleModel(model.value)"
               >
-                <svg v-if="modelValue.includes(model.value)" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-                </svg>
-              </span>
-              <ModelIcon :model="model.value" size="18px" />
-              <span class="truncate text-gray-900 dark:text-white">{{ model.value }}</span>
-            </button>
-            <button
-              type="button"
-              data-testid="copy-model-id"
-              class="mr-2 rounded p-1.5 text-gray-400 opacity-70 transition-colors hover:bg-gray-200 hover:text-primary-600 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 group-hover:opacity-100 dark:text-gray-500 dark:hover:bg-dark-500 dark:hover:text-primary-400"
-              :title="`${t('common.copy')} ${model.value}`"
-              :aria-label="`${t('common.copy')} ${model.value}`"
-              @click="copyModelId(model.value)"
-            >
-              <Icon name="copy" size="sm" />
-            </button>
-          </div>
-          <div v-if="filteredModels.length === 0" class="px-3 py-4 text-center text-sm text-gray-500">
-            {{ t('admin.accounts.noMatchingModels') }}
+                <span
+                  :class="[
+                    'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                    modelValue.includes(model.value)
+                      ? 'border-primary-500 bg-primary-500 text-white'
+                      : 'border-gray-300 dark:border-dark-500'
+                  ]"
+                >
+                  <svg v-if="modelValue.includes(model.value)" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                  </svg>
+                </span>
+                <ModelIcon :model="model.value" size="18px" />
+                <span class="truncate text-gray-900 dark:text-white">{{ model.value }}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="copy-model-id"
+                class="mr-2 rounded p-1.5 text-gray-400 opacity-70 transition-colors hover:bg-gray-200 hover:text-primary-600 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 group-hover:opacity-100 dark:text-gray-500 dark:hover:bg-dark-500 dark:hover:text-primary-400"
+                :title="`${t('common.copy')} ${model.value}`"
+                :aria-label="`${t('common.copy')} ${model.value}`"
+                @click="copyModelId(model.value)"
+              >
+                <Icon name="copy" size="sm" />
+              </button>
+            </div>
+            <div v-if="filteredModels.length === 0" class="px-3 py-4 text-center text-sm text-gray-500">
+              {{ t('admin.accounts.noMatchingModels') }}
+            </div>
           </div>
         </div>
-      </div>
+      </Teleport>
     </div>
 
     <!-- Quick Actions -->
@@ -145,7 +151,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { accountsAPI } from '@/api/admin/accounts'
@@ -182,6 +188,75 @@ const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
 const isSyncingUpstream = ref(false)
+const containerRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLElement | null>(null)
+const dropdownRef = ref<HTMLElement | null>(null)
+const dropdownStyle = ref<Record<string, string>>({})
+
+const DROPDOWN_GAP = 4
+const VIEWPORT_PADDING = 8
+const PREFERRED_DROPDOWN_HEIGHT = 264
+
+const updateDropdownPosition = () => {
+  const trigger = triggerRef.value
+  if (!trigger) return
+
+  const rect = trigger.getBoundingClientRect()
+  const viewport = window.visualViewport
+  const viewportTop = viewport?.offsetTop ?? 0
+  const viewportLeft = viewport?.offsetLeft ?? 0
+  const viewportWidth = viewport?.width ?? window.innerWidth
+  const viewportHeight = viewport?.height ?? window.innerHeight
+  const viewportRight = viewportLeft + viewportWidth
+  const viewportBottom = viewportTop + viewportHeight
+  const availableWidth = Math.max(0, viewportWidth - VIEWPORT_PADDING * 2)
+  const width = Math.min(Math.max(0, rect.width), availableWidth)
+  const left = Math.max(
+    viewportLeft + VIEWPORT_PADDING,
+    Math.min(rect.left, viewportRight - VIEWPORT_PADDING - width)
+  )
+  const spaceBelow = Math.max(
+    0,
+    viewportBottom - VIEWPORT_PADDING - rect.bottom - DROPDOWN_GAP
+  )
+  const spaceAbove = Math.max(
+    0,
+    rect.top - viewportTop - VIEWPORT_PADDING - DROPDOWN_GAP
+  )
+  const openAbove = spaceBelow < PREFERRED_DROPDOWN_HEIGHT && spaceAbove > spaceBelow
+  const maxHeight = openAbove ? spaceAbove : spaceBelow
+
+  dropdownStyle.value = {
+    position: 'fixed',
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(openAbove ? rect.top - DROPDOWN_GAP : rect.bottom + DROPDOWN_GAP)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.floor(maxHeight)}px`,
+    transform: openAbove ? 'translateY(-100%)' : 'none',
+    zIndex: '100000020'
+  }
+}
+
+const startPositionTracking = () => {
+  window.addEventListener('scroll', updateDropdownPosition, true)
+  window.addEventListener('resize', updateDropdownPosition)
+  window.visualViewport?.addEventListener('scroll', updateDropdownPosition)
+  window.visualViewport?.addEventListener('resize', updateDropdownPosition)
+}
+
+const stopPositionTracking = () => {
+  window.removeEventListener('scroll', updateDropdownPosition, true)
+  window.removeEventListener('resize', updateDropdownPosition)
+  window.visualViewport?.removeEventListener('scroll', updateDropdownPosition)
+  window.visualViewport?.removeEventListener('resize', updateDropdownPosition)
+}
+
+const closeDropdown = () => {
+  showDropdown.value = false
+  searchQuery.value = ''
+  stopPositionTracking()
+}
+
 const normalizedPlatforms = computed(() => {
   const rawPlatforms =
     props.platforms && props.platforms.length > 0
@@ -235,8 +310,28 @@ const filteredModels = computed(() => {
 })
 
 const toggleDropdown = () => {
-  showDropdown.value = !showDropdown.value
-  if (!showDropdown.value) searchQuery.value = ''
+  if (showDropdown.value) {
+    closeDropdown()
+    return
+  }
+
+  updateDropdownPosition()
+  showDropdown.value = true
+  startPositionTracking()
+  nextTick(updateDropdownPosition)
+}
+
+const handleClickOutside = (event: MouseEvent) => {
+  const target = event.target as Node
+  if (!containerRef.value?.contains(target) && !dropdownRef.value?.contains(target)) {
+    closeDropdown()
+  }
+}
+
+const handleEscape = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && showDropdown.value) {
+    closeDropdown()
+  }
 }
 
 const removeModel = (model: string) => {
@@ -329,5 +424,16 @@ const syncUpstreamModels = async () => {
 const clearAll = () => {
   emit('update:modelValue', [])
 }
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+  document.addEventListener('keydown', handleEscape)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+  document.removeEventListener('keydown', handleEscape)
+  stopPositionTracking()
+})
 
 </script>

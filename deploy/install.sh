@@ -2,7 +2,7 @@
 #
 # XIASS API Installation Script
 # XIASS API 二进制安装脚本
-# Usage: curl -sSL https://raw.githubusercontent.com/xyf0104/xiass-api/main/deploy/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/xyf0104/xiass-api/main/deploy/install.sh | bash
 #
 
 set -e
@@ -507,10 +507,27 @@ check_dependencies() {
         missing+=("tar")
     fi
 
+    if ! command -v sha256sum &> /dev/null && ! command -v shasum &> /dev/null; then
+        missing+=("sha256sum or shasum")
+    fi
+
     if [ ${#missing[@]} -gt 0 ]; then
         print_error "$(msg 'missing_deps'): ${missing[*]}"
         print_info "$(msg 'install_deps_first')"
         exit 1
+    fi
+}
+
+calculate_sha256() {
+    local file="$1"
+
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum &> /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        print_error "Neither sha256sum nor shasum is available."
+        return 1
     fi
 }
 
@@ -661,27 +678,37 @@ download_and_extract() {
     trap "rm -rf $TEMP_DIR" EXIT
 
     # Download archive
-    if ! curl -sL "$download_url" -o "$TEMP_DIR/$archive_name"; then
+    if ! curl -fsSL "$download_url" -o "$TEMP_DIR/$archive_name"; then
         print_error "$(msg 'download_failed')"
         exit 1
     fi
 
     # Download and verify checksum
     print_info "$(msg 'verifying_checksum')"
-    if curl -sL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
-        local expected_checksum=$(grep "$archive_name" "$TEMP_DIR/checksums.txt" | awk '{print $1}')
-        local actual_checksum=$(sha256sum "$TEMP_DIR/$archive_name" | awk '{print $1}')
-
-        if [ "$expected_checksum" != "$actual_checksum" ]; then
-            print_error "$(msg 'checksum_failed')"
-            print_error "Expected: $expected_checksum"
-            print_error "Actual: $actual_checksum"
-            exit 1
-        fi
-        print_success "$(msg 'checksum_verified')"
-    else
-        print_warning "$(msg 'checksum_not_found')"
+    if ! curl -fsSL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
+        print_error "$(msg 'checksum_not_found')"
+        exit 1
     fi
+
+    local expected_checksum
+    local actual_checksum
+    expected_checksum=$(awk -v archive="$archive_name" '$2 == archive || $2 == "*" archive { print $1; exit }' "$TEMP_DIR/checksums.txt")
+    if ! [[ "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]]; then
+        print_error "$(msg 'checksum_failed')"
+        print_error "No valid checksum found for: $archive_name"
+        exit 1
+    fi
+
+    actual_checksum=$(calculate_sha256 "$TEMP_DIR/$archive_name")
+    expected_checksum=$(printf '%s' "$expected_checksum" | tr '[:upper:]' '[:lower:]')
+    actual_checksum=$(printf '%s' "$actual_checksum" | tr '[:upper:]' '[:lower:]')
+    if [ "$expected_checksum" != "$actual_checksum" ]; then
+        print_error "$(msg 'checksum_failed')"
+        print_error "Expected: $expected_checksum"
+        print_error "Actual: $actual_checksum"
+        exit 1
+    fi
+    print_success "$(msg 'checksum_verified')"
 
     # Extract
     print_info "$(msg 'extracting')"

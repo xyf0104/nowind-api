@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -62,7 +63,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		log.Printf("XIASS API %s (commit: %s, built: %s)\n", Version, Commit, Date)
+		fmt.Printf("XIASS API %s (commit: %s, built: %s)\n", Version, Commit, Date)
 		return
 	}
 

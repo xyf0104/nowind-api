@@ -334,59 +334,52 @@
           <template #cell-groups="{ row }">
             <div v-if="allGroups.length > 0" class="flex flex-col gap-1">
               <!-- 专属分组行 -->
-              <span
+              <div
                 v-if="getUserGroups(row).exclusive.length > 0"
-                class="group/ex relative inline-flex cursor-pointer items-center gap-1 whitespace-nowrap text-xs"
-                @click.stop="toggleExpandedGroup(row.id)"
+                class="exclusive-group-trigger inline-flex cursor-pointer items-center whitespace-nowrap text-xs"
+                role="button"
+                tabindex="0"
+                aria-haspopup="menu"
+                :aria-expanded="expandedGroupUserId === row.id"
+                :data-test="`exclusive-group-trigger-${row.id}`"
+                @click.stop="toggleExpandedGroup(row, $event)"
+                @keydown.enter.prevent.stop="toggleExpandedGroup(row, $event)"
+                @keydown.space.prevent.stop="toggleExpandedGroup(row, $event)"
               >
-                <Icon name="shield" size="xs" class="h-3.5 w-3.5 text-purple-500 dark:text-purple-400" />
-                <span class="font-medium text-purple-600 dark:text-purple-400">{{ getUserGroups(row).exclusive.length }}</span>
-                <span class="text-gray-500 dark:text-dark-400">{{ t('admin.users.exclusiveLabel') }}</span>
-                <!-- Hover tooltip（操作菜单未打开时显示） -->
-                <div
-                  v-if="expandedGroupUserId !== row.id"
-                  class="pointer-events-none absolute left-0 top-full z-50 mt-1.5 rounded bg-gray-900 px-2.5 py-1.5 text-xs text-white opacity-0 shadow-lg transition-opacity duration-75 group-hover/ex:opacity-100 dark:bg-dark-600"
+                <HelpTooltip
+                  :key="expandedGroupUserId === row.id ? 'menu-open' : 'menu-closed'"
+                  class="!ml-0"
+                  width-class="w-auto"
                 >
-                  <div class="absolute left-4 bottom-full border-4 border-transparent border-b-gray-900 dark:border-b-dark-600"></div>
+                  <template #trigger>
+                    <span class="inline-flex items-center gap-1">
+                      <Icon name="shield" size="xs" class="h-3.5 w-3.5 text-purple-500 dark:text-purple-400" />
+                      <span class="font-medium text-purple-600 dark:text-purple-400">{{ getUserGroups(row).exclusive.length }}</span>
+                      <span class="text-gray-500 dark:text-dark-400">{{ t('admin.users.exclusiveLabel') }}</span>
+                    </span>
+                  </template>
                   <div class="flex flex-col gap-0.5 whitespace-nowrap">
                     <span v-for="g in getUserGroups(row).exclusive" :key="g.id">{{ g.name }}</span>
                   </div>
-                </div>
-                <!-- 点击展开分组操作菜单 -->
-                <div
-                  v-if="expandedGroupUserId === row.id"
-                  class="absolute left-0 top-full z-50 mt-1.5 min-w-[160px] overflow-hidden rounded-lg border border-gray-200 bg-white py-1 text-xs shadow-xl dark:border-dark-600 dark:bg-dark-700"
-                >
-                  <div class="border-b border-gray-100 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:border-dark-600 dark:text-dark-400">
-                    {{ t('admin.users.clickToReplace') }}
-                  </div>
-                  <div
-                    v-for="g in getUserGroups(row).exclusive"
-                    :key="g.id"
-                    class="flex cursor-pointer items-center gap-2 px-3 py-2 text-gray-700 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:text-dark-200 dark:hover:bg-primary-900/30 dark:hover:text-primary-400"
-                    @click.stop="openGroupReplace(row, g)"
-                  >
-                    <Icon name="swap" size="xs" class="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
-                    <span class="flex-1">{{ g.name }}</span>
-                  </div>
-                </div>
-              </span>
+                </HelpTooltip>
+              </div>
               <!-- 公开分组行 -->
-              <span
+              <HelpTooltip
                 v-if="getUserGroups(row).publicGroups.length > 0"
-                class="group/pub relative inline-flex cursor-default items-center gap-1 whitespace-nowrap text-xs"
+                class="!ml-0"
+                width-class="w-auto"
               >
-                <Icon name="globe" size="xs" class="h-3.5 w-3.5 text-gray-400 dark:text-dark-500" />
-                <span class="font-medium text-gray-600 dark:text-dark-300">{{ getUserGroups(row).publicGroups.length }}</span>
-                <span class="text-gray-400 dark:text-dark-500">{{ t('admin.users.publicLabel') }}</span>
-                <!-- Tooltip: 向下弹出 -->
-                <div class="pointer-events-none absolute left-0 top-full z-50 mt-1.5 rounded bg-gray-900 px-2.5 py-1.5 text-xs text-white opacity-0 shadow-lg transition-opacity duration-75 group-hover/pub:opacity-100 dark:bg-dark-600">
-                  <div class="absolute left-4 bottom-full border-4 border-transparent border-b-gray-900 dark:border-b-dark-600"></div>
-                  <div class="flex flex-col gap-0.5 whitespace-nowrap">
-                    <span v-for="g in getUserGroups(row).publicGroups" :key="g.id">{{ g.name }}</span>
-                  </div>
+                <template #trigger>
+                  <span class="inline-flex cursor-default items-center gap-1 whitespace-nowrap text-xs">
+                    <Icon name="globe" size="xs" class="h-3.5 w-3.5 text-gray-400 dark:text-dark-500" />
+                    <span class="font-medium text-gray-600 dark:text-dark-300">{{ getUserGroups(row).publicGroups.length }}</span>
+                    <span class="text-gray-400 dark:text-dark-500">{{ t('admin.users.publicLabel') }}</span>
+                  </span>
+                </template>
+                <div class="flex flex-col gap-0.5 whitespace-nowrap">
+                  <span v-for="g in getUserGroups(row).publicGroups" :key="g.id">{{ g.name }}</span>
                 </div>
-              </span>
+              </HelpTooltip>
               <!-- 都没有 -->
               <span
                 v-if="getUserGroups(row).exclusive.length === 0 && getUserGroups(row).publicGroups.length === 0"
@@ -423,19 +416,20 @@
 
           <template #cell-balance="{ value, row }">
             <div class="flex items-center gap-2">
-              <div class="group relative">
-                <button
-                  class="font-medium text-gray-900 underline decoration-dashed decoration-gray-300 underline-offset-4 transition-colors hover:text-primary-600 dark:text-white dark:decoration-dark-500 dark:hover:text-primary-400"
-                  @click="handleBalanceHistory(row)"
-                >
-                  ¥{{ value.toFixed(2) }}
-                </button>
-                <!-- Instant tooltip -->
-                <div class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 shadow-lg transition-opacity duration-75 group-hover:opacity-100 dark:bg-dark-600">
-                  {{ t('admin.users.balanceHistoryTip') }}
-                  <div class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-900 dark:border-t-dark-600"></div>
-                </div>
-              </div>
+              <HelpTooltip
+                :content="t('admin.users.balanceHistoryTip')"
+                class="!ml-0"
+                width-class="w-auto whitespace-nowrap"
+              >
+                <template #trigger>
+                  <button
+                    class="font-medium text-gray-900 underline decoration-dashed decoration-gray-300 underline-offset-4 transition-colors hover:text-primary-600 dark:text-white dark:decoration-dark-500 dark:hover:text-primary-400"
+                    @click="handleBalanceHistory(row)"
+                  >
+                    ¥{{ value.toFixed(2) }}
+                  </button>
+                </template>
+              </HelpTooltip>
               <button
                 @click.stop="handleDeposit(row)"
                 class="rounded px-2 py-0.5 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-900/20"
@@ -662,6 +656,33 @@
       </template>
     </TablePageLayout>
 
+    <Teleport to="body">
+      <div
+        v-if="expandedGroupMenuUser"
+        ref="expandedGroupMenuRef"
+        class="exclusive-group-menu fixed z-[100000020] overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 text-xs shadow-xl dark:border-dark-600 dark:bg-dark-700"
+        :style="expandedGroupMenuStyle"
+        role="menu"
+        :data-test="`exclusive-group-menu-${expandedGroupMenuUser.id}`"
+        @click.stop
+      >
+        <div class="border-b border-gray-100 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:border-dark-600 dark:text-dark-400">
+          {{ t('admin.users.clickToReplace') }}
+        </div>
+        <button
+          v-for="group in expandedGroupMenuGroups"
+          :key="group.id"
+          type="button"
+          role="menuitem"
+          class="flex w-full items-center gap-2 px-3 py-2 text-left text-gray-700 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:text-dark-200 dark:hover:bg-primary-900/30 dark:hover:text-primary-400"
+          @click.stop="openGroupReplace(expandedGroupMenuUser, group)"
+        >
+          <Icon name="swap" size="xs" class="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
+          <span class="min-w-0 flex-1 truncate">{{ group.name }}</span>
+        </button>
+      </div>
+    </Teleport>
+
     <!-- Action Menu (Teleported) -->
     <Teleport to="body">
       <div
@@ -772,7 +793,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
@@ -793,6 +814,7 @@ import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import Select from '@/components/common/Select.vue'
 import { buildApiKeyGroupFilterOptions } from './apiKeyGroupFilterOptions'
@@ -1488,6 +1510,134 @@ const closeActionMenu = () => {
   menuPosition.value = null
 }
 
+// Exclusive-group menu state. The menu lives under body so table overflow and
+// sticky headers cannot establish a clipping or stacking context around it.
+const expandedGroupUserId = ref<number | null>(null)
+const expandedGroupMenuTrigger = ref<HTMLElement | null>(null)
+const expandedGroupMenuRef = ref<HTMLElement | null>(null)
+const expandedGroupMenuStyle = ref<Record<string, string>>({})
+const expandedGroupMenuUser = computed(() =>
+  users.value.find(user => user.id === expandedGroupUserId.value) ?? null
+)
+const expandedGroupMenuGroups = computed(() =>
+  expandedGroupMenuUser.value
+    ? getUserGroups(expandedGroupMenuUser.value).exclusive
+    : []
+)
+
+const GROUP_MENU_GAP = 6
+const GROUP_MENU_VIEWPORT_PADDING = 8
+const GROUP_MENU_MIN_WIDTH = 160
+
+const getGroupMenuViewport = () => {
+  const viewport = window.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? window.innerWidth
+  const height = viewport?.height ?? window.innerHeight
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height
+  }
+}
+
+const closeExpandedGroupMenu = (restoreFocus = false) => {
+  const trigger = expandedGroupMenuTrigger.value
+  expandedGroupUserId.value = null
+  expandedGroupMenuTrigger.value = null
+  expandedGroupMenuStyle.value = {}
+
+  if (restoreFocus && trigger?.isConnected) {
+    nextTick(() => trigger.focus())
+  }
+}
+
+const updateExpandedGroupMenuPosition = () => {
+  if (expandedGroupUserId.value === null) return
+
+  const trigger = expandedGroupMenuTrigger.value
+  if (!trigger?.isConnected) {
+    closeExpandedGroupMenu()
+    return
+  }
+
+  const viewport = getGroupMenuViewport()
+  const triggerRect = trigger.getBoundingClientRect()
+  const menu = expandedGroupMenuRef.value
+  const availableWidth = Math.max(0, viewport.width - GROUP_MENU_VIEWPORT_PADDING * 2)
+  const naturalWidth = menu?.scrollWidth || menu?.offsetWidth || 180
+  const width = Math.min(Math.max(GROUP_MENU_MIN_WIDTH, naturalWidth), availableWidth)
+  const minimumLeft = viewport.left + GROUP_MENU_VIEWPORT_PADDING
+  const maximumLeft = Math.max(
+    minimumLeft,
+    viewport.right - GROUP_MENU_VIEWPORT_PADDING - width
+  )
+  const left = Math.min(Math.max(triggerRect.left, minimumLeft), maximumLeft)
+  const naturalHeight = menu?.scrollHeight
+    || menu?.offsetHeight
+    || 34 + expandedGroupMenuGroups.value.length * 32
+  const spaceBelow = Math.max(
+    0,
+    viewport.bottom - GROUP_MENU_VIEWPORT_PADDING - triggerRect.bottom - GROUP_MENU_GAP
+  )
+  const spaceAbove = Math.max(
+    0,
+    triggerRect.top - viewport.top - GROUP_MENU_VIEWPORT_PADDING - GROUP_MENU_GAP
+  )
+  const openAbove = spaceBelow < naturalHeight && spaceAbove > spaceBelow
+  const viewportAvailableHeight = Math.max(
+    0,
+    viewport.height - GROUP_MENU_VIEWPORT_PADDING * 2
+  )
+  const availableHeight = Math.min(
+    openAbove ? spaceAbove : spaceBelow,
+    viewportAvailableHeight
+  )
+  const visibleHeight = Math.min(naturalHeight, availableHeight)
+  const preferredTop = openAbove
+    ? triggerRect.top - GROUP_MENU_GAP - visibleHeight
+    : triggerRect.bottom + GROUP_MENU_GAP
+  const minimumTop = viewport.top + GROUP_MENU_VIEWPORT_PADDING
+  const maximumTop = Math.max(
+    minimumTop,
+    viewport.bottom - GROUP_MENU_VIEWPORT_PADDING - visibleHeight
+  )
+  const top = Math.min(Math.max(preferredTop, minimumTop), maximumTop)
+
+  expandedGroupMenuStyle.value = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.floor(availableHeight)}px`
+  }
+}
+
+const toggleExpandedGroup = (user: AdminUser, event: MouseEvent | KeyboardEvent) => {
+  if (expandedGroupUserId.value === user.id) {
+    closeExpandedGroupMenu()
+    return
+  }
+
+  const trigger = event.currentTarget as HTMLElement | null
+  if (!trigger) {
+    closeExpandedGroupMenu()
+    return
+  }
+
+  closeActionMenu()
+  expandedGroupUserId.value = user.id
+  expandedGroupMenuTrigger.value = trigger
+  nextTick(() => {
+    updateExpandedGroupMenuPosition()
+    expandedGroupMenuRef.value?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
+  })
+}
+
 // Close menu when clicking outside
 const handleClickOutside = (event: MouseEvent) => {
   const target = event.target as HTMLElement
@@ -1506,21 +1656,26 @@ const handleClickOutside = (event: MouseEvent) => {
   if (openUsageSortMenu.value !== null && !target.closest('.usage-sort-trigger')) {
     openUsageSortMenu.value = null
   }
-  // Close expanded group dropdown when clicking outside
-  if (expandedGroupUserId.value !== null) {
-    expandedGroupUserId.value = null
+  // Close the body-level exclusive-group menu only when the click is outside
+  // both the trigger and the teleported surface.
+  if (
+    expandedGroupUserId.value !== null
+    && !expandedGroupMenuTrigger.value?.contains(target)
+    && !expandedGroupMenuRef.value?.contains(target)
+  ) {
+    closeExpandedGroupMenu()
+  }
+}
+
+const handleDocumentKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && expandedGroupUserId.value !== null) {
+    closeExpandedGroupMenu(true)
   }
 }
 
 // Allowed groups modal state
 const showAllowedGroupsModal = ref(false)
 const allowedGroupsUser = ref<AdminUser | null>(null)
-
-// Expanded group dropdown state (click to show exclusive groups list)
-const expandedGroupUserId = ref<number | null>(null)
-const toggleExpandedGroup = (userId: number) => {
-  expandedGroupUserId.value = expandedGroupUserId.value === userId ? null : userId
-}
 
 // Group replace modal state
 const showGroupReplaceModal = ref(false)
@@ -1754,7 +1909,7 @@ const closeAllowedGroupsModal = () => {
 }
 
 const openGroupReplace = (user: AdminUser, group: { id: number; name: string }) => {
-  expandedGroupUserId.value = null
+  closeExpandedGroupMenu()
   groupReplaceUser.value = user
   groupReplaceOldGroup.value = group
   showGroupReplaceModal.value = true
@@ -1826,9 +1981,9 @@ const handleWithdrawFromHistory = () => {
   }
 }
 
-// 滚动时关闭菜单
-const handleScroll = () => {
+const handleFloatingMenuViewportChange = () => {
   closeActionMenu()
+  updateExpandedGroupMenuPosition()
 }
 
 onMounted(async () => {
@@ -1843,12 +1998,20 @@ onMounted(async () => {
     loadAllGroupsForApiKeyFilter()
   }
   document.addEventListener('click', handleClickOutside)
-  window.addEventListener('scroll', handleScroll, true)
+  document.addEventListener('keydown', handleDocumentKeydown)
+  window.addEventListener('scroll', handleFloatingMenuViewportChange, true)
+  window.addEventListener('resize', handleFloatingMenuViewportChange)
+  window.visualViewport?.addEventListener('scroll', handleFloatingMenuViewportChange)
+  window.visualViewport?.addEventListener('resize', handleFloatingMenuViewportChange)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
-  window.removeEventListener('scroll', handleScroll, true)
+  document.removeEventListener('keydown', handleDocumentKeydown)
+  window.removeEventListener('scroll', handleFloatingMenuViewportChange, true)
+  window.removeEventListener('resize', handleFloatingMenuViewportChange)
+  window.visualViewport?.removeEventListener('scroll', handleFloatingMenuViewportChange)
+  window.visualViewport?.removeEventListener('resize', handleFloatingMenuViewportChange)
   clearTimeout(searchTimeout)
   abortController?.abort()
 })

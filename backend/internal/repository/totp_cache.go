@@ -16,13 +16,31 @@ const (
 	totpLoginKeyPrefix    = "totp:login:"
 	totpAttemptsKeyPrefix = "totp:attempts:"
 	totpStepUpKeyPrefix   = "totp:stepup:"
-	totpAttemptsTTL       = 15 * time.Minute
 )
 
 // TotpCache implements service.TotpCache using Redis
 type TotpCache struct {
 	rdb *redis.Client
 }
+
+var consumeTotpLoginSessionScript = redis.NewScript(`
+local value = redis.call("GET", KEYS[1])
+if not value then
+    return nil
+end
+redis.call("DEL", KEYS[1])
+return value
+`)
+
+var reserveTotpVerifyAttemptScript = redis.NewScript(`
+local current = tonumber(redis.call("GET", KEYS[1]) or "0")
+if current >= tonumber(ARGV[1]) then
+    return 0
+end
+local count = redis.call("INCR", KEYS[1])
+redis.call("PEXPIRE", KEYS[1], ARGV[2])
+return count
+`)
 
 // NewTotpCache creates a new TOTP cache
 func NewTotpCache(rdb *redis.Client) service.TotpCache {
@@ -88,6 +106,28 @@ func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*ser
 	return &session, nil
 }
 
+// ConsumeLoginSession atomically retrieves and deletes a pending 2FA login session.
+func (c *TotpCache) ConsumeLoginSession(ctx context.Context, tempToken string) (*service.TotpLoginSession, error) {
+	key := totpLoginKeyPrefix + tempToken
+	result, err := consumeTotpLoginSessionScript.Run(ctx, c.rdb, []string{key}).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("consume login session: %w", err)
+	}
+	data, ok := result.(string)
+	if !ok {
+		return nil, fmt.Errorf("consume login session returned %T", result)
+	}
+
+	var session service.TotpLoginSession
+	if err := json.Unmarshal([]byte(data), &session); err != nil {
+		return nil, fmt.Errorf("unmarshal consumed login session: %w", err)
+	}
+	return &session, nil
+}
+
 // SetLoginSession stores a TOTP login session
 func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, session *service.TotpLoginSession, ttl time.Duration) error {
 	key := totpLoginKeyPrefix + tempToken
@@ -109,38 +149,23 @@ func (c *TotpCache) DeleteLoginSession(ctx context.Context, tempToken string) er
 	return c.rdb.Del(ctx, key).Err()
 }
 
-// IncrementVerifyAttempts increments the verify attempt counter
-func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (int, error) {
+// ReserveVerifyAttempt atomically reserves one verification attempt below maxAttempts.
+func (c *TotpCache) ReserveVerifyAttempt(ctx context.Context, userID int64, maxAttempts int, ttl time.Duration) (bool, error) {
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
-
-	// Use pipeline for atomic increment and set TTL
-	pipe := c.rdb.Pipeline()
-	incrCmd := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, totpAttemptsTTL)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("increment verify attempts: %w", err)
+	if maxAttempts <= 0 || ttl <= 0 {
+		return false, nil
 	}
-
-	count, err := incrCmd.Result()
+	count, err := reserveTotpVerifyAttemptScript.Run(
+		ctx,
+		c.rdb,
+		[]string{key},
+		maxAttempts,
+		ttl.Milliseconds(),
+	).Int64()
 	if err != nil {
-		return 0, fmt.Errorf("get increment result: %w", err)
+		return false, fmt.Errorf("reserve verify attempt: %w", err)
 	}
-
-	return int(count), nil
-}
-
-// GetVerifyAttempts gets the current verify attempt count
-func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, error) {
-	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
-	count, err := c.rdb.Get(ctx, key).Int()
-	if err != nil {
-		if err == redis.Nil {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("get verify attempts: %w", err)
-	}
-	return count, nil
+	return count > 0, nil
 }
 
 // ClearVerifyAttempts clears the verify attempt counter

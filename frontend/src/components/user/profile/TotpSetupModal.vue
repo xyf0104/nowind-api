@@ -1,9 +1,20 @@
 <template>
-  <div class="fixed inset-0 z-50 overflow-y-auto" @click.self="$emit('close')">
-    <div class="flex min-h-full items-center justify-center p-4">
-      <div class="fixed inset-0 bg-black/50 transition-opacity" @click="$emit('close')"></div>
+  <Teleport to="body">
+    <div
+      class="security-dialog-overlay fixed inset-0 z-[100000200] overflow-y-auto"
+      data-testid="totp-setup-dialog"
+      role="dialog"
+      aria-modal="true"
+      @click.self="$emit('close')"
+    >
+      <div class="flex min-h-full items-center justify-center p-4">
+        <div
+          class="fixed inset-0 bg-black/50 transition-opacity"
+          aria-hidden="true"
+          @click="$emit('close')"
+        ></div>
 
-      <div class="relative w-full max-w-md transform rounded-xl bg-white p-6 shadow-xl transition-all dark:bg-dark-800">
+        <div class="security-dialog-surface relative w-full max-w-md transform rounded-xl bg-white p-6 shadow-xl transition-all dark:bg-dark-800">
         <!-- Header -->
         <div class="mb-6 text-center">
           <h3 class="text-xl font-semibold text-gray-900 dark:text-white">
@@ -161,9 +172,10 @@
             </div>
           </form>
         </div>
+        </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">

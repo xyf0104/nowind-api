@@ -35,6 +35,25 @@ type refreshTokenCache struct {
 	rdb *redis.Client
 }
 
+var consumeRefreshTokenScript = redis.NewScript(`
+local value = redis.call("GET", KEYS[1])
+if not value then
+    return nil
+end
+redis.call("DEL", KEYS[1])
+return value
+`)
+
+var addUserRefreshTokenScript = redis.NewScript(`
+redis.call("SADD", KEYS[1], ARGV[1])
+local current_ttl = redis.call("PTTL", KEYS[1])
+local requested_ttl = tonumber(ARGV[2])
+if current_ttl < 0 or requested_ttl > current_ttl then
+    redis.call("PEXPIRE", KEYS[1], requested_ttl)
+end
+return 1
+`)
+
 // NewRefreshTokenCache creates a new RefreshTokenCache implementation.
 func NewRefreshTokenCache(rdb *redis.Client) service.RefreshTokenCache {
 	return &refreshTokenCache{rdb: rdb}
@@ -61,6 +80,27 @@ func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash strin
 	var data service.RefreshTokenData
 	if err := json.Unmarshal([]byte(val), &data); err != nil {
 		return nil, fmt.Errorf("unmarshal refresh token data: %w", err)
+	}
+	return &data, nil
+}
+
+func (c *refreshTokenCache) ConsumeRefreshToken(ctx context.Context, tokenHash string) (*service.RefreshTokenData, error) {
+	key := refreshTokenKey(tokenHash)
+	result, err := consumeRefreshTokenScript.Run(ctx, c.rdb, []string{key}).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, service.ErrRefreshTokenNotFound
+		}
+		return nil, err
+	}
+	val, ok := result.(string)
+	if !ok {
+		return nil, fmt.Errorf("consume refresh token returned %T", result)
+	}
+
+	var data service.RefreshTokenData
+	if err := json.Unmarshal([]byte(val), &data); err != nil {
+		return nil, fmt.Errorf("unmarshal consumed refresh token data: %w", err)
 	}
 	return &data, nil
 }
@@ -126,11 +166,7 @@ func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID stri
 
 func (c *refreshTokenCache) AddToUserTokenSet(ctx context.Context, userID int64, tokenHash string, ttl time.Duration) error {
 	key := userRefreshTokensKey(userID)
-	pipe := c.rdb.Pipeline()
-	pipe.SAdd(ctx, key, tokenHash)
-	pipe.Expire(ctx, key, ttl)
-	_, err := pipe.Exec(ctx)
-	return err
+	return addUserRefreshTokenScript.Run(ctx, c.rdb, []string{key}, tokenHash, ttl.Milliseconds()).Err()
 }
 
 func (c *refreshTokenCache) AddToFamilyTokenSet(ctx context.Context, familyID string, tokenHash string, ttl time.Duration) error {

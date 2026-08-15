@@ -4,6 +4,7 @@ export interface UseAutoRefreshOptions {
   storageKey: string
   intervals?: readonly number[]
   defaultInterval?: number
+  defaultEnabled?: boolean
   onRefresh: () => Promise<void> | void
   /** Skip tick when this returns true (e.g. modal open, document hidden). */
   shouldPause?: () => boolean
@@ -14,11 +15,12 @@ export function useAutoRefresh(options: UseAutoRefreshOptions) {
     storageKey,
     intervals = [5, 10, 15, 30] as const,
     defaultInterval,
+    defaultEnabled = false,
     onRefresh,
     shouldPause,
   } = options
 
-  const enabled = ref(false)
+  const enabled = ref(defaultEnabled)
   const intervalSeconds = ref(defaultInterval ?? intervals[intervals.length - 1])
   const countdown = ref(0)
   const fetching = ref(false)
@@ -30,7 +32,7 @@ export function useAutoRefresh(options: UseAutoRefreshOptions) {
       const saved = localStorage.getItem(storageKey)
       if (!saved) return
       const parsed = JSON.parse(saved) as { enabled?: boolean; interval_seconds?: number }
-      enabled.value = parsed.enabled === true
+      if (typeof parsed.enabled === 'boolean') enabled.value = parsed.enabled
       const iv = Number(parsed.interval_seconds)
       if (intervals.includes(iv as any)) intervalSeconds.value = iv
     } catch { /* ignore */ }

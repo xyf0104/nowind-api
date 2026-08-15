@@ -99,6 +99,28 @@ const SelectStub = {
   `
 }
 
+function mountRedeemView() {
+  return mount(RedeemView, {
+    attachTo: document.body,
+    global: {
+      stubs: {
+        AppLayout: { template: '<div><slot /></div>' },
+        TablePageLayout: {
+          template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+        },
+        DataTable: DataTableStub,
+        Pagination: true,
+        ConfirmDialog: true,
+        Select: SelectStub,
+        GroupBadge: true,
+        GroupOptionItem: true,
+        Icon: true,
+        Teleport: true
+      }
+    }
+  })
+}
+
 describe('admin RedeemView batch update', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -146,25 +168,7 @@ describe('admin RedeemView batch update', () => {
   })
 
   it('submits only checked fields for selected redeem codes', async () => {
-    const wrapper = mount(RedeemView, {
-      attachTo: document.body,
-      global: {
-        stubs: {
-          AppLayout: { template: '<div><slot /></div>' },
-          TablePageLayout: {
-            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
-          },
-          DataTable: DataTableStub,
-          Pagination: true,
-          ConfirmDialog: true,
-          Select: SelectStub,
-          GroupBadge: true,
-          GroupOptionItem: true,
-          Icon: true,
-          Teleport: true
-        }
-      }
-    })
+    const wrapper = mountRedeemView()
 
     await flushPromises()
     await wrapper.findAll('[data-test="select-code"]')[0].setValue(true)
@@ -183,5 +187,25 @@ describe('admin RedeemView batch update', () => {
       notes: 'maintenance'
     })
     expect(showSuccess).toHaveBeenCalledWith('admin.redeem.batchUpdateSuccess')
+  })
+
+  it('keeps generate and batch forms scrollable within short viewports', async () => {
+    const wrapper = mountRedeemView()
+    await flushPromises()
+
+    await wrapper.get('[data-test="generate-codes-open"]').trigger('click')
+    expect(wrapper.get('[data-test="generate-dialog"]').classes()).toContain('overflow-y-auto')
+    expect(wrapper.get('[data-test="generate-dialog-panel"]').classes()).toEqual(
+      expect.arrayContaining(['max-h-[calc(100dvh-2rem)]', 'overflow-y-auto'])
+    )
+
+    await wrapper.get('[data-test="generate-dialog-backdrop"]').trigger('click')
+    await wrapper.findAll('[data-test="select-code"]')[0].setValue(true)
+    await wrapper.get('[data-test="batch-update-open"]').trigger('click')
+
+    expect(wrapper.get('[data-test="batch-update-dialog"]').classes()).toContain('overflow-y-auto')
+    expect(wrapper.get('[data-test="batch-update-dialog-panel"]').classes()).toEqual(
+      expect.arrayContaining(['max-h-[calc(100dvh-2rem)]', 'overflow-y-auto'])
+    )
   })
 })

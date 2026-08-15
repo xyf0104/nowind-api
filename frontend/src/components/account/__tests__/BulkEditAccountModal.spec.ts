@@ -127,9 +127,13 @@ describe('BulkEditAccountModal', () => {
 
     await selector.find('div.cursor-pointer').trigger('click')
 
-    expect(wrapper.text()).toContain('gemini-3.1-flash-image')
-    expect(wrapper.text()).toContain('gemini-2.5-flash-image')
-    expect(wrapper.text()).not.toContain('gpt-5.3-codex')
+    const dropdown = document.body.querySelector('[data-testid="model-dropdown"]')
+    expect(dropdown).not.toBeNull()
+    expect(dropdown?.textContent).toContain('gemini-3.1-flash-image')
+    expect(dropdown?.textContent).toContain('gemini-2.5-flash-image')
+    expect(dropdown?.textContent).not.toContain('gpt-5.3-codex')
+
+    wrapper.unmount()
   })
 
   it('antigravity 映射预设包含图片映射并过滤 OpenAI 预设', async () => {

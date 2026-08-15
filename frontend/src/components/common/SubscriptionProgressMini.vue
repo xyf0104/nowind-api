@@ -24,11 +24,15 @@
     </button>
 
     <!-- Hover/Click Tooltip -->
-    <transition name="dropdown">
-      <div
-        v-if="tooltipOpen"
-        class="absolute right-0 z-50 mt-2 w-[340px] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl dark:border-dark-700 dark:bg-dark-800"
-      >
+    <Teleport to="body">
+      <transition name="dropdown">
+        <div
+          v-if="tooltipOpen"
+          ref="popoverRef"
+          class="subscription-popover console-floating-surface fixed z-[100000020] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl dark:border-dark-700 dark:bg-dark-800"
+          :style="popoverStyle"
+          @click.stop
+        >
         <div class="border-b border-gray-100 p-3 dark:border-dark-700">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
             {{ t('subscriptionProgress.title') }}
@@ -38,7 +42,7 @@
           </p>
         </div>
 
-        <div class="max-h-64 overflow-y-auto">
+        <div class="min-h-0 flex-1 overflow-y-auto">
           <div
             v-for="subscription in displaySubscriptions"
             :key="subscription.id"
@@ -172,13 +176,14 @@
             {{ t('subscriptionProgress.viewAll') }}
           </router-link>
         </div>
-      </div>
-    </transition>
+        </div>
+      </transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import { useSubscriptionStore } from '@/stores'
@@ -189,7 +194,65 @@ const { t } = useI18n()
 const subscriptionStore = useSubscriptionStore()
 
 const containerRef = ref<HTMLElement | null>(null)
+const popoverRef = ref<HTMLElement | null>(null)
 const tooltipOpen = ref(false)
+const popoverStyle = ref<Record<string, string>>({})
+const viewportPadding = 8
+const popoverGap = 8
+const preferredPopoverWidth = 340
+
+function getViewportBounds() {
+  const viewport = window.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? window.innerWidth
+  const height = viewport?.height ?? window.innerHeight
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+  }
+}
+
+function updatePopoverPosition() {
+  if (!tooltipOpen.value || !containerRef.value || !popoverRef.value) return
+
+  const viewport = getViewportBounds()
+  const triggerRect = containerRef.value.getBoundingClientRect()
+  const width = Math.max(
+    0,
+    Math.min(preferredPopoverWidth, viewport.width - viewportPadding * 2),
+  )
+  const minimumLeft = viewport.left + viewportPadding
+  const maximumLeft = Math.max(minimumLeft, viewport.right - width - viewportPadding)
+  const left = Math.min(Math.max(triggerRect.right - width, minimumLeft), maximumLeft)
+  const popoverHeight = popoverRef.value.offsetHeight || 360
+  const spaceBelow = Math.max(
+    0,
+    viewport.bottom - triggerRect.bottom - popoverGap - viewportPadding,
+  )
+  const spaceAbove = Math.max(
+    0,
+    triggerRect.top - viewport.top - popoverGap - viewportPadding,
+  )
+  const openAbove = spaceBelow < popoverHeight && spaceAbove > spaceBelow
+  const availableHeight = openAbove ? spaceAbove : spaceBelow
+  const visibleHeight = Math.min(popoverHeight, availableHeight)
+  const top = openAbove
+    ? Math.max(viewport.top + viewportPadding, triggerRect.top - popoverGap - visibleHeight)
+    : triggerRect.bottom + popoverGap
+
+  popoverStyle.value = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.floor(availableHeight)}px`,
+  }
+}
 
 // Use store data instead of local state
 const activeSubscriptions = computed(() => subscriptionStore.activeSubscriptions)
@@ -278,8 +341,12 @@ function getDaysRemainingClass(expiresAt: string): string {
   return 'text-gray-500 dark:text-dark-400'
 }
 
-function toggleTooltip() {
+async function toggleTooltip() {
   tooltipOpen.value = !tooltipOpen.value
+  if (tooltipOpen.value) {
+    await nextTick()
+    updatePopoverPosition()
+  }
 }
 
 function closeTooltip() {
@@ -292,8 +359,17 @@ function handleClickOutside(event: MouseEvent) {
   }
 }
 
+function handleViewportChange() {
+  if (!tooltipOpen.value) return
+  updatePopoverPosition()
+}
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
+  window.addEventListener('resize', handleViewportChange)
+  window.addEventListener('scroll', handleViewportChange, true)
+  window.visualViewport?.addEventListener('resize', handleViewportChange)
+  window.visualViewport?.addEventListener('scroll', handleViewportChange)
   // Trigger initial fetch if not already loaded
   // The actual data loading is handled by App.vue globally
   subscriptionStore.fetchActiveSubscriptions().catch((error) => {
@@ -303,10 +379,19 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('resize', handleViewportChange)
+  window.removeEventListener('scroll', handleViewportChange, true)
+  window.visualViewport?.removeEventListener('resize', handleViewportChange)
+  window.visualViewport?.removeEventListener('scroll', handleViewportChange)
 })
 </script>
 
 <style scoped>
+.subscription-popover {
+  display: flex;
+  flex-direction: column;
+}
+
 .dropdown-enter-active,
 .dropdown-leave-active {
   transition: all 0.2s ease;

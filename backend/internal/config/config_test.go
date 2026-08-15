@@ -802,8 +802,8 @@ func TestLoadDefaultJWTAccessTokenExpireMinutes(t *testing.T) {
 	if cfg.JWT.AccessTokenExpireMinutes != 0 {
 		t.Fatalf("JWT.AccessTokenExpireMinutes = %d, want 0", cfg.JWT.AccessTokenExpireMinutes)
 	}
-	if cfg.JWT.RefreshTokenExpireDays != 30 {
-		t.Fatalf("JWT.RefreshTokenExpireDays = %d, want 30", cfg.JWT.RefreshTokenExpireDays)
+	if cfg.JWT.RefreshTokenExpireDays != 7 {
+		t.Fatalf("JWT.RefreshTokenExpireDays = %d, want 7", cfg.JWT.RefreshTokenExpireDays)
 	}
 	if cfg.JWT.RefreshWindowMinutes != 2 {
 		t.Fatalf("JWT.RefreshWindowMinutes = %d, want 2", cfg.JWT.RefreshWindowMinutes)

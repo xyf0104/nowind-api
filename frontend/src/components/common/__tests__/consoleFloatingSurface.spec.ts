@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 const dir = dirname(fileURLToPath(import.meta.url))
 const videoSource = readFileSync(resolve(dir, '../DarkVideoBackground.vue'), 'utf8')
+const headerSource = readFileSync(resolve(dir, '../../layout/AppHeader.vue'), 'utf8')
 const styleSource = readFileSync(resolve(dir, '../../../style.css'), 'utf8')
 
 describe('console floating surfaces', () => {
@@ -23,6 +24,13 @@ describe('console floating surfaces', () => {
     expect(styleSource).toContain('--xiass-console-surface-raised: rgb(8 21 38 / 0.88)')
     expect(styleSource).toContain("[class*='fixed'][class*='inset-0'][class*='z-'] > div[class*='rounded'][class*='shadow']")
     expect(styleSource).toContain("div[class*='flex'] > div[class*='relative'][class*='rounded'][class*='shadow']")
+  })
+
+  it('keeps the header balance tooltip on the established opaque floating layer', () => {
+    expect(headerSource).toContain('balance-tooltip console-floating-surface')
+    expect(headerSource).toContain('absolute right-0 top-full z-50')
+    expect(headerSource).toContain('background-color: rgb(255 255 255) !important')
+    expect(headerSource).toContain('background-color: rgb(8 21 38) !important')
   })
 })
 

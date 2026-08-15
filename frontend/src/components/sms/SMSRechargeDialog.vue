@@ -49,6 +49,7 @@
                   :key="tier"
                   type="button"
                   :class="{ 'is-selected': amount === tier }"
+                  :disabled="!tierAvailable(tier)"
                   @click="amount = tier"
                 >
                   ¥{{ tier }}
@@ -147,10 +148,17 @@ watch(() => props.open, (open) => {
 
 function amountFitsMethod(value: number, method: string): boolean {
   const limit = visibleMethods.value[method]
-  if (!limit || value < 10) return false
+  const globalMinimum = Math.max(10, Number(checkout.value.global_min) || 0)
+  const globalMaximum = Number(checkout.value.global_max) || 0
+  if (!limit || value < globalMinimum) return false
+  if (globalMaximum > 0 && value > globalMaximum) return false
   if (limit.single_min > 0 && value < limit.single_min) return false
   if (limit.single_max > 0 && value > limit.single_max) return false
   return limit.available !== false
+}
+
+function tierAvailable(value: number): boolean {
+  return Object.keys(visibleMethods.value).some((method) => amountFitsMethod(value, method))
 }
 
 async function loadCheckout(): Promise<void> {
@@ -301,6 +309,7 @@ function describeError(error: unknown, fallback: string): string {
 .sms-recharge-tiers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 23px; }
 .sms-recharge-tiers button { min-height: 48px; border: 1px solid rgba(103, 157, 170, .28); border-radius: 7px; color: #bfd1d7; background: rgba(11, 48, 58, .64); font: 800 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; cursor: pointer; transition: .18s ease; }
 .sms-recharge-tiers button:hover, .sms-recharge-tiers button.is-selected { border-color: rgba(92, 229, 195, .7); color: #072820; background: #70e4c5; box-shadow: 0 7px 18px rgba(25, 183, 146, .2); }
+.sms-recharge-tiers button:disabled { cursor: not-allowed; opacity: .42; box-shadow: none; }
 .sms-recharge-methods { margin-top: 22px; }
 .sms-recharge-summary { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; align-items: end; margin-top: 20px; padding: 14px; border: 1px solid rgba(78, 194, 167, .24); border-radius: 8px; background: rgba(8, 75, 66, .22); }
 .sms-recharge-summary span { color: #88afa5; font-size: 12px; }

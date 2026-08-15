@@ -48,7 +48,11 @@
               <Icon name="edit" size="md" class="mr-2" />
               {{ t('admin.redeem.batchUpdate') }}
             </button>
-            <button @click="showGenerateDialog = true" class="btn btn-primary">
+            <button
+              data-test="generate-codes-open"
+              @click="showGenerateDialog = true"
+              class="btn btn-primary"
+            >
               {{ t('admin.redeem.generateCodes') }}
             </button>
           </div>
@@ -274,10 +278,19 @@
 
     <!-- Generate Codes Dialog -->
     <Teleport to="body">
-      <div v-if="showGenerateDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="fixed inset-0 bg-black/50" @click="showGenerateDialog = false"></div>
+      <div
+        v-if="showGenerateDialog"
+        data-test="generate-dialog"
+        class="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4"
+      >
         <div
-          class="relative z-10 w-full max-w-md rounded-xl bg-white p-6 shadow-xl dark:bg-dark-800"
+          data-test="generate-dialog-backdrop"
+          class="fixed inset-0 bg-black/50"
+          @click="showGenerateDialog = false"
+        ></div>
+        <div
+          data-test="generate-dialog-panel"
+          class="relative z-10 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6 shadow-xl dark:bg-dark-800"
         >
           <h2 class="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
             {{ t('admin.redeem.generateCodesTitle') }}
@@ -413,11 +426,13 @@
     <Teleport to="body">
       <div
         v-if="showBatchUpdateDialog"
-        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        data-test="batch-update-dialog"
+        class="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4"
       >
         <div class="fixed inset-0 bg-black/50" @click="closeBatchUpdateDialog"></div>
         <div
-          class="relative z-10 w-full max-w-lg rounded-xl bg-white p-6 shadow-xl dark:bg-dark-800"
+          data-test="batch-update-dialog-panel"
+          class="relative z-10 max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl dark:bg-dark-800"
         >
           <h2 class="mb-1 text-lg font-semibold text-gray-900 dark:text-white">
             {{ t('admin.redeem.batchUpdateTitle') }}

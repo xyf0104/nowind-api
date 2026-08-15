@@ -28,7 +28,7 @@ func profitControlWSAccount(id int64, rate float64, now time.Time) Account {
 	return *account
 }
 
-// previous_response_id 粘连：利润不合格 → 跳过复用但不删绑定；倍率恢复 → 重新粘连。
+// previous_response_id 粘连：利润不合格 → 停止不可迁移链路但不删绑定；倍率恢复 → 重新粘连。
 func TestProfitControl_PreviousResponseStickyVetoKeepsBinding(t *testing.T) {
 	ctx := profitControlTestCtx(profitControlTestGroup(23, 0.5, 0))
 	groupID := int64(23)
@@ -47,8 +47,8 @@ func TestProfitControl_PreviousResponseStickyVetoKeepsBinding(t *testing.T) {
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_profit", expensive.ID, time.Hour))
 
 	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_profit", "gpt-5.1", nil, false)
-	require.NoError(t, err)
-	require.Nil(t, selection, "上游倍率 0.8 超过阈值 0.5 的账号不应继续命中 previous_response_id 粘连")
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection, "上游倍率 0.8 超过阈值 0.5 时不可迁移链路必须停止")
 
 	// 利润不合格与 quota auto-pause 同为暂时状态：绑定必须保留。
 	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_profit")
@@ -65,6 +65,48 @@ func TestProfitControl_PreviousResponseStickyVetoKeepsBinding(t *testing.T) {
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestProfitControl_NonMigratablePreviousResponseVetoStopsSchedulerFallback(t *testing.T) {
+	ctx := profitControlTestCtx(profitControlTestGroup(24, 0.5, 0))
+	groupID := int64(24)
+	now := time.Now()
+	bound := profitControlWSAccount(3201, 0.8, now)
+	bound.Priority = 0
+	bound.GroupIDs = []int64{groupID}
+	fallback := profitControlWSAccount(3202, 0.3, now)
+	fallback.Priority = 1
+	fallback.GroupIDs = []int64{groupID}
+
+	cache := &schedulerTestGatewayCache{}
+	acquiredIDs := make([]int64, 0)
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{bound, fallback}},
+		cache:              cache,
+		cfg:                newOpenAIWSV2TestConfig(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{acquiredIDs: &acquiredIDs}),
+	}
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_profit_hard_affinity", bound.ID, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"resp_profit_hard_affinity",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportResponsesWebsocketV2,
+		false,
+	)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection)
+	require.Empty(t, decision.Layer)
+	require.NotContains(t, acquiredIDs, fallback.ID)
+	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_profit_hard_affinity")
+	require.NoError(t, getErr)
+	require.Equal(t, bound.ID, boundAccountID)
 }
 
 // legacy 引擎（高级调度器关闭）：候选过滤、全排除错误语义与既有语义一致。

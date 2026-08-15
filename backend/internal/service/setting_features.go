@@ -164,13 +164,17 @@ func (s *SettingService) IsPasswordResetEnabled(ctx context.Context) bool {
 	return value == "true"
 }
 
-// IsTotpEnabled 检查是否启用 TOTP 双因素认证功能
-func (s *SettingService) IsTotpEnabled(ctx context.Context) bool {
+// IsTotpEnabled 检查是否启用 TOTP 双因素认证功能。
+// 尚未写入设置时维持既有默认关闭；真实存储故障必须由认证调用方 fail-closed。
+func (s *SettingService) IsTotpEnabled(ctx context.Context) (bool, error) {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyTotpEnabled)
-	if err != nil {
-		return false // 默认关闭
+	if errors.Is(err, ErrSettingNotFound) {
+		return false, nil
 	}
-	return value == "true"
+	if err != nil {
+		return false, ErrServiceUnavailable.WithCause(fmt.Errorf("read totp setting: %w", err))
+	}
+	return strings.TrimSpace(value) != "false", nil
 }
 
 // PasskeyEnabled reports the effective runtime switch. WebAuthn deployment
@@ -237,15 +241,19 @@ func (s *SettingService) IsSessionBindingEnabled(ctx context.Context) bool {
 	return value == "true"
 }
 
-// IsStepUpEnabled 检查敏感操作 step-up 2FA 门控是否启用（默认关闭）。
+// IsStepUpEnabled 检查敏感操作 step-up 2FA 门控是否启用。
 // 开启时账号/代理导出、备份创建/下载、S3 配置修改、提升管理员等操作
 // 要求当前会话在有效期内完成过 TOTP step-up 验证。
-func (s *SettingService) IsStepUpEnabled(ctx context.Context) bool {
+// 尚未写入设置时维持既有默认关闭；真实存储故障必须由门控 fail-closed。
+func (s *SettingService) IsStepUpEnabled(ctx context.Context) (bool, error) {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyStepUpEnabled)
-	if err != nil {
-		return false // 默认关闭
+	if errors.Is(err, ErrSettingNotFound) {
+		return false, nil
 	}
-	return value == "true"
+	if err != nil {
+		return false, ErrServiceUnavailable.WithCause(fmt.Errorf("read step-up setting: %w", err))
+	}
+	return strings.TrimSpace(value) != "false", nil
 }
 
 // defaultAuditLogRetentionDays 审计日志默认保留天数。

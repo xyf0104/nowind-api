@@ -13,10 +13,41 @@ const props = withDefaults(defineProps<{
 const show = ref(false)
 const triggerRef = useTemplateRef<HTMLElement>('trigger')
 const tooltipRef = useTemplateRef<HTMLElement>('tooltip')
-const tooltipStyle = ref({ top: '0px', left: '0px' })
+const tooltipStyle = ref({
+  top: '0px',
+  left: '0px',
+  maxWidth: 'calc(100vw - 1rem)',
+})
 const tooltipPlacement = ref<'top' | 'bottom'>('top')
+const viewportMargin = 8
+
+function getViewportBounds() {
+  const viewport = window.visualViewport
+  const left = viewport?.offsetLeft ?? 0
+  const top = viewport?.offsetTop ?? 0
+  const width = viewport?.width ?? window.innerWidth
+  const height = viewport?.height ?? window.innerHeight
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+  }
+}
+
+function constrainTooltipWidth() {
+  const viewport = getViewportBounds()
+  tooltipStyle.value = {
+    ...tooltipStyle.value,
+    maxWidth: `${Math.max(0, viewport.width - viewportMargin * 2)}px`,
+  }
+}
 
 function openTooltip() {
+  constrainTooltipWidth()
   show.value = true
   nextTick(updatePosition)
 }
@@ -62,7 +93,8 @@ function onDocumentKeydown(event: KeyboardEvent) {
 
 function onViewportChange() {
   if (!show.value) return
-  updatePosition()
+  constrainTooltipWidth()
+  nextTick(updatePosition)
 }
 
 function updatePosition() {
@@ -73,16 +105,18 @@ function updatePosition() {
   const tooltip = tooltipRef.value
   const tooltipWidth = tooltip?.offsetWidth || 256
   const tooltipHeight = tooltip?.offsetHeight || 0
-  const viewportMargin = 8
+  const viewport = getViewportBounds()
   const centeredLeft = rect.left + rect.width / 2
-  const left = Math.min(
-    Math.max(centeredLeft, tooltipWidth / 2 + viewportMargin),
-    window.innerWidth - tooltipWidth / 2 - viewportMargin,
-  )
-  const hasRoomAbove = rect.top >= tooltipHeight + viewportMargin
+  const minimumCenter = viewport.left + tooltipWidth / 2 + viewportMargin
+  const maximumCenter = viewport.right - tooltipWidth / 2 - viewportMargin
+  const left = minimumCenter <= maximumCenter
+    ? Math.min(Math.max(centeredLeft, minimumCenter), maximumCenter)
+    : viewport.left + viewport.width / 2
+  const hasRoomAbove = rect.top - viewport.top >= tooltipHeight + viewportMargin
 
   tooltipPlacement.value = hasRoomAbove ? 'top' : 'bottom'
   tooltipStyle.value = {
+    ...tooltipStyle.value,
     top: hasRoomAbove ? `${rect.top - viewportMargin}px` : `${rect.bottom + viewportMargin}px`,
     left: `${left}px`,
   }
@@ -93,6 +127,8 @@ onMounted(() => {
   document.addEventListener('keydown', onDocumentKeydown)
   window.addEventListener('resize', onViewportChange)
   window.addEventListener('scroll', onViewportChange, true)
+  window.visualViewport?.addEventListener('resize', onViewportChange)
+  window.visualViewport?.addEventListener('scroll', onViewportChange)
 })
 
 onBeforeUnmount(() => {
@@ -100,6 +136,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', onViewportChange)
   window.removeEventListener('scroll', onViewportChange, true)
+  window.visualViewport?.removeEventListener('resize', onViewportChange)
+  window.visualViewport?.removeEventListener('scroll', onViewportChange)
 })
 </script>
 
@@ -135,7 +173,7 @@ onBeforeUnmount(() => {
         v-show="show"
         role="tooltip"
         :class="[
-          'fixed z-[100000100] -translate-x-1/2 rounded-lg bg-gray-900 p-3 text-xs leading-relaxed text-white shadow-xl ring-1 ring-white/10 dark:bg-gray-800',
+          'help-tooltip-surface fixed z-[100000100] -translate-x-1/2 rounded-lg p-3 text-xs leading-relaxed text-white shadow-xl ring-1 ring-white/10',
           tooltipPlacement === 'top' ? '-translate-y-full' : '',
           props.widthClass,
         ]"
@@ -155,7 +193,7 @@ onBeforeUnmount(() => {
         <slot>{{ content }}</slot>
         <div
           :class="[
-            'absolute left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-gray-900 dark:bg-gray-800',
+            'help-tooltip-arrow absolute left-1/2 h-2 w-2 -translate-x-1/2 rotate-45',
             tooltipPlacement === 'top' ? '-bottom-1' : '-top-1',
           ]"
         ></div>
@@ -163,3 +201,28 @@ onBeforeUnmount(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.help-tooltip-surface {
+  --help-tooltip-background: rgb(17 24 39);
+  background-color: var(--help-tooltip-background) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(.dark) .help-tooltip-surface {
+  --help-tooltip-background: rgb(31 41 55);
+}
+
+:global(html:not(.dark) body:has(.app-layout)) .help-tooltip-surface,
+:global(.dark body:has(.app-layout)) .help-tooltip-surface {
+  background-color: var(--help-tooltip-background) !important;
+  border-color: rgb(255 255 255 / 0.12) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.help-tooltip-arrow {
+  background-color: var(--help-tooltip-background) !important;
+}
+</style>

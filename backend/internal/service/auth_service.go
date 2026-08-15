@@ -49,6 +49,10 @@ var (
 // maxTokenLength 限制 token 大小，避免超长 header 触发解析时的异常内存分配。
 const maxTokenLength = 8192
 
+// sessionFamilyLifetime 是 XIASS 登录会话的绝对生命周期上限。
+// refresh token 轮转只能使用剩余时间，不能把会话继续向后滚动。
+const sessionFamilyLifetime = 7 * 24 * time.Hour
+
 // refreshTokenPrefix is the prefix for refresh tokens to distinguish them from access tokens.
 const refreshTokenPrefix = "rt_"
 
@@ -1290,13 +1294,18 @@ func (s *AuthService) GenerateToken(ctx context.Context, user *User) (string, er
 
 // generateAccessToken 生成带会话 ID 与绑定指纹的 access token。
 func (s *AuthService) generateAccessToken(user *User, sessionID, bindingHash string) (string, error) {
+	token, _, err := s.generateAccessTokenUntil(user, sessionID, bindingHash, time.Time{})
+	return token, err
+}
+
+func (s *AuthService) generateAccessTokenUntil(user *User, sessionID, bindingHash string, absoluteExpiry time.Time) (string, int, error) {
 	now := time.Now()
-	var expiresAt time.Time
-	if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
-		expiresAt = now.Add(time.Duration(s.cfg.JWT.AccessTokenExpireMinutes) * time.Minute)
-	} else {
-		// 向后兼容：使用旧的expire_hour配置
-		expiresAt = now.Add(time.Duration(s.cfg.JWT.ExpireHour) * time.Hour)
+	expiresAt := now.Add(s.accessTokenTTL())
+	if !absoluteExpiry.IsZero() && absoluteExpiry.Before(expiresAt) {
+		expiresAt = absoluteExpiry
+	}
+	if !absoluteExpiry.IsZero() && !expiresAt.After(now) {
+		return "", 0, ErrRefreshTokenExpired
 	}
 
 	claims := &JWTClaims{
@@ -1316,19 +1325,31 @@ func (s *AuthService) generateAccessToken(user *User, sessionID, bindingHash str
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(s.cfg.JWT.Secret))
 	if err != nil {
-		return "", fmt.Errorf("sign token: %w", err)
+		return "", 0, fmt.Errorf("sign token: %w", err)
 	}
 
-	return tokenString, nil
+	return tokenString, int(expiresAt.Sub(now) / time.Second), nil
 }
 
 // GetAccessTokenExpiresIn 返回Access Token的有效期（秒）
 // 用于前端设置刷新定时器
 func (s *AuthService) GetAccessTokenExpiresIn() int {
+	return int(s.accessTokenTTL() / time.Second)
+}
+
+func (s *AuthService) accessTokenTTL() time.Duration {
 	if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
-		return s.cfg.JWT.AccessTokenExpireMinutes * 60
+		return time.Duration(s.cfg.JWT.AccessTokenExpireMinutes) * time.Minute
 	}
-	return s.cfg.JWT.ExpireHour * 3600
+	return time.Duration(s.cfg.JWT.ExpireHour) * time.Hour
+}
+
+func (s *AuthService) refreshTokenFamilyLifetime() time.Duration {
+	configured := time.Duration(s.cfg.JWT.RefreshTokenExpireDays) * 24 * time.Hour
+	if configured <= 0 || configured > sessionFamilyLifetime {
+		return sessionFamilyLifetime
+	}
+	return configured
 }
 
 // HashPassword 使用bcrypt加密密码
@@ -1559,9 +1580,19 @@ type TokenPairWithUser struct {
 // GenerateTokenPair 生成Access Token和Refresh Token对
 // familyID: 可选的Token家族ID，用于Token轮转时保持家族关系
 func (s *AuthService) GenerateTokenPair(ctx context.Context, user *User, familyID string) (*TokenPair, error) {
+	return s.generateTokenPair(ctx, user, familyID, time.Time{})
+}
+
+func (s *AuthService) generateTokenPair(ctx context.Context, user *User, familyID string, familyExpiresAt time.Time) (*TokenPair, error) {
 	// 检查 refreshTokenCache 是否可用
 	if s.refreshTokenCache == nil {
 		return nil, errors.New("refresh token cache not configured")
+	}
+	if familyExpiresAt.IsZero() {
+		familyExpiresAt = time.Now().Add(s.refreshTokenFamilyLifetime())
+	}
+	if !familyExpiresAt.After(time.Now()) {
+		return nil, ErrRefreshTokenExpired
 	}
 
 	// 提前确定家族ID：作为 access token 的会话ID（sid），保证同一会话的
@@ -1575,13 +1606,13 @@ func (s *AuthService) GenerateTokenPair(ctx context.Context, user *User, familyI
 	}
 
 	// 生成Access Token（携带会话ID与绑定指纹）
-	accessToken, err := s.generateAccessToken(user, familyID, sessionBindingHashFromContext(ctx))
+	accessToken, expiresIn, err := s.generateAccessTokenUntil(user, familyID, sessionBindingHashFromContext(ctx), familyExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("generate access token: %w", err)
 	}
 
 	// 生成Refresh Token
-	refreshToken, err := s.generateRefreshToken(ctx, user, familyID)
+	refreshToken, err := s.generateRefreshToken(ctx, user, familyID, familyExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("generate refresh token: %w", err)
 	}
@@ -1589,12 +1620,12 @@ func (s *AuthService) GenerateTokenPair(ctx context.Context, user *User, familyI
 	return &TokenPair{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
-		ExpiresIn:    s.GetAccessTokenExpiresIn(),
+		ExpiresIn:    expiresIn,
 	}, nil
 }
 
 // generateRefreshToken 生成并存储Refresh Token
-func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, familyID string) (string, error) {
+func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, familyID string, familyExpiresAt time.Time) (string, error) {
 	// 生成随机Token
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -1615,15 +1646,22 @@ func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, fami
 	}
 
 	now := time.Now()
-	ttl := time.Duration(s.cfg.JWT.RefreshTokenExpireDays) * 24 * time.Hour
+	if familyExpiresAt.IsZero() {
+		familyExpiresAt = now.Add(s.refreshTokenFamilyLifetime())
+	}
+	ttl := familyExpiresAt.Sub(now)
+	if ttl <= 0 {
+		return "", ErrRefreshTokenExpired
+	}
 
 	data := &RefreshTokenData{
-		UserID:       user.ID,
-		TokenVersion: resolvedTokenVersion(user),
-		FamilyID:     familyID,
-		BindingHash:  sessionBindingHashFromContext(ctx),
-		CreatedAt:    now,
-		ExpiresAt:    now.Add(ttl),
+		UserID:          user.ID,
+		TokenVersion:    resolvedTokenVersion(user),
+		FamilyID:        familyID,
+		BindingHash:     sessionBindingHashFromContext(ctx),
+		CreatedAt:       now,
+		ExpiresAt:       familyExpiresAt,
+		FamilyExpiresAt: familyExpiresAt,
 	}
 
 	// 存储Token数据
@@ -1673,8 +1711,11 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 		return nil, ErrServiceUnavailable
 	}
 
-	// 检查Token是否过期
-	if time.Now().After(data.ExpiresAt) {
+	now := time.Now()
+	familyExpiresAt := refreshTokenFamilyExpiresAt(data, now)
+
+	// 检查Token或会话家族是否过期
+	if !data.ExpiresAt.After(now) || !familyExpiresAt.After(now) {
 		// 删除过期Token
 		_ = s.refreshTokenCache.DeleteRefreshToken(ctx, tokenHash)
 		return nil, ErrRefreshTokenExpired
@@ -1716,14 +1757,23 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 		}
 	}
 
-	// Token轮转：立即使旧Token失效
-	if err := s.refreshTokenCache.DeleteRefreshToken(ctx, tokenHash); err != nil {
-		logger.LegacyPrintf("service.auth", "[Auth] Failed to delete old refresh token: %v", err)
-		// 继续处理，不影响主流程
+	// Token轮转：原子消费旧Token。并发刷新时只有一个请求能继续签发。
+	consumed, err := s.refreshTokenCache.ConsumeRefreshToken(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, ErrRefreshTokenNotFound) {
+			logger.LegacyPrintf("service.auth", "[Auth] Refresh token was already consumed, possible concurrent reuse")
+			return nil, ErrRefreshTokenInvalid
+		}
+		logger.LegacyPrintf("service.auth", "[Auth] Failed to consume refresh token: %v", err)
+		return nil, ErrServiceUnavailable
+	}
+	familyExpiresAt = refreshTokenFamilyExpiresAt(consumed, time.Now())
+	if !familyExpiresAt.After(time.Now()) {
+		return nil, ErrRefreshTokenExpired
 	}
 
 	// 生成新的Token对，保持同一个家族ID
-	pair, err := s.GenerateTokenPair(ctx, user, data.FamilyID)
+	pair, err := s.generateTokenPair(ctx, user, consumed.FamilyID, familyExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1731,6 +1781,26 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 		TokenPair: *pair,
 		UserRole:  user.Role,
 	}, nil
+}
+
+func refreshTokenFamilyExpiresAt(data *RefreshTokenData, now time.Time) time.Time {
+	if data == nil {
+		return time.Time{}
+	}
+	if !data.FamilyExpiresAt.IsZero() {
+		return data.FamilyExpiresAt
+	}
+
+	// 旧缓存记录没有 family_expires_at。升级后最多再保留一个七天窗口，
+	// 并且绝不超过旧 token 自身的过期时间。
+	legacyDeadline := data.CreatedAt.Add(sessionFamilyLifetime)
+	if data.CreatedAt.IsZero() {
+		legacyDeadline = now.Add(sessionFamilyLifetime)
+	}
+	if !data.ExpiresAt.IsZero() && data.ExpiresAt.Before(legacyDeadline) {
+		return data.ExpiresAt
+	}
+	return legacyDeadline
 }
 
 // RevokeRefreshToken 撤销单个Refresh Token

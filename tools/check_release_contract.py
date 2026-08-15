@@ -650,9 +650,14 @@ def check_soft_router_compatibility(errors: list[str]) -> None:
 def check_migration_immutability(errors: list[str]) -> None:
     try:
         tags = git_output("tag", "--list", "v[0-9]*", "--sort=-v:refname").splitlines()
+        head_tags = set(git_output("tag", "--points-at", "HEAD").splitlines())
     except (subprocess.CalledProcessError, FileNotFoundError):
         return
     stable_tags = [tag for tag in tags if re.fullmatch(r"v\d+\.\d+\.\d+", tag)]
+    # During a tag-triggered release the newest tag is the candidate itself.
+    # Compare against the preceding stable release so modified historical
+    # migrations cannot pass through an empty candidate-to-candidate diff.
+    stable_tags = [tag for tag in stable_tags if tag not in head_tags]
     if not stable_tags:
         return
     base = stable_tags[0]

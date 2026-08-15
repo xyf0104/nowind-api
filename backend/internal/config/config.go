@@ -1518,7 +1518,8 @@ type JWTConfig struct {
 	// - >0: 使用分钟配置（优先级高于 ExpireHour）
 	// - =0: 回退使用 ExpireHour（向后兼容旧配置）
 	AccessTokenExpireMinutes int `mapstructure:"access_token_expire_minutes"`
-	// RefreshTokenExpireDays: Refresh Token有效期（天），默认30天
+	// RefreshTokenExpireDays: Refresh Token有效期（天），默认7天。
+	// 认证服务同时强制执行不可滚动延长的7天会话家族上限。
 	RefreshTokenExpireDays int `mapstructure:"refresh_token_expire_days"`
 	// RefreshWindowMinutes: 刷新窗口（分钟），在Access Token过期前多久开始允许刷新
 	RefreshWindowMinutes int `mapstructure:"refresh_window_minutes"`
@@ -2140,7 +2141,7 @@ func setDefaults() {
 	viper.SetDefault("jwt.secret", "")
 	viper.SetDefault("jwt.expire_hour", 168)
 	viper.SetDefault("jwt.access_token_expire_minutes", 0) // 0 表示回退到 expire_hour
-	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30天Refresh Token有效期
+	viper.SetDefault("jwt.refresh_token_expire_days", 7)   // 7天Refresh Token有效期
 	viper.SetDefault("jwt.refresh_window_minutes", 2)      // 过期前2分钟开始允许刷新
 
 	// TOTP

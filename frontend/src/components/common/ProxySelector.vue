@@ -1,6 +1,7 @@
 <template>
   <div class="relative" ref="containerRef">
     <button
+      ref="triggerRef"
       type="button"
       @click="toggle"
       :disabled="disabled"
@@ -22,8 +23,15 @@
       </span>
     </button>
 
-    <Transition name="select-dropdown">
-      <div v-if="isOpen" class="select-dropdown">
+    <Teleport to="body">
+      <Transition name="select-dropdown">
+        <div
+          v-if="isOpen"
+          ref="dropdownRef"
+          data-testid="proxy-dropdown"
+          class="select-dropdown"
+          :style="dropdownStyle"
+        >
         <!-- Search and Batch Test Header -->
         <div class="select-header">
           <div class="select-search">
@@ -162,8 +170,9 @@
             {{ t('common.noOptionsFound') }}
           </div>
         </div>
-      </div>
-    </Transition>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -203,7 +212,14 @@ const emit = defineEmits<{
 const isOpen = ref(false)
 const searchQuery = ref('')
 const containerRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLButtonElement | null>(null)
+const dropdownRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
+const dropdownStyle = ref<Record<string, string>>({})
+
+const DROPDOWN_GAP = 8
+const VIEWPORT_PADDING = 8
+const PREFERRED_DROPDOWN_HEIGHT = 296
 
 // Test state
 const testResults = reactive<Record<number, ProxyTestResult>>({})
@@ -235,20 +251,85 @@ const filteredProxies = computed(() => {
   })
 })
 
+const updateDropdownPosition = () => {
+  const trigger = triggerRef.value
+  if (!trigger) return
+
+  const rect = trigger.getBoundingClientRect()
+  const viewport = window.visualViewport
+  const viewportTop = viewport?.offsetTop ?? 0
+  const viewportLeft = viewport?.offsetLeft ?? 0
+  const viewportWidth = viewport?.width ?? window.innerWidth
+  const viewportHeight = viewport?.height ?? window.innerHeight
+  const viewportRight = viewportLeft + viewportWidth
+  const viewportBottom = viewportTop + viewportHeight
+  const availableWidth = Math.max(0, viewportWidth - VIEWPORT_PADDING * 2)
+  const width = Math.min(Math.max(0, rect.width), availableWidth)
+  const left = Math.max(
+    viewportLeft + VIEWPORT_PADDING,
+    Math.min(rect.left, viewportRight - VIEWPORT_PADDING - width)
+  )
+  const spaceBelow = Math.max(
+    0,
+    viewportBottom - VIEWPORT_PADDING - rect.bottom - DROPDOWN_GAP
+  )
+  const spaceAbove = Math.max(
+    0,
+    rect.top - viewportTop - VIEWPORT_PADDING - DROPDOWN_GAP
+  )
+  const openAbove = spaceBelow < PREFERRED_DROPDOWN_HEIGHT && spaceAbove > spaceBelow
+  const maxHeight = openAbove ? spaceAbove : spaceBelow
+
+  dropdownStyle.value = {
+    position: 'fixed',
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(openAbove ? rect.top - DROPDOWN_GAP : rect.bottom + DROPDOWN_GAP)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.floor(maxHeight)}px`,
+    transform: openAbove ? 'translateY(-100%)' : 'none',
+    zIndex: '100000020'
+  }
+}
+
+const startPositionTracking = () => {
+  window.addEventListener('scroll', updateDropdownPosition, true)
+  window.addEventListener('resize', updateDropdownPosition)
+  window.visualViewport?.addEventListener('scroll', updateDropdownPosition)
+  window.visualViewport?.addEventListener('resize', updateDropdownPosition)
+}
+
+const stopPositionTracking = () => {
+  window.removeEventListener('scroll', updateDropdownPosition, true)
+  window.removeEventListener('resize', updateDropdownPosition)
+  window.visualViewport?.removeEventListener('scroll', updateDropdownPosition)
+  window.visualViewport?.removeEventListener('resize', updateDropdownPosition)
+}
+
+const closeDropdown = () => {
+  isOpen.value = false
+  searchQuery.value = ''
+  stopPositionTracking()
+}
+
 const toggle = () => {
   if (props.disabled) return
-  isOpen.value = !isOpen.value
   if (isOpen.value) {
-    nextTick(() => {
-      searchInputRef.value?.focus()
-    })
+    closeDropdown()
+    return
   }
+
+  updateDropdownPosition()
+  isOpen.value = true
+  startPositionTracking()
+  nextTick(() => {
+    updateDropdownPosition()
+    searchInputRef.value?.focus()
+  })
 }
 
 const selectOption = (value: number | null) => {
   emit('update:modelValue', value)
-  isOpen.value = false
-  searchQuery.value = ''
+  closeDropdown()
 }
 
 const handleTestProxy = async (proxy: Proxy) => {
@@ -294,16 +375,15 @@ const handleBatchTest = async () => {
 }
 
 const handleClickOutside = (event: MouseEvent) => {
-  if (containerRef.value && !containerRef.value.contains(event.target as Node)) {
-    isOpen.value = false
-    searchQuery.value = ''
+  const target = event.target as Node
+  if (!containerRef.value?.contains(target) && !dropdownRef.value?.contains(target)) {
+    closeDropdown()
   }
 }
 
 const handleEscape = (event: KeyboardEvent) => {
   if (event.key === 'Escape' && isOpen.value) {
-    isOpen.value = false
-    searchQuery.value = ''
+    closeDropdown()
   }
 }
 
@@ -315,6 +395,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleEscape)
+  stopPositionTracking()
 })
 </script>
 
@@ -348,7 +429,7 @@ onUnmounted(() => {
 }
 
 .select-dropdown {
-  @apply absolute z-[100] mt-2 w-full;
+  @apply fixed z-[100000020] flex flex-col;
   @apply bg-white dark:bg-dark-800;
   @apply rounded-xl;
   @apply border border-gray-200 dark:border-dark-700;
@@ -357,7 +438,7 @@ onUnmounted(() => {
 }
 
 .select-header {
-  @apply flex items-center gap-2 px-3 py-2;
+  @apply flex shrink-0 items-center gap-2 px-3 py-2;
   @apply border-b border-gray-100 dark:border-dark-700;
 }
 
@@ -380,7 +461,7 @@ onUnmounted(() => {
 }
 
 .select-options {
-  @apply max-h-60 overflow-y-auto py-1;
+  @apply min-h-0 max-h-60 overflow-y-auto py-1;
 }
 
 .select-option {

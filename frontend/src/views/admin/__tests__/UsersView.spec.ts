@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 
-import type { AdminUser } from '@/types'
+import type { AdminGroup, AdminUser } from '@/types'
 import UsersView from '../UsersView.vue'
 
 const {
   listUsers,
   getAllGroups,
+  getAllIncludingInactive,
   getBatchUsersUsage,
   listEnabledDefinitions,
   getBatchUserAttributes
 } = vi.hoisted(() => ({
   listUsers: vi.fn(),
   getAllGroups: vi.fn(),
+  getAllIncludingInactive: vi.fn(),
   getBatchUsersUsage: vi.fn(),
   listEnabledDefinitions: vi.fn(),
   getBatchUserAttributes: vi.fn()
@@ -26,7 +29,8 @@ vi.mock('@/api/admin', () => ({
       delete: vi.fn()
     },
     groups: {
-      getAll: getAllGroups
+      getAll: getAllGroups,
+      getAllIncludingInactive
     },
     dashboard: {
       getBatchUsersUsage
@@ -97,6 +101,7 @@ const DataTableStub = {
         <slot :name="'header-' + col.key" :column="col" />
       </template>
       <div v-for="row in data" :key="row.id">
+        <slot name="cell-groups" :row="row" />
         <slot name="cell-last_used_at" :value="row.last_used_at" :row="row" />
       </div>
     </div>
@@ -119,6 +124,39 @@ const BulkEditUserModalStub = {
   `
 }
 
+const HelpTooltipStub = {
+  template: '<div><slot name="trigger" /><slot /></div>'
+}
+
+const GroupReplaceModalStub = {
+  props: ['show', 'user', 'oldGroup'],
+  template: '<div v-if="show" data-test="group-replace-state">{{ user.id }}:{{ oldGroup.id }}</div>'
+}
+
+const originalInnerWidth = window.innerWidth
+const originalInnerHeight = window.innerHeight
+
+function setViewportSize(width: number, height: number) {
+  Object.defineProperties(window, {
+    innerWidth: { configurable: true, value: width },
+    innerHeight: { configurable: true, value: height }
+  })
+}
+
+function makeRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => ({})
+  } as DOMRect
+}
+
 describe('admin UsersView', () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -126,6 +164,7 @@ describe('admin UsersView', () => {
 
     listUsers.mockReset()
     getAllGroups.mockReset()
+    getAllIncludingInactive.mockReset()
     getBatchUsersUsage.mockReset()
     listEnabledDefinitions.mockReset()
     getBatchUserAttributes.mockReset()
@@ -138,6 +177,7 @@ describe('admin UsersView', () => {
       pages: 1
     })
     getAllGroups.mockResolvedValue([])
+    getAllIncludingInactive.mockResolvedValue([])
     getBatchUsersUsage.mockResolvedValue({ stats: {} })
     listEnabledDefinitions.mockResolvedValue([])
     getBatchUserAttributes.mockResolvedValue({ values: {} })
@@ -145,6 +185,125 @@ describe('admin UsersView', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    document.body.innerHTML = ''
+    setViewportSize(originalInnerWidth, originalInnerHeight)
+    vi.restoreAllMocks()
+  })
+
+  it('portals the exclusive-group menu, repositions it in the viewport, and closes it accessibly', async () => {
+    setViewportSize(320, 240)
+    localStorage.setItem('user-column-settings-version', '3')
+    localStorage.setItem('user-hidden-columns', JSON.stringify(['balance_platform_quota']))
+
+    const exclusiveGroup = {
+      id: 7,
+      name: 'Dedicated Group',
+      status: 'active',
+      is_exclusive: true,
+      subscription_type: 'standard'
+    } as AdminGroup
+    listUsers.mockResolvedValue({
+      items: [createAdminUser({ allowed_groups: [exclusiveGroup.id] })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+    getAllGroups.mockResolvedValue([exclusiveGroup])
+
+    const wrapper = mount(UsersView, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          TablePageLayout: {
+            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+          },
+          DataTable: DataTableStub,
+          Pagination: true,
+          ConfirmDialog: true,
+          EmptyState: true,
+          GroupBadge: true,
+          HelpTooltip: HelpTooltipStub,
+          Select: true,
+          UserAttributesConfigModal: true,
+          UserConcurrencyCell: true,
+          UserCreateModal: true,
+          UserEditModal: true,
+          BulkEditUserModal: BulkEditUserModalStub,
+          UserPlatformQuotaModal: true,
+          UserApiKeysModal: true,
+          UserAllowedGroupsModal: true,
+          UserBalanceModal: true,
+          UserBalanceHistoryModal: true,
+          GroupReplaceModal: GroupReplaceModalStub,
+          Icon: true,
+          Teleport: false
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const trigger = wrapper.get('[data-test="exclusive-group-trigger-42"]')
+    let triggerRect = makeRect(290, 210, 18, 18)
+    vi.spyOn(trigger.element, 'getBoundingClientRect').mockImplementation(() => triggerRect)
+
+    await trigger.trigger('click')
+    await flushPromises()
+
+    const menu = document.body.querySelector<HTMLElement>('[data-test="exclusive-group-menu-42"]')
+    expect(menu).not.toBeNull()
+    expect(menu?.parentElement).toBe(document.body)
+    expect(menu?.classList.contains('fixed')).toBe(true)
+    expect(menu?.className).toContain('z-[100000020]')
+
+    Object.defineProperties(menu!, {
+      offsetWidth: { configurable: true, value: 220 },
+      scrollWidth: { configurable: true, value: 220 },
+      offsetHeight: { configurable: true, value: 80 },
+      scrollHeight: { configurable: true, value: 80 }
+    })
+    window.dispatchEvent(new Event('resize'))
+    await nextTick()
+
+    expect(menu?.style.left).toBe('92px')
+    expect(menu?.style.top).toBe('124px')
+    expect(menu?.style.maxHeight).toBe('196px')
+    expect(document.activeElement).toBe(menu?.querySelector('[role="menuitem"]'))
+
+    triggerRect = makeRect(4, 20, 18, 18)
+    window.dispatchEvent(new Event('scroll'))
+    await nextTick()
+    expect(menu?.style.left).toBe('8px')
+    expect(menu?.style.top).toBe('44px')
+
+    setViewportSize(200, 240)
+    triggerRect = makeRect(190, -40, 18, 18)
+    window.dispatchEvent(new Event('resize'))
+    await nextTick()
+    expect(menu?.style.left).toBe('8px')
+    expect(menu?.style.top).toBe('8px')
+    expect(menu?.style.width).toBe('184px')
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(document.body.querySelector('[data-test="exclusive-group-menu-42"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger.element)
+
+    await trigger.trigger('click')
+    await flushPromises()
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="exclusive-group-menu-42"]')).toBeNull()
+
+    await trigger.trigger('click')
+    await flushPromises()
+    document.body.querySelector<HTMLButtonElement>('[data-test="exclusive-group-menu-42"] [role="menuitem"]')?.click()
+    await nextTick()
+    expect(wrapper.get('[data-test="group-replace-state"]').text()).toBe('42:7')
+
+    wrapper.unmount()
   })
 
   it('shows active, used, and created activity columns in order and requests last_used_at sort', async () => {

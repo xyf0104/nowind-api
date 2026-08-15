@@ -41,6 +41,15 @@ const flushPromises = async () => {
   await Promise.resolve()
 }
 
+const mountTotpDialog = (component: typeof TotpSetupModal | typeof TotpDisableDialog) =>
+  mount(component, {
+    global: {
+      stubs: {
+        teleport: true
+      }
+    }
+  })
+
 describe('TOTP 弹窗定时器清理', () => {
   let intervalSeed = 1000
   let setIntervalSpy: ReturnType<typeof vi.spyOn>
@@ -80,7 +89,7 @@ describe('TOTP 弹窗定时器清理', () => {
   })
 
   it('TotpSetupModal 卸载时清理倒计时定时器', async () => {
-    const wrapper = mount(TotpSetupModal)
+    const wrapper = mountTotpDialog(TotpSetupModal)
     await flushPromises()
 
     const sendButton = wrapper
@@ -100,7 +109,7 @@ describe('TOTP 弹窗定时器清理', () => {
   })
 
   it('TotpDisableDialog 卸载时清理倒计时定时器', async () => {
-    const wrapper = mount(TotpDisableDialog)
+    const wrapper = mountTotpDialog(TotpDisableDialog)
     await flushPromises()
 
     const sendButton = wrapper
@@ -125,7 +134,7 @@ describe('TOTP 弹窗定时器清理', () => {
       response: { data: { message: 'setup failed' } }
     })
 
-    const wrapper = mount(TotpSetupModal)
+    const wrapper = mountTotpDialog(TotpSetupModal)
     await flushPromises()
 
     await wrapper.get('input[type="password"]').setValue('correct horse battery staple')
@@ -143,7 +152,7 @@ describe('TOTP 弹窗定时器清理', () => {
       response: { data: { message: 'disable failed' } }
     })
 
-    const wrapper = mount(TotpDisableDialog)
+    const wrapper = mountTotpDialog(TotpDisableDialog)
     await flushPromises()
 
     await wrapper.get('input[type="password"]').setValue('correct horse battery staple')

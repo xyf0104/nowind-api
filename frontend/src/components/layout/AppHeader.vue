@@ -72,7 +72,7 @@
             {{ balanceFrozenLabel }}
           </span>
           <div
-            class="pointer-events-none absolute right-0 top-full mt-2 hidden w-56 rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg group-hover:block dark:border-dark-700 dark:bg-dark-800"
+            class="balance-tooltip console-floating-surface pointer-events-none absolute right-0 top-full z-50 mt-2 hidden w-56 rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg group-hover:block dark:border-dark-700 dark:bg-dark-800"
           >
             <div class="flex items-center justify-between">
               <span class="text-gray-500 dark:text-dark-400">{{ balanceAvailableText }}</span>
@@ -379,5 +379,27 @@ onBeforeUnmount(() => {
 .dropdown-leave-to {
   opacity: 0;
   transform: scale(0.95) translateY(-4px);
+}
+
+.balance-tooltip {
+  background-color: rgb(255 255 255) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(.dark) .balance-tooltip {
+  background-color: rgb(8 21 38) !important;
+}
+
+:global(html:not(.dark) body:has(.app-layout)) .balance-tooltip {
+  background-color: rgb(255 255 255) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(.dark body:has(.app-layout)) .balance-tooltip {
+  background-color: rgb(8 21 38) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 </style>

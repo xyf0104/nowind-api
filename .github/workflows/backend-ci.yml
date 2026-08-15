@@ -24,10 +24,15 @@ jobs:
       - name: Verify legacy origin migration
         run: |
           bash -n deploy/xiass-update.sh
+          bash -n deploy/install.sh
+          bash -n deploy/docker-deploy.sh
           tools/test_xiass_update_origin.sh
           /bin/sh deploy/tests/docker-compose-security-test.sh
           /bin/sh deploy/tests/docker-runtime-resources-test.sh
           /bin/sh deploy/test-caddyfile-cache.sh
+          bash deploy/test-install-download-integrity.sh
+          bash deploy/tests/install-github-token-test.sh
+          bash deploy/test-docker-deploy-existing-install.sh
 
   test:
     runs-on: ubuntu-latest

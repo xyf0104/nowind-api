@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -375,7 +376,8 @@ func getOpenAIGroupIDFromContext(c *gin.Context) int64 {
 }
 
 // SelectAccountByPreviousResponseID 按 previous_response_id 命中账号粘连。
-// 未命中或账号不可用时返回 (nil, nil)，由调用方继续走常规调度。
+// 未命中或绑定失效时返回 (nil, nil)；临时配额/利润阻塞保留绑定并返回错误，
+// 防止不可迁移的响应链落入常规调度。
 func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	ctx context.Context,
 	groupID *int64,
@@ -402,13 +404,16 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if s == nil {
 		return nil, nil
 	}
-	accountID, account, responseID, store := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	accountID, account, responseID, store, affinityErr := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	if affinityErr != nil {
+		return nil, affinityErr
+	}
 	if accountID <= 0 || account == nil || store == nil {
 		return nil, nil
 	}
 
 	result, acquireErr := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
-	if acquireErr == nil && result.Acquired {
+	if acquireErr == nil && result != nil && result.Acquired {
 		logOpenAIWSBindResponseAccountWarn(
 			derefGroupID(groupID),
 			accountID,
@@ -424,6 +429,12 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 
 	cfg := s.schedulingConfig()
 	if s.concurrencyService != nil {
+		logOpenAIWSBindResponseAccountWarn(
+			derefGroupID(groupID),
+			accountID,
+			responseID,
+			store.BindResponseAccount(ctx, derefGroupID(groupID), responseID, accountID, s.openAIWSResponseStickyTTL()),
+		)
 		return attachSelectionProfitGate(ctx, &AccountSelectionResult{
 			Account: account,
 			WaitPlan: &AccountWaitPlan{
@@ -446,8 +457,12 @@ func (s *OpenAIGatewayService) ResolveAccountIDByPreviousResponseIDForScheduler(
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
 ) int64 {
-	accountID, _, _, _ := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	accountID, _, _, _, _ := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
 	return accountID
+}
+
+func openAIPreviousResponseAffinityBlocked(accountID int64, reason string) error {
+	return fmt.Errorf("%w: previous_response_id bound account %d is temporarily unavailable (%s)", ErrNoAvailableAccounts, accountID, reason)
 }
 
 func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
@@ -458,104 +473,104 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
-) (int64, *Account, string, OpenAIWSStateStore) {
+) (int64, *Account, string, OpenAIWSStateStore, error) {
 	if s == nil {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	responseID := strings.TrimSpace(previousResponseID)
 	if responseID == "" {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	store := s.getOpenAIWSStateStore()
 	if store == nil {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 
 	accountID, err := store.GetResponseAccount(ctx, derefGroupID(groupID), responseID)
 	if err != nil || accountID <= 0 {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if excludedIDs != nil {
 		if _, excluded := excludedIDs[accountID]; excluded {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 	}
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
 	if err != nil || account == nil {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	// 非 WSv2 场景（如 force_http/全局关闭）不应使用 previous_response_id 粘连，
 	// 以保持“回滚到 HTTP”后的历史行为一致性。
 	if s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	// Quota auto-pause must also gate the previous_response_id sticky path; otherwise an
 	// account over its 5h/7d threshold keeps serving the same response chain even though
-	// normal scheduling skips it. Pause is transient, so fall through to normal scheduling
-	// without deleting the binding (the window may reset before the next turn).
+	// normal scheduling skips it. Pause is transient, so preserve the binding and stop
+	// hard-affinity selection instead of migrating the response chain.
 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
-		return 0, nil, "", nil
+		return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "quota_auto_pause")
 	}
 	// 分组利润控制：与 quota auto-pause 同语义——利润不合格是暂时
-	// 状态（上游倍率/高峰随时间变化），只跳过本次复用、落回普通调度，不删除
-	// 绑定（倍率恢复后可继续按 previous_response_id 粘连）。
+	// 状态（上游倍率/高峰随时间变化），保留绑定并停止不可迁移链路，倍率恢复后
+	// 可继续按 previous_response_id 粘连。
 	if vetoed, _ := openAIProfitControlVetoReason(ctx, account); vetoed {
-		return 0, nil, "", nil
+		return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "profit_control")
 	}
 	if s.schedulerSnapshot != nil && s.accountRepo != nil {
 		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
 		if latestErr != nil || latest == nil {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if !latest.SupportsOpenAIEndpointCapability(requiredCapability) {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, latest); paused {
-			return 0, nil, "", nil
+			return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "quota_auto_pause")
 		}
-		// 利润门对最新账号状态复检一次，语义同上：跳过复用、不删绑定。
+		// 利润门对最新账号状态复检一次，语义同上：停止链路、不删绑定。
 		if vetoed, _ := openAIProfitControlVetoReason(ctx, latest); vetoed {
-			return 0, nil, "", nil
+			return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "profit_control")
 		}
 		if s.isOpenAIAccountRequestRuntimeBlocked(latest, requestedModel) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		account = latest
 	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
-	return accountID, account, responseID, store
+	return accountID, account, responseID, store, nil
 }
 
 func classifyOpenAIWSAcquireError(err error) string {

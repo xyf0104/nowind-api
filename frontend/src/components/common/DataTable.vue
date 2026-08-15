@@ -53,7 +53,10 @@
           'cursor-pointer': clickableRows,
           'border-primary-300 bg-primary-50/40 dark:border-primary-700 dark:bg-primary-900/10': selectable && isRowSelected(row, index)
         }"
+        :role="clickableRows ? 'button' : undefined"
+        :tabindex="clickableRows ? 0 : undefined"
         @click="clickableRows && emit('rowClick', row)"
+        @keydown="handleMobileRowKeydown($event, row)"
       >
         <div class="space-y-3">
           <div v-if="selectable" class="flex justify-end">
@@ -483,6 +486,13 @@ const props = withDefaults(defineProps<Props>(), {
   selectable: false,
   selectedKeys: () => []
 })
+
+const handleMobileRowKeydown = (event: KeyboardEvent, row: any) => {
+  if (!props.clickableRows || event.target !== event.currentTarget) return
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  emit('rowClick', row)
+}
 
 const sortKey = ref<string>('')
 const sortOrder = ref<'asc' | 'desc'>('asc')

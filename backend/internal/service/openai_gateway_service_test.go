@@ -651,6 +651,7 @@ func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accoun
 type stubGatewayCache struct {
 	sessionBindings map[string]int64
 	deletedSessions map[string]int
+	refreshTTLs     map[string]time.Duration
 }
 
 func (c *stubGatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -669,6 +670,10 @@ func (c *stubGatewayCache) SetSessionAccountID(ctx context.Context, groupID int6
 }
 
 func (c *stubGatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
+	if c.refreshTTLs == nil {
+		c.refreshTTLs = make(map[string]time.Duration)
+	}
+	c.refreshTTLs[sessionHash] = ttl
 	return nil
 }
 
@@ -1100,7 +1105,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyWaitPlan(t *testing.T) {
 	groupID := int64(1)
 	repo := stubOpenAIAccountRepo{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}},
 		},
 	}
 	cache := &stubGatewayCache{
@@ -1127,6 +1132,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyWaitPlan(t *testing.T) {
 	if selection.Account == nil || selection.Account.ID != 1 {
 		t.Fatalf("expected account 1")
 	}
+	require.Equal(t, time.Minute, cache.refreshTTLs["openai:"+sessionHash])
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {

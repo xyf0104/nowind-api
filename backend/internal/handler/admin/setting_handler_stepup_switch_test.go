@@ -107,6 +107,31 @@ func TestUpdateSettingsDisableStepUpRejectsAdminAPIKey(t *testing.T) {
 	require.Equal(t, "true", repo.values[service.SettingKeyStepUpEnabled])
 }
 
+func TestUpdateSettingsDisableTotpRequiresStepUp(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+		service.SettingKeyTotpEnabled: "true",
+	})
+
+	rec := doUpdateSettings(t, h, map[string]any{"totp_enabled": false}, nil)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "true", repo.values[service.SettingKeyTotpEnabled])
+}
+
+func TestUpdateSettingsDisableTotpRejectsAdminAPIKey(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+		service.SettingKeyTotpEnabled: "true",
+	})
+
+	rec := doUpdateSettings(t, h, map[string]any{"totp_enabled": false}, func(c *gin.Context) {
+		c.Set("auth_method", service.AuditAuthMethodAdminAPIKey)
+	})
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "STEP_UP_ADMIN_API_KEY_FORBIDDEN")
+	require.Equal(t, "true", repo.values[service.SettingKeyTotpEnabled])
+}
+
 // 无状态转换（false→false）：不触发任何转换校验，常规保存成功且默认持久化为 false。
 func TestUpdateSettingsStepUpNoTransitionSkipsGate(t *testing.T) {
 	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
@@ -137,6 +162,7 @@ func TestUpdateSettingsOmittedSecuritySwitchesKeepStoredValues(t *testing.T) {
 	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
 		service.SettingKeyStepUpEnabled:         "true",
 		service.SettingKeySessionBindingEnabled: "true",
+		service.SettingKeyTotpEnabled:           "true",
 	})
 
 	rec := doUpdateSettings(t, h, map[string]any{"registration_enabled": true}, nil)
@@ -144,6 +170,7 @@ func TestUpdateSettingsOmittedSecuritySwitchesKeepStoredValues(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "true", repo.values[service.SettingKeyStepUpEnabled])
 	require.Equal(t, "true", repo.values[service.SettingKeySessionBindingEnabled])
+	require.Equal(t, "true", repo.values[service.SettingKeyTotpEnabled])
 }
 
 // 省略字段在开关本就关闭时同样保持关闭（默认值路径）。
