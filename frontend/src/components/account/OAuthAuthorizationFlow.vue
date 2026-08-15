@@ -1,21 +1,25 @@
 <template>
   <div
-    class="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-700 dark:bg-blue-900/30"
+    class="min-w-0 overflow-x-hidden rounded-lg border border-blue-200 bg-blue-50 p-3 sm:p-4 dark:border-blue-700 dark:bg-blue-900/30"
+    data-testid="oauth-authorization-flow"
   >
-      <div class="flex items-start gap-4">
-      <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-500">
+      <div class="flex min-w-0 items-start gap-3 sm:gap-4">
+      <div class="hidden h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-500 sm:flex">
         <Icon name="link" size="md" class="text-white" />
       </div>
-      <div class="flex-1">
+      <div class="min-w-0 flex-1 break-words">
         <h4 class="mb-3 font-semibold text-blue-900 dark:text-blue-200">{{ oauthTitle }}</h4>
 
         <!-- Auth Method Selection -->
         <div v-if="showMethodSelection" class="mb-4">
           <label class="mb-2 block text-sm font-medium text-blue-800 dark:text-blue-300">
-            {{ methodLabel }}
+            {{ resolvedMethodLabel }}
           </label>
-          <div class="flex flex-wrap gap-4">
-            <label v-if="showManualOption" class="flex cursor-pointer items-center gap-2">
+          <div
+            class="grid min-w-0 grid-cols-1 gap-x-4 gap-y-3 sm:flex sm:flex-wrap sm:gap-4"
+            data-testid="oauth-method-options"
+          >
+            <label v-if="showManualOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -26,7 +30,7 @@
                 t('admin.accounts.oauth.manualAuth')
               }}</span>
             </label>
-            <label v-if="showCookieOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showCookieOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -37,7 +41,7 @@
                 t('admin.accounts.oauth.cookieAutoAuth')
               }}</span>
             </label>
-            <label v-if="showRefreshTokenOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showRefreshTokenOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -48,7 +52,7 @@
                 t(getOAuthKey('refreshTokenAuth'))
               }}</span>
             </label>
-            <label v-if="showSsoOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showSsoOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -59,7 +63,7 @@
                 t(getOAuthKey('ssoCookieAuth'))
               }}</span>
             </label>
-            <label v-if="showMobileRefreshTokenOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showMobileRefreshTokenOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -70,7 +74,7 @@
                 t('admin.accounts.oauth.openai.mobileRefreshTokenAuth')
               }}</span>
             </label>
-            <label v-if="showSessionTokenOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showSessionTokenOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -81,7 +85,7 @@
                 t(getOAuthKey('sessionTokenAuth'))
               }}</span>
             </label>
-            <label v-if="showAccessTokenOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showAccessTokenOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -92,7 +96,7 @@
                 t('admin.accounts.oauth.openai.accessTokenAuth')
               }}</span>
             </label>
-            <label v-if="showCodexSessionImportOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showCodexSessionImportOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -103,7 +107,7 @@
                 t('admin.accounts.oauth.openai.codexSessionAuth')
               }}</span>
             </label>
-            <label v-if="showAgentIdentityOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showAgentIdentityOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -114,7 +118,7 @@
                 t('admin.accounts.oauth.openai.agentIdentityAuth')
               }}</span>
             </label>
-            <label v-if="showCodexPatOption" class="flex cursor-pointer items-center gap-2">
+            <label v-if="showCodexPatOption" class="flex min-w-0 cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -131,7 +135,7 @@
         <!-- Refresh Token Input (OpenAI / Antigravity / Mobile RT) -->
         <div v-if="inputMethod === 'refresh_token' || inputMethod === 'mobile_refresh_token'" class="space-y-4">
           <div
-            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+            class="rounded-lg border border-blue-300 bg-white/80 p-3 sm:p-4 dark:border-blue-600 dark:bg-gray-800/80"
           >
             <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
               {{ t(getOAuthKey('refreshTokenDesc')) }}
@@ -587,7 +591,7 @@
               >
                 1
               </div>
-              <div class="flex-1">
+              <div class="min-w-0 flex-1">
                 <p class="mb-2 font-medium text-blue-900 dark:text-blue-200">
                   {{ oauthStep1GenerateUrl }}
                 </p>
@@ -647,16 +651,19 @@
                   {{ loading ? t('admin.accounts.oauth.generating') : oauthGenerateAuthUrl }}
                 </button>
                 <div v-else class="space-y-3">
-                  <div class="flex items-center gap-2">
+                  <div
+                    class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center"
+                    data-testid="oauth-url-row"
+                  >
                     <input
                       :value="authUrl"
                       readonly
                       type="text"
-                      class="input flex-1 bg-gray-50 font-mono text-xs dark:bg-gray-700"
+                      class="input w-full min-w-0 bg-gray-50 font-mono text-xs sm:flex-1 dark:bg-gray-700"
                     />
                     <button
                       type="button"
-                      class="btn btn-secondary p-2"
+                      class="btn btn-secondary self-end p-2 sm:self-auto"
                       title="Copy URL"
                       @click="handleCopyUrl"
                     >
@@ -698,7 +705,7 @@
 
           <!-- Step 2: Open URL and authorize -->
           <div
-            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+            class="rounded-lg border border-blue-300 bg-white/80 p-3 sm:p-4 dark:border-blue-600 dark:bg-gray-800/80"
           >
             <div class="flex items-start gap-3">
               <div
@@ -706,7 +713,7 @@
               >
                 2
               </div>
-              <div class="flex-1">
+              <div class="min-w-0 flex-1">
                 <p class="mb-2 font-medium text-blue-900 dark:text-blue-200">
                   {{ oauthStep2OpenUrl }}
                 </p>
@@ -745,7 +752,7 @@
 
           <!-- Step 3: Enter authorization code -->
           <div
-            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+            class="rounded-lg border border-blue-300 bg-white/80 p-3 sm:p-4 dark:border-blue-600 dark:bg-gray-800/80"
           >
             <div class="flex items-start gap-3">
               <div
@@ -753,7 +760,7 @@
               >
                 4
               </div>
-              <div class="flex-1">
+              <div class="min-w-0 flex-1">
                 <p class="mb-2 font-medium text-blue-900 dark:text-blue-200">
                   {{ oauthStep3EnterCode }}
                 </p>
@@ -857,7 +864,7 @@ const props = withDefaults(defineProps<Props>(), {
   showHelp: true,
   showProxyWarning: true,
   allowMultiple: false,
-  methodLabel: 'Authorization Method',
+  methodLabel: '',
   showCookieOption: true,
   showRefreshTokenOption: false,
   showMobileRefreshTokenOption: false,
@@ -888,6 +895,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const resolvedMethodLabel = computed(() => props.methodLabel || t('admin.accounts.oauth.authMethod'))
 
 const showLocalCallbackNotice = computed(() => props.platform === 'openai' || props.platform === 'grok')
 

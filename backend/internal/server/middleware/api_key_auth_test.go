@@ -1341,6 +1341,112 @@ func TestAPIKeyAuthUsageStillTouchesLastUsed(t *testing.T) {
 	require.Equal(t, 1, touchCalls)
 }
 
+func TestAPIKeyAuthModelsSkipsBillingButInferenceStillEnforcesIt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	group := &service.Group{
+		ID:               42,
+		Name:             "subscription",
+		Status:           service.StatusActive,
+		Hydrated:         true,
+		SubscriptionType: service.SubscriptionTypeSubscription,
+	}
+	user := &service.User{
+		ID:          7,
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     0,
+		Concurrency: 3,
+	}
+	apiKey := &service.APIKey{
+		ID:      100,
+		UserID:  user.ID,
+		Key:     "models-auth-only",
+		Status:  service.StatusActive,
+		User:    user,
+		GroupID: &group.ID,
+		Group:   group,
+	}
+
+	subscriptionCalls := 0
+	apiKeyRepo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
+		clone := *apiKey
+		return &clone, nil
+	}}
+	subscriptionRepo := &stubUserSubscriptionRepo{getActive: func(context.Context, int64, int64) (*service.UserSubscription, error) {
+		subscriptionCalls++
+		return nil, service.ErrSubscriptionNotFound
+	}}
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg)
+	subscriptionService := service.NewSubscriptionService(nil, subscriptionRepo, nil, nil, cfg)
+	t.Cleanup(subscriptionService.Stop)
+	router := newAuthTestRouter(apiKeyService, subscriptionService, cfg)
+
+	modelsResponse := httptest.NewRecorder()
+	modelsRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	modelsRequest.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(modelsResponse, modelsRequest)
+
+	require.Equal(t, http.StatusOK, modelsResponse.Code)
+	require.Equal(t, 1, subscriptionCalls)
+
+	inferenceResponse := httptest.NewRecorder()
+	inferenceRequest := httptest.NewRequest(http.MethodGet, "/t", nil)
+	inferenceRequest.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(inferenceResponse, inferenceRequest)
+
+	require.Equal(t, http.StatusForbidden, inferenceResponse.Code)
+	requireAPIKeyAuthError(t, inferenceResponse, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
+	require.Equal(t, 2, subscriptionCalls)
+}
+
+func TestAPIKeyAuthModelsAllowsZeroBalanceButInferenceDoesNot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	group := &service.Group{
+		ID:       43,
+		Name:     "pay-as-you-go",
+		Status:   service.StatusActive,
+		Hydrated: true,
+	}
+	user := &service.User{
+		ID:          8,
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     0,
+		Concurrency: 3,
+	}
+	apiKey := &service.APIKey{
+		ID:      101,
+		UserID:  user.ID,
+		Key:     "models-zero-balance",
+		Status:  service.StatusActive,
+		User:    user,
+		GroupID: &group.ID,
+		Group:   group,
+	}
+	apiKeyRepo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
+		clone := *apiKey
+		return &clone, nil
+	}}
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
+
+	modelsResponse := httptest.NewRecorder()
+	modelsRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	modelsRequest.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	router.ServeHTTP(modelsResponse, modelsRequest)
+	require.Equal(t, http.StatusOK, modelsResponse.Code)
+
+	inferenceResponse := httptest.NewRecorder()
+	inferenceRequest := httptest.NewRequest(http.MethodGet, "/t", nil)
+	inferenceRequest.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	router.ServeHTTP(inferenceResponse, inferenceRequest)
+	require.Equal(t, http.StatusForbidden, inferenceResponse.Code)
+	requireAPIKeyAuthError(t, inferenceResponse, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+}
+
 func TestAPIKeyAuthAllowsBalanceBelowMinimumReserve(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1510,6 +1616,7 @@ func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService
 	router.POST("/v1/messages", ok)
 	router.GET("/v1/usage", ok)
 	router.GET("/v1/sub2api/billing", ok)
+	router.GET("/v1/models", ok)
 	return router
 }
 

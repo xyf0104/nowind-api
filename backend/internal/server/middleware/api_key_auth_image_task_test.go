@@ -13,3 +13,10 @@ func TestIsAsyncImageTaskRead(t *testing.T) {
 	require.False(t, isAsyncImageTaskRead(http.MethodPost, "/v1/images/tasks/imgtask_123"))
 	require.False(t, isAsyncImageTaskRead(http.MethodGet, "/v1/images/generations"))
 }
+
+func TestIsModelCatalogRead(t *testing.T) {
+	require.True(t, isModelCatalogRead(http.MethodGet, "/v1/models"))
+	require.True(t, isModelCatalogRead(http.MethodGet, "/models"))
+	require.False(t, isModelCatalogRead(http.MethodPost, "/v1/models"))
+	require.False(t, isModelCatalogRead(http.MethodGet, "/v1/models/extra"))
+}

@@ -79,7 +79,12 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if normalized {
 			body = normalizedBody
 		}
-		reqStream = gjson.GetBytes(body, "stream").Bool()
+		// The Codex upstream always streams normal Responses requests, but the
+		// downstream contract must still follow the client's original stream flag.
+		// Compact is unary by definition and keeps its existing non-stream result.
+		if isOpenAIResponsesCompactPath(c) {
+			reqStream = gjson.GetBytes(body, "stream").Bool()
+		}
 	}
 
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
@@ -1517,6 +1522,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		}
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+		c.Writer.Header().Set("Content-Type", contentType)
 		c.Data(resp.StatusCode, contentType, body)
 	}
 

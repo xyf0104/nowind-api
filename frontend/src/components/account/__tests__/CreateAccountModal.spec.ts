@@ -228,6 +228,19 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(flow.props('initialInputMethod')).toBe('manual')
   })
 
+  it('keeps the OAuth step indicator compact at mobile widths', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenAI account')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+
+    const indicator = wrapper.get('[data-testid="oauth-step-indicator"]')
+    expect(indicator.classes()).toEqual(expect.arrayContaining(['min-w-0', 'overflow-hidden']))
+    expect(indicator.get('div').classes()).toEqual(
+      expect.arrayContaining(['w-full', 'min-w-0', 'justify-center', 'sm:w-auto'])
+    )
+  })
+
   it.each([
     ['camelCase', { authMode: 'agentIdentity', agentIdentity: { agentRuntimeId: 'runtime' } }],
     ['nested identity without auth_mode', { agent_identity: { agent_runtime_id: 'runtime' } }],

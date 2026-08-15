@@ -6,32 +6,36 @@
     @close="handleClose"
   >
     <!-- Step Indicator for OAuth accounts -->
-    <div v-if="isOAuthFlow" class="mb-6 flex items-center justify-center">
-      <div class="flex items-center space-x-4">
-        <div class="flex items-center">
+    <div
+      v-if="isOAuthFlow"
+      class="mb-4 flex min-w-0 items-center justify-center overflow-hidden sm:mb-6"
+      data-testid="oauth-step-indicator"
+    >
+      <div class="flex w-full min-w-0 items-center justify-center gap-2 sm:w-auto sm:gap-4">
+        <div class="flex min-w-0 items-center">
           <div
             :class="[
-              'flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold',
+              'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold sm:h-8 sm:w-8 sm:text-sm',
               step >= 1 ? 'bg-primary-500 text-white' : 'bg-gray-200 text-gray-500 dark:bg-dark-600'
             ]"
           >
             1
           </div>
-          <span class="ml-2 text-sm font-medium text-gray-700 dark:text-gray-300">{{
+          <span class="ml-1.5 whitespace-nowrap text-xs font-medium text-gray-700 dark:text-gray-300 sm:ml-2 sm:text-sm">{{
             t('admin.accounts.oauth.authMethod')
           }}</span>
         </div>
-        <div class="h-0.5 w-8 bg-gray-300 dark:bg-dark-600" />
-        <div class="flex items-center">
+        <div class="h-0.5 w-4 flex-shrink-0 bg-gray-300 dark:bg-dark-600 sm:w-8" />
+        <div class="flex min-w-0 items-center">
           <div
             :class="[
-              'flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold',
+              'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold sm:h-8 sm:w-8 sm:text-sm',
               step >= 2 ? 'bg-primary-500 text-white' : 'bg-gray-200 text-gray-500 dark:bg-dark-600'
             ]"
           >
             2
           </div>
-          <span class="ml-2 text-sm font-medium text-gray-700 dark:text-gray-300">{{
+          <span class="ml-1.5 whitespace-nowrap text-xs font-medium text-gray-700 dark:text-gray-300 sm:ml-2 sm:text-sm">{{
             oauthStepTitle
           }}</span>
         </div>
@@ -3314,7 +3318,7 @@
     </form>
 
     <!-- Step 2: OAuth Authorization -->
-    <div v-else class="space-y-5">
+    <div v-else class="min-w-0 space-y-5 overflow-x-hidden">
       <OAuthAuthorizationFlow
         ref="oauthFlowRef"
         :add-method="form.platform === 'anthropic' ? addMethod : 'oauth'"
