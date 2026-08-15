@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.13-0ea5e9" alt="当前版本 v1.1.13" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.14-0ea5e9" alt="当前版本 v1.1.14" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.13
+> 当前版本：v1.1.14
 
-v1.1.13 完成 XIASS 全系统稳定性与界面层级审查：修复 2FA 登录方式、二维码、提示框、下拉菜单和弹窗被后续模块遮挡或在手机端越界的问题，并保留动态主题背景；加强 Refresh Token、TOTP、七天会话、备份恢复互斥和安全开关的并发与故障处理；修复账号计费明细、OpenAI 硬优先级与一分钟普通粘性、接码取消期间到码及会员价格快照等边界逻辑。安装包校验、现有 `.env`/Compose 数据保护、前后端完整测试、Helper 测试和发布契约现已成为 GitHub 稳定发布的强制门禁。
+v1.1.14 延续 v1.1.13 的 XIASS 全系统稳定性与界面层级修复，并清理 OpenAI 调度器遗留的无效辅助方法；响应工具架构净化的性能回归测试改为验证复杂度增长趋势，消除不同 Go 运行时分配策略造成的 CI 误报，同时继续防止大请求体退回逐路径全量重写。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 
