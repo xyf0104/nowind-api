@@ -3,20 +3,50 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/alicebob/miniredis/v2"
 	"github.com/imroc/req/v3"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
 type openaiOAuthClientStateStub struct {
 	exchangeCalled int32
 	lastClientID   string
+}
+
+type retainingPublicSessionStore struct {
+	sessions map[string]*openai.OAuthSession
+}
+
+func newRetainingPublicSessionStore() *retainingPublicSessionStore {
+	return &retainingPublicSessionStore{sessions: make(map[string]*openai.OAuthSession)}
+}
+
+func (s *retainingPublicSessionStore) Store(_ context.Context, sessionID string, session *openai.OAuthSession) error {
+	if strings.TrimSpace(sessionID) == "" || session == nil {
+		return errors.New("invalid public oauth session")
+	}
+	s.sessions[sessionID] = session
+	return nil
+}
+
+func (s *retainingPublicSessionStore) Consume(_ context.Context, sessionID, state, browserBindingHash string) (*openai.OAuthSession, bool, error) {
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil, false, nil
+	}
+	if state != session.State {
+		return nil, false, ErrPublicOpenAIOAuthStateMismatch
+	}
+	if session.BrowserBindingHash != "" && strings.TrimSpace(browserBindingHash) != session.BrowserBindingHash {
+		return nil, false, ErrPublicOpenAIOAuthBrowserBindingMismatch
+	}
+	delete(s.sessions, sessionID)
+	return session, true, nil
 }
 
 func (s *openaiOAuthClientStateStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -112,10 +142,7 @@ func TestOpenAIOAuthService_ExchangeCodeForPublicToolSkipsEnrichment(t *testing.
 	client := &openaiOAuthClientStateStub{}
 	var privacyFactoryCalled int32
 	svc := NewOpenAIOAuthService(nil, client)
-	redisServer := miniredis.RunT(t)
-	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-	defer func() { _ = redisClient.Close() }()
-	publicSessions := NewRedisPublicOpenAIOAuthSessionStore(redisClient)
+	publicSessions := newRetainingPublicSessionStore()
 	svc.SetPublicSessionStore(publicSessions)
 	svc.SetPrivacyClientFactory(func(_ string) (*req.Client, error) {
 		atomic.AddInt32(&privacyFactoryCalled, 1)
@@ -156,10 +183,7 @@ func TestOpenAIOAuthService_ExchangeCodeForPublicToolSkipsEnrichment(t *testing.
 func TestOpenAIOAuthService_PublicToolKeepsSessionAfterInvalidProof(t *testing.T) {
 	client := &openaiOAuthClientStateStub{}
 	svc := NewOpenAIOAuthService(nil, client)
-	redisServer := miniredis.RunT(t)
-	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-	defer func() { _ = redisClient.Close() }()
-	publicSessions := NewRedisPublicOpenAIOAuthSessionStore(redisClient)
+	publicSessions := newRetainingPublicSessionStore()
 	svc.SetPublicSessionStore(publicSessions)
 	defer svc.Stop()
 

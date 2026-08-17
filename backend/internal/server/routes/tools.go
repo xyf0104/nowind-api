@@ -6,6 +6,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	basemiddleware "github.com/Wei-Shaw/sub2api/internal/middleware"
 	ippkg "github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -22,7 +23,7 @@ func RegisterToolRoutes(
 	redisClient *redis.Client,
 	panelRateLimiter *servermiddleware.PanelRateLimiter,
 ) {
-	h.Admin.OpenAIOAuth.ConfigurePublicToolSessionStore(service.NewRedisPublicOpenAIOAuthSessionStore(redisClient))
+	h.Admin.OpenAIOAuth.ConfigurePublicToolSessionStore(repository.NewRedisPublicOpenAIOAuthSessionStore(redisClient))
 	tools := v1.Group("/tools")
 
 	rateLimiter := basemiddleware.NewRateLimiter(redisClient)
