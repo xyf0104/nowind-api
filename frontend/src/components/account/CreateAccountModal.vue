@@ -4986,8 +4986,8 @@ const resetForm = () => {
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
-	 codexImageToolMode.value = 'inherit'
-	 codexFingerprintMode.value = 'off'
+  codexImageToolMode.value = 'inherit'
+  codexFingerprintMode.value = 'off'
   anthropicPassthroughEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
