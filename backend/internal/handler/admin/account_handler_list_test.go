@@ -64,6 +64,59 @@ func TestAccountHandlerListDefaultsToRecentAccountActivity(t *testing.T) {
 	require.Equal(t, "desc", adminSvc.lastListAccounts.sortOrder)
 }
 
+func TestAccountHandlerListLiteUsesStrictCredentialFreeAllowlist(t *testing.T) {
+	router, adminSvc := setupAccountListRouter()
+	notes := "visible note"
+	adminSvc.accounts = []service.Account{{
+		ID:          17,
+		Name:        "safe picker entry",
+		Notes:       &notes,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Concurrency: 3,
+		Priority:    2,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"accessToken":   "must-not-render",
+			"refreshToken":  "must-not-render",
+			"client_secret": "must-not-render",
+			"nested":        map[string]any{"token": "must-not-render"},
+		},
+		Extra: map[string]any{
+			"sessionToken":   "must-not-render",
+			"custom_headers": map[string]any{"Authorization": "must-not-render"},
+		},
+	}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?page=1&page_size=20&lite=true", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "private, no-store, max-age=0", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no-cache", rec.Header().Get("Pragma"))
+	require.Equal(t, "0", rec.Header().Get("Expires"))
+	require.NotContains(t, rec.Body.String(), "must-not-render")
+
+	var payload struct {
+		Data struct {
+			Items []map[string]any `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Len(t, payload.Data.Items, 1)
+	item := payload.Data.Items[0]
+	require.Equal(t, "safe picker entry", item["name"])
+	require.Equal(t, "visible note", item["notes"])
+	for _, forbidden := range []string{
+		"credentials", "credentials_status", "extra", "proxy", "proxy_id",
+		"account_groups", "groups", "error_message", "rate_limit_reset_at",
+	} {
+		require.NotContains(t, item, forbidden)
+	}
+}
+
 func TestAccountHandlerListReturnsSchedulerScoresPerGroup(t *testing.T) {
 	router, adminSvc := setupAccountListRouter()
 	now := time.Now().UTC()

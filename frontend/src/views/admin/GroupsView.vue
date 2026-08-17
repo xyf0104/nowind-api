@@ -118,7 +118,7 @@
           :data="groups"
           :loading="loading"
           :server-side-sort="true"
-          default-sort-key="sort_order"
+          default-sort-key="display_order"
           default-sort-order="asc"
           @sort="handleSort"
         >
@@ -4209,6 +4209,7 @@ import { createStableObjectKeyResolver } from "@/utils/stableObjectKey";
 import { extractApiErrorMessage } from "@/utils/apiError";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
 import { getPersistedPageSize } from "@/composables/usePersistedPageSize";
+import { sortGroups } from "@/utils/groupSorting";
 import {
   createDefaultMessagesDispatchFormState,
   messagesDispatchConfigToFormState,
@@ -4652,7 +4653,7 @@ const pagination = reactive({
   pages: 0,
 });
 const sortState = reactive({
-  sort_by: "sort_order",
+  sort_by: "display_order",
   sort_order: "asc" as "asc" | "desc",
 });
 
@@ -5395,6 +5396,9 @@ const loadGroups = async () => {
       { signal },
     );
     if (signal.aborted) return;
+    // The repository applies the selected global order before pagination.
+    // Preserve that response order so clicking a sortable column is not
+    // overwritten by a second, page-local display-order sort.
     groups.value = response.items;
     pagination.total = response.total;
     pagination.pages = response.pages;
@@ -6433,10 +6437,7 @@ const openSortModal = async () => {
   try {
     // 获取所有分组（不分页）
     const allGroups = await adminAPI.groups.getAll();
-    // 按 sort_order 排序
-    sortableGroups.value = [...allGroups].sort(
-      (a, b) => a.sort_order - b.sort_order,
-    );
+    sortableGroups.value = sortGroups(allGroups);
     showSortModal.value = true;
   } catch (error) {
     appStore.showError(t("admin.groups.failedToLoad"));

@@ -122,3 +122,60 @@ func TestAuthCacheInvalidationTriggers_CoverSecurityMutationsOnly(t *testing.T) 
 	require.Equal(t, cacheKey, stored)
 	require.NotContains(t, stored, keyValue)
 }
+
+func TestAuthCacheInvalidationTriggers_PublicAllowedGroupsForRestrictedUser(t *testing.T) {
+	ctx := context.Background()
+	suffix := time.Now().UnixNano()
+	group := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("auth-outbox-public-group-%d", suffix), RateMultiplier: 1, IsExclusive: false,
+	})
+	user := mustCreateUser(t, integrationEntClient, &service.User{
+		Email:                fmt.Sprintf("auth-outbox-public-%d@example.com", suffix),
+		Concurrency:          5,
+		RestrictPublicGroups: true,
+	})
+	_, err := integrationDB.ExecContext(ctx,
+		"UPDATE users SET restrict_public_groups = TRUE WHERE id = $1", user.ID)
+	require.NoError(t, err)
+	groupID := group.ID
+	keyValue := fmt.Sprintf("sk-auth-outbox-public-%d", suffix)
+	apiKeyRepo := NewAPIKeyRepository(integrationEntClient, integrationDB)
+	key := &service.APIKey{UserID: user.ID, GroupID: &groupID, Key: keyValue, Name: "public-outbox", Status: service.StatusActive}
+	require.NoError(t, apiKeyRepo.Create(ctx, key))
+
+	sum := sha256.Sum256([]byte(keyValue))
+	cacheKey := hex.EncodeToString(sum[:])
+	clear := func() {
+		_, err := integrationDB.ExecContext(ctx, "DELETE FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey)
+		require.NoError(t, err)
+	}
+	count := func() int {
+		var value int
+		require.NoError(t, integrationDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&value))
+		return value
+	}
+	clear()
+	t.Cleanup(clear)
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(ctx, "DELETE FROM user_allowed_groups WHERE user_id = $1 OR group_id = $2", user.ID, group.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, "DELETE FROM api_keys WHERE id = $1", key.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, "DELETE FROM users WHERE id = $1", user.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, "DELETE FROM groups WHERE id = $1", group.ID)
+		require.NoError(t, err)
+	})
+
+	_, err = integrationDB.ExecContext(ctx,
+		"INSERT INTO user_allowed_groups (user_id, group_id) VALUES ($1, $2)", user.ID, group.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, count(), "restricted public-group grant must enqueue")
+
+	clear()
+	_, err = integrationDB.ExecContext(ctx,
+		"DELETE FROM user_allowed_groups WHERE user_id = $1 AND group_id = $2", user.ID, group.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, count(), "restricted public-group revocation must enqueue")
+}

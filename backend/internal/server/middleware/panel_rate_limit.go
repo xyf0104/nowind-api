@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/middleware"
+	ippkg "github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -121,6 +122,7 @@ func (p *PanelRateLimiter) PublicIP() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		clientIP = ippkg.NormalizeRateLimitIP(clientIP)
 
 		result, err := p.limiter.Allow(c.Request.Context(), "panel:public:ip:"+clientIP, settings.PublicIPRPM, panelRateLimitWindow)
 		if err != nil {

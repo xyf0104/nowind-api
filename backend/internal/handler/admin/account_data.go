@@ -99,6 +99,12 @@ func buildProxyKey(protocol, host string, port int, username, password string) s
 }
 
 func (h *AccountHandler) ExportData(c *gin.Context) {
+	// Export responses can contain access tokens, refresh tokens, API keys, and
+	// proxy credentials. Keep them out of browser and intermediary caches.
+	c.Header("Cache-Control", "private, no-store, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+
 	ctx := c.Request.Context()
 
 	selectedIDs, err := parseAccountIDs(c)

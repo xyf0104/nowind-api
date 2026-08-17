@@ -23,6 +23,7 @@ func TestIsModelSupported_OpenAIOAuthEmptyMapping_ServableModels(t *testing.T) {
 		"", // 空模型交由上层必填校验
 		"gpt-5.4",
 		"gpt-5.4-high", // 推理后缀变体
+		"gpt-5.6-luna", // OAuth 上游默认支持 Luna
 		"gpt-5.3-codex",
 		"gpt-5.1-codex-mini",
 		"gpt-5",
@@ -102,16 +103,42 @@ func TestIsModelSupported_OpenAIOAuthPassthroughIgnoresLeftoverMapping(t *testin
 	require.True(t, account.IsModelSupported("deepseek-v4"), "透传应放行任意模型")
 }
 
-func TestIsModelSupported_OpenAIAPIKeyEmptyMappingAllowsAll(t *testing.T) {
+func TestIsModelSupported_OpenAIAPIKeyEmptyMappingRejectsUnconfirmedLuna(t *testing.T) {
 	account := &Account{
 		ID:       2,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeAPIKey,
 	}
 
-	// API Key 账号（第三方 OpenAI 兼容上游）可服务任意别名，语义不变。
+	// 未声明 Luna 能力的 API Key 账号继续兼容其他模型，但不可承接 Luna。
 	require.True(t, account.IsModelSupported("deepseek-v4"))
 	require.True(t, account.IsModelSupported("gpt-5.4"))
+	require.False(t, account.IsModelSupported("gpt-5.6-luna"))
+	require.False(t, account.IsModelSupported("provider/gpt-5.6-luna-high"))
+}
+
+func TestIsModelSupported_OpenAIAPIKeyExplicitLunaMappingAllowsLuna(t *testing.T) {
+	account := &Account{
+		ID:       2,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.6-luna": "gpt-5.6-luna"},
+		},
+	}
+
+	require.True(t, account.IsModelSupported("gpt-5.6-luna"))
+}
+
+func TestIsModelSupported_OpenAIAPIKeyPassthroughAllowsLuna(t *testing.T) {
+	account := &Account{
+		ID:       2,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra:    map[string]any{"openai_passthrough": true},
+	}
+
+	require.True(t, account.IsModelSupported("gpt-5.6-luna"))
 }
 
 func TestIsModelSupported_NonOpenAIPlatformsUnchanged(t *testing.T) {

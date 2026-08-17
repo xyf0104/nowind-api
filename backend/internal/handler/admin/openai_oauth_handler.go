@@ -2,6 +2,9 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -38,6 +41,12 @@ const (
 	openAIQuotaResetWarningCacheRefreshFailed    = "reset_credit_cache_refresh_failed"
 	openAIQuotaResetWarningAccountRecoveryFailed = "account_state_recovery_failed"
 	openAIQuotaResetWarningAccountRefreshFailed  = "account_state_refresh_failed"
+)
+
+const (
+	publicOpenAIOAuthBindingCookie = "xiass_openai_oauth_binding"
+	publicOpenAIOAuthCookiePath    = "/api/v1/tools/openai-oauth"
+	publicOpenAIOAuthBodyMaxBytes  = 16 * 1024
 )
 
 // openAIQuotaResetPostProcessTimeout bounds the work performed AFTER the
@@ -104,6 +113,14 @@ func NewOpenAIOAuthHandler(
 	return h
 }
 
+// ConfigurePublicToolSessionStore attaches the Redis-backed transaction store
+// used by the unauthenticated 401 re-authorization helper.
+func (h *OpenAIOAuthHandler) ConfigurePublicToolSessionStore(store service.PublicOpenAIOAuthSessionStore) {
+	if h != nil && h.openaiOAuthService != nil {
+		h.openaiOAuthService.SetPublicSessionStore(store)
+	}
+}
+
 // OpenAIGenerateAuthURLRequest represents the request for generating OpenAI auth URL
 type OpenAIGenerateAuthURLRequest struct {
 	ProxyID     *int64 `json:"proxy_id"`
@@ -164,6 +181,102 @@ func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
 	}
 
 	response.Success(c, tokenInfo)
+}
+
+// GeneratePublicToolAuthURL starts the free public OpenAI re-authorization
+// flow. Public callers cannot select an administrator proxy or redirect URI.
+func (h *OpenAIOAuthHandler) GeneratePublicToolAuthURL(c *gin.Context) {
+	binding, err := publicOpenAIOAuthBrowserBinding(c)
+	if err != nil {
+		response.InternalError(c, "failed to create browser binding")
+		return
+	}
+	setPublicOpenAIOAuthCookie(c, binding)
+	setPublicOpenAIOAuthNoStoreHeaders(c)
+
+	result, err := h.openaiOAuthService.GeneratePublicAuthURL(c.Request.Context(), hashPublicOpenAIOAuthBinding(binding))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// ExchangePublicToolCode completes the public OpenAI re-authorization flow.
+// The service deliberately skips account enrichment, database writes and
+// privacy-setting mutations for this endpoint.
+func (h *OpenAIOAuthHandler) ExchangePublicToolCode(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, publicOpenAIOAuthBodyMaxBytes)
+	var req struct {
+		SessionID string `json:"session_id" binding:"required,len=32"`
+		Code      string `json:"code" binding:"required,max=8192"`
+		State     string `json:"state" binding:"required,len=64"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	binding, err := c.Cookie(publicOpenAIOAuthBindingCookie)
+	if err != nil || strings.TrimSpace(binding) == "" {
+		response.BadRequest(c, "Authorization was started in a different browser or has expired")
+		return
+	}
+	setPublicOpenAIOAuthNoStoreHeaders(c)
+
+	exchangeContext, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	tokenInfo, err := h.openaiOAuthService.ExchangeCodeForPublicTool(exchangeContext, &service.OpenAIExchangeCodeInput{
+		SessionID:          strings.TrimSpace(req.SessionID),
+		Code:               strings.TrimSpace(req.Code),
+		State:              strings.TrimSpace(req.State),
+		BrowserBindingHash: hashPublicOpenAIOAuthBinding(binding),
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, tokenInfo)
+}
+
+func publicOpenAIOAuthBrowserBinding(c *gin.Context) (string, error) {
+	if existing, err := c.Cookie(publicOpenAIOAuthBindingCookie); err == nil {
+		trimmed := strings.TrimSpace(existing)
+		if len(trimmed) >= 32 && len(trimmed) <= 128 {
+			return trimmed, nil
+		}
+	}
+	randomBytes, err := openai.GenerateRandomBytes(32)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
+}
+
+func hashPublicOpenAIOAuthBinding(binding string) string {
+	digest := sha256.Sum256([]byte(binding))
+	return hex.EncodeToString(digest[:])
+}
+
+func setPublicOpenAIOAuthCookie(c *gin.Context, binding string) {
+	secure := c.Request.TLS != nil || strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https")
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     publicOpenAIOAuthBindingCookie,
+		Value:    binding,
+		Path:     publicOpenAIOAuthCookiePath,
+		MaxAge:   int(openai.SessionTTL / time.Second),
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func setPublicOpenAIOAuthNoStoreHeaders(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+	c.Header("Referrer-Policy", "no-referrer")
 }
 
 // OpenAIRefreshTokenRequest represents the request for refreshing OpenAI token
@@ -610,6 +723,7 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	}
 	if _, err := h.rateLimitService.RecoverAccountState(postCtx, accountID, service.AccountRecoveryOptions{
 		InvalidateToken: true,
+		ForceCleanup:    true,
 	}); err != nil {
 		// Recovery failures are almost always storage-level; the remaining steps
 		// share that dependency, so stop here instead of compounding the failure.

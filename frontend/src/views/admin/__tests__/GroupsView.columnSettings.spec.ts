@@ -30,6 +30,7 @@ const {
 
 const messages: Record<string, string> = {
   'admin.groups.columnSettings': 'Column Settings',
+  'admin.groups.sortOrder': 'Sort Order',
   'admin.groups.columns.name': 'Name',
   'admin.groups.columns.id': 'ID',
   'admin.groups.columns.platform': 'Platform',
@@ -418,5 +419,45 @@ describe('admin GroupsView column settings', () => {
     expect(getCapacitySummary).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
+  })
+
+  it('preserves the globally sorted order returned by the server', async () => {
+    listGroups.mockResolvedValueOnce({
+      items: [
+        createGroup({ id: 4, name: 'OpenAI 0.1', platform: 'openai', rate_multiplier: 0.1 }),
+        createGroup({ id: 3, name: 'OpenAI 0.2', platform: 'openai', rate_multiplier: 0.2 }),
+        createGroup({ id: 2, name: 'Claude', platform: 'anthropic', rate_multiplier: 0.1 }),
+        createGroup({ id: 5, name: 'Gemini', platform: 'gemini', rate_multiplier: 0.01 }),
+        createGroup({ id: 1, name: 'Exclusive OpenAI', platform: 'openai', rate_multiplier: 0.01, is_exclusive: true }),
+      ],
+      total: 5,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = await mountView()
+
+    expect(wrapper.get('[data-test="rows"]').text()).toBe(
+      'OpenAI 0.1,OpenAI 0.2,Claude,Gemini,Exclusive OpenAI',
+    )
+  })
+
+  it('opens the manual sorting dialog in unified group order', async () => {
+    getAllGroups.mockResolvedValueOnce([
+      createGroup({ id: 1, name: 'Exclusive OpenAI', platform: 'openai', rate_multiplier: 0.01, is_exclusive: true }),
+      createGroup({ id: 2, name: 'Claude', platform: 'anthropic', rate_multiplier: 0.1 }),
+      createGroup({ id: 3, name: 'OpenAI 0.2', platform: 'openai', rate_multiplier: 0.2 }),
+      createGroup({ id: 4, name: 'OpenAI 0.1', platform: 'openai', rate_multiplier: 0.1 }),
+    ])
+    const wrapper = await mountView()
+
+    await wrapper.get('button[title="Sort Order"]').trigger('click')
+    await flushPromises()
+
+    const dialogText = wrapper.text()
+    expect(dialogText.indexOf('OpenAI 0.1')).toBeLessThan(dialogText.indexOf('OpenAI 0.2'))
+    expect(dialogText.indexOf('OpenAI 0.2')).toBeLessThan(dialogText.indexOf('Claude'))
+    expect(dialogText.indexOf('Claude')).toBeLessThan(dialogText.indexOf('Exclusive OpenAI'))
   })
 })

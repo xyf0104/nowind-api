@@ -277,6 +277,9 @@ func TestPanelRateLimiterPublicIP(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, performPanelRequest(router, "203.0.113.9:1000").Code)
 	// 其他公网 IP 独立计数
 	require.Equal(t, http.StatusOK, performPanelRequest(router, "198.51.100.7:1000").Code)
+	// 同一 IPv6 /64 必须共用限流桶，不能通过轮换后 64 位绕过。
+	require.Equal(t, http.StatusOK, performPanelRequest(router, "[2001:db8:abcd:1234:1111::1]:1000").Code)
+	require.Equal(t, http.StatusTooManyRequests, performPanelRequest(router, "[2001:db8:abcd:1234:ffff::2]:1000").Code)
 
 	// 回环/内网地址（反代内部转发地址）：跳过计数，绝不误拦
 	for i := 0; i < 5; i++ {
@@ -290,6 +293,7 @@ func TestPanelRateLimiterPublicIP(t *testing.T) {
 	defer allower.mu.Unlock()
 	require.Contains(t, allower.counts, "panel:public:ip:203.0.113.9")
 	require.Contains(t, allower.counts, "panel:public:ip:198.51.100.7")
+	require.Contains(t, allower.counts, "panel:public:ip:2001:db8:abcd:1234::")
 	for key := range allower.counts {
 		require.NotContains(t, key, "127.0.0.1")
 		require.NotContains(t, key, "10.0.0.8")

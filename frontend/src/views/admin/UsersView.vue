@@ -1097,7 +1097,9 @@ const getUserGroups = (user: AdminUser) => {
         exclusive.push(g)
       }
     } else {
-      publicGroups.push(g)
+      if (!user.restrict_public_groups || user.allowed_groups?.includes(g.id)) {
+        publicGroups.push(g)
+      }
     }
   }
   return { exclusive, publicGroups }

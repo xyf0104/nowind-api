@@ -121,3 +121,19 @@ func TestAuthCacheInvalidationMigration_SecurityCoverageAndNoPlaintextPayload(t 
 	require.Len(t, hex.EncodeToString(sum[:]), 64)
 	require.NotContains(t, sqlText, plaintext)
 }
+
+func TestMigration204_PublicAllowedGroupsUseDurableAuthCacheInvalidation(t *testing.T) {
+	content, err := migrations.FS.ReadFile("204_add_user_public_group_restriction.sql")
+	require.NoError(t, err)
+	sqlText := string(content)
+
+	for _, required := range []string{
+		"CREATE OR REPLACE FUNCTION enqueue_allowed_group_auth_cache_invalidation()",
+		"u.restrict_public_groups = TRUE",
+		"k.user_id = target_user_id",
+		"k.group_id = target_group_id",
+		"auth_cache_invalidation_outbox",
+	} {
+		require.Contains(t, sqlText, required)
+	}
+}

@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/imroc/req/v3"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -103,4 +106,105 @@ func TestOpenAIOAuthService_ExchangeCode_StateMatch(t *testing.T) {
 
 	_, ok := svc.sessionStore.Get("sid")
 	require.False(t, ok)
+}
+
+func TestOpenAIOAuthService_ExchangeCodeForPublicToolSkipsEnrichment(t *testing.T) {
+	client := &openaiOAuthClientStateStub{}
+	var privacyFactoryCalled int32
+	svc := NewOpenAIOAuthService(nil, client)
+	redisServer := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	defer func() { _ = redisClient.Close() }()
+	publicSessions := NewRedisPublicOpenAIOAuthSessionStore(redisClient)
+	svc.SetPublicSessionStore(publicSessions)
+	svc.SetPrivacyClientFactory(func(_ string) (*req.Client, error) {
+		atomic.AddInt32(&privacyFactoryCalled, 1)
+		return nil, errors.New("public tool must not create a privacy client")
+	})
+	defer svc.Stop()
+
+	require.NoError(t, publicSessions.Store(context.Background(), "public-sid", &openai.OAuthSession{
+		State:              "public-state",
+		CodeVerifier:       "verifier",
+		RedirectURI:        openai.DefaultRedirectURI,
+		BrowserBindingHash: "browser-hash",
+		CreatedAt:          time.Now(),
+	}))
+
+	info, err := svc.ExchangeCodeForPublicTool(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID:          "public-sid",
+		Code:               "auth-code",
+		State:              "public-state",
+		BrowserBindingHash: "browser-hash",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "at", info.AccessToken)
+	require.Equal(t, "rt", info.RefreshToken)
+	require.Equal(t, int32(0), atomic.LoadInt32(&privacyFactoryCalled))
+
+	_, err = svc.ExchangeCodeForPublicTool(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID:          "public-sid",
+		Code:               "auth-code",
+		State:              "public-state",
+		BrowserBindingHash: "browser-hash",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "session not found or expired")
+	require.Equal(t, int32(1), atomic.LoadInt32(&client.exchangeCalled))
+}
+
+func TestOpenAIOAuthService_PublicToolKeepsSessionAfterInvalidProof(t *testing.T) {
+	client := &openaiOAuthClientStateStub{}
+	svc := NewOpenAIOAuthService(nil, client)
+	redisServer := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	defer func() { _ = redisClient.Close() }()
+	publicSessions := NewRedisPublicOpenAIOAuthSessionStore(redisClient)
+	svc.SetPublicSessionStore(publicSessions)
+	defer svc.Stop()
+
+	storeSession := func(id string) {
+		require.NoError(t, publicSessions.Store(context.Background(), id, &openai.OAuthSession{
+			State:              "expected-state",
+			CodeVerifier:       "verifier",
+			RedirectURI:        openai.DefaultRedirectURI,
+			BrowserBindingHash: "expected-browser",
+			CreatedAt:          time.Now(),
+		}))
+	}
+
+	storeSession("wrong-state")
+	_, err := svc.ExchangeCodeForPublicTool(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID:          "wrong-state",
+		Code:               "auth-code",
+		State:              "incorrect-state",
+		BrowserBindingHash: "expected-browser",
+	})
+	require.ErrorContains(t, err, "invalid oauth state")
+	info, err := svc.ExchangeCodeForPublicTool(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID:          "wrong-state",
+		Code:               "auth-code",
+		State:              "expected-state",
+		BrowserBindingHash: "expected-browser",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "at", info.AccessToken)
+
+	storeSession("wrong-browser")
+	_, err = svc.ExchangeCodeForPublicTool(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID:          "wrong-browser",
+		Code:               "auth-code",
+		State:              "expected-state",
+		BrowserBindingHash: "incorrect-browser",
+	})
+	require.ErrorContains(t, err, "different browser")
+	info, err = svc.ExchangeCodeForPublicTool(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID:          "wrong-browser",
+		Code:               "auth-code",
+		State:              "expected-state",
+		BrowserBindingHash: "expected-browser",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "at", info.AccessToken)
+	require.Equal(t, int32(2), atomic.LoadInt32(&client.exchangeCalled))
 }

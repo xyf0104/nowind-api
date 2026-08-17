@@ -194,6 +194,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/token-converter',
+    name: 'TokenConverter',
+    component: () => import('@/views/admin/TokenConverterView.vue'),
+    meta: {
+      requiresAuth: false,
+      requiresAdmin: false,
+      title: 'Token Format Converter',
+      titleKey: 'tokenConverter.title',
+      descriptionKey: 'tokenConverter.description'
+    }
+  },
+  {
     path: '/sms',
     name: 'SMSReceiverConsole',
     component: () => import('@/views/admin/SMSReceiverConsoleView.vue'),
@@ -558,6 +570,10 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/token-converter',
+    redirect: '/token-converter'
+  },
+  {
     path: '/admin/announcements',
     name: 'AdminAnnouncements',
     component: () => import('@/views/admin/AnnouncementsView.vue'),
@@ -771,7 +787,7 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/airwallex', '/legal', '/ios']
+const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/token-converter', '/setup', '/payment/result', '/payment/airwallex', '/legal', '/ios']
 const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/callback',
   '/auth/linuxdo/callback',

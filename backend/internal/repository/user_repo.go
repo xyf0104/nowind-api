@@ -282,6 +282,9 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User, field
 	if fields.RPMLimit {
 		updateOp = updateOp.SetRpmLimit(userIn.RPMLimit)
 	}
+	if fields.RestrictPublicGroups {
+		updateOp = updateOp.SetRestrictPublicGroups(userIn.RestrictPublicGroups)
+	}
 	if fields.Status {
 		updateOp = updateOp.SetStatus(userIn.Status)
 	}

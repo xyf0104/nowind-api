@@ -3,10 +3,8 @@ package service
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -14,8 +12,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// openAITransportErrorTempUnschedDuration is how long an account is temporarily
-// unscheduled after a durable transport failure (matches tokenRefreshTempUnschedDuration).
+// openAITransportErrorTempUnschedDuration is reserved for durable proxy
+// authentication failures. Connectivity failures never persistently unschedule
+// an account because a router/WAN restart can produce the same error briefly.
 const openAITransportErrorTempUnschedDuration = 10 * time.Minute
 
 // openAITransportFailoverBody is the OpenAI-format error body attached to the
@@ -28,60 +27,36 @@ var openAITransportFailoverBody = []byte(`{"error":{"type":"upstream_error","mes
 // failure — i.e. the HTTP round-trip never completed (proxy / DNS / TCP / TLS
 // error, no HTTP status code received).
 type openAITransportErrorClass struct {
-	// Persistent marks failures where retrying the same proxy/account is
-	// pointless: expired or rejected proxy credentials, a dead proxy endpoint,
-	// or DNS/routing failure. Such accounts should be temporarily unscheduled
-	// (and alerted on) instead of being repeatedly scheduled into hard failures.
+	// Persistent marks configuration failures where retrying the same proxy is
+	// pointless until an operator changes credentials. Network reachability is
+	// deliberately transient and must only fail over the current request.
 	Persistent bool
 }
 
-// openAIPersistentTransportErrorMarkers are substrings (matched case-insensitively
-// against the raw transport error) that indicate a durable proxy/network fault.
-// Matched signals are intentionally specific failure *reasons*, not the operation
-// (e.g. we match "connection refused", not "proxyconnect") so that a transient
-// failure of the same operation (a proxy timeout) is NOT misclassified as durable.
+// openAIPersistentTransportErrorMarkers only contains explicit proxy credential
+// failures. Connection refused, DNS and route errors can all occur during a
+// short router/WAN restart and therefore must not create a persistent account
+// state that outlives the network incident.
 var openAIPersistentTransportErrorMarkers = []string{
 	"authentication failed",         // SOCKS5 RFC1929 / proxy credentials rejected (expired account)
 	"proxy authentication required", // HTTP proxy 407
-	"connection refused",            // proxy/upstream endpoint down
-	"no route to host",
-	"network is unreachable",
-	"no such host", // DNS resolution failure (bad/expired proxy hostname)
 }
 
 // classifyOpenAITransportError decides whether a transport-level upstream error
-// is durable (Persistent — evict the account + alert) or a transient blip
-// (fail over to a healthy account but keep this one schedulable).
+// is a durable credential/configuration failure (Persistent) or a connectivity
+// failure (fail over this request while keeping the account schedulable).
 //
 // Motivating incident: a SOCKS5 proxy whose subscription lapsed returned
 // `username/password authentication failed`; the account was nonetheless
 // rescheduled on every request, hard-failing users with 502s.
 //
-// Classification strategy (mirrors sanitizeStreamError in gateway_service.go):
-//  1. Typed-error checks first (syscall constants, *net.DNSError) — portable and
-//     unambiguous.
-//  2. String-marker fallback for errors that have no typed form (e.g. the plain
-//     string returned by golang.org/x/net/proxy for SOCKS5 credential rejection).
-//     The network-layer string markers ("connection refused", "no route to host",
-//     "network is unreachable", "no such host") are kept as a cross-platform safety
-//     net even though the typed checks should cover them on modern Go+Linux.
+// SOCKS5 credential rejection is returned as a plain string by x/net/proxy, so
+// explicit markers are used. Typed network errors intentionally remain transient.
 func classifyOpenAITransportError(err error) openAITransportErrorClass {
 	if err == nil {
 		return openAITransportErrorClass{}
 	}
 
-	// — Typed checks (preferred) ——————————————————————————————————————————————
-	if errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.EHOSTUNREACH) ||
-		errors.Is(err, syscall.ENETUNREACH) {
-		return openAITransportErrorClass{Persistent: true}
-	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-		return openAITransportErrorClass{Persistent: true}
-	}
-
-	// — String-marker fallback ————————————————————————————————————————————————
 	msg := strings.ToLower(err.Error())
 	for _, marker := range openAIPersistentTransportErrorMarkers {
 		if strings.Contains(msg, marker) {
@@ -94,9 +69,8 @@ func classifyOpenAITransportError(err error) openAITransportErrorClass {
 // handleOpenAIUpstreamTransportError handles a transport-level upstream failure
 // (Do/DoWithTLS returned a non-HTTP error: proxy/DNS/TCP/TLS). It:
 //  1. records the failure in Ops error logs (status 0, kind=request_error);
-//  2. for durable faults (expired/rejected proxy creds, dead proxy, DNS/routing)
-//     temporarily unschedules the account (DB + in-memory) and logs a stable
-//     warn event that alert rules can key on;
+//  2. only for explicit proxy credential failures, temporarily unschedules the
+//     account (DB + in-memory); connectivity failures never persist account state;
 //  3. returns an error that is *UpstreamFailoverError (so the handler fails over
 //     to a healthy account) for all non-canceled errors, or a plain error for
 //     context.Canceled (client gone — no failover, no eviction).

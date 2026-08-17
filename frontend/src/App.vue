@@ -45,11 +45,13 @@ const APP_LAYOUT_ROUTE_NAMES = new Set([
   'AdminPromoCodes', 'AdminSettings', 'AdminRiskControl', 'AdminPromptAudit', 'AdminUsage',
   'AdminAffiliateInvites', 'AdminAffiliateRebates', 'AdminAffiliateTransfers',
   'AdminPaymentDashboard', 'AdminOrders', 'AdminPaymentPlans',
+  'TokenConverter',
   'AirwallexPayment',
 ])
 
 const usesPersistentAppLayout = computed(() => (
   !isStandaloneSMSHost
+  && (route.name !== 'TokenConverter' || authStore.isAuthenticated)
   && typeof route.name === 'string'
   && APP_LAYOUT_ROUTE_NAMES.has(route.name)
 ))

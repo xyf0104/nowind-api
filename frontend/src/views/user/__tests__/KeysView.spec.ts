@@ -192,6 +192,11 @@ const SelectStub = {
   template: '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"></select>',
 }
 
+const BaseDialogStub = {
+  props: ['show'],
+  template: '<div v-if="show"><slot /><slot name="footer" /></div>',
+}
+
 const SearchInputStub = {
   name: 'SearchInput',
   props: ['modelValue'],
@@ -223,7 +228,7 @@ const mountView = async () => {
         TablePageLayout: TablePageLayoutStub,
         DataTable: DataTableStub,
         Pagination: PaginationStub,
-        BaseDialog: true,
+        BaseDialog: BaseDialogStub,
         ConfirmDialog: true,
         EmptyState: true,
         Select: SelectStub,
@@ -437,5 +442,28 @@ describe('user KeysView column settings', () => {
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
+  })
+
+  it('orders create-key groups by public status, platform, and effective rate', async () => {
+    getAvailableGroups.mockResolvedValue([
+      { id: 1, name: 'Exclusive OpenAI', platform: 'openai', rate_multiplier: 0.01, is_exclusive: true },
+      { id: 2, name: 'Claude', platform: 'anthropic', rate_multiplier: 0.1, is_exclusive: false },
+      { id: 3, name: 'OpenAI Base 0.1', platform: 'openai', rate_multiplier: 0.1, is_exclusive: false },
+      { id: 4, name: 'OpenAI Custom 0.2', platform: 'openai', rate_multiplier: 0.2, is_exclusive: false },
+      { id: 5, name: 'Gemini', platform: 'gemini', rate_multiplier: 0.01, is_exclusive: false },
+    ])
+    getUserGroupRates.mockResolvedValue({ 3: 0.3, 4: 0.05 })
+    const wrapper = await mountView()
+
+    await wrapper.get('[data-tour="keys-create-btn"]').trigger('click')
+    await nextTick()
+
+    const createGroupSelect = wrapper
+      .findAllComponents({ name: 'Select' })
+      .find((component) => component.attributes('data-tour') === 'key-form-group')
+    expect(createGroupSelect).toBeTruthy()
+    expect(
+      createGroupSelect!.props('options').map((option: { value: number }) => option.value),
+    ).toEqual([4, 3, 2, 5, 1])
   })
 })

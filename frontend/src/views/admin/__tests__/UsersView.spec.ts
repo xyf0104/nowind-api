@@ -306,6 +306,74 @@ describe('admin UsersView', () => {
     wrapper.unmount()
   })
 
+  it('does not show hidden public groups for a restricted user', async () => {
+    localStorage.setItem('user-column-settings-version', '3')
+    localStorage.setItem('user-hidden-columns', JSON.stringify(['balance_platform_quota']))
+
+    const visiblePublicGroup = {
+      id: 11,
+      name: 'Visible Public Group',
+      status: 'active',
+      is_exclusive: false,
+      subscription_type: 'standard'
+    } as AdminGroup
+    const hiddenPublicGroup = {
+      id: 12,
+      name: 'Hidden Public Group',
+      status: 'active',
+      is_exclusive: false,
+      subscription_type: 'standard'
+    } as AdminGroup
+    listUsers.mockResolvedValue({
+      items: [createAdminUser({
+        allowed_groups: [visiblePublicGroup.id],
+        restrict_public_groups: true
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+    getAllGroups.mockResolvedValue([visiblePublicGroup, hiddenPublicGroup])
+
+    const wrapper = mount(UsersView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          TablePageLayout: {
+            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+          },
+          DataTable: DataTableStub,
+          Pagination: true,
+          ConfirmDialog: true,
+          EmptyState: true,
+          GroupBadge: true,
+          HelpTooltip: HelpTooltipStub,
+          Select: true,
+          UserAttributesConfigModal: true,
+          UserConcurrencyCell: true,
+          UserCreateModal: true,
+          UserEditModal: true,
+          BulkEditUserModal: BulkEditUserModalStub,
+          UserPlatformQuotaModal: true,
+          UserApiKeysModal: true,
+          UserAllowedGroupsModal: true,
+          UserBalanceModal: true,
+          UserBalanceHistoryModal: true,
+          GroupReplaceModal: true,
+          Icon: true,
+          Teleport: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain(visiblePublicGroup.name)
+    expect(wrapper.text()).not.toContain(hiddenPublicGroup.name)
+    wrapper.unmount()
+  })
+
   it('shows active, used, and created activity columns in order and requests last_used_at sort', async () => {
     const wrapper = mount(UsersView, {
       global: {

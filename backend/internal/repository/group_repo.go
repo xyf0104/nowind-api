@@ -534,6 +534,34 @@ func (r *groupRepository) listWithAccountCountSort(ctx context.Context, q *dbent
 func groupListOrder(params pagination.PaginationParams) []func(*entsql.Selector) {
 	sortBy := strings.ToLower(strings.TrimSpace(params.SortBy))
 	sortOrder := params.NormalizedSortOrder(pagination.SortOrderAsc)
+	if sortBy == "display_order" {
+		return []func(*entsql.Selector){func(s *entsql.Selector) {
+			isExclusive := s.C(group.FieldIsExclusive)
+			platform := s.C(group.FieldPlatform)
+			rateMultiplier := s.C(group.FieldRateMultiplier)
+			sortOrderColumn := s.C(group.FieldSortOrder)
+			name := s.C(group.FieldName)
+			id := s.C(group.FieldID)
+			s.OrderExpr(
+				entsql.Expr(isExclusive+" ASC"),
+				entsql.Expr(fmt.Sprintf(`CASE LOWER(%s)
+					WHEN 'openai' THEN 0
+					WHEN 'anthropic' THEN 1
+					WHEN 'claude' THEN 1
+					WHEN 'gemini' THEN 2
+					WHEN 'antigravity' THEN 3
+					WHEN 'grok' THEN 4
+					ELSE 5 END ASC`, platform)),
+				entsql.Expr(fmt.Sprintf(`CASE LOWER(%s)
+					WHEN 'claude' THEN 'anthropic'
+					ELSE LOWER(%s) END ASC`, platform, platform)),
+				entsql.Expr(rateMultiplier+" ASC NULLS LAST"),
+				entsql.Expr(sortOrderColumn+" ASC"),
+				entsql.Expr(name+" ASC"),
+				entsql.Expr(id+" ASC"),
+			)
+		}}
+	}
 
 	var field string
 	tieField := group.FieldID

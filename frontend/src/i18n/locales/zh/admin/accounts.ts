@@ -377,7 +377,7 @@ export default {
         resetSuccess: '账号状态已恢复',
         resetFailed: '恢复账号状态失败',
         failedToLoad: '加载临时不可调度状态失败',
-        notActive: '当前账号未处于临时不可调度状态。',
+        notActive: '当前没有生效中的临时停调；如列表状态未同步，仍可点击恢复状态清理残留。',
         expired: '已到期',
         remainingMinutes: '约 {minutes} 分钟',
         remainingHours: '约 {hours} 小时',

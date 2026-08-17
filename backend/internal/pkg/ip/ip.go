@@ -3,10 +3,26 @@ package ip
 
 import (
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+// NormalizeRateLimitIP returns a stable address bucket for abuse controls.
+// IPv4 addresses remain individual, while IPv6 addresses are grouped by /64
+// so rotating interface identifiers cannot mint unlimited rate-limit buckets.
+func NormalizeRateLimitIP(raw string) string {
+	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	addr = addr.Unmap()
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, 64).Masked().Addr().String()
+	}
+	return addr.String()
+}
 
 const forwardedIPSettingsKey = "sub2api.forwarded_ip_settings"
 

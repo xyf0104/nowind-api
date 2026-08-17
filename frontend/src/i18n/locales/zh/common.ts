@@ -175,6 +175,7 @@ export default {
     availableChannels: '模型价格',
     subscriptions: '订阅管理',
     accounts: '账号管理',
+    tokenConverter: '令牌转换',
     proxies: 'IP管理',
     redeemCodes: '兑换码',
     ops: '运维监控',

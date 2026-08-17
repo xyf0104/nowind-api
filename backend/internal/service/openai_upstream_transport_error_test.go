@@ -11,9 +11,9 @@ import (
 	"testing"
 )
 
-// TestClassifyOpenAITransportError pins which transport-level upstream failures
-// are "persistent" (retrying the same proxy/account is pointless — evict + alert)
-// versus "transient" (a blip — fail over to a healthy account but do not evict).
+// TestClassifyOpenAITransportError pins explicit proxy credential failures as
+// persistent while every connectivity failure remains request-local. Router/WAN
+// restarts commonly surface as connection refused, no route or DNS failures.
 //
 // The motivating incident: a SOCKS5 proxy whose credentials expired returned
 // `username/password authentication failed`, yet the account kept being scheduled.
@@ -23,14 +23,15 @@ func TestClassifyOpenAITransportError(t *testing.T) {
 		err        error
 		persistent bool
 	}{
-		// Durable — config/credential/routing problems. Retrying same proxy won't help.
+		// Durable — explicit proxy credential/configuration failures.
 		{"socks5 proxy credential rejected", errors.New(`Post "https://chatgpt.com/backend-api/codex/responses": socks connect tcp 85.255.176.68:12324->chatgpt.com:443: username/password authentication failed`), true},
-		{"proxy connection refused", errors.New(`proxyconnect tcp: dial tcp 1.2.3.4:1080: connect: connection refused`), true},
-		{"no route to host", errors.New(`dial tcp 1.2.3.4:443: connect: no route to host`), true},
-		{"dns resolution failure", errors.New(`dial tcp: lookup proxy.example.com: no such host`), true},
-		{"network unreachable", errors.New(`dial tcp 1.2.3.4:443: connect: network is unreachable`), true},
+		{"http proxy credential rejected", errors.New(`proxy authentication required`), true},
 
-		// Transient — a temporary blip. Fail over, but do NOT evict the account.
+		// Connectivity — fail over, but never persistently evict the account.
+		{"proxy connection refused", errors.New(`proxyconnect tcp: dial tcp 1.2.3.4:1080: connect: connection refused`), false},
+		{"no route to host", errors.New(`dial tcp 1.2.3.4:443: connect: no route to host`), false},
+		{"dns resolution failure", errors.New(`dial tcp: lookup proxy.example.com: no such host`), false},
+		{"network unreachable", errors.New(`dial tcp 1.2.3.4:443: connect: network is unreachable`), false},
 		{"client timeout", errors.New(`Post "https://chatgpt.com/...": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`), false},
 		{"i/o timeout", errors.New(`dial tcp 1.2.3.4:443: i/o timeout`), false},
 		{"connection reset by peer", errors.New(`read tcp 10.0.0.1:5->2.2.2.2:443: read: connection reset by peer`), false},
@@ -40,7 +41,7 @@ func TestClassifyOpenAITransportError(t *testing.T) {
 		{"nil error", nil, false},
 
 		// ── Typed-error cases ──────────────────────────────────────────────
-		// ECONNREFUSED wrapped in the canonical net.OpError shape Go produces.
+		// Typed connectivity errors remain transient as well.
 		{
 			"ECONNREFUSED via net.OpError",
 			&net.OpError{
@@ -48,18 +49,17 @@ func TestClassifyOpenAITransportError(t *testing.T) {
 				Net: "tcp",
 				Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
 			},
-			true,
+			false,
 		},
-		// Bare syscall error (errors.Is traverses the chain).
-		{"ECONNREFUSED bare", syscall.ECONNREFUSED, true},
-		{"EHOSTUNREACH bare", syscall.EHOSTUNREACH, true},
-		{"ENETUNREACH bare", syscall.ENETUNREACH, true},
+		{"ECONNREFUSED bare", syscall.ECONNREFUSED, false},
+		{"EHOSTUNREACH bare", syscall.EHOSTUNREACH, false},
+		{"ENETUNREACH bare", syscall.ENETUNREACH, false},
 
 		// *net.DNSError with IsNotFound — permanent DNS lookup failure.
 		{
 			"DNS not found (IsNotFound=true)",
 			&net.DNSError{Err: "no such host", Name: "proxy.example.com", IsNotFound: true},
-			true,
+			false,
 		},
 		// *net.DNSError with IsNotFound=false — transient DNS timeout (not persistent).
 		{

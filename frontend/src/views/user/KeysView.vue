@@ -1145,6 +1145,7 @@ import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
+import { sortGroups } from '@/utils/groupSorting'
 import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
@@ -1378,10 +1379,16 @@ const shouldSubmitEditStatus = (key: ApiKey, status: 'active' | 'inactive') => {
 }
 
 // Filter dropdown options
+const sortedGroups = computed(() =>
+  sortGroups(groups.value, {
+    getEffectiveRate: (group) => userGroupRates.value[group.id] ?? group.rate_multiplier,
+  })
+)
+
 const groupFilterOptions = computed(() => [
   { value: '', label: t('keys.allGroups') },
   { value: 0, label: t('keys.noGroup') },
-  ...groups.value.map((g) => ({ value: g.id, label: g.name }))
+  ...sortedGroups.value.map((g) => ({ value: g.id, label: g.name }))
 ])
 
 const statusFilterOptions = computed(() => [
@@ -1409,7 +1416,7 @@ const onStatusFilterChange = (value: string | number | boolean | null) => {
 
 // Convert groups to Select options format with rate multiplier and subscription type
 const groupOptions = computed(() =>
-  groups.value.map((group) => ({
+  sortedGroups.value.map((group) => ({
     value: group.id,
     label: group.name,
     description: group.description,

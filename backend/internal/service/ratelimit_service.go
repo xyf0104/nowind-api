@@ -48,6 +48,10 @@ type SuccessfulTestRecoveryResult struct {
 // AccountRecoveryOptions 控制账号恢复时的附加行为。
 type AccountRecoveryOptions struct {
 	InvalidateToken bool
+	// ForceCleanup makes an administrator-triggered recovery idempotently clear
+	// stale DB, Redis and in-memory scheduling state even when its deadline has
+	// already passed and the status endpoint reports inactive.
+	ForceCleanup bool
 }
 
 type geminiUsageCacheEntry struct {
@@ -1814,6 +1818,15 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 
 	if hasRecoverableRuntimeState(account) {
+		if err := s.ClearRateLimit(ctx, accountID); err != nil {
+			return nil, err
+		}
+		result.ClearedRateLimit = true
+	} else if options.ForceCleanup {
+		// The status endpoint intentionally treats expired deadlines as inactive,
+		// but an expired DB timestamp or stale Redis/runtime entry can still leave
+		// the list and recovery dialog out of sync. Manual recovery must always be
+		// safe to press and must clear every copy of that state.
 		if err := s.ClearRateLimit(ctx, accountID); err != nil {
 			return nil, err
 		}

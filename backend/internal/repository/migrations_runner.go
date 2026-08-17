@@ -62,6 +62,16 @@ const usersEmailAliasDedupIndex = "idx_users_email_dot_stripped"
 const usageLogsUpstreamModelMismatchIndexMigration = "202_add_usage_log_upstream_model_mismatch_index_notx.sql"
 const usageLogsUpstreamModelMismatchIndex = "idx_usage_logs_upstream_model_mismatch_created_at"
 
+// freshInstallBusinessSeedMigrations are historical, data-only migrations that
+// remain immutable for existing installations. A genuinely empty database records
+// them as applied without executing them so a new XIASS instance starts without
+// maintainer-specific groups, channels, multipliers, or model prices.
+var freshInstallBusinessSeedMigrations = map[string]struct{}{
+	"008_seed_default_group.sql":               {},
+	"157_seed_default_channel_pricing.sql":     {},
+	"173_seed_nowind_v1061_models_pricing.sql": {},
+}
+
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
 	acceptedDBChecksum map[string]struct{}
@@ -168,6 +178,13 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	}
 	sort.Strings(files) // 确保按文件名顺序执行迁移
 
+	// Persist the fresh-install decision before applying migration 001. This makes
+	// the policy crash-safe: a retry sees the seed migrations already recorded and
+	// cannot accidentally create defaults after a partially completed first run.
+	if err := prepareFreshInstallBusinessSeeds(ctx, lockConn, fsys, files); err != nil {
+		return err
+	}
+
 	for _, name := range files {
 		// 读取迁移文件内容
 		contentBytes, err := fs.ReadFile(fsys, name)
@@ -270,6 +287,76 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	}
 
 	return nil
+}
+
+func prepareFreshInstallBusinessSeeds(ctx context.Context, db migrationConnection, fsys fs.FS, files []string) error {
+	hasBusinessSeeds := false
+	for _, name := range files {
+		if _, ok := freshInstallBusinessSeedMigrations[name]; ok {
+			hasBusinessSeeds = true
+			break
+		}
+	}
+	if !hasBusinessSeeds {
+		return nil
+	}
+
+	fresh, err := isFreshInstallation(ctx, db)
+	if err != nil {
+		return fmt.Errorf("detect fresh installation: %w", err)
+	}
+	if !fresh {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin fresh install seed policy: %w", err)
+	}
+	for _, name := range files {
+		if _, ok := freshInstallBusinessSeedMigrations[name]; !ok {
+			continue
+		}
+
+		contentBytes, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("read fresh install seed migration %s: %w", name, err)
+		}
+		content := strings.TrimSpace(string(contentBytes))
+		sum := sha256.Sum256([]byte(content))
+		checksum := hex.EncodeToString(sum[:])
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)",
+			name, checksum,
+		); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record skipped fresh install seed migration %s: %w", name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("commit fresh install seed policy: %w", err)
+	}
+	return nil
+}
+
+func isFreshInstallation(ctx context.Context, db migrationConnection) (bool, error) {
+	var fresh bool
+	err := db.QueryRowContext(ctx, `
+		SELECT
+			NOT EXISTS (SELECT 1 FROM schema_migrations)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM information_schema.tables
+				WHERE table_schema = 'public'
+				  AND table_name IN (
+					'users', 'groups', 'accounts', 'api_keys',
+					'channels', 'settings', 'usage_logs'
+				  )
+			)
+	`).Scan(&fresh)
+	return fresh, err
 }
 
 type migrationConnection interface {

@@ -455,6 +455,14 @@ export function getModelsByPlatform(platform: string): string[] {
   }
 }
 
+// OpenAI OAuth accounts support Luna. Only API-key/upstream accounts avoid
+// claiming Luna until an upstream model sync or explicit selection confirms it.
+export function getDefaultSelectedModelsByPlatform(platform: string, accountType?: string): string[] {
+  const models = getModelsByPlatform(platform)
+  if (platform !== 'openai' || accountType !== 'apikey') return [...models]
+  return models.filter((model) => model !== 'gpt-5.6-luna')
+}
+
 // 按平台获取预设映射
 export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'openai') return openaiPresetMappings

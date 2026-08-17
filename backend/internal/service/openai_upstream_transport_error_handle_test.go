@@ -54,7 +54,7 @@ func (u *failingOpenAIHTTPUpstream) DoWithTLS(_ *http.Request, _ string, _ int64
 	return nil, u.err
 }
 
-// A durable proxy/credential failure must (a) temporarily unschedule the account
+// A durable proxy credential failure must (a) temporarily unschedule the account
 // so it stops being hammered, and (b) return a failover error so the handler
 // switches to a healthy account instead of writing a hard 502 itself.
 func TestHandleOpenAIUpstreamTransportError_PersistentEvictsAndFailsOver(t *testing.T) {
@@ -84,6 +84,26 @@ func TestHandleOpenAIUpstreamTransportError_PersistentEvictsAndFailsOver(t *test
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 
 	// Must NOT write a response body — the handler owns the (failover) response.
+	require.Equal(t, 0, rec.Body.Len())
+}
+
+// A router/WAN restart can briefly make the local SOCKS listener return
+// connection refused. The request should fail over, but the account must remain
+// immediately eligible for the next request after connectivity recovers.
+func TestHandleOpenAIUpstreamTransportError_ConnectionRefusedFailsOverWithoutEviction(t *testing.T) {
+	repo := &openaiTransportAccountRepoStub{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 271, Name: "wan-proxy-account", Platform: PlatformOpenAI}
+	c, rec := newOpenAITransportErrTestContext()
+
+	err := svc.handleOpenAIUpstreamTransportError(context.Background(), c, account,
+		errors.New(`Post "https://chatgpt.com/backend-api/codex/responses": socks connect tcp proxy.example.com:1101->chatgpt.com:443: unknown error connection refused`), false)
+
+	var fo *UpstreamFailoverError
+	require.True(t, errors.As(err, &fo))
+	require.Equal(t, http.StatusBadGateway, fo.StatusCode)
+	require.Empty(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.Equal(t, 0, rec.Body.Len())
 }
 

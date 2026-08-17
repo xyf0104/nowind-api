@@ -32,6 +32,18 @@ func TestGetTrustedClientIPUsesGinClientIP(t *testing.T) {
 	require.Equal(t, "9.9.9.9", w.Body.String())
 }
 
+func TestNormalizeRateLimitIPUsesIPv6PrefixBuckets(t *testing.T) {
+	require.Equal(t, "203.0.113.9", NormalizeRateLimitIP("203.0.113.9"))
+	require.Equal(t, "192.0.2.4", NormalizeRateLimitIP("::ffff:192.0.2.4"))
+	require.Equal(t, "2001:db8:abcd:1234::", NormalizeRateLimitIP("2001:db8:abcd:1234:1111::1"))
+	require.Equal(
+		t,
+		NormalizeRateLimitIP("2001:db8:abcd:1234:1111::1"),
+		NormalizeRateLimitIP("2001:db8:abcd:1234:ffff::2"),
+	)
+	require.Equal(t, "not-an-ip", NormalizeRateLimitIP(" not-an-ip "))
+}
+
 func TestGetClientIPPreservesLegacyDockerForwardedHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -112,7 +112,7 @@
         <button
           type="button"
           class="btn btn-primary"
-          :disabled="!isActive || resetting"
+          :disabled="!account || loading || resetting"
           @click="handleReset"
         >
           <svg

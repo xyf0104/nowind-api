@@ -57,6 +57,8 @@ func (User) Fields() []ent.Field {
 		field.String("status").
 			MaxLen(20).
 			Default(domain.StatusActive),
+		field.Bool("restrict_public_groups").
+			Default(false),
 
 		// Optional profile fields (added later; default '' in DB migration)
 		field.String("username").

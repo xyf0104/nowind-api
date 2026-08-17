@@ -109,3 +109,52 @@ func (s *GroupRepoSuite) TestList_SortBySortOrderDesc() {
 	s.Require().Contains(indexByID, g2.ID)
 	s.Require().Less(indexByID[g2.ID], indexByID[g1.ID])
 }
+
+func (s *GroupRepoSuite) TestList_SortByDisplayOrderAcrossPages() {
+	testGroups := []service.Group{
+		{Name: "display-order-exclusive-openai", Platform: service.PlatformOpenAI, RateMultiplier: 0.01, IsExclusive: true},
+		{Name: "display-order-public-other", Platform: "mistral", RateMultiplier: 0.1},
+		{Name: "display-order-public-grok", Platform: service.PlatformGrok, RateMultiplier: 0.1},
+		{Name: "display-order-public-antigravity", Platform: service.PlatformAntigravity, RateMultiplier: 0.1},
+		{Name: "display-order-public-gemini", Platform: service.PlatformGemini, RateMultiplier: 0.1},
+		{Name: "display-order-public-anthropic-high", Platform: service.PlatformAnthropic, RateMultiplier: 0.5},
+		{Name: "display-order-public-claude-low", Platform: "claude", RateMultiplier: 0.1},
+		{Name: "display-order-public-openai-high", Platform: service.PlatformOpenAI, RateMultiplier: 0.2},
+		{Name: "display-order-public-openai-low", Platform: service.PlatformOpenAI, RateMultiplier: 0.1},
+		{Name: "display-order-exclusive-anthropic", Platform: service.PlatformAnthropic, RateMultiplier: 0.01, IsExclusive: true},
+	}
+	for i := range testGroups {
+		testGroups[i].Status = service.StatusActive
+		testGroups[i].SubscriptionType = service.SubscriptionTypeStandard
+		s.Require().NoError(s.repo.Create(s.ctx, &testGroups[i]))
+	}
+
+	var got []string
+	const pageSize = 3
+	for page := 1; page <= 4; page++ {
+		groups, result, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{
+			Page:      page,
+			PageSize:  pageSize,
+			SortBy:    "display_order",
+			SortOrder: "asc",
+		}, "", "", "display-order-", nil)
+		s.Require().NoError(err)
+		s.Require().EqualValues(len(testGroups), result.Total)
+		for _, group := range groups {
+			got = append(got, group.Name)
+		}
+	}
+
+	s.Require().Equal([]string{
+		"display-order-public-openai-low",
+		"display-order-public-openai-high",
+		"display-order-public-claude-low",
+		"display-order-public-anthropic-high",
+		"display-order-public-gemini",
+		"display-order-public-antigravity",
+		"display-order-public-grok",
+		"display-order-public-other",
+		"display-order-exclusive-openai",
+		"display-order-exclusive-anthropic",
+	}, got)
+}

@@ -4,7 +4,12 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import {
+  buildModelMappingObject,
+  getDefaultSelectedModelsByPlatform,
+  getModelsByPlatform,
+  splitModelMappingObject,
+} from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -15,6 +20,14 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gpt-5.4-2026-03-05')
     expect(models).toContain('codex-auto-review')
     expect(models).toContain('gpt-5.6')
+    expect(models).toContain('gpt-5.6-luna')
+  })
+
+  it('OpenAI OAuth 默认支持 Luna，上游 API Key 需同步或显式选择后才声明支持', () => {
+    expect(getDefaultSelectedModelsByPlatform('openai', 'oauth')).toContain('gpt-5.6-luna')
+    expect(getDefaultSelectedModelsByPlatform('openai', 'apikey')).not.toContain('gpt-5.6-luna')
+    expect(getModelsByPlatform('openai')).toContain('gpt-5.6-luna')
+    expect(getDefaultSelectedModelsByPlatform('anthropic', 'apikey')).toEqual(getModelsByPlatform('anthropic'))
   })
 
   it('openai 模型列表不再暴露已下线的 ChatGPT 登录 Codex 模型', () => {

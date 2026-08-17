@@ -204,6 +204,21 @@ type AccountWithConcurrency struct {
 	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
 }
 
+// AccountListLiteItem is a strict allowlist for account pickers that do not
+// need credential-bearing account details. Keep this separate from dto.Account:
+// adding a field to the full account response must never expose it here.
+type AccountListLiteItem struct {
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
+	Notes       *string `json:"notes"`
+	Platform    string  `json:"platform"`
+	Type        string  `json:"type"`
+	Concurrency int     `json:"concurrency"`
+	Priority    int     `json:"priority"`
+	Status      string  `json:"status"`
+	Schedulable bool    `json:"schedulable"`
+}
+
 type AccountSchedulerScore struct {
 	BaseScore             float64 `json:"base_score"`
 	StickyScore           float64 `json:"sticky_score"`
@@ -600,6 +615,28 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 	if err != nil {
 		response.ErrorFrom(c, err)
+		return
+	}
+	if lite {
+		items := make([]AccountListLiteItem, len(accounts))
+		for i := range accounts {
+			account := &accounts[i]
+			items[i] = AccountListLiteItem{
+				ID:          account.ID,
+				Name:        account.Name,
+				Notes:       account.Notes,
+				Platform:    account.Platform,
+				Type:        account.Type,
+				Concurrency: account.Concurrency,
+				Priority:    account.Priority,
+				Status:      account.Status,
+				Schedulable: account.Schedulable,
+			}
+		}
+		c.Header("Cache-Control", "private, no-store, max-age=0")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+		response.Paginated(c, items, total, page, pageSize)
 		return
 	}
 	if h.ollamaCloudUsage != nil && len(accounts) > 0 {
@@ -1227,6 +1264,7 @@ func (h *AccountHandler) RecoverState(c *gin.Context) {
 
 	if _, err := h.rateLimitService.RecoverAccountState(c.Request.Context(), accountID, service.AccountRecoveryOptions{
 		InvalidateToken: true,
+		ForceCleanup:    true,
 	}); err != nil {
 		response.ErrorFrom(c, err)
 		return

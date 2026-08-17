@@ -115,9 +115,9 @@ func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window t
 // 代理地址、所有用户坍缩进同一个限流桶造成整体误拦截。
 func clientIPForRateLimit(c *gin.Context) string {
 	if resolved := ippkg.GetSecurityClientIP(c, false); resolved != "" {
-		return resolved
+		return ippkg.NormalizeRateLimitIP(resolved)
 	}
-	return c.ClientIP()
+	return ippkg.NormalizeRateLimitIP(c.ClientIP())
 }
 
 // Limit 返回速率限制中间件

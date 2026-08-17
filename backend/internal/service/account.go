@@ -808,6 +808,13 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
+		// OpenAI-compatible API-key/upstream accounts do not all expose Luna.
+		// With passthrough disabled, only an explicit/synchronized mapping may
+		// claim that capability. OAuth accounts remain governed by the branch
+		// above and continue to support Luna by default.
+		if a.IsOpenAI() && normalizeKnownOpenAICodexModel(requestedModel) == "gpt-5.6-luna" {
+			return false
+		}
 		return true // 无映射 = 允许所有
 	}
 	if mappingSupportsRequestedModel(mapping, requestedModel) {

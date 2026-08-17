@@ -67,3 +67,57 @@ func TestAdminService_UpdateUser_NoInvalidateWhenRPMLimitUnchanged(t *testing.T)
 	require.NoError(t, err)
 	require.Empty(t, invalidator.userIDs, "只改 username 不应触发认证缓存失效")
 }
+
+func TestAdminService_UpdateUser_InvalidatesAuthCacheOnPublicGroupAccessChange(t *testing.T) {
+	tests := []struct {
+		name  string
+		user  *User
+		input *UpdateUserInput
+	}{
+		{
+			name: "restriction toggle",
+			user: &User{
+				ID:                   42,
+				Email:                "u@example.com",
+				AllowedGroups:        []int64{7},
+				RestrictPublicGroups: false,
+			},
+			input: &UpdateUserInput{RestrictPublicGroups: boolPointer(true)},
+		},
+		{
+			name: "allowed groups",
+			user: &User{
+				ID:                   42,
+				Email:                "u@example.com",
+				AllowedGroups:        []int64{7},
+				RestrictPublicGroups: true,
+			},
+			input: &UpdateUserInput{AllowedGroups: int64SlicePointer([]int64{8})},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &rpmUserRepoStub{userRepoStub: &userRepoStub{user: tt.user}}
+			invalidator := &authCacheInvalidatorStub{}
+			svc := &adminServiceImpl{
+				userRepo:             repo,
+				redeemCodeRepo:       &redeemRepoStub{},
+				authCacheInvalidator: invalidator,
+			}
+
+			updated, err := svc.UpdateUser(context.Background(), 42, tt.input)
+			require.NoError(t, err)
+			require.NotNil(t, updated)
+			require.Equal(t, []int64{42}, invalidator.userIDs)
+		})
+	}
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func int64SlicePointer(value []int64) *[]int64 {
+	return &value
+}

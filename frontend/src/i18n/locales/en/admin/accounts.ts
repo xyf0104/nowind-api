@@ -329,7 +329,7 @@ export default {
         resetSuccess: 'Account state recovered successfully',
         resetFailed: 'Failed to recover account state',
         failedToLoad: 'Failed to load temp unschedulable status',
-        notActive: 'This account is not temporarily unschedulable.',
+        notActive: 'No temporary block is active. You can still recover the account to clear stale state.',
         expired: 'Expired',
         remainingMinutes: 'About {minutes} minutes',
         remainingHours: 'About {hours} hours',

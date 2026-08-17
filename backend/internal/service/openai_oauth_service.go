@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,9 +16,17 @@ import (
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
 	sessionStore         *openai.SessionStore
+	publicSessionStore   PublicOpenAIOAuthSessionStore
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
+}
+
+// SetPublicSessionStore configures the Redis-backed one-shot store used only
+// by the unauthenticated token tool. Administrator OAuth sessions remain in
+// the existing private in-process store.
+func (s *OpenAIOAuthService) SetPublicSessionStore(store PublicOpenAIOAuthSessionStore) {
+	s.publicSessionStore = store
 }
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
@@ -43,6 +52,20 @@ type OpenAIAuthURLResult struct {
 
 // GenerateAuthURL generates an OpenAI OAuth authorization URL
 func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI, platform string) (*OpenAIAuthURLResult, error) {
+	return s.generateAuthURL(ctx, proxyID, redirectURI, platform, "")
+}
+
+// GeneratePublicAuthURL creates a public-tool transaction bound to the browser
+// that initiated it. Public flows always use the official fixed callback and
+// cannot select an administrator proxy.
+func (s *OpenAIOAuthService) GeneratePublicAuthURL(ctx context.Context, browserBindingHash string) (*OpenAIAuthURLResult, error) {
+	if strings.TrimSpace(browserBindingHash) == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_BROWSER_BINDING_REQUIRED", "browser binding is required")
+	}
+	return s.generateAuthURL(ctx, nil, openai.DefaultRedirectURI, PlatformOpenAI, browserBindingHash)
+}
+
+func (s *OpenAIOAuthService) generateAuthURL(ctx context.Context, proxyID *int64, redirectURI, platform, browserBindingHash string) (*OpenAIAuthURLResult, error) {
 	// Generate PKCE values
 	state, err := openai.GenerateState()
 	if err != nil {
@@ -83,14 +106,24 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 
 	// Store session
 	session := &openai.OAuthSession{
-		State:        state,
-		CodeVerifier: codeVerifier,
-		ClientID:     clientID,
-		RedirectURI:  redirectURI,
-		ProxyURL:     proxyURL,
-		CreatedAt:    time.Now(),
+		State:              state,
+		CodeVerifier:       codeVerifier,
+		ClientID:           clientID,
+		RedirectURI:        redirectURI,
+		ProxyURL:           proxyURL,
+		BrowserBindingHash: strings.TrimSpace(browserBindingHash),
+		CreatedAt:          time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if session.BrowserBindingHash != "" {
+		if s.publicSessionStore == nil {
+			return nil, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_OAUTH_SESSION_STORE_UNAVAILABLE", "public authorization is temporarily unavailable")
+		}
+		if err := s.publicSessionStore.Store(ctx, sessionID, session); err != nil {
+			return nil, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_OAUTH_SESSION_STORE_UNAVAILABLE", "public authorization is temporarily unavailable").WithCause(err)
+		}
+	} else {
+		s.sessionStore.Set(sessionID, session)
+	}
 
 	// Build authorization URL
 	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
@@ -103,11 +136,12 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 
 // OpenAIExchangeCodeInput represents the input for code exchange
 type OpenAIExchangeCodeInput struct {
-	SessionID   string
-	Code        string
-	State       string
-	RedirectURI string
-	ProxyID     *int64
+	SessionID          string
+	Code               string
+	State              string
+	RedirectURI        string
+	ProxyID            *int64
+	BrowserBindingHash string
 }
 
 // OpenAITokenInfo represents the token information for OpenAI
@@ -131,16 +165,52 @@ type OpenAITokenInfo struct {
 
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
-	// Get session
-	session, ok := s.sessionStore.Get(input.SessionID)
-	if !ok {
-		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
-	}
+	return s.exchangeCode(ctx, input, true, false)
+}
+
+// ExchangeCodeForPublicTool exchanges an authorization code without account
+// enrichment or privacy-setting side effects. It is used by the public token
+// conversion tool, where tokens must only be returned to the current browser.
+func (s *OpenAIOAuthService) ExchangeCodeForPublicTool(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
+	return s.exchangeCode(ctx, input, false, true)
+}
+
+func (s *OpenAIOAuthService) exchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput, enrich, consumeSession bool) (*OpenAITokenInfo, error) {
 	if input.State == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_STATE_REQUIRED", "oauth state is required")
 	}
+	// Get session
+	var session *openai.OAuthSession
+	var ok bool
+	if consumeSession {
+		if s.publicSessionStore == nil {
+			return nil, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_OAUTH_SESSION_STORE_UNAVAILABLE", "public authorization is temporarily unavailable")
+		}
+		var err error
+		session, ok, err = s.publicSessionStore.Consume(ctx, input.SessionID, input.State, input.BrowserBindingHash)
+		if err != nil {
+			if errors.Is(err, ErrPublicOpenAIOAuthStateMismatch) {
+				return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_STATE", "invalid oauth state")
+			}
+			if errors.Is(err, ErrPublicOpenAIOAuthBrowserBindingMismatch) {
+				return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_BROWSER_BINDING_INVALID", "authorization was started in a different browser")
+			}
+			return nil, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_OAUTH_SESSION_STORE_UNAVAILABLE", "public authorization is temporarily unavailable").WithCause(err)
+		}
+	} else {
+		session, ok = s.sessionStore.Get(input.SessionID)
+	}
+	if !ok {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
+	}
 	if subtle.ConstantTimeCompare([]byte(input.State), []byte(session.State)) != 1 {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_STATE", "invalid oauth state")
+	}
+	if session.BrowserBindingHash != "" && subtle.ConstantTimeCompare(
+		[]byte(strings.TrimSpace(input.BrowserBindingHash)),
+		[]byte(session.BrowserBindingHash),
+	) != 1 {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_BROWSER_BINDING_INVALID", "authorization was started in a different browser")
 	}
 
 	// Get proxy URL: prefer input.ProxyID, fallback to session.ProxyURL
@@ -183,7 +253,9 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	}
 
 	// Delete session after successful exchange
-	s.sessionStore.Delete(input.SessionID)
+	if !consumeSession {
+		s.sessionStore.Delete(input.SessionID)
+	}
 
 	tokenInfo := &OpenAITokenInfo{
 		AccessToken:  tokenResp.AccessToken,
@@ -202,7 +274,9 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		tokenInfo.PlanType = userInfo.PlanType
 	}
 
-	s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
+	if enrich {
+		s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
+	}
 
 	return tokenInfo, nil
 }
