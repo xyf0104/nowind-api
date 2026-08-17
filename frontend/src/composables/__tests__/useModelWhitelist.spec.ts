@@ -8,6 +8,7 @@ import {
   buildModelMappingObject,
   getDefaultSelectedModelsByPlatform,
   getModelsByPlatform,
+  getPresetMappingsByPlatform,
   splitModelMappingObject,
 } from '../useModelWhitelist'
 
@@ -111,6 +112,31 @@ describe('useModelWhitelist', () => {
     const models = getModelsByPlatform('antigravity')
 
     expect(models).toContain('gemini-3.1-pro')
+  })
+
+  it('Antigravity 白名单和映射包含完整 Gemini 3.7 Flash 分层模型', () => {
+    const models = [
+      'gemini-3.7-flash',
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash-medium',
+      'gemini-3.7-flash-low',
+      'gemini-3.7-flash-tiered'
+    ]
+    const whitelist = getModelsByPlatform('antigravity')
+    const presets = getPresetMappingsByPlatform('antigravity')
+
+    for (const model of models) {
+      expect(whitelist).toContain(model)
+      expect(presets).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: model, to: model })
+        ])
+      )
+    }
+
+    expect(buildModelMappingObject('whitelist', models, [])).toEqual(
+      Object.fromEntries(models.map((model) => [model, model]))
+    )
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

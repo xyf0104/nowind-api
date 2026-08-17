@@ -145,6 +145,39 @@ describe('AccountTestModal', () => {
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
 
+  it('Antigravity 测试列表优先完整 Gemini 3.7 Flash 分层模型', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'gemini-2.5-flash', display_name: 'Gemini 2.5 Flash' },
+      { id: 'gemini-3.7-flash-tiered', display_name: 'Gemini 3.7 Flash' },
+      { id: 'gemini-3.7-flash-low', display_name: 'Gemini 3.7 Flash Low' },
+      { id: 'gemini-3.7-flash-medium', display_name: 'Gemini 3.7 Flash Medium' },
+      { id: 'gemini-3.7-flash-high', display_name: 'Gemini 3.7 Flash High' },
+      { id: 'gemini-3.7-flash', display_name: 'Gemini 3.7 Flash' },
+      { id: 'gemini-3.5-flash', display_name: 'Gemini 3.5 Flash' }
+    ])
+
+    const wrapper = mountModal({
+      id: 42,
+      name: 'Antigravity Account',
+      platform: 'antigravity',
+      type: 'oauth',
+      status: 'active'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    expect((wrapper.vm as any).availableModels.map((model: { id: string }) => model.id)).toEqual([
+      'gemini-3.7-flash',
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash-medium',
+      'gemini-3.7-flash-low',
+      'gemini-3.7-flash-tiered',
+      'gemini-3.5-flash',
+      'gemini-2.5-flash'
+    ])
+    expect((wrapper.vm as any).selectedModelId).toBe('gemini-3.7-flash')
+  })
+
   it('grok 账号测试默认选择 Grok 模型', async () => {
     getAvailableModels.mockResolvedValue([
       { id: 'grok-4.3', display_name: 'Grok 4.3' },
