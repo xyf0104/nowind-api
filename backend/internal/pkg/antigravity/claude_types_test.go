@@ -26,11 +26,52 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 		"gemini-3.6-flash-low",
 		"gemini-3.6-flash-medium",
 		"gemini-3.6-flash-tiered",
+		"gemini-3.7-flash",
+		"gemini-3.7-flash-high",
+		"gemini-3.7-flash-medium",
+		"gemini-3.7-flash-low",
+		"gemini-3.7-flash-tiered",
 	}
 
 	for _, id := range requiredIDs {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("expected model %q to be exposed in DefaultModels", id)
+		}
+	}
+}
+
+func TestGeminiModels_Gemini37FlashMetadata(t *testing.T) {
+	t.Parallel()
+
+	models := make(map[string]modelDef, len(geminiModels))
+	for _, model := range geminiModels {
+		models[model.ID] = model
+	}
+
+	cases := map[string]struct {
+		displayName string
+		isReasoning bool
+	}{
+		"gemini-3.7-flash":        {displayName: "Gemini 3.7 Flash"},
+		"gemini-3.7-flash-high":   {displayName: "Gemini 3.7 Flash High", isReasoning: true},
+		"gemini-3.7-flash-medium": {displayName: "Gemini 3.7 Flash Medium", isReasoning: true},
+		"gemini-3.7-flash-low":    {displayName: "Gemini 3.7 Flash Low", isReasoning: true},
+		"gemini-3.7-flash-tiered": {displayName: "Gemini 3.7 Flash", isReasoning: true},
+	}
+
+	for id, want := range cases {
+		got, ok := models[id]
+		if !ok {
+			t.Fatalf("expected model %q to exist", id)
+		}
+		if got.DisplayName != want.displayName {
+			t.Errorf("unexpected display name for %q: got %q want %q", id, got.DisplayName, want.displayName)
+		}
+		if got.CreatedAt != "2026-08-18T00:00:00Z" {
+			t.Errorf("unexpected creation date for %q: got %q", id, got.CreatedAt)
+		}
+		if got.IsReasoning != want.isReasoning {
+			t.Errorf("unexpected reasoning flag for %q: got %t want %t", id, got.IsReasoning, want.isReasoning)
 		}
 	}
 }
