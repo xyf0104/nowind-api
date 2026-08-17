@@ -524,9 +524,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 	status := c.Query("status")
 	search := c.Query("search")
 	privacyMode := strings.TrimSpace(c.Query("privacy_mode"))
-	// Keep newly added accounts and accounts changed or used most recently at the top
-	// of the admin list. Explicit table sorting still takes precedence per request.
-	sortBy := c.DefaultQuery("sort_by", "updated_at")
+	// Keep newly added accounts and accounts changed, tested, or used most recently
+	// at the top. Explicit table sorting still takes precedence per request.
+	sortBy := c.DefaultQuery("sort_by", service.AccountSortRecentActivity)
 	sortOrder := c.DefaultQuery("sort_order", "desc")
 	// 标准化和验证 search 参数
 	search = strings.TrimSpace(search)

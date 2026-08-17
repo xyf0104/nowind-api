@@ -330,6 +330,10 @@ let parseTimer: ReturnType<typeof setTimeout> | undefined
 const MAX_FILE_COUNT = 20
 const MAX_TOTAL_FILE_BYTES = 20 * 1024 * 1024
 
+function onlyOAuthAccounts(accounts: Account[]): Account[] {
+  return accounts.filter((account) => account.type === 'oauth')
+}
+
 const outputFormats = computed<Array<{ value: TokenOutputFormat; label: string; compatible: boolean }>>(() => {
   const formats: Array<{ value: TokenOutputFormat; label: string }> = [
     { value: 'xiass', label: t('tokenConverter.formats.xiass') },
@@ -449,19 +453,21 @@ async function openAdminAccountPicker(): Promise<void> {
   try {
     const firstPage = await adminAPI.accounts.list(1, 100, {
       lite: 'true',
-      sort_by: 'updated_at',
+      type: 'oauth',
+      sort_by: 'recent_activity',
       sort_order: 'desc',
     })
     const accounts = [...firstPage.items]
     for (let page = 2; page <= firstPage.pages; page += 1) {
       const nextPage = await adminAPI.accounts.list(page, 100, {
         lite: 'true',
-        sort_by: 'updated_at',
+        type: 'oauth',
+        sort_by: 'recent_activity',
         sort_order: 'desc',
       })
       accounts.push(...nextPage.items)
     }
-    adminAccounts.value = accounts
+    adminAccounts.value = onlyOAuthAccounts(accounts)
   } catch (error) {
     adminAccountPickerVisible.value = false
     const message = (error as { message?: string })?.message
@@ -478,16 +484,24 @@ function closeAdminAccountPicker(): void {
 
 async function importSelectedAdminAccounts(accountIds: number[]): Promise<void> {
   if (!authStore.isAdmin || accountIds.length === 0 || adminAccountsLoading.value) return
+  const allowedIds = new Set(onlyOAuthAccounts(adminAccounts.value).map((account) => account.id))
+  const oauthAccountIds = [...new Set(accountIds)].filter((accountId) => allowedIds.has(accountId))
+  if (oauthAccountIds.length === 0) return
   adminAccountsLoading.value = true
   try {
     const payload = await stepUp.run(() => adminAPI.accounts.exportData({
-      ids: accountIds,
+      ids: oauthAccountIds,
       includeProxies: false,
     }))
-    inputText.value = JSON.stringify(payload, null, 2)
+    const oauthPayload = {
+      ...payload,
+      proxies: [],
+      accounts: payload.accounts.filter((account) => account.type === 'oauth'),
+    }
+    inputText.value = JSON.stringify(oauthPayload, null, 2)
     outputFormat.value = 'xiass'
     closeAdminAccountPicker()
-    appStore.showSuccess(t('tokenConverter.adminAccounts.loaded', { count: payload.accounts.length }))
+    appStore.showSuccess(t('tokenConverter.adminAccounts.loaded', { count: oauthPayload.accounts.length }))
   } catch (error) {
     if (isStepUpCancelled(error)) return
     if (isStepUpBlocked(error)) {
@@ -534,7 +548,7 @@ async function copyOutput(): Promise<void> {
 
 function downloadOutput(): void {
   if (!exported.value) return
-  const blob = new Blob([exported.value.text], { type: 'application/json;charset=utf-8' })
+  const blob = new Blob([outputText.value], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url

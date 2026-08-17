@@ -99,10 +99,10 @@ export default {
     },
     formatDescriptions: {
       xiass: '可直接用于“添加账号 → 批量导入”',
-      session: '输出 accessToken、refreshToken、用户与账号信息',
+      session: '仅输出 Session 所需的 Token 字段',
       'codex-auth': '输出 Codex 使用的 auth.json 结构',
-      oauth: '输出标准 snake_case Token 字段',
-      canonical: '输出便于留存和再次转换的统一结构',
+      oauth: '仅输出标准 snake_case OAuth Token 字段',
+      canonical: '仅输出平台、账号类型与规范化凭据',
     },
     sources: {
       xiass: 'XIASS / sub2api',

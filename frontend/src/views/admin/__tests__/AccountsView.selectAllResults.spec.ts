@@ -225,7 +225,7 @@ describe('admin AccountsView select all filtered results', () => {
       1,
       20,
       expect.objectContaining({
-        sort_by: 'updated_at',
+        sort_by: 'recent_activity',
         sort_order: 'desc'
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })

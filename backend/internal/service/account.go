@@ -81,6 +81,10 @@ type Account struct {
 	headerOverrideCacheRawSig         uint64
 }
 
+// AccountSortRecentActivity orders account-management rows by the newest
+// created_at, updated_at, or last_used_at value before pagination.
+const AccountSortRecentActivity = "recent_activity"
+
 type OpenAIEndpointCapability string
 
 const openAILongContextBillingEnabledKey = "openai_long_context_billing_enabled"

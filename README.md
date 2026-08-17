@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.15-0ea5e9" alt="当前版本 v1.1.15" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.16-0ea5e9" alt="当前版本 v1.1.16" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.15
+> 当前版本：v1.1.16
 
-v1.1.15 新增公开多平台令牌格式转换与免费 OpenAI 401 重新授权，管理员可安全选择并导出 XIASS 账号；新增用户级公开分组可见性控制，并统一创建密钥与分组管理的“平台顺序、倍率升序、专属末尾”排列。全新安装不再写入维护者默认分组、渠道和价格；OpenAI OAuth 账号继续默认支持 Luna，OpenAI 上游/API Key 账号关闭自动透传后，Luna 仅在上游同步或管理员显式选择后参与调度；同时修复网络波动后的账号恢复状态。
+v1.1.16 将账号管理默认调整为按创建、编辑、模型测试或实际调用的最近活动排序，并在数据库分页前完成全局排序；令牌转换器中的“获取 XIASS API 账号”仅列出 OAuth 账号，所选账号仍可转换为兼容格式。各输出格式只生成自身需要的目标结构，页面展示、复制和下载保持完全一致，不再夹带无关账号资料。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 

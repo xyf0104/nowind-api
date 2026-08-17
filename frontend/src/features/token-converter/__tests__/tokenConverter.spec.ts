@@ -64,7 +64,7 @@ describe('tokenConverter', () => {
     expect(xiass.accounts[0].credentials).not.toHaveProperty('user')
   })
 
-  it('round-trips XIASS account settings and exports a directly importable bundle', () => {
+  it('projects XIASS input into a directly importable bundle without raw record leakage', () => {
     const source = {
       type: 'sub2api-data',
       version: 1,
@@ -95,22 +95,24 @@ describe('tokenConverter', () => {
 
     expect(exported.type).toBe('sub2api-data')
     expect(exported.proxies).toEqual(source.proxies)
-    expect(exported.accounts[0]).toMatchObject({
+    expect(exported.accounts[0]).toEqual({
       name: 'Pro Account',
       notes: 'keep me',
-      proxy_key: 'proxy-1',
-      concurrency: 8,
-      priority: 3,
+      platform: 'openai',
+      type: 'oauth',
       credentials: {
         access_token: 'access-1',
         refresh_token: 'refresh-1',
         client_id: 'custom-client',
       },
       extra: { codex_cli_only: true },
+      proxy_key: 'proxy-1',
+      concurrency: 8,
+      priority: 3,
     })
   })
 
-  it('losslessly round-trips every XIASS platform through XIASS and canonical JSON', () => {
+  it('keeps portable credentials for every platform without carrying account metadata', () => {
     const accounts = [
       {
         name: 'OpenAI Pro',
@@ -188,19 +190,34 @@ describe('tokenConverter', () => {
       proxies: parsed.proxies,
     }).text)
     expect(directXiass.proxies).toEqual(source.proxies)
-    expect(directXiass.accounts).toEqual(accounts)
+    expect(directXiass.accounts.map((account: { credentials: Record<string, unknown> }) => account.credentials)).toEqual([
+      { access_token: 'oa-access', refresh_token: 'oa-refresh', client_id: 'custom-client' },
+      { setup_token: 'claude-setup', custom_headers: { 'x-route': 'one' } },
+      { project_id: 'gemini-project', service_account_json: '{"type":"service_account","private_key":"secret"}' },
+      { refresh_token: 'ag-refresh', project_id: 'ag-project' },
+      { api_key: 'grok-key', base_url: 'https://grok.example/v1' },
+    ])
 
     const canonical = exportTokenAccounts(parsed.accounts, 'canonical', {
       now: NOW,
       proxies: parsed.proxies,
     })
+    const canonicalValue = JSON.parse(canonical.text)
+    expect(canonicalValue).toMatchObject({ type: 'xiass-token-converter', version: 3 })
+    expect(canonicalValue).not.toHaveProperty('exported_at')
+    expect(canonicalValue).not.toHaveProperty('proxies')
+    expect(canonical.text).not.toMatch(/proxy-one|privacy_mode|nested/)
     const reparsed = parseTokenInput(canonical.text, NOW)
     const canonicalXiass = JSON.parse(exportTokenAccounts(reparsed.accounts, 'xiass', {
       now: NOW,
       proxies: reparsed.proxies,
     }).text)
-    expect(canonicalXiass.proxies).toEqual(source.proxies)
-    expect(canonicalXiass.accounts).toEqual(accounts)
+    const portable = (account: { platform: string; type: string; credentials: Record<string, unknown> }) => ({
+      platform: account.platform,
+      type: account.type,
+      credentials: account.credentials,
+    })
+    expect(canonicalXiass.accounts.map(portable)).toEqual(directXiass.accounts.map(portable))
   })
 
   it.each(platformCases)('canonicalizes %s OAuth aliases into backend-readable XIASS credentials', (inputPlatform, outputPlatform) => {
@@ -230,7 +247,6 @@ describe('tokenConverter', () => {
         session_token: `${inputPlatform}-session`,
         token_type: 'Bearer',
         project_id: `${inputPlatform}-project`,
-        tenantHint: `${inputPlatform}-tenant`,
       },
     })
     expect(exported.accounts[0].credentials).not.toHaveProperty('platform')
@@ -240,6 +256,7 @@ describe('tokenConverter', () => {
     expect(exported.accounts[0].credentials).not.toHaveProperty('idToken')
     expect(exported.accounts[0].credentials).not.toHaveProperty('tokenType')
     expect(exported.accounts[0].credentials).not.toHaveProperty('projectId')
+    expect(exported.accounts[0].credentials).not.toHaveProperty('tenantHint')
 
     const canonical = exportTokenAccounts(parsed.accounts, 'canonical', { now: NOW })
     const reparsed = parseTokenInput(canonical.text, NOW)
@@ -271,7 +288,6 @@ describe('tokenConverter', () => {
 
     const direct = JSON.parse(exportTokenAccounts(parsed.accounts, 'xiass', { now: NOW }).text)
     expect(direct.accounts[0].credentials).toEqual({
-      regionHint: 'test-region',
       api_key: `${inputPlatform}-key`,
       base_url: `https://${inputPlatform}.example.com/v1`,
       custom_headers: { 'x-tenant': inputPlatform },
@@ -281,6 +297,7 @@ describe('tokenConverter', () => {
     expect(direct.accounts[0].credentials).not.toHaveProperty('apiKey')
     expect(direct.accounts[0].credentials).not.toHaveProperty('baseUrl')
     expect(direct.accounts[0].credentials).not.toHaveProperty('customHeaders')
+    expect(direct.accounts[0].credentials).not.toHaveProperty('regionHint')
 
     const canonical = exportTokenAccounts(parsed.accounts, 'canonical', { now: NOW })
     const reparsed = parseTokenInput(canonical.text, NOW)
@@ -318,7 +335,6 @@ describe('tokenConverter', () => {
 
     const exported = JSON.parse(exportTokenAccounts(parsed.accounts, 'xiass', { now: NOW }).text)
     expect(exported.accounts[0].credentials).toEqual({
-      custom: { keep: true },
       access_token: 'snake-access',
       refresh_token: 'camel-refresh',
       api_key: 'camel-key',
@@ -368,6 +384,89 @@ describe('tokenConverter', () => {
     ])
   })
 
+  it('uses independent minimal projections and never leaks profile or raw account fields', () => {
+    const parsed = parseTokenInput(JSON.stringify({
+      type: 'xiass-token-converter',
+      version: 2,
+      accounts: [{
+        name: 'private-display-name',
+        platform: 'openai',
+        account_type: 'oauth',
+        email: 'private@example.com',
+        credentials: {
+          access_token: 'access-safe',
+          refresh_token: 'refresh-safe',
+          id_token: 'id-token-safe',
+          client_id: 'client-safe',
+          chatgpt_account_id: 'account-required-by-codex',
+          chatgpt_user_id: 'private-user-id',
+          plan_type: 'private-plan',
+          password: 'private-password',
+        },
+        raw_account: { id: 'private-raw-id', password: 'private-raw-password' },
+        credential_extras: { extra_secret: 'private-credential-extra' },
+        extra: { admin_only: 'private-admin-extra' },
+      }],
+    }), NOW)
+
+    const session = exportTokenAccounts(parsed.accounts, 'session', { now: NOW })
+    const oauth = exportTokenAccounts(parsed.accounts, 'oauth', { now: NOW })
+    const codex = exportTokenAccounts(parsed.accounts, 'codex-auth', { now: NOW })
+    const canonical = exportTokenAccounts(parsed.accounts, 'canonical', { now: NOW })
+
+    expect(JSON.parse(session.text)).toEqual({
+      accessToken: 'access-safe',
+      refreshToken: 'refresh-safe',
+      idToken: 'id-token-safe',
+    })
+    expect(JSON.parse(oauth.text)).toEqual({
+      access_token: 'access-safe',
+      refresh_token: 'refresh-safe',
+      id_token: 'id-token-safe',
+      token_type: 'Bearer',
+    })
+    expect(JSON.parse(codex.text)).toEqual({
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: 'id-token-safe',
+        access_token: 'access-safe',
+        refresh_token: 'refresh-safe',
+        account_id: 'account-required-by-codex',
+      },
+      last_refresh: NOW.toISOString(),
+    })
+    expect(JSON.parse(canonical.text)).toEqual({
+      type: 'xiass-token-converter',
+      version: 3,
+      accounts: [{
+        platform: 'openai',
+        account_type: 'oauth',
+        credentials: {
+          access_token: 'access-safe',
+          refresh_token: 'refresh-safe',
+          id_token: 'id-token-safe',
+          client_id: 'client-safe',
+          chatgpt_account_id: 'account-required-by-codex',
+        },
+      }],
+    })
+
+    const forbidden = [
+      'private-display-name',
+      'private@example.com',
+      'private-user-id',
+      'private-plan',
+      'private-password',
+      'private-raw-id',
+      'private-raw-password',
+      'private-credential-extra',
+      'private-admin-extra',
+    ]
+    for (const result of [session, oauth, codex, canonical]) {
+      for (const value of forbidden) expect(result.text).not.toContain(value)
+    }
+  })
+
   it('exports multiple accounts to session, OAuth, Codex auth, and canonical JSON formats', () => {
     const parsed = parseTokenInput(JSON.stringify([
       { access_token: 'access-1', refresh_token: 'refresh-1' },
@@ -382,7 +481,7 @@ describe('tokenConverter', () => {
     expect(sessions).toHaveLength(2)
     expect(oauth[1].refresh_token).toBe('refresh-2')
     expect(auth[0].tokens.access_token).toBe('access-1')
-    expect(canonical).toMatchObject({ type: 'xiass-token-converter', version: 2 })
+    expect(canonical).toMatchObject({ type: 'xiass-token-converter', version: 3 })
     expect(canonical.accounts).toHaveLength(2)
   })
 

@@ -214,7 +214,7 @@ const searchQuery = ref('')
 const selectedPlatform = ref<'all' | AccountPlatform>('all')
 const selectedIds = ref<Set<number>>(new Set())
 
-const accounts = computed(() => props.accounts)
+const accounts = computed(() => props.accounts.filter((account) => account.type === 'oauth'))
 
 const platformFilters = computed(() => {
   const counts = new Map<AccountPlatform, number>()
@@ -298,6 +298,7 @@ function platformButtonClass(platform: 'all' | AccountPlatform): string {
 }
 
 function toggleAccount(accountId: number): void {
+  if (!accounts.value.some((account) => account.id === accountId)) return
   const next = new Set(selectedIds.value)
   if (next.has(accountId)) next.delete(accountId)
   else next.add(accountId)
@@ -316,6 +317,10 @@ function handleCancel(): void {
 
 function handleConfirm(): void {
   if (selectedIds.value.size === 0) return
-  emit('confirm', accounts.value.filter((account) => selectedIds.value.has(account.id)).map((account) => account.id))
+  const oauthAccountIds = accounts.value
+    .filter((account) => selectedIds.value.has(account.id))
+    .map((account) => account.id)
+  if (oauthAccountIds.length === 0) return
+  emit('confirm', oauthAccountIds)
 }
 </script>

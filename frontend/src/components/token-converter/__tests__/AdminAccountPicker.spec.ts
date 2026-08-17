@@ -93,16 +93,19 @@ describe('AdminAccountPicker', () => {
     vi.restoreAllMocks()
   })
 
-  it('groups accounts by the platforms present in the payload without exposing credentials', () => {
+  it('shows only OAuth accounts even when the server payload contains API Key accounts', () => {
     const wrapper = mountPicker()
 
-    expect(wrapper.get('[data-testid="platform-filter-openai"]').text()).toContain('2')
+    expect(wrapper.get('[data-testid="platform-filter-openai"]').text()).toContain('1')
     expect(wrapper.get('[data-testid="platform-filter-anthropic"]').text()).toContain('1')
     expect(wrapper.find('[data-testid="platform-filter-gemini"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="platform-group-openai"]').text()).toContain('OpenAI Pro')
     expect(wrapper.get('[data-testid="platform-group-anthropic"]').text()).toContain('Claude Team')
+    expect(wrapper.find('[data-testid="account-option-33"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="选择账号 OpenAI Direct"]').exists()).toBe(false)
 
     const visibleText = wrapper.text()
+    expect(visibleText).not.toContain('OpenAI Direct')
     expect(visibleText).not.toContain('must-not-render')
   })
 
@@ -129,12 +132,12 @@ describe('AdminAccountPicker', () => {
     expect(confirmed).toEqual([11])
   })
 
-  it('supports individual selection', async () => {
+  it('supports individual OAuth selection and never emits an API Key id', async () => {
     const accounts = createAccounts()
     const wrapper = mountPicker(accounts)
 
     await wrapper.get('input[aria-label="选择账号 OpenAI Pro"]').setValue(true)
-    await wrapper.get('input[aria-label="选择账号 OpenAI Direct"]').setValue(true)
+    await wrapper.get('input[aria-label="选择账号 Claude Team"]').setValue(true)
 
     const confirmButton = wrapper.findAll('button').find((button) =>
       button.text().includes('确认选择'),
@@ -142,7 +145,8 @@ describe('AdminAccountPicker', () => {
     await confirmButton!.trigger('click')
 
     const confirmed = wrapper.emitted('confirm')?.[0]?.[0]
-    expect(confirmed).toEqual([11, 33])
+    expect(confirmed).toEqual([11, 22])
+    expect(confirmed).not.toContain(33)
   })
 
   it('emits cancel from both the cancel action and dialog close without mutating input', async () => {

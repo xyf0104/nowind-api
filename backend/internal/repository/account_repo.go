@@ -1066,6 +1066,25 @@ func (r *accountRepository) ListOpsAccountsForStats(ctx context.Context, platfor
 
 func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selector) {
 	sortBy := strings.ToLower(strings.TrimSpace(params.SortBy))
+	if sortBy == service.AccountSortRecentActivity {
+		sortOrder := params.NormalizedSortOrder(pagination.SortOrderDesc)
+		direction := "DESC"
+		tieOrder := entsql.Desc
+		if sortOrder == pagination.SortOrderAsc {
+			direction = "ASC"
+			tieOrder = entsql.Asc
+		}
+		return []func(*entsql.Selector){func(s *entsql.Selector) {
+			expression := accountRecentActivitySortExpression(
+				s.C(dbaccount.FieldCreatedAt),
+				s.C(dbaccount.FieldUpdatedAt),
+				s.C(dbaccount.FieldLastUsedAt),
+			)
+			s.OrderExpr(entsql.Expr(expression + " " + direction))
+			s.OrderBy(tieOrder(s.C(dbaccount.FieldID)))
+		}}
+	}
+
 	sortOrder := params.NormalizedSortOrder(pagination.SortOrderAsc)
 	if sortBy == "upstream_billing_rate" {
 		direction := "ASC"
@@ -1123,6 +1142,10 @@ func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selecto
 		return []func(*entsql.Selector){dbent.Asc(dbaccount.FieldName), dbent.Asc(dbaccount.FieldID)}
 	}
 	return []func(*entsql.Selector){dbent.Asc(field), dbent.Asc(dbaccount.FieldID)}
+}
+
+func accountRecentActivitySortExpression(createdAt, updatedAt, lastUsedAt string) string {
+	return "GREATEST(" + createdAt + ", " + updatedAt + ", COALESCE(" + lastUsedAt + ", " + createdAt + "))"
 }
 
 func upstreamBillingRateSortExpression(extra string) string {

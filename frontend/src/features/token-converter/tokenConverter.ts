@@ -101,7 +101,58 @@ const CREDENTIAL_KEY_ALIASES: ReadonlyArray<readonly [string, readonly string[]]
   ['model_mapping', ['model_mapping', 'modelMapping']],
   ['custom_headers', ['custom_headers', 'customHeaders']],
   ['header_overrides', ['header_overrides', 'headerOverrides']],
+  ['header_override_enabled', ['header_override_enabled', 'headerOverrideEnabled']],
+  ['grok_custom_base_url_enabled', ['grok_custom_base_url_enabled', 'grokCustomBaseUrlEnabled']],
+  ['auth_mode', ['auth_mode', 'authMode']],
+  ['service_account', ['service_account', 'serviceAccount']],
+  ['client_email', ['client_email', 'clientEmail']],
+  ['private_key', ['private_key', 'privateKey']],
+  ['location', ['location']],
+  ['vertex_location', ['vertex_location', 'vertexLocation']],
+  ['aws_access_key_id', ['aws_access_key_id', 'awsAccessKeyId']],
+  ['aws_secret_access_key', ['aws_secret_access_key', 'awsSecretAccessKey']],
+  ['aws_session_token', ['aws_session_token', 'awsSessionToken']],
+  ['aws_region', ['aws_region', 'awsRegion']],
+  ['aws_force_global', ['aws_force_global', 'awsForceGlobal']],
+  ['antigravity_project_id', ['antigravity_project_id', 'antigravityProjectId']],
 ]
+
+// Export is intentionally allow-listed. Source records can contain account-management
+// settings and personal profile data that do not belong in a credential conversion.
+const PORTABLE_CREDENTIAL_KEYS = [
+  'access_token',
+  'refresh_token',
+  'id_token',
+  'session_token',
+  'api_key',
+  'base_url',
+  'setup_token',
+  'client_id',
+  'client_secret',
+  'project_id',
+  'service_account_json',
+  'service_account',
+  'oauth_type',
+  'tier_id',
+  'token_type',
+  'user_agent',
+  'model_mapping',
+  'auth_mode',
+  'client_email',
+  'private_key',
+  'location',
+  'vertex_location',
+  'aws_access_key_id',
+  'aws_secret_access_key',
+  'aws_session_token',
+  'aws_region',
+  'aws_force_global',
+  'antigravity_project_id',
+  'custom_headers',
+  'header_overrides',
+  'header_override_enabled',
+  'grok_custom_base_url_enabled',
+] as const
 
 const CREDENTIAL_ALIAS_KEYS = new Set(CREDENTIAL_KEY_ALIASES.flatMap(([, aliases]) => aliases))
 const NORMALIZED_ACCOUNT_CREDENTIAL_KEYS = new Set([
@@ -393,7 +444,7 @@ function accountFromRecord(
     sourceFormat,
     platform,
     accountType,
-    name: firstString(record, ['name'], ['user', 'name'], ['user', 'email'], ['email']) ?? `${platform} ${accountType} ${index}`,
+    name: firstString(record, ['name'], ['user', 'name']) ?? `${platform} ${accountType} ${index}`,
     email: firstString(record, ['email'], ['user', 'email']) ?? firstString(normalizedCredentials, ['email']),
     accountId: firstString(
       normalizedCredentials,
@@ -432,7 +483,6 @@ function accountFromRecord(
 
   if (isOpenAIOAuth(account)) {
     enrichFromJwt(account)
-    account.name = account.email ?? account.name
   }
   return account
 }
@@ -471,7 +521,7 @@ function accountFromXiass(record: UnknownRecord, index: number, now: Date): Norm
   account.rawAccount = { ...record }
   if (isOpenAIOAuth(account)) {
     enrichFromJwt(account)
-    account.name = firstString(record, ['name']) ?? account.email ?? account.name
+    account.name = firstString(record, ['name']) ?? account.name
   }
   return account
 }
@@ -601,7 +651,6 @@ export function parseTokenInput(content: string, now = new Date()): TokenParseRe
         rawCredentials: { access_token: token },
       }
       enrichFromJwt(account)
-      account.name = account.email ?? account.name
       append(account)
       warnings.push({ code: 'raw-token-assumed-access', index: account.index })
       return
@@ -648,33 +697,37 @@ function compactRecord(record: UnknownRecord): UnknownRecord {
   )
 }
 
-function tokenCredentials(account: NormalizedTokenAccount): UnknownRecord {
-  const credentials = compactRecord({
-    ...canonicalizeCredentialRecord(account.rawCredentials, true),
-    ...canonicalizeCredentialRecord(account.credentialExtras ?? {}, true),
-  })
+function portableCredentials(
+  account: NormalizedTokenAccount,
+  includeOpenAIAccountRouting: boolean,
+): UnknownRecord {
+  const source = canonicalizeCredentialRecord({
+    ...account.rawCredentials,
+    ...(account.credentialExtras ?? {}),
+  }, true)
+  const credentials: UnknownRecord = {}
+  for (const key of PORTABLE_CREDENTIAL_KEYS) {
+    const value = source[key]
+    if (value !== undefined && value !== '') credentials[key] = value
+  }
+
   const assignCanonical = (key: string, value: unknown) => {
     if (value !== undefined && value !== '') credentials[key] = value
   }
   assignCanonical('access_token', account.accessToken)
   assignCanonical('refresh_token', account.refreshToken)
   assignCanonical('id_token', account.idToken)
-  assignCanonical('session_token', account.sessionToken)
   assignCanonical('api_key', account.apiKey)
-  assignCanonical('email', account.email)
-  assignCanonical('chatgpt_account_id', account.accountId)
-  assignCanonical('chatgpt_user_id', account.userId)
-  assignCanonical('organization_id', account.organizationId)
-  assignCanonical('plan_type', account.planType)
-  if (!('expires_at' in credentials)) assignCanonical('expires_at', account.expiresAt)
-  return credentials
+  assignCanonical('expires_at', account.expiresAt)
+  if (includeOpenAIAccountRouting && account.platform === 'openai' && account.accountType === 'oauth') {
+    assignCanonical('chatgpt_account_id', account.accountId)
+    assignCanonical('organization_id', account.organizationId)
+  }
+  return compactRecord(credentials)
 }
 
 function asSession(account: NormalizedTokenAccount): UnknownRecord {
   return compactRecord({
-    user: compactRecord({ id: account.userId, email: account.email, name: account.name }),
-    expires: account.expiresAt,
-    account: compactRecord({ id: account.accountId, planType: account.planType }),
     accessToken: account.accessToken,
     refreshToken: account.refreshToken,
     idToken: account.idToken,
@@ -695,72 +748,39 @@ function asCodexAuth(account: NormalizedTokenAccount, now: Date): UnknownRecord 
 }
 
 function asOAuth(account: NormalizedTokenAccount): UnknownRecord {
+  const source = portableCredentials(account, false)
   return compactRecord({
     access_token: account.accessToken,
     refresh_token: account.refreshToken,
     id_token: account.idToken,
-    token_type: 'Bearer',
+    token_type: source.token_type ?? 'Bearer',
     expires_at: account.expiresAt,
-    email: account.email,
-    chatgpt_account_id: account.accountId,
-    chatgpt_user_id: account.userId,
-    organization_id: account.organizationId,
-    plan_type: account.planType,
   })
 }
 
 function asCanonical(account: NormalizedTokenAccount): UnknownRecord {
-  return compactRecord({
-    name: account.name,
+  return {
     platform: account.platform,
     account_type: account.accountType,
-    email: account.email,
-    account_id: account.accountId,
-    user_id: account.userId,
-    plan_type: account.planType,
-    organization_id: account.organizationId,
-    access_token: account.accessToken,
-    refresh_token: account.refreshToken,
-    id_token: account.idToken,
-    session_token: account.sessionToken,
-    api_key: account.apiKey,
-    expires_at: account.expiresAt,
-    last_refresh: account.lastRefresh,
-    raw_credentials: tokenCredentials(account),
-    raw_account: account.rawAccount,
-    credential_extras: account.credentialExtras,
-    extra: account.extra,
-  })
-}
-
-function assignPreservedValue(
-  record: UnknownRecord,
-  key: string,
-  value: unknown,
-  fallback?: unknown,
-): void {
-  if (value !== undefined) {
-    record[key] = value
-  } else if (!(key in record) && fallback !== undefined) {
-    record[key] = fallback
+    credentials: portableCredentials(account, true),
   }
 }
 
 function asXiassAccount(account: NormalizedTokenAccount, options: TokenExportOptions): UnknownRecord {
-  const record: UnknownRecord = account.rawAccount ? { ...account.rawAccount } : {}
-  record.name = account.name
-  record.platform = account.platform
-  record.type = account.accountType
-  record.credentials = tokenCredentials(account)
-  assignPreservedValue(record, 'notes', account.notes)
-  assignPreservedValue(record, 'extra', account.extra)
-  assignPreservedValue(record, 'proxy_key', account.proxyKey)
-  assignPreservedValue(record, 'concurrency', account.concurrency, options.concurrency ?? 3)
-  assignPreservedValue(record, 'priority', account.priority, options.priority ?? 50)
-  assignPreservedValue(record, 'rate_multiplier', account.rateMultiplier)
-  assignPreservedValue(record, 'expires_at', account.accountExpiresAt)
-  assignPreservedValue(record, 'auto_pause_on_expired', account.autoPauseOnExpired)
-  return record
+  return compactRecord({
+    name: account.name,
+    platform: account.platform,
+    type: account.accountType,
+    credentials: portableCredentials(account, true),
+    notes: account.notes,
+    extra: account.extra,
+    proxy_key: account.proxyKey,
+    concurrency: account.concurrency ?? options.concurrency ?? 3,
+    priority: account.priority ?? options.priority ?? 50,
+    rate_multiplier: account.rateMultiplier,
+    expires_at: account.accountExpiresAt,
+    auto_pause_on_expired: account.autoPauseOnExpired,
+  })
 }
 
 export function exportTokenAccounts(
@@ -803,9 +823,7 @@ export function exportTokenAccounts(
   } else {
     value = {
       type: 'xiass-token-converter',
-      version: 2,
-      exported_at: now.toISOString(),
-      proxies: options.proxies ?? [],
+      version: 3,
       accounts: accounts.map(asCanonical),
     }
     fileName = `xiass-token-json-${now.toISOString().slice(0, 10)}.json`

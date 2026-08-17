@@ -693,7 +693,7 @@ type AccountSortState = {
 // Every visit starts with newly added or recently changed/used accounts first.
 // Header sorting remains available for the current visit, but is intentionally not
 // persisted so an older local preference cannot hide recent account activity.
-const sortState = reactive<AccountSortState>({ sort_by: 'updated_at', sort_order: 'desc' })
+const sortState = reactive<AccountSortState>({ sort_by: 'recent_activity', sort_order: 'desc' })
 
 // Auto refresh settings
 const showAutoRefreshDropdown = ref(false)

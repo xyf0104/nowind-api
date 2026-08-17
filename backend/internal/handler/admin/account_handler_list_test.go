@@ -60,7 +60,7 @@ func TestAccountHandlerListDefaultsToRecentAccountActivity(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "updated_at", adminSvc.lastListAccounts.sortBy)
+	require.Equal(t, service.AccountSortRecentActivity, adminSvc.lastListAccounts.sortBy)
 	require.Equal(t, "desc", adminSvc.lastListAccounts.sortOrder)
 }
 

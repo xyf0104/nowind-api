@@ -66,6 +66,7 @@ func isOpenAIImageModel(model string) bool {
 // AccountTestService handles account testing operations
 type AccountTestService struct {
 	accountRepo               AccountRepository
+	recordTestActivity        func(context.Context, int64) error
 	geminiTokenProvider       *GeminiTokenProvider
 	claudeTokenProvider       *ClaudeTokenProvider
 	grokTokenProvider         *GrokTokenProvider
@@ -88,7 +89,7 @@ func NewAccountTestService(
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
 ) *AccountTestService {
-	return &AccountTestService{
+	service := &AccountTestService{
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
 		claudeTokenProvider:       claudeTokenProvider,
@@ -98,6 +99,10 @@ func NewAccountTestService(
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
 	}
+	if accountRepo != nil {
+		service.recordTestActivity = accountRepo.UpdateLastUsed
+	}
+	return service
 }
 
 func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error) {
@@ -184,6 +189,13 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
+	}
+	// A model test is activity even when the upstream request later fails. Spark
+	// shadows resolve through their parent and keep the existing shadow path intact.
+	if !account.IsCredentialShadow() && s.recordTestActivity != nil {
+		if err := s.recordTestActivity(ctx, accountID); err != nil {
+			log.Printf("failed to record account test activity: account=%d err=%v", accountID, err)
+		}
 	}
 
 	// Synthetic UI load-test accounts exercise the real SSE parsing and modal

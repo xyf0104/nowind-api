@@ -21,6 +21,52 @@ func (s *AccountRepoSuite) TestList_DefaultSortByNameAsc() {
 	s.Require().Equal("z-account", accounts[1].Name)
 }
 
+func (s *AccountRepoSuite) TestListWithFilters_DefaultRecentActivitySortsBeforePagination() {
+	base := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	create := func(name string, createdAt, updatedAt time.Time, lastUsedAt *time.Time) *service.Account {
+		return mustCreateAccount(s.T(), s.client, &service.Account{
+			Name:       name,
+			CreatedAt:  createdAt,
+			UpdatedAt:  updatedAt,
+			LastUsedAt: lastUsedAt,
+		})
+	}
+
+	oldActivity := base.Add(time.Hour)
+	tieActivity := base.Add(2 * time.Hour)
+	createdActivity := base.Add(3 * time.Hour)
+	editedActivity := base.Add(4 * time.Hour)
+	calledActivity := base.Add(5 * time.Hour)
+
+	create("old-activity", base, oldActivity, nil)
+	olderTie := create("older-id-tie", base, tieActivity, nil)
+	newerTie := create("newer-id-tie", base, tieActivity, nil)
+	create("newly-created", createdActivity, createdActivity, nil)
+	create("recently-edited", base, editedActivity, nil)
+	create("recently-called", base, oldActivity, &calledActivity)
+	s.Require().Greater(newerTie.ID, olderTie.ID)
+
+	wantPages := [][]string{
+		{"recently-called", "recently-edited"},
+		{"newly-created", "newer-id-tie"},
+		{"older-id-tie", "old-activity"},
+	}
+	for page, want := range wantPages {
+		accounts, result, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{
+			Page:      page + 1,
+			PageSize:  2,
+			SortBy:    service.AccountSortRecentActivity,
+			SortOrder: pagination.SortOrderDesc,
+		}, "", "", "", "", 0, "")
+		s.Require().NoError(err)
+		s.Require().Equal(int64(6), result.Total)
+		s.Require().Len(accounts, len(want))
+		for index, name := range want {
+			s.Require().Equal(name, accounts[index].Name)
+		}
+	}
+}
+
 func (s *AccountRepoSuite) TestListWithFilters_SortByPriorityDesc() {
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "low-priority", Priority: 10})
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "high-priority", Priority: 90})

@@ -99,10 +99,10 @@ export default {
     },
     formatDescriptions: {
       xiass: 'Ready for Add Account → Batch Import',
-      session: 'Exports accessToken, refreshToken, user, and account details',
+      session: 'Exports only the token fields required by Session JSON',
       'codex-auth': 'Exports the Codex auth.json structure',
-      oauth: 'Exports standard snake_case token fields',
-      canonical: 'A normalized structure for storage and later conversion',
+      oauth: 'Exports only standard snake_case OAuth token fields',
+      canonical: 'Exports only platform, account type, and normalized credentials',
     },
     sources: {
       xiass: 'XIASS / sub2api',
