@@ -17,6 +17,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const (
+	windowsCodexGracefulExitTimeout = 2 * time.Second
+	windowsCodexForcedExitTimeout   = 13 * time.Second
+	windowsCodexExitPollInterval    = 250 * time.Millisecond
+)
+
 func detectCodexInstallation() CodexInstallation {
 	launchTargets := windowsCodexLaunchTargets()
 	// The Store build currently ships as OpenAI.Codex while its main process is
@@ -162,7 +168,7 @@ func filterOfficialWindowsCodexLaunchTargets(targets []string) []string {
 	for _, target := range targets {
 		target = strings.TrimSpace(target)
 		lower := strings.ToLower(target)
-		if !strings.HasPrefix(lower, "openai.codex_") || !strings.Contains(lower, "!") {
+		if !isOfficialWindowsCodexLaunchTarget(target) {
 			continue
 		}
 		if _, ok := seen[lower]; ok {
@@ -172,6 +178,11 @@ func filterOfficialWindowsCodexLaunchTargets(targets []string) []string {
 		filtered = append(filtered, target)
 	}
 	return filtered
+}
+
+func isOfficialWindowsCodexLaunchTarget(target string) bool {
+	lower := strings.ToLower(strings.TrimSpace(target))
+	return strings.HasPrefix(lower, "openai.codex_") && strings.Contains(lower, "!")
 }
 
 func selectCodexInstallation() (CodexInstallation, error) {
@@ -302,23 +313,78 @@ func stopCodex(installation CodexInstallation) error {
 	if err != nil {
 		return fmt.Errorf("could not verify whether Codex is running: %w", err)
 	}
-	if len(processIDs) > 0 {
-		for _, processID := range processIDs {
-			_ = hiddenWindowsCommand("taskkill.exe", "/PID", processID, "/T").Run()
-		}
-		deadline := time.Now().Add(15 * time.Second)
-		for len(processIDs) > 0 && time.Now().Before(deadline) {
-			time.Sleep(250 * time.Millisecond)
-			processIDs, err = windowsInstallationProcessIDsWithError(installation)
-			if err != nil {
-				return fmt.Errorf("could not verify that Codex exited: %w", err)
-			}
-		}
-		if len(processIDs) > 0 {
-			return errors.New("Codex did not exit within 15 seconds; configuration is saved but the app was not force-closed")
+	if len(processIDs) == 0 {
+		return nil
+	}
+
+	// Ask the desktop app to close first so SQLite/WAL state can be flushed.
+	// The Windows Store build often remains in the tray after this request, so
+	// escalate to a forced process-tree termination after a short grace period.
+	_ = terminateWindowsProcessTrees(processIDs, false)
+	processIDs, err = waitForWindowsCodexExit(installation, windowsCodexGracefulExitTimeout)
+	if err != nil {
+		return fmt.Errorf("could not verify that Codex exited: %w", err)
+	}
+	if len(processIDs) == 0 {
+		return nil
+	}
+
+	deadline := time.Now().Add(windowsCodexForcedExitTimeout)
+	var lastTerminateErr error
+	for len(processIDs) > 0 && time.Now().Before(deadline) {
+		lastTerminateErr = terminateWindowsProcessTrees(processIDs, true)
+		time.Sleep(windowsCodexExitPollInterval)
+		processIDs, err = windowsInstallationProcessIDsWithError(installation)
+		if err != nil {
+			return fmt.Errorf("could not verify that Codex was force-closed: %w", err)
 		}
 	}
-	return nil
+	if len(processIDs) == 0 {
+		return nil
+	}
+	if lastTerminateErr != nil {
+		return fmt.Errorf("Codex background processes %s could not be force-closed: %w", strings.Join(processIDs, ", "), lastTerminateErr)
+	}
+	return fmt.Errorf("Codex background processes are still running after forced shutdown (PIDs: %s); no configuration was changed", strings.Join(processIDs, ", "))
+}
+
+func terminateWindowsProcessTrees(processIDs []string, force bool) error {
+	seen := make(map[string]struct{}, len(processIDs))
+	var terminateErrors []error
+	for _, processID := range processIDs {
+		processID = strings.TrimSpace(processID)
+		if processID == "" {
+			continue
+		}
+		if _, ok := seen[processID]; ok {
+			continue
+		}
+		seen[processID] = struct{}{}
+		arguments := windowsTaskkillArguments(processID, force)
+		if err := hiddenWindowsCommand("taskkill.exe", arguments...).Run(); err != nil {
+			terminateErrors = append(terminateErrors, fmt.Errorf("PID %s: %w", processID, err))
+		}
+	}
+	return errors.Join(terminateErrors...)
+}
+
+func windowsTaskkillArguments(processID string, force bool) []string {
+	arguments := []string{"/PID", processID, "/T"}
+	if force {
+		arguments = append(arguments, "/F")
+	}
+	return arguments
+}
+
+func waitForWindowsCodexExit(installation CodexInstallation, timeout time.Duration) ([]string, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		processIDs, err := windowsInstallationProcessIDsWithError(installation)
+		if err != nil || len(processIDs) == 0 || !time.Now().Before(deadline) {
+			return processIDs, err
+		}
+		time.Sleep(windowsCodexExitPollInterval)
+	}
 }
 
 func startCodex(installation CodexInstallation) error {
@@ -428,7 +494,37 @@ func windowsCodexProcessIDsByNameWithError() ([]string, error) {
 	return processIDs, nil
 }
 
+func windowsStoreCodexProcessIDsWithError() ([]string, error) {
+	processes, err := snapshotWindowsProcesses()
+	if err != nil {
+		return nil, err
+	}
+	return windowsStoreCodexProcessIDs(processes), nil
+}
+
+func windowsStoreCodexProcessIDs(processes []windowsProcess) []string {
+	var processIDs []string
+	for _, process := range processes {
+		if !strings.EqualFold(process.Name, "ChatGPT.exe") {
+			continue
+		}
+		// QueryFullProcessImageName can be denied for WindowsApps processes.
+		// An official OpenAI.Codex launch target has already been verified before
+		// this fallback is used, so a pathless ChatGPT.exe is still the target app.
+		if process.Path == "" || isOfficialWindowsCodexPackagePath(process.Path) || strings.Contains(strings.ToLower(filepath.Clean(process.Path)), `\codex\`) {
+			processIDs = append(processIDs, strconv.FormatUint(uint64(process.ID), 10))
+		}
+	}
+	return processIDs
+}
+
 func windowsInstallationProcessIDsWithError(installation CodexInstallation) ([]string, error) {
+	if isOfficialWindowsCodexLaunchTarget(installation.LaunchTarget) {
+		processIDs, err := windowsStoreCodexProcessIDsWithError()
+		if err != nil || len(processIDs) > 0 || installation.Executable == "" {
+			return processIDs, err
+		}
+	}
 	if installation.Executable != "" {
 		processIDs, err := windowsProcessIDsWithError(installation.Executable)
 		if err != nil || len(processIDs) > 0 || installation.LaunchTarget == "" {
@@ -520,6 +616,10 @@ func hiddenWindowsCommand(name string, arguments ...string) *exec.Cmd {
 }
 
 func isWindowsCodexAppRunning() bool {
+	processIDs, err := windowsStoreCodexProcessIDsWithError()
+	if err == nil && len(processIDs) > 0 {
+		return true
+	}
 	return len(windowsCodexProcessIDsByName()) > 0
 }
 

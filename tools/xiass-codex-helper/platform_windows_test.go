@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,26 @@ func TestFilterOfficialWindowsCodexLaunchTargetsRejectsCodexPlusPlus(t *testing.
 	}
 }
 
+func TestOfficialWindowsCodexLaunchTargetRecognition(t *testing.T) {
+	for _, target := range []string{
+		`OpenAI.Codex_2p2nqsd0c76g0!App`,
+		`  OPENAI.CODEX_2p2nqsd0c76g0!Codex  `,
+	} {
+		if !isOfficialWindowsCodexLaunchTarget(target) {
+			t.Fatalf("official launch target was not recognized: %q", target)
+		}
+	}
+	for _, target := range []string{
+		`OpenAI.ChatGPT_2p2nqsd0c76g0!App`,
+		`BigPizzaV3.CodexPlusPlus_abcd1234!App`,
+		`OpenAI.Codex_2p2nqsd0c76g0`,
+	} {
+		if isOfficialWindowsCodexLaunchTarget(target) {
+			t.Fatalf("unrelated launch target was accepted: %q", target)
+		}
+	}
+}
+
 func TestWindowsStoreCodexInstallationUsesOfficialLaunchTarget(t *testing.T) {
 	installation, ok := windowsStoreCodexInstallation([]string{
 		`BigPizzaV3.CodexPlusPlus_abcd1234!App`,
@@ -110,5 +131,28 @@ func TestHiddenWindowsCommandUsesNoWindowFlags(t *testing.T) {
 	}
 	if err := command.Run(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsTaskkillArgumentsEscalateToForce(t *testing.T) {
+	graceful := windowsTaskkillArguments("123", false)
+	forced := windowsTaskkillArguments("123", true)
+	if got := strings.Join(graceful, " "); got != "/PID 123 /T" {
+		t.Fatalf("graceful taskkill arguments = %q", got)
+	}
+	if got := strings.Join(forced, " "); got != "/PID 123 /T /F" {
+		t.Fatalf("forced taskkill arguments = %q", got)
+	}
+}
+
+func TestWindowsStoreCodexProcessIDsIncludePathlessBackgroundApp(t *testing.T) {
+	processIDs := windowsStoreCodexProcessIDs([]windowsProcess{
+		{ID: 11, Name: "ChatGPT.exe"},
+		{ID: 12, Name: "ChatGPT.exe", Path: `C:\Program Files\WindowsApps\OpenAI.Codex_26.810.4967.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`},
+		{ID: 13, Name: "ChatGPT.exe", Path: `C:\Other\ChatGPT.exe`},
+		{ID: 14, Name: "codex.exe", Path: `C:\Users\Test\AppData\Roaming\npm\codex.exe`},
+	})
+	if got := strings.Join(processIDs, ","); got != "11,12" {
+		t.Fatalf("Store Codex process IDs = %q, want pathless and official ChatGPT processes", got)
 	}
 }
