@@ -339,8 +339,8 @@ type TestConnectionResult struct {
 }
 
 // TestConnection 测试 Antigravity 账号连接。
-// 复用 antigravityRetryLoop 的完整重试 / credits overages / 智能重试逻辑，
-// 与真实调度行为一致。差异：不做账号切换（测试指定账号）、不记录 ops 错误。
+// 通过 antigravityRetryLoop 的只读 probe 模式发出一次真实上游请求，
+// 原样报告上游状态，但不读取或修改正式调度状态。
 func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
 
 	// 获取 token
@@ -380,7 +380,7 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		proxyURL = account.Proxy.URL()
 	}
 
-	// 复用 antigravityRetryLoop：完整的重试 / credits overages / 智能重试
+	// 只读 probe：不让管理员测试污染模型 cooldown、粘性会话或账号调度状态。
 	prefix := fmt.Sprintf("[antigravity-Test] account=%d(%s)", account.ID, account.Name)
 	p := antigravityRetryLoopParams{
 		ctx:            ctx,
@@ -393,18 +393,12 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		c:              nil, // 无 gin.Context → 跳过 ops 追踪
 		httpUpstream:   s.httpUpstream,
 		settingService: s.settingService,
-		accountRepo:    s.accountRepo,
 		requestedModel: modelID,
-		handleError:    testConnectionHandleError,
+		readOnlyProbe:  true,
 	}
 
 	result, err := s.antigravityRetryLoop(p)
 	if err != nil {
-		// AccountSwitchError → 测试时不切换账号，返回友好提示
-		var switchErr *AntigravityAccountSwitchError
-		if errors.As(err, &switchErr) {
-			return nil, fmt.Errorf("该账号模型 %s 当前限流中，请稍后重试", switchErr.RateLimitedModel)
-		}
 		return nil, err
 	}
 
@@ -424,19 +418,6 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 
 	text := extractTextFromSSEResponse(respBody)
 	return &TestConnectionResult{Text: text, MappedModel: mappedModel}, nil
-}
-
-// testConnectionHandleError 是 TestConnection 使用的轻量 handleError 回调。
-// 仅记录日志，不做 ops 错误追踪或粘性会话清除。
-func testConnectionHandleError(
-	_ context.Context, prefix string, account *Account,
-	statusCode int, _ http.Header, body []byte,
-	requestedModel string, _ int64, _ string, _ bool,
-) *handleModelRateLimitResult {
-	logger.LegacyPrintf("service.antigravity_gateway",
-		"%s test_handle_error status=%d model=%s account=%d body=%s",
-		prefix, statusCode, requestedModel, account.ID, truncateForLog(body, 200))
-	return nil
 }
 
 // buildGeminiTestRequest 构建 Gemini 格式测试请求

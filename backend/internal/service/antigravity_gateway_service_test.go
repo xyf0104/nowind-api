@@ -200,6 +200,59 @@ func (c *recordingInternal500CounterCache) ResetInternal500Count(_ context.Conte
 	return nil
 }
 
+type antigravityProbeMutationRepo struct {
+	AccountRepository
+	modelRateLimitCalls int
+	rateLimitCalls      int
+	tempUnschedCalls    int
+	setErrorCalls       int
+	extraUpdateCalls    int
+}
+
+func (r *antigravityProbeMutationRepo) SetModelRateLimit(_ context.Context, _ int64, _ string, _ time.Time, _ ...string) error {
+	r.modelRateLimitCalls++
+	return nil
+}
+
+func (r *antigravityProbeMutationRepo) SetRateLimited(_ context.Context, _ int64, _ time.Time) error {
+	r.rateLimitCalls++
+	return nil
+}
+
+func (r *antigravityProbeMutationRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, _ string) error {
+	r.tempUnschedCalls++
+	return nil
+}
+
+func (r *antigravityProbeMutationRepo) SetError(_ context.Context, _ int64, _ string) error {
+	r.setErrorCalls++
+	return nil
+}
+
+func (r *antigravityProbeMutationRepo) UpdateExtra(_ context.Context, _ int64, _ map[string]any) error {
+	r.extraUpdateCalls++
+	return nil
+}
+
+func (r *antigravityProbeMutationRepo) requireNoMutations(t *testing.T) {
+	t.Helper()
+	require.Zero(t, r.modelRateLimitCalls, "probe must not write model cooldowns")
+	require.Zero(t, r.rateLimitCalls, "probe must not write account rate limits")
+	require.Zero(t, r.tempUnschedCalls, "probe must not change temporary scheduling state")
+	require.Zero(t, r.setErrorCalls, "probe must not disable the account")
+	require.Zero(t, r.extraUpdateCalls, "probe must not update account runtime metadata")
+}
+
+type antigravityProbeCache struct {
+	GatewayCache
+	deleteCalls int
+}
+
+func (c *antigravityProbeCache) DeleteSessionAccountID(_ context.Context, _ int64, _ string) error {
+	c.deleteCalls++
+	return nil
+}
+
 type antigravitySettingRepoStub struct{}
 
 func (s *antigravitySettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
@@ -278,6 +331,174 @@ func TestResolveAntigravityProjectID(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestAntigravityGatewayService_TestConnection_ReadOnlyProbe(t *testing.T) {
+	const modelID = "gemini-2.5-flash"
+	rateLimitBody := `{
+		"error": {
+			"code": 429,
+			"message": "quota exceeded",
+			"status": "RESOURCE_EXHAUSTED",
+			"details": [
+				{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{"model":"gemini-2.5-flash"}},
+				{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"15s"}
+			]
+		}
+	}`
+
+	newAccount := func() *Account {
+		return &Account{
+			ID:          401,
+			Name:        "probe-account",
+			Platform:    PlatformAntigravity,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token": "probe-token",
+				"expires_at":   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				"project_id":   "probe-project",
+				"model_mapping": map[string]any{
+					modelID: modelID,
+				},
+			},
+		}
+	}
+
+	t.Run("bypasses stale local cooldown and reports upstream 429", func(t *testing.T) {
+		account := newAccount()
+		account.Extra = map[string]any{
+			modelRateLimitsKey: map[string]any{
+				modelID: map[string]any{
+					"rate_limit_reset_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				},
+			},
+		}
+		repo := &antigravityProbeMutationRepo{}
+		cache := &antigravityProbeCache{}
+		counter := &recordingInternal500CounterCache{}
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(rateLimitBody)),
+		}}}
+		svc := &AntigravityGatewayService{
+			accountRepo:      repo,
+			cache:            cache,
+			tokenProvider:    &AntigravityTokenProvider{},
+			httpUpstream:     upstream,
+			internal500Cache: counter,
+		}
+
+		result, err := svc.TestConnection(context.Background(), account, modelID)
+
+		require.Nil(t, result)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "API 返回 429")
+		require.Contains(t, err.Error(), "RESOURCE_EXHAUSTED")
+		require.Equal(t, 1, upstream.callCount, "probe must make one real request despite local cooldown")
+		repo.requireNoMutations(t)
+		require.Zero(t, cache.deleteCalls)
+		require.Empty(t, counter.incrementCalls)
+		require.Empty(t, counter.resetCalls)
+	})
+
+	t.Run("bypasses error policy without changing scheduling state", func(t *testing.T) {
+		account := newAccount()
+		account.Credentials["temp_unschedulable_enabled"] = true
+		account.Credentials["temp_unschedulable_rules"] = []any{map[string]any{
+			"error_code":       float64(http.StatusTooManyRequests),
+			"keywords":         []any{"quota exceeded"},
+			"duration_minutes": float64(10),
+		}}
+		repo := &antigravityProbeMutationRepo{}
+		cache := &antigravityProbeCache{}
+		counter := &recordingInternal500CounterCache{}
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(rateLimitBody)),
+		}}}
+		svc := &AntigravityGatewayService{
+			accountRepo:      repo,
+			cache:            cache,
+			tokenProvider:    &AntigravityTokenProvider{},
+			httpUpstream:     upstream,
+			rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+			internal500Cache: counter,
+		}
+
+		result, err := svc.TestConnection(context.Background(), account, modelID)
+
+		require.Nil(t, result)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "API 返回 429")
+		require.Equal(t, 1, upstream.callCount, "probe must not retry a real quota response")
+		repo.requireNoMutations(t)
+		require.Zero(t, cache.deleteCalls)
+		require.Empty(t, counter.incrementCalls)
+		require.Empty(t, counter.resetCalls)
+	})
+}
+
+func TestAntigravityRetryLoop_Runtime429StillMutatesSchedulingState(t *testing.T) {
+	const modelID = "gemini-2.5-flash"
+	rateLimitBody := `{
+		"error": {
+			"code": 429,
+			"message": "quota exceeded",
+			"status": "RESOURCE_EXHAUSTED",
+			"details": [
+				{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{"model":"gemini-2.5-flash"}},
+				{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"15s"}
+			]
+		}
+	}`
+	repo := &antigravityProbeMutationRepo{}
+	cache := &antigravityProbeCache{}
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(rateLimitBody)),
+	}}}
+	account := &Account{
+		ID:          402,
+		Name:        "runtime-account",
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+	}
+	svc := &AntigravityGatewayService{accountRepo: repo, cache: cache}
+
+	result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+		ctx:             context.Background(),
+		prefix:          "[runtime-test]",
+		account:         account,
+		accessToken:     "runtime-token",
+		action:          "streamGenerateContent",
+		body:            []byte(`{"project":"runtime-project"}`),
+		httpUpstream:    upstream,
+		accountRepo:     repo,
+		requestedModel:  modelID,
+		isStickySession: true,
+		groupID:         77,
+		sessionHash:     "runtime-sticky-session",
+		handleError: func(_ context.Context, _ string, _ *Account, _ int, _ http.Header, _ []byte, _ string, _ int64, _ string, _ bool) *handleModelRateLimitResult {
+			return nil
+		},
+	})
+
+	require.Nil(t, result)
+	var switchErr *AntigravityAccountSwitchError
+	require.ErrorAs(t, err, &switchErr)
+	require.Equal(t, modelID, switchErr.RateLimitedModel)
+	require.Equal(t, 1, upstream.callCount)
+	require.Greater(t, repo.modelRateLimitCalls, 0, "runtime 429 must still write model cooldowns")
+	require.Equal(t, 1, cache.deleteCalls, "runtime 429 must still clear the sticky binding")
 }
 
 func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t *testing.T) {

@@ -39,11 +39,42 @@ type antigravityRetryLoopParams struct {
 	isStickySession bool   // 是否为粘性会话（用于账号切换时的缓存计费判断）
 	groupID         int64  // 用于模型级限流时清除粘性会话
 	sessionHash     string // 用于模型级限流时清除粘性会话
+	readOnlyProbe   bool   // 管理员连接测试：真实请求上游，但不读取或修改正式调度状态
 }
 
 // antigravityRetryLoopResult 重试循环的结果
 type antigravityRetryLoopResult struct {
 	resp *http.Response
+}
+
+// antigravityReadOnlyProbe performs exactly one upstream request without
+// consulting or mutating runtime scheduling state. It deliberately bypasses
+// local cooldowns, retry/error policies, credits state, sticky sessions and
+// health counters so an administrator sees the upstream response as-is.
+func (s *AntigravityGatewayService) antigravityReadOnlyProbe(p antigravityRetryLoopParams) (*antigravityRetryLoopResult, error) {
+	baseURL := resolveAntigravityForwardBaseURL()
+	if baseURL == "" {
+		return nil, errors.New("no antigravity forward base url configured")
+	}
+	if p.account == nil {
+		return nil, errors.New("antigravity probe account is nil")
+	}
+	if p.httpUpstream == nil {
+		return nil, errors.New("antigravity probe upstream is not configured")
+	}
+
+	upstreamReq, err := antigravity.NewAPIRequestWithURL(p.ctx, baseURL, p.action, p.accessToken, p.body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)
+	if err != nil {
+		return nil, fmt.Errorf("upstream probe request failed: %w", err)
+	}
+	if resp == nil {
+		return nil, errors.New("upstream returned nil response")
+	}
+	return &antigravityRetryLoopResult{resp: resp}, nil
 }
 
 // resolveAntigravityForwardBaseURL 解析转发用 base URL。
@@ -449,6 +480,10 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 
 // antigravityRetryLoop 执行带 URL fallback 的重试循环
 func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopParams) (*antigravityRetryLoopResult, error) {
+	if p.readOnlyProbe {
+		return s.antigravityReadOnlyProbe(p)
+	}
+
 	// 预检查：模型限流 + overages 启用 + 积分未耗尽 → 直接注入 AI Credits
 	overagesInjected := false
 	if p.requestedModel != "" && p.account.Platform == PlatformAntigravity &&
