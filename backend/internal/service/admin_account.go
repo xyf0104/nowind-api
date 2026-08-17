@@ -914,6 +914,117 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	return updated, nil
 }
 
+var antigravityOAuthIdentityCredentialKeys = []string{
+	"access_token",
+	"refresh_token",
+	"token_type",
+	"expires_in",
+	"expires_at",
+	"scope",
+	"email",
+	"project_id",
+	"plan_type",
+	"_token_version",
+}
+
+func nextOAuthTokenVersion(credentials map[string]any) int64 {
+	current := (&Account{Credentials: credentials}).GetCredentialAsInt64("_token_version")
+	next := time.Now().UnixMilli()
+	if next <= current {
+		return current + 1
+	}
+	return next
+}
+
+func buildAntigravityReauthorizedCredentials(existing, incoming map[string]any) (map[string]any, error) {
+	accessToken, _ := incoming["access_token"].(string)
+	if strings.TrimSpace(accessToken) == "" {
+		return nil, infraerrors.BadRequest("ANTIGRAVITY_ACCESS_TOKEN_REQUIRED", "Antigravity re-authorization requires a new access token")
+	}
+	refreshToken, _ := incoming["refresh_token"].(string)
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, infraerrors.BadRequest("ANTIGRAVITY_REFRESH_TOKEN_REQUIRED", "Antigravity re-authorization requires a new refresh token")
+	}
+
+	merged, err := cloneAccountJSONMap(existing)
+	if err != nil {
+		return nil, err
+	}
+	if merged == nil {
+		merged = make(map[string]any)
+	}
+	for _, key := range antigravityOAuthIdentityCredentialKeys {
+		delete(merged, key)
+	}
+	for _, key := range antigravityOAuthIdentityCredentialKeys {
+		if key == "_token_version" {
+			continue
+		}
+		value, ok := incoming[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, isString := value.(string); isString {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			value = text
+		}
+		merged[key] = value
+	}
+	merged["_token_version"] = nextOAuthTokenVersion(existing)
+	return merged, nil
+}
+
+// ApplyAntigravityOAuthCredentials replaces only provider-owned identity
+// fields while preserving account-owned configuration. Privacy is reset before
+// the credential write so an old identity's successful marker can never cover
+// a newly authorized identity, even if a later write fails.
+func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
+	ctx context.Context,
+	id int64,
+	input AntigravityOAuthCredentialsInput,
+) (*Account, error) {
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth {
+		return nil, infraerrors.BadRequest("NOT_ANTIGRAVITY_OAUTH", "account is not an Antigravity OAuth account")
+	}
+	if input.Type != "" && input.Type != AccountTypeOAuth {
+		return nil, infraerrors.BadRequest("INVALID_ANTIGRAVITY_ACCOUNT_TYPE", "Antigravity re-authorization requires OAuth account type")
+	}
+
+	credentials, err := buildAntigravityReauthorizedCredentials(account.Credentials, input.Credentials)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reset first. If credential persistence fails, the old account merely
+	// retries privacy setup instead of inheriting a false success marker.
+	if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{"privacy_mode": AntigravityPrivacyFailed}); err != nil {
+		return nil, err
+	}
+	if err := persistAccountCredentials(ctx, s.accountRepo, account, credentials); err != nil {
+		return nil, err
+	}
+
+	privacyMode := strings.TrimSpace(input.PrivacyMode)
+	if privacyMode != AntigravityPrivacySet && privacyMode != AntigravityPrivacyFailed {
+		privacyMode = AntigravityPrivacyFailed
+	}
+	if privacyMode == AntigravityPrivacySet {
+		if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{"privacy_mode": privacyMode}); err != nil {
+			slog.Warn("antigravity_reauthorization_privacy_persist_failed", "account_id", id, "error", err)
+			privacyMode = AntigravityPrivacyFailed
+		}
+	}
+	applyAntigravityPrivacyMode(account, privacyMode)
+	return account, nil
+}
+
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {

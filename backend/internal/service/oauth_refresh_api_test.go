@@ -30,6 +30,7 @@ type refreshAPIAccountRepo struct {
 	beforeSuccessCAS        func(*refreshAPIAccountRepo)
 	lastExpectedCredentials map[string]any
 	lastExpectedProxyID     *int64
+	lastCASPlatform         string
 }
 
 func (r *refreshAPIAccountRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
@@ -77,7 +78,28 @@ func (r *refreshAPIAccountRepo) UpdateGrokOAuthCredentialsIfUnchanged(
 	expectedProxyID *int64,
 	credentials map[string]any,
 ) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(PlatformGrok, id, expectedCredentials, expectedProxyID, credentials)
+}
+
+func (r *refreshAPIAccountRepo) UpdateAntigravityOAuthCredentialsIfUnchanged(
+	_ context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, credentials)
+}
+
+func (r *refreshAPIAccountRepo) updateOAuthCredentialsIfUnchanged(
+	platform string,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
 	r.successCASCalls++
+	r.lastCASPlatform = platform
 	r.lastExpectedCredentials = shallowCopyMap(expectedCredentials)
 	if expectedProxyID != nil {
 		proxyID := *expectedProxyID
@@ -91,7 +113,7 @@ func (r *refreshAPIAccountRepo) UpdateGrokOAuthCredentialsIfUnchanged(
 	if r.updateErr != nil {
 		return false, r.updateErr
 	}
-	if r.account == nil || r.account.ID != id || r.account.Platform != PlatformGrok ||
+	if r.account == nil || r.account.ID != id || r.account.Platform != platform ||
 		r.account.Type != AccountTypeOAuth ||
 		!reflect.DeepEqual(r.account.Credentials, expectedCredentials) ||
 		!reflect.DeepEqual(r.account.ProxyID, expectedProxyID) {
@@ -390,6 +412,52 @@ func TestRefreshIfNeeded_GrokSuccessCASLetsConcurrentReauthorizationWin(t *testi
 	require.NotNil(t, repo.lastExpectedProxyID)
 	require.Equal(t, proxyID, *repo.lastExpectedProxyID)
 	require.Zero(t, repo.updateCredentialsCalls, "the provider result must not overwrite a concurrent repair")
+}
+
+func TestRefreshIfNeeded_AntigravitySuccessCASLetsConcurrentReauthorizationWin(t *testing.T) {
+	proxyID := int64(31)
+	account := &Account{
+		ID:       73,
+		Platform: PlatformAntigravity,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		ProxyID:  &proxyID,
+		Credentials: map[string]any{
+			"access_token":   "attempted-access",
+			"refresh_token":  "attempted-refresh",
+			"project_id":     "attempted-project",
+			"_token_version": int64(10),
+		},
+	}
+	repo := &refreshAPIAccountRepo{account: account}
+	repo.beforeSuccessCAS = func(r *refreshAPIAccountRepo) {
+		r.account.Credentials = map[string]any{
+			"access_token":   "reauthorized-access",
+			"refresh_token":  "reauthorized-refresh",
+			"project_id":     "reauthorized-project",
+			"_token_version": int64(11),
+		}
+	}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials: map[string]any{
+			"access_token":  "stale-provider-access",
+			"refresh_token": "stale-provider-refresh",
+			"project_id":    "stale-provider-project",
+		},
+	}
+
+	result, err := NewOAuthRefreshAPI(repo, nil).RefreshIfNeeded(context.Background(), account, executor, time.Hour)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.Refreshed)
+	require.Nil(t, result.NewCredentials)
+	require.Equal(t, "reauthorized-refresh", result.Account.GetCredential("refresh_token"))
+	require.Equal(t, "reauthorized-project", result.Account.GetCredential("project_id"))
+	require.Equal(t, PlatformAntigravity, repo.lastCASPlatform)
+	require.Equal(t, "attempted-refresh", repo.lastExpectedCredentials["refresh_token"])
+	require.Zero(t, repo.updateCredentialsCalls)
 }
 
 func TestRefreshIfNeeded_GrokSuccessPersistenceFailureIsProviderContainment(t *testing.T) {

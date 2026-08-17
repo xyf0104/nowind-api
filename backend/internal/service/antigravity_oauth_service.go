@@ -90,8 +90,8 @@ type AntigravityTokenInfo struct {
 	Email            string `json:"email,omitempty"`
 	ProjectID        string `json:"project_id,omitempty"`
 	ProjectIDMissing bool   `json:"-"`
-	PlanType         string `json:"-"`
-	PrivacyMode      string `json:"-"`
+	PlanType         string `json:"plan_type,omitempty"`
+	PrivacyMode      string `json:"privacy_mode,omitempty"`
 }
 
 // ExchangeCode 用 authorization code 交换 token

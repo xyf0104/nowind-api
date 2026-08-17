@@ -132,9 +132,14 @@ export function useAntigravityOAuth() {
       token_type: tokenInfo.token_type,
       expires_at: expiresAt,
       project_id: tokenInfo.project_id,
-      email: tokenInfo.email
+      email: tokenInfo.email,
+      plan_type: tokenInfo.plan_type
     }
   }
+
+  const buildExtraInfo = (tokenInfo: AntigravityTokenInfo): Record<string, unknown> => ({
+    privacy_mode: tokenInfo.privacy_mode || 'privacy_set_failed'
+  })
 
   return {
     authUrl,
@@ -146,6 +151,7 @@ export function useAntigravityOAuth() {
     generateAuthUrl,
     exchangeAuthCode,
     validateRefreshToken,
-    buildCredentials
+    buildCredentials,
+    buildExtraInfo
   }
 }

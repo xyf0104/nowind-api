@@ -53,4 +53,27 @@ describe('useAntigravityOAuth.buildCredentials', () => {
 
     expect(credentials.refresh_token).toBe('rotated-refresh-token')
   })
+
+  it('includes plan type and binds privacy status to the new authorization result', () => {
+    const oauth = useAntigravityOAuth()
+    const tokenInfo = {
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_at: 1_900_000_000,
+      project_id: 'new-project',
+      plan_type: 'pro',
+      privacy_mode: 'privacy_set'
+    }
+
+    expect(oauth.buildCredentials(tokenInfo).plan_type).toBe('pro')
+    expect(oauth.buildExtraInfo(tokenInfo)).toEqual({ privacy_mode: 'privacy_set' })
+  })
+
+  it('marks privacy for retry when the exchange response has no status', () => {
+    const oauth = useAntigravityOAuth()
+
+    expect(oauth.buildExtraInfo({ access_token: 'access-token' })).toEqual({
+      privacy_mode: 'privacy_set_failed'
+    })
+  })
 })

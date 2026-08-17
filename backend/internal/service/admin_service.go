@@ -137,6 +137,20 @@ type AdminService interface {
 	ResetAccountQuota(ctx context.Context, id int64) error
 }
 
+// AntigravityOAuthCredentialsApplier is the narrow persistence boundary used
+// by the interactive re-authorization flow. Keeping it separate from the
+// generic account update contract prevents a partial credential document from
+// deleting account-owned settings such as model_mapping.
+type AntigravityOAuthCredentialsApplier interface {
+	ApplyAntigravityOAuthCredentials(ctx context.Context, id int64, input AntigravityOAuthCredentialsInput) (*Account, error)
+}
+
+type AntigravityOAuthCredentialsInput struct {
+	Type        string
+	Credentials map[string]any
+	PrivacyMode string
+}
+
 // CreateUserInput represents input for creating a new user via admin operations.
 type CreateUserInput struct {
 	Email         string

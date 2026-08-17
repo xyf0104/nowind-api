@@ -1557,32 +1557,44 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		return
 	}
 
-	updatedAccount, err := h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
-		Type:        req.Type,
-		Credentials: req.Credentials,
-	})
+	var updatedAccount *service.Account
+	if existing.Platform == service.PlatformAntigravity {
+		applier, ok := h.adminService.(service.AntigravityOAuthCredentialsApplier)
+		if !ok {
+			response.InternalError(c, "Antigravity OAuth credential persistence is not configured")
+			return
+		}
+		privacyMode, _ := req.Extra["privacy_mode"].(string)
+		updatedAccount, err = applier.ApplyAntigravityOAuthCredentials(ctx, accountID, service.AntigravityOAuthCredentialsInput{
+			Type:        req.Type,
+			Credentials: req.Credentials,
+			PrivacyMode: privacyMode,
+		})
+	} else {
+		updatedAccount, err = h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
+			Type:        req.Type,
+			Credentials: req.Credentials,
+		})
+		if err == nil && len(req.Extra) > 0 {
+			// Non-Antigravity platforms retain the existing key-level Extra merge.
+			if extraErr := h.adminService.UpdateAccountExtra(ctx, accountID, req.Extra); extraErr != nil {
+				extraKeys := make([]string, 0, len(req.Extra))
+				for k := range req.Extra {
+					extraKeys = append(extraKeys, k)
+				}
+				slog.Error("apply_oauth_credentials.update_extra_failed",
+					"account_id", accountID,
+					"extra_keys", extraKeys,
+					"err", extraErr,
+				)
+			}
+		}
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-
-	// 增量合并 Extra（JSONB key 级 merge，绝不覆盖 base_rpm / window_cost_limit /
-	// max_sessions / quota_* / privacy_mode 等持久化键）。
-	// best-effort：失败仅记日志；下方 ClearAccountError 会从 DB 重新读取最新 account，
-	// 因此响应里的 extra 始终以 DB 为准——这里不需要手动维护内存快照。
-	if len(req.Extra) > 0 {
-		if extraErr := h.adminService.UpdateAccountExtra(ctx, accountID, req.Extra); extraErr != nil {
-			extraKeys := make([]string, 0, len(req.Extra))
-			for k := range req.Extra {
-				extraKeys = append(extraKeys, k)
-			}
-			slog.Error("apply_oauth_credentials.update_extra_failed",
-				"account_id", accountID,
-				"extra_keys", extraKeys,
-				"err", extraErr,
-			)
-		}
-	}
+	credentialAccount := updatedAccount
 
 	if cleared, clearErr := h.adminService.ClearAccountError(ctx, accountID); clearErr != nil {
 		slog.Warn("apply_oauth_credentials.clear_error_failed",
@@ -1593,12 +1605,40 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		updatedAccount = cleared
 	}
 
-	if h.tokenCacheInvalidator != nil && updatedAccount.IsOAuth() {
-		if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(ctx, updatedAccount); invalidateErr != nil {
-			slog.Warn("apply_oauth_credentials.invalidate_token_failed",
-				"account_id", accountID,
-				"err", invalidateErr,
-			)
+	if h.tokenCacheInvalidator != nil {
+		// The project ID is part of the Antigravity cache key. Delete both the
+		// pre-authorization and post-authorization keys, plus the account-ID key
+		// included by the composite invalidator.
+		accountsToInvalidate := []*service.Account{credentialAccount}
+		if existing.Platform == service.PlatformAntigravity {
+			accountsToInvalidate = append([]*service.Account{existing}, accountsToInvalidate...)
+		}
+		for _, account := range accountsToInvalidate {
+			if account == nil || !account.IsOAuth() {
+				continue
+			}
+			if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(ctx, account); invalidateErr != nil {
+				slog.Warn("apply_oauth_credentials.invalidate_token_failed",
+					"account_id", accountID,
+					"err", invalidateErr,
+				)
+			}
+		}
+	}
+
+	privacyMode := ""
+	if updatedAccount.Extra != nil {
+		privacyMode, _ = updatedAccount.Extra["privacy_mode"].(string)
+	}
+	if existing.Platform == service.PlatformAntigravity && privacyMode != service.AntigravityPrivacySet {
+		// Older cached frontends may not return the privacy result. The dedicated
+		// persistence path already cleared the old identity's marker, so this is a
+		// safe retry against the new credential document.
+		if mode := h.adminService.EnsureAntigravityPrivacy(ctx, credentialAccount); mode != "" {
+			if updatedAccount.Extra == nil {
+				updatedAccount.Extra = make(map[string]any)
+			}
+			updatedAccount.Extra["privacy_mode"] = mode
 		}
 	}
 

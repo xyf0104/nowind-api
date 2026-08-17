@@ -34,6 +34,19 @@ type GrokOAuthRefreshSuccessRepository interface {
 	) (bool, error)
 }
 
+// AntigravityOAuthRefreshSuccessRepository prevents a provider refresh that
+// started before an interactive re-authorization from overwriting the newly
+// authorized credential document.
+type AntigravityOAuthRefreshSuccessRepository interface {
+	UpdateAntigravityOAuthCredentialsIfUnchanged(
+		ctx context.Context,
+		id int64,
+		expectedCredentials map[string]any,
+		expectedProxyID *int64,
+		credentials map[string]any,
+	) (bool, error)
+}
+
 const (
 	defaultRefreshLockTTL                   = 60 * time.Second
 	defaultRefreshLockReleaseTimeout        = 2 * time.Second
@@ -292,21 +305,30 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 
 	// 5. 设置版本号 + 更新 DB
 	if newCredentials != nil {
-		newCredentials["_token_version"] = time.Now().UnixMilli()
-		if freshAccount.IsGrokOAuth() {
+		newCredentials["_token_version"] = nextOAuthTokenVersion(attemptedAccount.Credentials)
+
+		var updateIfUnchanged func(context.Context, int64, map[string]any, *int64, map[string]any) (bool, error)
+		switch {
+		case freshAccount.IsGrokOAuth():
 			conditionalRepo, ok := api.accountRepo.(GrokOAuthRefreshSuccessRepository)
 			if !ok {
 				return nil, &providerConfigurationRefreshError{
 					err: fmt.Errorf("grok OAuth refresh success CAS repository is not configured"),
 				}
 			}
-			applied, updateErr := conditionalRepo.UpdateGrokOAuthCredentialsIfUnchanged(
-				ctx,
-				freshAccount.ID,
-				attemptedAccount.Credentials,
-				attemptedAccount.ProxyID,
-				newCredentials,
-			)
+			updateIfUnchanged = conditionalRepo.UpdateGrokOAuthCredentialsIfUnchanged
+		case freshAccount.Platform == PlatformAntigravity && freshAccount.Type == AccountTypeOAuth:
+			conditionalRepo, ok := api.accountRepo.(AntigravityOAuthRefreshSuccessRepository)
+			if !ok {
+				return nil, &providerConfigurationRefreshError{
+					err: fmt.Errorf("Antigravity OAuth refresh success CAS repository is not configured"),
+				}
+			}
+			updateIfUnchanged = conditionalRepo.UpdateAntigravityOAuthCredentialsIfUnchanged
+		}
+
+		if updateIfUnchanged != nil {
+			applied, updateErr := updateIfUnchanged(ctx, freshAccount.ID, attemptedAccount.Credentials, attemptedAccount.ProxyID, newCredentials)
 			if updateErr != nil {
 				slog.Error("oauth_refresh_update_failed",
 					"account_id", freshAccount.ID,
@@ -324,10 +346,10 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 				currentAccount, readErr := api.accountRepo.GetByID(ctx, freshAccount.ID)
 				if readErr != nil || currentAccount == nil {
 					if readErr == nil {
-						readErr = fmt.Errorf("account not found after Grok OAuth success CAS miss")
+						readErr = fmt.Errorf("account not found after OAuth success CAS miss")
 					}
 					return nil, &providerCycleContainmentRefreshError{
-						err: fmt.Errorf("grok OAuth success CAS lost and current state is unavailable: %w", readErr),
+						err: fmt.Errorf("OAuth success CAS lost and current state is unavailable: %w", readErr),
 					}
 				}
 				slog.Info("oauth_refresh_success_cas_skipped_stale_credentials",
@@ -336,13 +358,13 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 				)
 				return &OAuthRefreshResult{Account: currentAccount}, nil
 			}
-			durableAccount, readErr := api.loadGrokDurableAccountAfterPersist(ctx, cacheKey, freshAccount.ID)
+			durableAccount, readErr := api.loadOAuthDurableAccountAfterPersist(ctx, cacheKey, freshAccount.ID)
 			if readErr != nil || durableAccount == nil {
 				if readErr == nil {
-					readErr = fmt.Errorf("account not found after Grok OAuth success CAS")
+					readErr = fmt.Errorf("account not found after OAuth success CAS")
 				}
 				return nil, &providerCycleContainmentRefreshError{
-					err: fmt.Errorf("grok OAuth success persisted but durable account state is unavailable: %w", readErr),
+					err: fmt.Errorf("OAuth success persisted but durable account state is unavailable: %w", readErr),
 				}
 			}
 			// The CAS changes credentials only. A concurrent admin or scheduler
@@ -384,7 +406,7 @@ func (api *OAuthRefreshAPI) releaseRefreshLock(parent context.Context, cacheKey 
 	}
 }
 
-func (api *OAuthRefreshAPI) loadGrokDurableAccountAfterPersist(parent context.Context, cacheKey string, accountID int64) (*Account, error) {
+func (api *OAuthRefreshAPI) loadOAuthDurableAccountAfterPersist(parent context.Context, cacheKey string, accountID int64) (*Account, error) {
 	cleanupParent := context.Background()
 	if parent != nil {
 		cleanupParent = context.WithoutCancel(parent)

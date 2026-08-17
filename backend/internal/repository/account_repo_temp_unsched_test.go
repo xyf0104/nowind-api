@@ -249,6 +249,31 @@ func TestAccountRepository_UpdateGrokOAuthCredentialsIfUnchanged_UsesExactAttemp
 	require.Equal(t, &proxyID, exec.execArgs[0][5])
 }
 
+func TestAccountRepository_UpdateAntigravityOAuthCredentialsIfUnchanged_UsesPlatformAndExactAttemptState(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+	proxyID := int64(37)
+
+	applied, err := repo.UpdateAntigravityOAuthCredentialsIfUnchanged(
+		context.Background(),
+		104,
+		map[string]any{"refresh_token": "attempted", "_token_version": int64(19)},
+		&proxyID,
+		map[string]any{"refresh_token": "rotated", "_token_version": int64(20)},
+	)
+
+	require.NoError(t, err)
+	require.True(t, applied)
+	require.Len(t, exec.execQueries, 1)
+	normalized := normalizeSQLWhitespace(exec.execQueries[0])
+	require.Contains(t, normalized, "credentials = $5::jsonb")
+	require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $6")
+	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
+	require.Len(t, exec.execArgs[0], 7)
+	require.Equal(t, service.PlatformAntigravity, exec.execArgs[0][2])
+	require.Equal(t, &proxyID, exec.execArgs[0][5])
+}
+
 func TestAccountRepository_ListOAuthRefreshCandidatePage_SQLFilter(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	require.NoError(t, err)

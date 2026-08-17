@@ -449,13 +449,14 @@ const handleExchangeCode = async () => {
     if (!tokenInfo) return
 
     const credentials = antigravityOAuth.buildCredentials(tokenInfo)
+    const extra = antigravityOAuth.buildExtraInfo(tokenInfo)
 
     try {
-      await adminAPI.accounts.update(props.account.id, {
+      const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
         type: 'oauth',
-        credentials
+        credentials,
+        extra
       })
-      const updatedAccount = await adminAPI.accounts.clearError(props.account.id)
       appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
       emit('reauthorized', updatedAccount)
       handleClose()
