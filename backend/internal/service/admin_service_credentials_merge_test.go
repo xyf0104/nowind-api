@@ -115,3 +115,79 @@ func TestUpdateAccount_EmptyCredentialsSkipsUpdate(t *testing.T) {
 	require.Equal(t, "rt-existing", repo.account.Credentials["refresh_token"], "空 credentials 不应触碰已有 token")
 	require.Equal(t, "renamed", repo.account.Name)
 }
+
+func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateBaseline(t *testing.T) {
+	accountID := int64(205)
+	repo := &updateAccountCredsRepoStub{
+		account: &Account{
+			ID:       accountID,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"access_token":       "access-old",
+				"refresh_token":      "refresh-old",
+				"chatgpt_account_id": "workspace-a",
+			},
+			Extra: map[string]any{
+				openAIWeeklyEstimateBaselineKey: map[string]any{
+					"percent":  10.0,
+					"cost":     100.0,
+					"reset_at": "2026-08-25T05:17:50Z",
+					"identity": "workspace-a",
+				},
+			},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	_, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Credentials: map[string]any{
+			"access_token":  "access-new",
+			"refresh_token": "refresh-new",
+		},
+		ResetOpenAIWeeklyEstimate: true,
+	})
+	require.NoError(t, err)
+	require.NotContains(t, repo.account.Extra, openAIWeeklyEstimateBaselineKey)
+}
+
+func TestUpdateAccount_OpenAITokenRefreshPreservesWeeklyEstimateBaseline(t *testing.T) {
+	accountID := int64(206)
+	repo := &updateAccountCredsRepoStub{
+		account: &Account{
+			ID:       accountID,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"access_token":       "access-old",
+				"refresh_token":      "refresh-old",
+				"chatgpt_account_id": "workspace-a",
+			},
+			Extra: map[string]any{
+				openAIWeeklyEstimateBaselineKey: map[string]any{
+					"percent":  10.0,
+					"cost":     100.0,
+					"reset_at": "2026-08-25T05:17:50Z",
+					"identity": "workspace-a",
+				},
+			},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	_, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Credentials: map[string]any{
+			"access_token":  "access-refreshed",
+			"refresh_token": "refresh-rotated",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"percent":  10.0,
+		"cost":     100.0,
+		"reset_at": "2026-08-25T05:17:50Z",
+		"identity": "workspace-a",
+	}, repo.account.Extra[openAIWeeklyEstimateBaselineKey])
+}

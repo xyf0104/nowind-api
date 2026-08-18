@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +60,16 @@ func (r *orderedCodexSnapshotRaceRepo) UpdateOpenAICodexSnapshot(_ context.Conte
 
 func (r *forceRefreshAccountUsageRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
 	return r.account, nil
+}
+
+func (r *forceRefreshAccountUsageRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
+	if r.account.Extra == nil {
+		r.account.Extra = make(map[string]any)
+	}
+	for key, value := range updates {
+		r.account.Extra[key] = value
+	}
+	return nil
 }
 
 type forceRefreshWindowStatsRepo struct {
@@ -224,9 +233,8 @@ func TestAccountUsageService_OpenAIForceRefreshReturnsMatchingQuotaAndCostSnapsh
 	if usage.SevenDay.WindowStats.Cost != 413.92 {
 		t.Fatalf("forced refresh account cost = %v, want 413.92", usage.SevenDay.WindowStats.Cost)
 	}
-	weeklyLimit := usage.SevenDay.WindowStats.Cost / (usage.SevenDay.Utilization / 100)
-	if math.Round(weeklyLimit) != 3184 {
-		t.Fatalf("forced refresh weekly limit = %v, want 3184 from 413.92 / 13%%", weeklyLimit)
+	if usage.SevenDay.WeeklyEstimateUSD != nil {
+		t.Fatalf("first forced refresh weekly estimate = %v, want collecting state", *usage.SevenDay.WeeklyEstimateUSD)
 	}
 	if windowRepo.calls != 2 {
 		t.Fatalf("window stats queried %d times, want 2 for 5h and 7d", windowRepo.calls)

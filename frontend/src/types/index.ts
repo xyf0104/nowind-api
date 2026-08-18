@@ -1389,6 +1389,7 @@ export interface UsageProgress {
   resets_at: string | null
   remaining_seconds: number
   window_stats?: WindowStats | null // 窗口期统计（从窗口开始到当前的使用量）
+  weekly_estimate_usd?: number | null // 本次登录基准后的累计账号用量折算
   used_requests?: number
   limit_requests?: number
 }

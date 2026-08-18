@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -154,12 +155,13 @@ type WindowStats struct {
 
 // UsageProgress 使用量进度
 type UsageProgress struct {
-	Utilization      float64      `json:"utilization"`            // 使用率百分比 (0-100+，100表示100%)
-	ResetsAt         *time.Time   `json:"resets_at"`              // 重置时间
-	RemainingSeconds int          `json:"remaining_seconds"`      // 距重置剩余秒数
-	WindowStats      *WindowStats `json:"window_stats,omitempty"` // 窗口期统计（从窗口开始到当前的使用量）
-	UsedRequests     int64        `json:"used_requests,omitempty"`
-	LimitRequests    int64        `json:"limit_requests,omitempty"`
+	Utilization       float64      `json:"utilization"`                   // 使用率百分比 (0-100+，100表示100%)
+	ResetsAt          *time.Time   `json:"resets_at"`                     // 重置时间
+	RemainingSeconds  int          `json:"remaining_seconds"`             // 距重置剩余秒数
+	WindowStats       *WindowStats `json:"window_stats,omitempty"`        // 窗口期统计（从窗口开始到当前的使用量）
+	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 本次登录基准后的累计账号用量折算
+	UsedRequests      int64        `json:"used_requests,omitempty"`
+	LimitRequests     int64        `json:"limit_requests,omitempty"`
 }
 
 // AntigravityModelQuota Antigravity 单个模型的配额信息
@@ -735,6 +737,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 			usage.SevenDay = &UsageProgress{Utilization: 0}
 		}
 		usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
+		s.applyOpenAIWeeklyEstimate(ctx, account, usage.SevenDay)
 	}
 
 	return usage, nil
@@ -1599,6 +1602,98 @@ func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration
 		return progress.ResetsAt.Add(-fallbackWindow)
 	}
 	return now.Add(-fallbackWindow)
+}
+
+const (
+	openAIWeeklyEstimateResetTolerance = 5 * time.Minute
+	openAIWeeklyEstimateBaselineKey    = "codex_7d_estimate_baseline"
+)
+
+type openAIWeeklyEstimateBaseline struct {
+	Percent  float64
+	Cost     float64
+	ResetAt  time.Time
+	Identity string
+}
+
+func (s *AccountUsageService) applyOpenAIWeeklyEstimate(ctx context.Context, account *Account, progress *UsageProgress) {
+	if s == nil || account == nil || progress == nil || progress.WindowStats == nil {
+		return
+	}
+
+	estimate, baselineUpdates := calculateOpenAIWeeklyEstimate(account, progress)
+	progress.WeeklyEstimateUSD = estimate
+	if len(baselineUpdates) == 0 {
+		return
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, baselineUpdates); err != nil {
+		slog.Warn("persist_openai_weekly_estimate_baseline_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	mergeAccountExtra(account, baselineUpdates)
+}
+
+func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*float64, map[string]any) {
+	percent := progress.Utilization
+	cost := progress.WindowStats.Cost
+	if math.IsNaN(percent) || math.IsInf(percent, 0) || math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 {
+		return nil, nil
+	}
+	percent = math.Max(0, math.Min(100, percent))
+
+	identity := account.GetCredential("chatgpt_account_id")
+	baseline, baselineOK := readOpenAIWeeklyEstimateBaseline(account.Extra)
+
+	resetAt := time.Time{}
+	if progress.ResetsAt != nil {
+		resetAt = progress.ResetsAt.UTC()
+	}
+	baselineValid := baselineOK && baseline.Identity == identity &&
+		sameOpenAIWeeklyEstimateWindow(baseline.ResetAt, resetAt) && percent >= baseline.Percent && cost >= baseline.Cost
+	if !baselineValid {
+		return nil, map[string]any{
+			openAIWeeklyEstimateBaselineKey: map[string]any{
+				"percent":  percent,
+				"cost":     cost,
+				"reset_at": resetAt.Format(time.RFC3339Nano),
+				"identity": identity,
+			},
+		}
+	}
+
+	deltaPercent := percent - baseline.Percent
+	deltaCost := cost - baseline.Cost
+	if deltaPercent <= 0 || deltaCost <= 0 {
+		return nil, nil
+	}
+	estimate := deltaCost / deltaPercent * 100
+	if math.IsNaN(estimate) || math.IsInf(estimate, 0) || estimate <= 0 {
+		return nil, nil
+	}
+	return &estimate, nil
+}
+
+func readOpenAIWeeklyEstimateBaseline(extra map[string]any) (openAIWeeklyEstimateBaseline, bool) {
+	raw, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	if !ok {
+		return openAIWeeklyEstimateBaseline{}, false
+	}
+	percent, percentOK := raw["percent"].(float64)
+	cost, costOK := raw["cost"].(float64)
+	resetText, resetOK := raw["reset_at"].(string)
+	identity, identityOK := raw["identity"].(string)
+	resetAt, resetErr := parseTime(resetText)
+	valid := percentOK && costOK && resetOK && identityOK && resetErr == nil &&
+		!math.IsNaN(percent) && !math.IsInf(percent, 0) && !math.IsNaN(cost) && !math.IsInf(cost, 0)
+	return openAIWeeklyEstimateBaseline{Percent: percent, Cost: cost, ResetAt: resetAt, Identity: identity},
+		valid
+}
+
+func sameOpenAIWeeklyEstimateWindow(previous, current time.Time) bool {
+	if previous.IsZero() || current.IsZero() {
+		return previous.IsZero() && current.IsZero()
+	}
+	return previous.Sub(current).Abs() <= openAIWeeklyEstimateResetTolerance
 }
 
 func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error) {

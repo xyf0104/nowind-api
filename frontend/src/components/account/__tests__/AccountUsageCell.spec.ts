@@ -642,6 +642,7 @@ describe('AccountUsageCell', () => {
         utilization: 6,
         resets_at: '2099-03-13T12:00:00Z',
         remaining_seconds: 3600,
+        weekly_estimate_usd: 2977,
         window_stats: {
           requests: 1500,
           tokens: 1_000_000,
@@ -695,13 +696,14 @@ describe('AccountUsageCell', () => {
     expect(estimate.get('span:last-child').classes()).toContain('dark:text-emerald-400')
   })
 
-  it('OpenAI OAuth 刷新后按最新账号已用和 7d 百分比实时重算周额度', async () => {
+  it('OpenAI OAuth 刷新后展示后端按本次登录累计用量计算的周额度', async () => {
     getUsage
       .mockResolvedValueOnce({
         seven_day: {
           utilization: 12,
           resets_at: '2099-03-13T12:00:00Z',
           remaining_seconds: 3600,
+          weekly_estimate_usd: 3000,
           window_stats: {
             requests: 3000,
             tokens: 400_000_000,
@@ -716,6 +718,7 @@ describe('AccountUsageCell', () => {
           utilization: 12.935,
           resets_at: '2099-03-13T12:00:00Z',
           remaining_seconds: 3500,
+          weekly_estimate_usd: 5000,
           window_stats: {
             requests: 3464,
             tokens: 426_000_000,
@@ -749,7 +752,7 @@ describe('AccountUsageCell', () => {
 
     expect(getUsage).toHaveBeenCalledTimes(2)
     expect(getUsage).toHaveBeenNthCalledWith(2, 2104, undefined, true)
-    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$5,000')
   })
 
   it('OpenAI OAuth 强制刷新失败时保留上一份完整周额度快照', async () => {
@@ -759,6 +762,7 @@ describe('AccountUsageCell', () => {
           utilization: 13,
           resets_at: '2099-03-13T12:00:00Z',
           remaining_seconds: 3500,
+          weekly_estimate_usd: 3184,
           window_stats: {
             requests: 3464,
             tokens: 426_000_000,
@@ -794,6 +798,39 @@ describe('AccountUsageCell', () => {
     expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
   })
 
+  it('OpenAI OAuth 尚未形成首个额度差值时显示统计中', async () => {
+    getUsage.mockResolvedValue({
+      seven_day: {
+        utilization: 37,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3500,
+        window_stats: {
+          requests: 10,
+          tokens: 1000,
+          cost: 8,
+          standard_cost: 8,
+          user_cost: 1
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2107, platform: 'openai', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('usage.weeklyEstimatePending')
+  })
+
   it('OpenAI OAuth 并发刷新时忽略较晚返回的旧请求', async () => {
     let resolveInitial: ((value: any) => void) | undefined
     const initialRequest = new Promise((resolve) => {
@@ -806,6 +843,7 @@ describe('AccountUsageCell', () => {
           utilization: 13,
           resets_at: '2099-03-13T12:00:00Z',
           remaining_seconds: 3500,
+          weekly_estimate_usd: 3184,
           window_stats: {
             requests: 3464,
             tokens: 426_000_000,
@@ -839,6 +877,7 @@ describe('AccountUsageCell', () => {
         utilization: 12,
         resets_at: '2099-03-13T12:00:00Z',
         remaining_seconds: 3600,
+        weekly_estimate_usd: 3000,
         window_stats: {
           requests: 3000,
           tokens: 400_000_000,
@@ -860,6 +899,7 @@ describe('AccountUsageCell', () => {
         utilization: 25,
         resets_at: '2099-03-13T12:00:00Z',
         remaining_seconds: 3600,
+        weekly_estimate_usd: 100,
         window_stats: {
           requests: 50,
           tokens: 50_000,

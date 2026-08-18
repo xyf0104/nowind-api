@@ -277,14 +277,15 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			mergedCredentials := mergeCodexImportCredentials(existing.Credentials, credentials, item)
 			mergedExtra := mergeCodexImportMap(existing.Extra, extra)
 			updateInput := &service.UpdateAccountInput{
-				Credentials:        mergedCredentials,
-				Extra:              mergedExtra,
-				Concurrency:        req.Concurrency,
-				Priority:           req.Priority,
-				RateMultiplier:     req.RateMultiplier,
-				LoadFactor:         req.LoadFactor,
-				ExpiresAt:          effectiveExpiresAt,
-				AutoPauseOnExpired: autoPauseOnExpired,
+				Credentials:               mergedCredentials,
+				Extra:                     mergedExtra,
+				Concurrency:               req.Concurrency,
+				Priority:                  req.Priority,
+				RateMultiplier:            req.RateMultiplier,
+				LoadFactor:                req.LoadFactor,
+				ExpiresAt:                 effectiveExpiresAt,
+				AutoPauseOnExpired:        autoPauseOnExpired,
+				ResetOpenAIWeeklyEstimate: true,
 			}
 			if req.ProxyID != nil {
 				updateInput.ProxyID = req.ProxyID

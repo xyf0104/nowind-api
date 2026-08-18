@@ -1608,8 +1608,9 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		})
 	} else {
 		updatedAccount, err = h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
-			Type:        req.Type,
-			Credentials: req.Credentials,
+			Type:                      req.Type,
+			Credentials:               req.Credentials,
+			ResetOpenAIWeeklyEstimate: existing.Platform == service.PlatformOpenAI,
 		})
 		if err == nil && len(req.Extra) > 0 {
 			// Non-Antigravity platforms retain the existing key-level Extra merge.

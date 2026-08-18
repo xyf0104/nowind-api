@@ -157,6 +157,7 @@ var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
 	"codex_7d_reset_after_seconds":           {},
 	"codex_7d_window_minutes":                {},
 	"codex_7d_reset_at":                      {},
+	openAIWeeklyEstimateBaselineKey:          {},
 }
 
 func duplicateAccountExtra(value map[string]any) (map[string]any, error) {
@@ -177,6 +178,10 @@ func canDuplicateAccountType(accountType string) bool {
 	default:
 		return false
 	}
+}
+
+func clearOpenAIWeeklyEstimateBaseline(extra map[string]any) {
+	delete(extra, openAIWeeklyEstimateBaselineKey)
 }
 
 func duplicateAccountGroups(source *Account) ([]AccountGroup, []int64) {
@@ -626,6 +631,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
+	resetOpenAIWeeklyEstimate := input.ResetOpenAIWeeklyEstimate &&
+		account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
 	// 安全/身份不变量(影子账号):通用更新路径被 edit/re-auth/refresh/batch 共用,
 	// 必须在此守住,否则仅在创建时的保证可被这些路径绕过。
 	if account.IsCredentialShadow() {
@@ -711,6 +718,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OllamaCloudUsageSessionExtraKey,
 			OllamaCloudUsageAutoRefreshExtraKey,
 			OllamaCloudUsageSnapshotExtraKey,
+			openAIWeeklyEstimateBaselineKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
@@ -791,6 +799,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			delete(account.Extra, OllamaCloudUsageSessionExtraKey)
 			delete(account.Extra, OllamaCloudUsageAutoRefreshExtraKey)
 			delete(account.Extra, OllamaCloudUsageSnapshotExtraKey)
+		}
+		if resetOpenAIWeeklyEstimate {
+			clearOpenAIWeeklyEstimateBaseline(account.Extra)
 		}
 	}
 	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
