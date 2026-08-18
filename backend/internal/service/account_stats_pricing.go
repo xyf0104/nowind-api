@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
-// resolveAccountStatsCost 计算账号统计定价费用。
+// resolveAccountStatsCostForModels 计算账号统计定价费用。
 // 返回 nil 表示不覆盖，统计时使用 total_cost 作为基础价。
 //
 // 优先级（先命中为准）：
@@ -15,26 +17,9 @@ import (
 //  4. nil → 使用 total_cost 作为基础价
 //
 // upstreamModel 是最终发往上游的模型 ID。
+// requestedModel 仅用于 Antigravity Gemini 3.7 公共档位的自定义计价回退。
 // totalCost 是本次请求的客户计费（倍率前），用于优先级 2。
 // serviceTier 是最终参与用户计费的 OpenAI 服务层级，用于优先级 3。
-func resolveAccountStatsCost(
-	ctx context.Context,
-	channelService *ChannelService,
-	billingService *BillingService,
-	accountID int64,
-	groupID int64,
-	upstreamModel string,
-	tokens UsageTokens,
-	requestCount int,
-	totalCost float64,
-	serviceTier string,
-) *float64 {
-	return resolveAccountStatsCostForModels(
-		ctx, channelService, billingService, accountID, groupID,
-		upstreamModel, "", tokens, requestCount, totalCost, serviceTier,
-	)
-}
-
 func resolveAccountStatsCostForModels(
 	ctx context.Context,
 	channelService *ChannelService,
@@ -60,7 +45,11 @@ func resolveAccountStatsCostForModels(
 
 	// 优先级 1：自定义规则（始终尝试）
 	pricingModels := []string{upstreamModel}
-	if requestedModel = strings.TrimSpace(requestedModel); requestedModel != "" && !strings.EqualFold(requestedModel, upstreamModel) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if platform == PlatformAntigravity &&
+		upstreamModel == domain.AntigravityGemini37FlashTieredModel &&
+		isAntigravityGemini37FlashModel(requestedModel) &&
+		!isAntigravityGemini37InternalModel(requestedModel) {
 		pricingModels = append(pricingModels, requestedModel)
 	}
 	if cost := tryCustomRulesForModels(channel, accountID, groupID, platform, pricingModels, tokens, requestCount); cost != nil {
@@ -110,14 +99,7 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
 	return &cost
 }
 
-// tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
-func tryCustomRules(
-	channel *Channel, accountID, groupID int64,
-	platform, model string, tokens UsageTokens, requestCount int,
-) *float64 {
-	return tryCustomRulesForModels(channel, accountID, groupID, platform, []string{model}, tokens, requestCount)
-}
-
+// tryCustomRulesForModels 遍历自定义规则，按数组顺序先命中为准。
 func tryCustomRulesForModels(
 	channel *Channel, accountID, groupID int64,
 	platform string, models []string, tokens UsageTokens, requestCount int,
@@ -265,7 +247,7 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 
 // applyAccountStatsCost resolves the account stats cost for a usage log entry.
 // It resolves the upstream model (falling back to the requested model) and calls
-// the 4-level priority chain via resolveAccountStatsCost.
+// the 4-level priority chain via resolveAccountStatsCostForModels.
 func applyAccountStatsCost(
 	ctx context.Context,
 	usageLog *UsageLog,

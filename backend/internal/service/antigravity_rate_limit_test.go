@@ -1048,7 +1048,9 @@ func TestResolveAntigravityForwardBaseURL_DefaultProd(t *testing.T) {
 	dailyURL := "https://daily.test"
 	antigravity.BaseURLs = []string{prodURL, dailyURL}
 
-	resolved := resolveAntigravityForwardBaseURL()
+	configured := configuredAntigravityForwardBaseURLs()
+	require.NotEmpty(t, configured)
+	resolved := configured[0]
 	require.Equal(t, prodURL, resolved)
 }
 

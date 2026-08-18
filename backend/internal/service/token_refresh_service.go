@@ -1157,7 +1157,7 @@ func (s *TokenRefreshService) persistRefreshErrorState(ctx context.Context, acco
 		conditionalRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
 		if !ok {
 			return false, &providerConfigurationRefreshError{
-				err: errors.New("Antigravity OAuth conditional refresh mutation repository is not configured"),
+				err: errors.New("antigravity OAuth conditional refresh mutation repository is not configured"),
 			}
 		}
 		return conditionalRepo.SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(
@@ -1202,7 +1202,7 @@ func (s *TokenRefreshService) persistRefreshTempUnschedulable(
 		conditionalRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
 		if !ok {
 			return false, &providerConfigurationRefreshError{
-				err: errors.New("Antigravity OAuth conditional refresh mutation repository is not configured"),
+				err: errors.New("antigravity OAuth conditional refresh mutation repository is not configured"),
 			}
 		}
 		return conditionalRepo.SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(

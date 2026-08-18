@@ -11,6 +11,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Keep the legacy test call shape while production uses the multi-model resolver.
+func resolveAccountStatsCost(
+	ctx context.Context,
+	channelService *ChannelService,
+	billingService *BillingService,
+	accountID int64,
+	groupID int64,
+	upstreamModel string,
+	tokens UsageTokens,
+	requestCount int,
+	totalCost float64,
+	serviceTier string,
+) *float64 {
+	return resolveAccountStatsCostForModels(
+		ctx, channelService, billingService, accountID, groupID,
+		upstreamModel, "", tokens, requestCount, totalCost, serviceTier,
+	)
+}
+
+func tryCustomRules(
+	channel *Channel, accountID, groupID int64,
+	platform, model string, tokens UsageTokens, requestCount int,
+) *float64 {
+	return tryCustomRulesForModels(channel, accountID, groupID, platform, []string{model}, tokens, requestCount)
+}
+
 // ---------------------------------------------------------------------------
 // matchAccountStatsRule
 // ---------------------------------------------------------------------------
@@ -838,6 +864,32 @@ func TestApplyAccountStatsCost_Gemini37TieredUsesPublicTierCustomPricing(t *test
 
 	require.NotNil(t, usageLog.AccountStatsCost)
 	require.InDelta(t, 0.5, *usageLog.AccountStatsCost, 1e-12)
+}
+
+func TestApplyAccountStatsCost_DoesNotUseRequestedModelForOtherPlatforms(t *testing.T) {
+	channel := &Channel{
+		ID:     1,
+		Status: StatusActive,
+		AccountStatsPricingRules: []AccountStatsPricingRule{{
+			AccountIDs: []int64{1},
+			Pricing: []ChannelModelPricing{{
+				Platform:    PlatformOpenAI,
+				Models:      []string{"gpt-public"},
+				InputPrice:  testPtrFloat64(0.01),
+				OutputPrice: testPtrFloat64(0.02),
+			}},
+		}},
+	}
+	cs := newTestChannelServiceForStats(t, channel, 10, PlatformOpenAI)
+	usageLog := &UsageLog{}
+
+	applyAccountStatsCost(
+		context.Background(), usageLog, cs, nil,
+		1, 10, "gpt-upstream", "gpt-public",
+		UsageTokens{InputTokens: 100, OutputTokens: 50}, 0,
+	)
+
+	require.Nil(t, usageLog.AccountStatsCost)
 }
 
 func TestResolveAccountStatsCost_AllMiss_ReturnsNil(t *testing.T) {

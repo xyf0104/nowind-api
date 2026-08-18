@@ -1402,7 +1402,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 
 		applier, ok := h.adminService.(service.AntigravityOAuthRefreshApplier)
 		if !ok {
-			return nil, "", errors.New("Antigravity OAuth refresh CAS persistence is not configured")
+			return nil, "", errors.New("antigravity OAuth refresh CAS persistence is not configured")
 		}
 		updatedAccount, applied, applyErr := applier.ApplyAntigravityOAuthRefreshIfUnchanged(ctx, account, newCredentials)
 		if applyErr != nil {

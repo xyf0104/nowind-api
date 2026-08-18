@@ -1015,7 +1015,7 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
 
 	conditionalRepo, ok := s.accountRepo.(antigravityOAuthReauthorizationRepository)
 	if !ok {
-		return nil, errors.New("Antigravity OAuth reauthorization CAS repository is not configured")
+		return nil, errors.New("antigravity OAuth reauthorization CAS repository is not configured")
 	}
 	applied, err := conditionalRepo.UpdateAntigravityOAuthCredentialsAndPrivacyIfUnchanged(
 		ctx,
@@ -1041,7 +1041,7 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
 	if privacyMode == AntigravityPrivacySet {
 		privacyRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
 		if !ok {
-			return nil, errors.New("Antigravity OAuth privacy CAS repository is not configured")
+			return nil, errors.New("antigravity OAuth privacy CAS repository is not configured")
 		}
 		applied, err := privacyRepo.UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(
 			ctx,

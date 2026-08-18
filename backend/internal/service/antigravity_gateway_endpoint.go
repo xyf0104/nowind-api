@@ -67,14 +67,6 @@ func configuredAntigravityForwardBaseURLs() []string {
 	}
 }
 
-func resolveAntigravityForwardBaseURL() string {
-	baseURLs := configuredAntigravityForwardBaseURLs()
-	if len(baseURLs) == 0 {
-		return ""
-	}
-	return baseURLs[0]
-}
-
 func antigravityEndpointPreferenceIdentity(p antigravityRetryLoopParams) (antigravityEndpointPreferenceKey, [sha256.Size]byte) {
 	var envelope struct {
 		Project string `json:"project"`
