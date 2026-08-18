@@ -25,7 +25,7 @@ const (
 	antigravityRetryBaseDelay   = 1 * time.Second
 	antigravityRetryMaxDelay    = 16 * time.Second
 
-	antigravityConnectionTestPrompt          = "Reply with exactly OK"
+	antigravityConnectionTestPrompt          = "hi"
 	antigravityConnectionTestMaxOutputTokens = 256
 
 	// 限流相关常量
@@ -471,7 +471,7 @@ func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedMode
 		Messages: []antigravity.ClaudeMessage{
 			{
 				Role:    "user",
-				Content: json.RawMessage(`"Reply with exactly OK"`),
+				Content: json.RawMessage(`"` + antigravityConnectionTestPrompt + `"`),
 			},
 		},
 		MaxTokens: antigravityConnectionTestMaxOutputTokens,

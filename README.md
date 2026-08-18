@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.18-0ea5e9" alt="当前版本 v1.1.18" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.19-0ea5e9" alt="当前版本 v1.1.19" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.18
+> 当前版本：v1.1.19
 
-v1.1.18 修正 Antigravity 账号模型测试：展示上游真实响应，拒绝空内容、异常状态和已退役模型提示，不再把 HTTP 200 的业务失败误判为成功；模型目录仅展示实测可用的当前公开名称，同时保留旧名称的后端兼容映射，避免已有配置升级后中断。
+v1.1.19 修正 Antigravity 账号模型测试提示词：实际发送 `hi` 并原样展示上游模型的自然回复，不再通过测试指令强制模型仅回答 `OK`；保留空响应、异常状态、已退役模型及限流/容量错误检测。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 

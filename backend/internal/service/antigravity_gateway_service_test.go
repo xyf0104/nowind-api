@@ -473,7 +473,7 @@ func TestAntigravityGatewayService_TestConnection_RequiresUsableContent(t *testi
 			StatusCode: http.StatusOK,
 			Header:     http.Header{},
 			Body: io.NopCloser(strings.NewReader(
-				`data: {"response":{"candidates":[{"content":{"parts":[{"text":"OK"}]},"finishReason":"STOP"}]}}` + "\n",
+				`data: {"response":{"candidates":[{"content":{"parts":[{"text":"Hi! How can I help?"}]},"finishReason":"STOP"}]}}` + "\n",
 			)),
 		}}}
 		svc := &AntigravityGatewayService{
@@ -484,7 +484,7 @@ func TestAntigravityGatewayService_TestConnection_RequiresUsableContent(t *testi
 		result, err := svc.TestConnection(context.Background(), newAccount(), modelID)
 
 		require.NoError(t, err)
-		require.Equal(t, "OK", result.Text)
+		require.Equal(t, "Hi! How can I help?", result.Text)
 		require.Len(t, upstream.requestBodies, 1)
 
 		var payload map[string]any
