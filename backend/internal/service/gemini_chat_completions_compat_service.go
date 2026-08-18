@@ -222,7 +222,11 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		}
 		evBody := unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody)
 
-		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+		// Matched / TempUnscheduled mean the policy layer has explicitly requested
+		// account failover, including for 4xx statuses outside the default table.
+		// ErrorPolicySkipped keeps the existing pool-mode same-account retry hint.
+		shouldFailover := policy == ErrorPolicyMatched || policy == ErrorPolicyTempUnscheduled || s.shouldFailoverGeminiUpstreamError(resp.StatusCode)
+		if shouldFailover {
 			upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(evBody)))
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -236,7 +240,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           evBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: policy == ErrorPolicySkipped && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 			}
 		}
 

@@ -194,6 +194,56 @@ func TestGeminiForwardAsChatCompletions_PoolMode400KeepsUpstreamMessage(t *testi
 	require.Equal(t, geminiSkippedTestUpstreamMsg, errObj["message"], "应回传上游 message")
 }
 
+func TestGeminiForwardAsChatCompletions_PolicyRequested4xxFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`)
+	tests := []struct {
+		name       string
+		statusCode int
+		upstream   string
+		account    *Account
+	}{
+		{
+			name:       "custom code matched 400",
+			statusCode: http.StatusBadRequest,
+			upstream:   `{"error":{"message":"matched custom code"}}`,
+			account: &Account{ID: 703, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"api_key": "test-key", "custom_error_codes_enabled": true,
+				"custom_error_codes": []any{float64(http.StatusBadRequest)},
+			}},
+		},
+		{
+			name:       "temporary rule matched 404",
+			statusCode: http.StatusNotFound,
+			upstream:   `{"error":{"message":"model temporarily unavailable"}}`,
+			account: &Account{ID: 704, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"api_key": "test-key", "temp_unschedulable_enabled": true,
+				"temp_unschedulable_rules": []any{map[string]any{
+					"error_code": float64(http.StatusNotFound), "keywords": []any{"temporarily unavailable"}, "duration_minutes": float64(5),
+				}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, _ := newGeminiSkippedWriteService(tt.statusCode, tt.upstream)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+
+			result, err := svc.ForwardAsChatCompletions(context.Background(), c, tt.account, body)
+
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, tt.statusCode, failoverErr.StatusCode)
+			require.False(t, failoverErr.RetryableOnSameAccount)
+			require.Zero(t, rec.Body.Len(), "换号前不得写客户端响应")
+		})
+	}
+}
+
 func TestWriteGeminiMappedError_400KeepsUpstreamMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &GeminiMessagesCompatService{cfg: &config.Config{}}
