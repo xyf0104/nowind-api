@@ -76,6 +76,34 @@ func SetCodexCanonicalUserAgentResolver(resolver func() string) {
 	codexCanonicalUAResolver = resolver
 }
 
+// CodexCanonicalUserAgent returns the same effective User-Agent used by
+// inference requests after panel overrides and automatic version sync.
+func CodexCanonicalUserAgent() string {
+	return resolveCodexOutboundIdentity("").userAgent
+}
+
+// CodexCanonicalAuthIdentity returns the official credential-face identity.
+// auth.openai.com receives originator + User-Agent but no inference Version header.
+func CodexCanonicalAuthIdentity() (userAgent, originator string) {
+	identity := resolveCodexOutboundIdentity("")
+	return identity.userAgent, identity.originator
+}
+
+// ApplyCodexCanonicalAuthIdentity writes the credential-face identity pair.
+func ApplyCodexCanonicalAuthIdentity(h http.Header) {
+	if h == nil {
+		return
+	}
+	userAgent, originator := CodexCanonicalAuthIdentity()
+	h.Set("user-agent", userAgent)
+	h.Set("originator", originator)
+}
+
+// CodexCanonicalClientVersion returns the effective inference client version.
+func CodexCanonicalClientVersion() string {
+	return resolveCodexOutboundIdentity("").version
+}
+
 // codexCanonicalUserAgent 返回出站规范 User-Agent。
 func codexCanonicalUserAgent() string {
 	codexCanonicalUAMu.RLock()
@@ -210,6 +238,6 @@ func pairCodexIdentityHeaders(h http.Header) {
 	h.Set("user-agent", pairedUA)
 	h.Set("originator", originator)
 	if v := strings.TrimSpace(h.Get("version")); v != "" && CompareVersions(v, codexUpstreamMinVersion) < 0 {
-		h.Set("version", codexCLIVersion)
+		h.Set("version", resolveCodexOutboundIdentity("").version)
 	}
 }

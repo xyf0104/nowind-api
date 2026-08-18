@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,15 +115,14 @@ type antigravityUsageCache struct {
 }
 
 const (
-	apiCacheTTL             = 3 * time.Minute
-	apiErrorCacheTTL        = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
-	antigravityErrorTTL     = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
-	apiQueryMaxJitter       = 800 * time.Millisecond // 用量查询最大随机延迟
-	windowStatsCacheTTL     = 1 * time.Minute
-	openAIProbeCacheTTL     = 10 * time.Minute
-	grokProbeRetryTTL       = 1 * time.Minute
-	grokFreeQuotaWindow     = 24 * time.Hour
-	openAICodexProbeVersion = codexCLIVersion // 与网关出站身份同源，避免两处硬编码版本各自漂移
+	apiCacheTTL         = 3 * time.Minute
+	apiErrorCacheTTL    = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
+	antigravityErrorTTL = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
+	apiQueryMaxJitter   = 800 * time.Millisecond // 用量查询最大随机延迟
+	windowStatsCacheTTL = 1 * time.Minute
+	openAIProbeCacheTTL = 10 * time.Minute
+	grokProbeRetryTTL   = 1 * time.Minute
+	grokFreeQuotaWindow = 24 * time.Hour
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -160,7 +160,7 @@ type UsageProgress struct {
 	ResetsAt          *time.Time   `json:"resets_at"`                     // 重置时间
 	RemainingSeconds  int          `json:"remaining_seconds"`             // 距重置剩余秒数
 	WindowStats       *WindowStats `json:"window_stats,omitempty"`        // 窗口期统计（从窗口开始到当前的使用量）
-	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 最近一个完整 1% 额度段的账号用量折算
+	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 最近完整 2% 样本平滑估算；100% 时等于账号已用
 	UsedRequests      int64        `json:"used_requests,omitempty"`
 	LimitRequests     int64        `json:"limit_requests,omitempty"`
 }
@@ -823,7 +823,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if accessToken == "" && !account.IsOpenAIAgentIdentity() {
 		return nil, fmt.Errorf("no access token available")
 	}
-	modelID := openaipkg.DefaultTestModel
+	modelID := openaipkg.CodexUsageProbeModel
 	payload := createOpenAITestPayload(modelID, true)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -853,9 +853,10 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Originator", openaipkg.CodexDefaultOriginator)
-	req.Header.Set("Version", openAICodexProbeVersion)
-	req.Header.Set("User-Agent", codexCLIUserAgent)
+	canonical := resolveCodexOutboundIdentity("")
+	req.Header.Set("Originator", canonical.originator)
+	req.Header.Set("Version", canonical.version)
+	req.Header.Set("User-Agent", canonical.userAgent)
 	if s.identityCache != nil {
 		if fp, fpErr := s.identityCache.GetFingerprint(reqCtx, account.ID); fpErr == nil && fp != nil && strings.TrimSpace(fp.UserAgent) != "" {
 			req.Header.Set("User-Agent", strings.TrimSpace(fp.UserAgent))
@@ -1608,8 +1609,9 @@ func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration
 const (
 	openAIWeeklyEstimateResetTolerance = 5 * time.Minute
 	openAIWeeklyEstimateBaselineKey    = "codex_7d_estimate_baseline"
-	openAIWeeklyEstimateStateVersion   = 2
-	openAIWeeklyEstimateMinSegment     = 1.0
+	openAIWeeklyEstimateStateVersion   = 3
+	openAIWeeklyEstimateMinSegment     = 2.0
+	openAIWeeklyEstimateMaxSamples     = 5
 	openAIWeeklyEstimateEpsilon        = 1e-9
 )
 
@@ -1623,9 +1625,9 @@ type openAIWeeklyEstimateBaseline struct {
 type openAIWeeklyEstimateState struct {
 	SegmentPercent       float64
 	SegmentCost          float64
-	SegmentMaxEstimate   float64
 	LastPercent          float64
 	LastCost             float64
+	RecentRates          []float64
 	CompletedEstimate    float64
 	HasCompletedEstimate bool
 	ResetAt              time.Time
@@ -1670,63 +1672,78 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 	}
 
 	state, stateOK := readOpenAIWeeklyEstimateState(account.Extra)
-	if stateOK {
-		stateValid := state.Identity == identity &&
-			sameOpenAIWeeklyEstimateWindow(state.ResetAt, resetAt) &&
-			percent+openAIWeeklyEstimateEpsilon >= state.LastPercent &&
-			cost+openAIWeeklyEstimateEpsilon >= state.LastCost
-		if !stateValid {
-			return nil, openAIWeeklyEstimateStateUpdate(newOpenAIWeeklyEstimateState(percent, cost, resetAt, identity))
-		}
+	stateMigrated := false
+	if !stateOK {
+		state = newOpenAIWeeklyEstimateState(percent, cost, resetAt, identity)
+		stateMigrated = true
 
-		if percent == state.LastPercent && cost == state.LastCost && state.ResetAt.Equal(resetAt) {
-			return openAIWeeklyEstimateCompletedValue(state), nil
-		}
-
-		deltaPercent := percent - state.SegmentPercent
-		deltaCost := cost - state.SegmentCost
-		if deltaPercent > openAIWeeklyEstimateEpsilon && deltaCost > 0 {
-			candidate := deltaCost / deltaPercent * 100
-			if validOpenAIWeeklyEstimate(candidate) && candidate > state.SegmentMaxEstimate {
-				state.SegmentMaxEstimate = candidate
-			}
-		}
-
-		if deltaPercent+openAIWeeklyEstimateEpsilon >= openAIWeeklyEstimateMinSegment {
-			if validOpenAIWeeklyEstimate(state.SegmentMaxEstimate) {
-				state.CompletedEstimate = state.SegmentMaxEstimate
+		// v2 used one-percent segments. Preserve its last displayed estimate while
+		// v3 collects the first complete two-percent sample, but start the new
+		// segment at the current observation so the two algorithms never overlap.
+		if legacy, legacyOK := readOpenAIWeeklyEstimateV2State(account.Extra); legacyOK &&
+			validOpenAIWeeklyEstimateObservation(legacy, percent, cost, resetAt, identity) {
+			if legacy.HasCompletedEstimate && validOpenAIWeeklyEstimate(legacy.CompletedEstimate) {
+				state.CompletedEstimate = legacy.CompletedEstimate
 				state.HasCompletedEstimate = true
 			}
-			state.SegmentPercent = percent
-			state.SegmentCost = cost
-			state.SegmentMaxEstimate = 0
+		} else if baselineOK && baseline.Identity == identity &&
+			sameOpenAIWeeklyEstimateWindow(baseline.ResetAt, resetAt) &&
+			percent+openAIWeeklyEstimateEpsilon >= baseline.Percent &&
+			cost+openAIWeeklyEstimateEpsilon >= baseline.Cost {
+			// v1 stored only the login baseline. It can seed the new segment, but a
+			// full two percentage points are still required before showing a result.
+			state = newOpenAIWeeklyEstimateState(baseline.Percent, baseline.Cost, resetAt, identity)
 		}
-
-		state.LastPercent = percent
-		state.LastCost = cost
-		state.ResetAt = resetAt
-		return openAIWeeklyEstimateCompletedValue(state), openAIWeeklyEstimateStateUpdate(state)
 	}
 
-	// v1 stored only the login baseline. Seed v2 with its best current estimate
-	// so existing installations do not lose the displayed value during upgrade.
-	state = newOpenAIWeeklyEstimateState(percent, cost, resetAt, identity)
-	baselineValid := baselineOK && baseline.Identity == identity &&
-		sameOpenAIWeeklyEstimateWindow(baseline.ResetAt, resetAt) &&
-		percent+openAIWeeklyEstimateEpsilon >= baseline.Percent &&
-		cost+openAIWeeklyEstimateEpsilon >= baseline.Cost
-	if baselineValid {
-		deltaPercent := percent - baseline.Percent
-		deltaCost := cost - baseline.Cost
-		if deltaPercent > openAIWeeklyEstimateEpsilon && deltaCost > 0 {
-			estimate := deltaCost / deltaPercent * 100
-			if validOpenAIWeeklyEstimate(estimate) {
-				state.CompletedEstimate = estimate
-				state.HasCompletedEstimate = true
+	if !validOpenAIWeeklyEstimateObservation(state, percent, cost, resetAt, identity) {
+		state = newOpenAIWeeklyEstimateState(percent, cost, resetAt, identity)
+		completeOpenAIWeeklyEstimate(&state, percent, cost)
+		return openAIWeeklyEstimateCompletedValue(state, percent, cost), openAIWeeklyEstimateStateUpdate(state)
+	}
+
+	if math.Abs(percent-state.LastPercent) <= openAIWeeklyEstimateEpsilon &&
+		math.Abs(cost-state.LastCost) <= openAIWeeklyEstimateEpsilon && state.ResetAt.Equal(resetAt) {
+		if stateMigrated {
+			completeOpenAIWeeklyEstimate(&state, percent, cost)
+			return openAIWeeklyEstimateCompletedValue(state, percent, cost), openAIWeeklyEstimateStateUpdate(state)
+		}
+		return openAIWeeklyEstimateCompletedValue(state, percent, cost), nil
+	}
+
+	// A quota percentage advance with no XIASS account cost is external usage.
+	// Rebase so that percentage is not mixed into a later local-cost sample.
+	if percent-state.LastPercent > openAIWeeklyEstimateEpsilon &&
+		cost-state.LastCost <= openAIWeeklyEstimateEpsilon {
+		state.SegmentPercent = percent
+		state.SegmentCost = cost
+	}
+
+	deltaPercent := percent - state.SegmentPercent
+	deltaCost := cost - state.SegmentCost
+	if deltaPercent+openAIWeeklyEstimateEpsilon >= openAIWeeklyEstimateMinSegment {
+		if deltaCost > openAIWeeklyEstimateEpsilon {
+			rate := deltaCost / deltaPercent
+			if validOpenAIWeeklyEstimate(rate) {
+				state.RecentRates = appendOpenAIWeeklyEstimateRate(state.RecentRates, rate)
+				if smoothedRate, ok := openAIWeeklyEstimateSmoothedRate(state.RecentRates); ok {
+					estimate := cost + math.Max(0, 100-percent)*smoothedRate
+					if validOpenAIWeeklyEstimateValue(estimate) {
+						state.CompletedEstimate = estimate
+						state.HasCompletedEstimate = true
+					}
+				}
 			}
 		}
+		state.SegmentPercent = percent
+		state.SegmentCost = cost
 	}
-	return openAIWeeklyEstimateCompletedValue(state), openAIWeeklyEstimateStateUpdate(state)
+
+	state.LastPercent = percent
+	state.LastCost = cost
+	state.ResetAt = resetAt
+	completeOpenAIWeeklyEstimate(&state, percent, cost)
+	return openAIWeeklyEstimateCompletedValue(state, percent, cost), openAIWeeklyEstimateStateUpdate(state)
 }
 
 func newOpenAIWeeklyEstimateState(percent, cost float64, resetAt time.Time, identity string) openAIWeeklyEstimateState {
@@ -1740,12 +1757,92 @@ func newOpenAIWeeklyEstimateState(percent, cost float64, resetAt time.Time, iden
 	}
 }
 
-func openAIWeeklyEstimateCompletedValue(state openAIWeeklyEstimateState) *float64 {
+func validOpenAIWeeklyEstimateObservation(state openAIWeeklyEstimateState, percent, cost float64, resetAt time.Time, identity string) bool {
+	return state.Identity == identity &&
+		sameOpenAIWeeklyEstimateWindow(state.ResetAt, resetAt) &&
+		percent+openAIWeeklyEstimateEpsilon >= state.LastPercent &&
+		cost+openAIWeeklyEstimateEpsilon >= state.LastCost
+}
+
+func completeOpenAIWeeklyEstimate(state *openAIWeeklyEstimateState, percent, cost float64) {
+	if state == nil || percent < 100-openAIWeeklyEstimateEpsilon {
+		return
+	}
+	state.CompletedEstimate = cost
+	state.HasCompletedEstimate = true
+}
+
+func openAIWeeklyEstimateCompletedValue(state openAIWeeklyEstimateState, percent, cost float64) *float64 {
+	if percent >= 100-openAIWeeklyEstimateEpsilon && validOpenAIWeeklyEstimateValue(cost) {
+		exact := cost
+		return &exact
+	}
 	if !state.HasCompletedEstimate || !validOpenAIWeeklyEstimate(state.CompletedEstimate) {
 		return nil
 	}
 	estimate := state.CompletedEstimate
 	return &estimate
+}
+
+func appendOpenAIWeeklyEstimateRate(rates []float64, rate float64) []float64 {
+	if !validOpenAIWeeklyEstimate(rate) {
+		return rates
+	}
+	result := append(append([]float64(nil), rates...), rate)
+	if len(result) > openAIWeeklyEstimateMaxSamples {
+		result = append([]float64(nil), result[len(result)-openAIWeeklyEstimateMaxSamples:]...)
+	}
+	return result
+}
+
+func openAIWeeklyEstimateSmoothedRate(rates []float64) (float64, bool) {
+	validRates := make([]float64, 0, len(rates))
+	for _, rate := range rates {
+		if validOpenAIWeeklyEstimate(rate) {
+			validRates = append(validRates, rate)
+		}
+	}
+	if len(validRates) == 0 {
+		return 0, false
+	}
+
+	median := openAIWeeklyEstimateMedian(validRates)
+	threshold := math.Inf(1)
+	if len(validRates) >= 3 {
+		deviations := make([]float64, len(validRates))
+		for i, rate := range validRates {
+			deviations[i] = math.Abs(rate - median)
+		}
+		mad := openAIWeeklyEstimateMedian(deviations)
+		// The 50% median floor keeps legitimate variation such as $30/% vs
+		// $45/% while still removing a single obviously broken sample.
+		threshold = math.Max(3*mad, median*0.5)
+	}
+
+	var weightedTotal float64
+	var totalWeight float64
+	for i, rate := range validRates {
+		if math.Abs(rate-median) > threshold {
+			continue
+		}
+		weight := 1 + 0.25*float64(i)
+		weightedTotal += rate * weight
+		totalWeight += weight
+	}
+	if totalWeight <= 0 {
+		return 0, false
+	}
+	return weightedTotal / totalWeight, true
+}
+
+func openAIWeeklyEstimateMedian(values []float64) float64 {
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	middle := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[middle]
+	}
+	return (sorted[middle-1] + sorted[middle]) / 2
 }
 
 func openAIWeeklyEstimateStateUpdate(state openAIWeeklyEstimateState) map[string]any {
@@ -1758,10 +1855,10 @@ func openAIWeeklyEstimateStateUpdate(state openAIWeeklyEstimateState) map[string
 		"reset_at":        state.ResetAt.Format(time.RFC3339Nano),
 		"identity":        state.Identity,
 	}
-	if validOpenAIWeeklyEstimate(state.SegmentMaxEstimate) {
-		raw["segment_max_estimate"] = state.SegmentMaxEstimate
+	if len(state.RecentRates) > 0 {
+		raw["recent_rates"] = append([]float64(nil), state.RecentRates...)
 	}
-	if state.HasCompletedEstimate && validOpenAIWeeklyEstimate(state.CompletedEstimate) {
+	if state.HasCompletedEstimate && validOpenAIWeeklyEstimateValue(state.CompletedEstimate) {
 		raw["completed_estimate"] = state.CompletedEstimate
 	}
 	return map[string]any{openAIWeeklyEstimateBaselineKey: raw}
@@ -1772,6 +1869,23 @@ func readOpenAIWeeklyEstimateState(extra map[string]any) (openAIWeeklyEstimateSt
 	if !ok || parseExtraInt(raw["version"]) < openAIWeeklyEstimateStateVersion {
 		return openAIWeeklyEstimateState{}, false
 	}
+	state, ok := parseOpenAIWeeklyEstimateState(raw)
+	if !ok {
+		return openAIWeeklyEstimateState{}, false
+	}
+	state.RecentRates = parseOpenAIWeeklyEstimateRates(raw["recent_rates"])
+	return state, true
+}
+
+func readOpenAIWeeklyEstimateV2State(extra map[string]any) (openAIWeeklyEstimateState, bool) {
+	raw, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	if !ok || parseExtraInt(raw["version"]) != 2 {
+		return openAIWeeklyEstimateState{}, false
+	}
+	return parseOpenAIWeeklyEstimateState(raw)
+}
+
+func parseOpenAIWeeklyEstimateState(raw map[string]any) (openAIWeeklyEstimateState, bool) {
 
 	segmentPercent, segmentPercentOK := parseOpenAIWeeklyEstimateNumber(raw, "segment_percent")
 	segmentCost, segmentCostOK := parseOpenAIWeeklyEstimateNumber(raw, "segment_cost")
@@ -1794,14 +1908,38 @@ func readOpenAIWeeklyEstimateState(extra map[string]any) (openAIWeeklyEstimateSt
 		ResetAt:        resetAt,
 		Identity:       identity,
 	}
-	if candidate, candidateOK := parseOpenAIWeeklyEstimateNumber(raw, "segment_max_estimate"); candidateOK && validOpenAIWeeklyEstimate(candidate) {
-		state.SegmentMaxEstimate = candidate
-	}
-	if completed, completedOK := parseOpenAIWeeklyEstimateNumber(raw, "completed_estimate"); completedOK && validOpenAIWeeklyEstimate(completed) {
+	if completed, completedOK := parseOpenAIWeeklyEstimateNumber(raw, "completed_estimate"); completedOK && validOpenAIWeeklyEstimateValue(completed) {
 		state.CompletedEstimate = completed
 		state.HasCompletedEstimate = true
 	}
 	return state, true
+}
+
+func parseOpenAIWeeklyEstimateRates(value any) []float64 {
+	var values []any
+	switch typed := value.(type) {
+	case []any:
+		values = typed
+	case []float64:
+		values = make([]any, len(typed))
+		for i, rate := range typed {
+			values[i] = rate
+		}
+	default:
+		return nil
+	}
+
+	rates := make([]float64, 0, len(values))
+	for _, value := range values {
+		rate, ok := parseOpenAIWeeklyEstimateValue(value)
+		if ok && validOpenAIWeeklyEstimate(rate) {
+			rates = append(rates, rate)
+		}
+	}
+	if len(rates) > openAIWeeklyEstimateMaxSamples {
+		rates = rates[len(rates)-openAIWeeklyEstimateMaxSamples:]
+	}
+	return rates
 }
 
 func parseOpenAIWeeklyEstimateNumber(raw map[string]any, key string) (float64, bool) {
@@ -1809,6 +1947,10 @@ func parseOpenAIWeeklyEstimateNumber(raw map[string]any, key string) (float64, b
 	if !ok || value == nil {
 		return 0, false
 	}
+	return parseOpenAIWeeklyEstimateValue(value)
+}
+
+func parseOpenAIWeeklyEstimateValue(value any) (float64, bool) {
 	var parsed float64
 	switch typed := value.(type) {
 	case float64:
@@ -1839,6 +1981,10 @@ func parseOpenAIWeeklyEstimateNumber(raw map[string]any, key string) (float64, b
 
 func validOpenAIWeeklyEstimate(estimate float64) bool {
 	return !math.IsNaN(estimate) && !math.IsInf(estimate, 0) && estimate > 0
+}
+
+func validOpenAIWeeklyEstimateValue(estimate float64) bool {
+	return !math.IsNaN(estimate) && !math.IsInf(estimate, 0) && estimate >= 0
 }
 
 func readOpenAIWeeklyEstimateBaseline(extra map[string]any) (openAIWeeklyEstimateBaseline, bool) {

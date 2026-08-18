@@ -831,6 +831,77 @@ describe('AccountUsageCell', () => {
     expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('usage.weeklyEstimatePending')
   })
 
+  it('OpenAI OAuth 达到 100% 时按账号已用精确显示两位小数', async () => {
+    getUsage.mockResolvedValue({
+      seven_day: {
+        utilization: 100,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3500,
+        weekly_estimate_usd: 9999,
+        window_stats: {
+          requests: 100,
+          tokens: 1000,
+          cost: 108.05,
+          standard_cost: 108.05,
+          user_cost: 20
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2108, platform: 'openai', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+    const estimate = wrapper.get('[data-test="oauth-weekly-estimate"]').text()
+    expect(estimate).toContain('$108.05')
+    expect(estimate).not.toContain('usage.weeklyEstimatePending')
+  })
+
+  it('OpenAI OAuth 100% 缺少估算字段时回退到账号已用且不显示统计中', async () => {
+    getUsage.mockResolvedValue({
+      seven_day: {
+        utilization: 100,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 0,
+        window_stats: {
+          requests: 1000,
+          tokens: 1_000_000,
+          cost: 2892.37,
+          standard_cost: 2892.37,
+          user_cost: 600
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2109, platform: 'openai', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: billingUsageProgressBarStub,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+    const estimate = wrapper.get('[data-test="oauth-weekly-estimate"]').text()
+    expect(estimate).toContain('$2,892.37')
+    expect(estimate).not.toContain('usage.weeklyEstimatePending')
+  })
+
   it('OpenAI OAuth 并发刷新时忽略较晚返回的旧请求', async () => {
     let resolveInitial: ((value: any) => void) | undefined
     const initialRequest = new Promise((resolve) => {

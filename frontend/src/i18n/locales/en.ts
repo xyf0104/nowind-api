@@ -892,7 +892,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Estimated from the latest completed 1% quota segment; the previous result remains while the current segment is incomplete',
+    weeklyEstimateHint: 'Smoothed from recent completed 2% quota segments; the previous result remains until completion, and 100% shows actual account cost',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

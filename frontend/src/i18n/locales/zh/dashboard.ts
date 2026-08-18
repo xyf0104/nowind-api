@@ -302,7 +302,7 @@ export default {
     requestCountUnit: '次请求',
     openBillingBreakdown: '查看用户与模型扣费明细',
     weeklyEstimate: '周额度约',
-    weeklyEstimateHint: '按最近一个完整 1% 额度段的账号已用估算，当前段未完成时保留上一段结果',
+    weeklyEstimateHint: '按最近完整 2% 区间智能估算，当前区间未完成时保留上一结果，100% 时显示实际账号已用',
     weeklyEstimatePending: '统计中',
     oauthBillingDetails: '账号扣费明细',
     currentUsageWindow: '当前 {window} 窗口',

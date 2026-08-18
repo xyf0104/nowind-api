@@ -828,11 +828,30 @@ const openAIFiveHour = computed(() => {
 })
 
 const openAIWeeklyEstimateText = computed(() => {
-  const estimate = Number(usageInfo.value?.seven_day?.weekly_estimate_usd)
-  if (!Number.isFinite(estimate) || estimate <= 0) return t('usage.weeklyEstimatePending')
+  const sevenDay = usageInfo.value?.seven_day
+  const utilization = Number(sevenDay?.utilization)
+  const isComplete = Number.isFinite(utilization) && utilization >= 100
+  const rawEstimate = sevenDay?.weekly_estimate_usd
+  let estimate = rawEstimate == null ? Number.NaN : Number(rawEstimate)
 
-  const rounded = Math.round(estimate)
-  return `$${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(rounded)}`
+  // At 100%, the account's actual weekly cost is the exact answer. Prefer it
+  // even if an older backend still returns a stale estimate snapshot.
+  if (isComplete) {
+    const actualCost = Number(sevenDay?.window_stats?.cost)
+    if (Number.isFinite(actualCost) && actualCost >= 0) estimate = actualCost
+  }
+  if (!Number.isFinite(estimate) || estimate < 0 || (!isComplete && estimate === 0)) {
+    return t('usage.weeklyEstimatePending')
+  }
+
+  if (isComplete) {
+    return `$${new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(estimate)}`
+  }
+
+  return `$${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(estimate))}`
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
