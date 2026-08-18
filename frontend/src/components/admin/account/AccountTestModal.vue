@@ -252,6 +252,10 @@ import { useClipboard } from '@/composables/useClipboard'
 import { buildApiUrl } from '@/api/client'
 import { ADMIN_UI_REQUEST_HEADER } from '@/api/adminUIRequest'
 import { adminAPI } from '@/api/admin'
+import {
+  isAntigravityGemini37InternalModel,
+  normalizeAntigravityModelsForDisplay
+} from '@/composables/useModelWhitelist'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -297,12 +301,14 @@ const openAITestModeOptions = computed(() => [
 const prioritizedGeminiModels = [
   'gemini-3.1-flash-image',
   'gemini-2.5-flash-image',
-  'gemini-3.7-flash',
   'gemini-3.7-flash-high',
   'gemini-3.7-flash-medium',
   'gemini-3.7-flash-low',
-  'gemini-3.7-flash-tiered',
-  'gemini-3.5-flash',
+  'gemini-3.6-flash-high',
+  'gemini-3.6-flash-medium',
+  'gemini-3.6-flash-low',
+  'gemini-3.5-flash-medium',
+  'gemini-3.5-flash-low',
   'gemini-2.5-flash',
   'gemini-2.5-pro',
   'gemini-3-flash-preview',
@@ -335,6 +341,32 @@ const sortTestModels = (models: ClaudeModel[]) => {
   })
 }
 
+const antigravityGemini37DisplayNames: Record<string, string> = {
+  'gemini-3.7-flash-high': 'Gemini 3.7 Flash High',
+  'gemini-3.7-flash-medium': 'Gemini 3.7 Flash Medium',
+  'gemini-3.7-flash-low': 'Gemini 3.7 Flash Low'
+}
+
+const normalizeAntigravityTestModels = (models: ClaudeModel[]): ClaudeModel[] => {
+  const displayModels = new Map(
+    models
+      .filter((model) => !isAntigravityGemini37InternalModel(model.id))
+      .map((model) => [model.id, model])
+  )
+  const internalTemplate = models.find((model) => isAntigravityGemini37InternalModel(model.id))
+
+  return normalizeAntigravityModelsForDisplay(models.map((model) => model.id)).map((id) => {
+    const existing = displayModels.get(id)
+    if (existing) return existing
+
+    return {
+      ...(internalTemplate || { type: 'model', created_at: '' }),
+      id,
+      display_name: antigravityGemini37DisplayNames[id] || id
+    }
+  })
+}
+
 // Load available models when modal opens
 watch(
   () => props.show,
@@ -363,9 +395,12 @@ const loadAvailableModels = async () => {
   selectedModelId.value = '' // Reset selection before loading
   try {
     const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
-      ? sortTestModels(models)
+    const displayModels = props.account.platform === 'antigravity'
+      ? normalizeAntigravityTestModels(models)
       : models
+    availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
+      ? sortTestModels(displayModels)
+      : displayModels
     // Default selection by platform
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {

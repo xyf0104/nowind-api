@@ -1280,7 +1280,14 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		mapping := acc.GetModelMapping()
 		if len(mapping) > 0 {
 			hasAnyMapping = true
+			modelIDs := make([]string, 0, len(mapping))
 			for model := range mapping {
+				modelIDs = append(modelIDs, model)
+			}
+			if acc.Platform == PlatformAntigravity {
+				modelIDs = publicAntigravityModelIDs(modelIDs)
+			}
+			for _, model := range modelIDs {
 				modelSet[model] = struct{}{}
 			}
 		}

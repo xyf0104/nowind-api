@@ -159,7 +159,11 @@ import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import { useClipboard } from '@/composables/useClipboard'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import {
+  allModels,
+  getModelsByPlatform,
+  normalizeAntigravityModelsForDisplay
+} from '@/composables/useModelWhitelist'
 
 const { t } = useI18n()
 
@@ -286,6 +290,11 @@ const canSyncUpstream = computed(() => {
   return false
 })
 
+const isAntigravitySync = computed(() =>
+  normalizedPlatforms.value.some(platform => platform.toLowerCase() === 'antigravity') ||
+  props.syncCredentials?.platform.toLowerCase() === 'antigravity'
+)
+
 const availableOptions = computed(() => {
   if (normalizedPlatforms.value.length === 0) {
     return allModels
@@ -392,7 +401,10 @@ const syncUpstreamModels = async () => {
       return
     }
 
-    const upstreamModels = result.models.map(model => model.trim()).filter(Boolean)
+    const rawUpstreamModels = result.models.map(model => model.trim()).filter(Boolean)
+    const upstreamModels = isAntigravitySync.value
+      ? normalizeAntigravityModelsForDisplay(rawUpstreamModels)
+      : rawUpstreamModels
     if (upstreamModels.length === 0) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
       return

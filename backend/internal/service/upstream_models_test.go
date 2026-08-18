@@ -359,6 +359,42 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
 }
 
+func TestFetchUpstreamSupportedModelsProjectsAntigravityGemini37Models(t *testing.T) {
+	t.Parallel()
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"gemini-2.5-flash"},
+			{"id":"gemini-3.7-flash"},
+			{"id":"gemini-3.7-flash-tiered"},
+			{"id":"gemini-3.7-flash-high"}
+		]}`)),
+	}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID:       11,
+		Platform: PlatformAntigravity,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "antigravity-key",
+			"base_url": "https://gateway.example.com/antigravity",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"gemini-2.5-flash",
+		"gemini-3.7-flash-high",
+		"gemini-3.7-flash-low",
+		"gemini-3.7-flash-medium",
+	}, models)
+}
+
 func TestFetchUpstreamSupportedModelsParsesGrokAPIKeyResponse(t *testing.T) {
 	t.Parallel()
 

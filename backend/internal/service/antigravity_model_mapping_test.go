@@ -136,6 +136,60 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			accountMapping: nil,
 			expected:       "gemini-3-flash",
 		},
+		{
+			name:           "Gemini 3.5 Medium 公共别名使用实际 low ID",
+			requestedModel: "gemini-3.5-flash-medium",
+			accountMapping: nil,
+			expected:       "gemini-3.5-flash-low",
+		},
+		{
+			name:           "Gemini 3.5 Low 公共别名使用实际 extra-low ID",
+			requestedModel: "gemini-3.5-flash-low",
+			accountMapping: nil,
+			expected:       "gemini-3.5-flash-extra-low",
+		},
+		{
+			name:           "Gemini 3.6 基础别名使用实际 medium ID",
+			requestedModel: "gemini-3.6-flash",
+			accountMapping: nil,
+			expected:       "gemini-3.6-flash-medium",
+		},
+		{
+			name:           "Gemini 3.7 基础兼容别名使用内部 tiered ID",
+			requestedModel: "gemini-3.7-flash",
+			accountMapping: nil,
+			expected:       "gemini-3.7-flash-tiered",
+		},
+		{
+			name:           "Gemini 3.7 High 使用内部 tiered ID",
+			requestedModel: "gemini-3.7-flash-high",
+			accountMapping: nil,
+			expected:       "gemini-3.7-flash-tiered",
+		},
+		{
+			name:           "Gemini 3.7 Medium 使用内部 tiered ID",
+			requestedModel: "gemini-3.7-flash-medium",
+			accountMapping: nil,
+			expected:       "gemini-3.7-flash-tiered",
+		},
+		{
+			name:           "Gemini 3.7 Low 使用内部 tiered ID",
+			requestedModel: "gemini-3.7-flash-low",
+			accountMapping: nil,
+			expected:       "gemini-3.7-flash-tiered",
+		},
+		{
+			name:           "Gemini 3.7 raw tiered 兼容入口保持内部 ID",
+			requestedModel: "gemini-3.7-flash-tiered",
+			accountMapping: nil,
+			expected:       "gemini-3.7-flash-tiered",
+		},
+		{
+			name:           "Sonnet 4.6 Thinking 使用实际基础 ID",
+			requestedModel: "claude-sonnet-4-6-thinking",
+			accountMapping: nil,
+			expected:       "claude-sonnet-4-6",
+		},
 
 		// 4. 未在默认映射中的模型返回空字符串（不支持）
 		{

@@ -37,6 +37,14 @@ func setupAvailableModelsRouter(adminSvc service.AdminService) *gin.Engine {
 	return router
 }
 
+func setupAntigravityDefaultMappingRouter(adminSvc service.AdminService) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router.GET("/api/v1/admin/accounts/antigravity/default-model-mapping", handler.GetAntigravityDefaultModelMapping)
+	return router
+}
+
 type syncUpstreamHTTPUpstream struct {
 	resp *http.Response
 	err  error
@@ -103,6 +111,67 @@ func TestAccountHandlerGetAvailableModels_GrokUsesXAIModels(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 1)
 	require.Equal(t, "grok-4.3", resp.Data[0].ID)
+}
+
+func TestAccountHandlerGetAvailableModels_AntigravityHidesGemini37InternalRoutes(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       47,
+			Name:     "antigravity-oauth",
+			Platform: service.PlatformAntigravity,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/47/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ids := make([]string, 0, len(resp.Data))
+	for _, model := range resp.Data {
+		ids = append(ids, model.ID)
+	}
+	require.Contains(t, ids, "gemini-3.7-flash-high")
+	require.Contains(t, ids, "gemini-3.7-flash-medium")
+	require.Contains(t, ids, "gemini-3.7-flash-low")
+	require.NotContains(t, ids, "gemini-3.7-flash")
+	require.NotContains(t, ids, "gemini-3.7-flash-tiered")
+}
+
+func TestAccountHandlerGetAntigravityDefaultModelMapping_HidesGemini37InternalRoutes(t *testing.T) {
+	router := setupAntigravityDefaultMappingRouter(newStubAdminService())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/antigravity/default-model-mapping", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Data map[string]string `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	for _, modelID := range []string{
+		"gemini-3.7-flash-high",
+		"gemini-3.7-flash-medium",
+		"gemini-3.7-flash-low",
+	} {
+		require.Equal(t, modelID, resp.Data[modelID])
+	}
+	require.NotContains(t, resp.Data, "gemini-3.7-flash")
+	require.NotContains(t, resp.Data, "gemini-3.7-flash-tiered")
+	for _, upstreamModel := range resp.Data {
+		require.NotEqual(t, "gemini-3.7-flash-tiered", upstreamModel)
+	}
 }
 
 func TestAccountHandlerGetAvailableModels_GrokDefaultsToXAIModelsWithoutMapping(t *testing.T) {

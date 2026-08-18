@@ -91,6 +91,10 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
 	}
+	modelProfile := resolveAntigravityWrappedModelProfile(originalModel, mappedModel)
+	if modelProfile.upstreamModel != "" {
+		mappedModel = modelProfile.upstreamModel
+	}
 	billingModel := mappedModel
 
 	// 获取 access_token
@@ -135,6 +139,10 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	wrappedBody, err := s.wrapV1InternalRequest(projectID, mappedModel, injectedBody)
 	if err != nil {
 		return nil, s.writeGoogleError(c, http.StatusInternalServerError, "Failed to build upstream request")
+	}
+	wrappedBody, err = applyAntigravityWrappedModelProfile(wrappedBody, modelProfile)
+	if err != nil {
+		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Invalid request body")
 	}
 
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
@@ -241,6 +249,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 			cleanedInjectedBody := CleanGeminiNativeThoughtSignatures(injectedBody)
 			retryWrappedBody, wrapErr := s.wrapV1InternalRequest(projectID, mappedModel, cleanedInjectedBody)
+			if wrapErr == nil {
+				retryWrappedBody, wrapErr = applyAntigravityWrappedModelProfile(retryWrappedBody, modelProfile)
+			}
 			if wrapErr == nil {
 				retryResult, retryErr := s.antigravityRetryLoop(antigravityRetryLoopParams{
 					ctx:             ctx,

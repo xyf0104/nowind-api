@@ -31,6 +31,7 @@ type tokenRefreshAccountRepo struct {
 	conditionalErrorCalls        int
 	conditionalTempCalls         int
 	conditionalSuccessCalls      int
+	conditionalExtraCalls        int
 	conditionalErrorErr          error
 	conditionalTempErr           error
 	conditionalSuccessErr        error
@@ -183,11 +184,47 @@ func (r *tokenRefreshAccountRepo) SetGrokOAuthRefreshErrorIfCredentialsUnchanged
 	expectedProxyID *int64,
 	errorMsg string,
 ) (bool, error) {
+	return r.setOAuthRefreshErrorIfCredentialsUnchanged(PlatformGrok, id, expectedCredentials, expectedProxyID, errorMsg)
+}
+
+func (r *tokenRefreshAccountRepo) SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(
+	_ context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	errorMsg string,
+) (bool, error) {
+	return r.setOAuthRefreshErrorIfCredentialsUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, errorMsg)
+}
+
+func (r *tokenRefreshAccountRepo) setOAuthRefreshErrorIfCredentialsUnchanged(
+	platform string,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	errorMsg string,
+) (bool, error) {
 	r.conditionalErrorCalls++
 	if r.conditionalErrorErr != nil {
 		return false, r.conditionalErrorErr
 	}
 	account := r.accountsByID[id]
+	if account == nil && r.accountsByID == nil {
+		var credentials map[string]any
+		if expectedCredentials != nil {
+			credentials = shallowCopyMap(expectedCredentials)
+		}
+		account = &Account{
+			ID:          id,
+			Platform:    platform,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			ProxyID:     cloneInt64Pointer(expectedProxyID),
+			Credentials: credentials,
+		}
+		r.lastAccount = account
+	}
 	if account == nil {
 		return false, nil
 	}
@@ -206,7 +243,7 @@ func (r *tokenRefreshAccountRepo) SetGrokOAuthRefreshErrorIfCredentialsUnchanged
 		proxyID := int64(902)
 		account.ProxyID = &proxyID
 	}
-	if account.Status != StatusActive || account.Platform != PlatformGrok || account.Type != AccountTypeOAuth ||
+	if account.Status != StatusActive || account.Platform != platform || account.Type != AccountTypeOAuth ||
 		!reflect.DeepEqual(account.Credentials, expectedCredentials) || !reflect.DeepEqual(account.ProxyID, expectedProxyID) {
 		return false, nil
 	}
@@ -225,6 +262,26 @@ func (r *tokenRefreshAccountRepo) UpdateGrokOAuthCredentialsIfUnchanged(
 	expectedProxyID *int64,
 	credentials map[string]any,
 ) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(PlatformGrok, id, expectedCredentials, expectedProxyID, credentials)
+}
+
+func (r *tokenRefreshAccountRepo) UpdateAntigravityOAuthCredentialsIfUnchanged(
+	_ context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, credentials)
+}
+
+func (r *tokenRefreshAccountRepo) updateOAuthCredentialsIfUnchanged(
+	platform string,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
 	r.conditionalSuccessCalls++
 	if r.conditionalSuccessErr != nil {
 		return false, r.conditionalSuccessErr
@@ -237,7 +294,7 @@ func (r *tokenRefreshAccountRepo) UpdateGrokOAuthCredentialsIfUnchanged(
 		resetAt := time.Now().Add(30 * time.Minute)
 		account.RateLimitResetAt = &resetAt
 	}
-	if account == nil || account.Platform != PlatformGrok ||
+	if account == nil || account.Platform != platform ||
 		account.Type != AccountTypeOAuth || !reflect.DeepEqual(account.Credentials, expectedCredentials) ||
 		!reflect.DeepEqual(account.ProxyID, expectedProxyID) {
 		return false, nil
@@ -260,11 +317,49 @@ func (r *tokenRefreshAccountRepo) SetGrokOAuthRefreshTempUnschedulableIfCredenti
 	until time.Time,
 	reason string,
 ) (bool, error) {
+	return r.setOAuthRefreshTempUnschedulableIfCredentialsUnchanged(PlatformGrok, id, expectedCredentials, expectedProxyID, until, reason)
+}
+
+func (r *tokenRefreshAccountRepo) SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
+	_ context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	until time.Time,
+	reason string,
+) (bool, error) {
+	return r.setOAuthRefreshTempUnschedulableIfCredentialsUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, until, reason)
+}
+
+func (r *tokenRefreshAccountRepo) setOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
+	platform string,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	until time.Time,
+	reason string,
+) (bool, error) {
 	r.conditionalTempCalls++
 	if r.conditionalTempErr != nil {
 		return false, r.conditionalTempErr
 	}
 	account := r.accountsByID[id]
+	if account == nil && r.accountsByID == nil {
+		var credentials map[string]any
+		if expectedCredentials != nil {
+			credentials = shallowCopyMap(expectedCredentials)
+		}
+		account = &Account{
+			ID:          id,
+			Platform:    platform,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			ProxyID:     cloneInt64Pointer(expectedProxyID),
+			Credentials: credentials,
+		}
+		r.lastAccount = account
+	}
 	if account == nil {
 		return false, nil
 	}
@@ -283,7 +378,7 @@ func (r *tokenRefreshAccountRepo) SetGrokOAuthRefreshTempUnschedulableIfCredenti
 		proxyID := int64(902)
 		account.ProxyID = &proxyID
 	}
-	if account.Status != StatusActive || account.Platform != PlatformGrok || account.Type != AccountTypeOAuth ||
+	if account.Status != StatusActive || account.Platform != platform || account.Type != AccountTypeOAuth ||
 		!reflect.DeepEqual(account.Credentials, expectedCredentials) || !reflect.DeepEqual(account.ProxyID, expectedProxyID) {
 		return false, nil
 	}
@@ -291,6 +386,32 @@ func (r *tokenRefreshAccountRepo) SetGrokOAuthRefreshTempUnschedulableIfCredenti
 	r.lastTempUnschedReason = reason
 	account.TempUnschedulableUntil = &until
 	account.TempUnschedulableReason = reason
+	return true, nil
+}
+
+func (r *tokenRefreshAccountRepo) UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(
+	_ context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	updates map[string]any,
+) (bool, error) {
+	r.conditionalExtraCalls++
+	if r.accountsByID != nil {
+		account := r.accountsByID[id]
+		if account == nil || account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth ||
+			!reflect.DeepEqual(account.Credentials, expectedCredentials) || !reflect.DeepEqual(account.ProxyID, expectedProxyID) {
+			return false, nil
+		}
+		if account.Extra == nil {
+			account.Extra = make(map[string]any, len(updates))
+		}
+		for key, value := range updates {
+			account.Extra[key] = value
+		}
+	}
+	r.updateExtraCalls++
+	r.lastExtraUpdates = shallowCopyMap(updates)
 	return true, nil
 }
 
@@ -376,6 +497,8 @@ type tokenRefresherStub struct {
 	credentials map[string]any
 	err         error
 	calls       int
+	started     chan<- struct{}
+	release     <-chan struct{}
 }
 
 func (r *tokenRefresherStub) CanRefresh(account *Account) bool {
@@ -388,10 +511,38 @@ func (r *tokenRefresherStub) NeedsRefresh(account *Account, refreshWindowDuratio
 
 func (r *tokenRefresherStub) Refresh(ctx context.Context, account *Account) (map[string]any, error) {
 	r.calls++
+	if r.started != nil {
+		select {
+		case r.started <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if r.release != nil {
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
 	return r.credentials, nil
+}
+
+func reauthorizeAntigravityTestAccount(account *Account) {
+	account.Credentials = map[string]any{
+		"access_token":   "reauthorized-access",
+		"refresh_token":  "reauthorized-refresh",
+		"project_id":     "reauthorized-project",
+		"_token_version": int64(2),
+	}
+	account.Status = StatusActive
+	account.Schedulable = true
+	account.ErrorMessage = ""
+	account.TempUnschedulableUntil = nil
+	account.TempUnschedulableReason = ""
 }
 
 func (r *tokenRefresherStub) CacheKey(account *Account) string {
@@ -1388,6 +1539,170 @@ func TestPathA_RetryableErrorExhausted(t *testing.T) {
 	require.Equal(t, 0, repo.setErrorCalls) // 可重试错误不标记 error
 	require.Equal(t, 0, repo.updateCalls)   // 刷新失败不应更新
 	require.Equal(t, 0, invalidator.calls)  // 不应触发缓存失效
+}
+
+func TestPathA_AntigravityLateSuccessCannotOverwriteConcurrentReauthorization(t *testing.T) {
+	proxyID := int64(501)
+	account := &Account{
+		ID:          119,
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{
+			"access_token":   "attempted-access",
+			"refresh_token":  "attempted-refresh",
+			"project_id":     "attempted-project",
+			"_token_version": int64(1),
+		},
+	}
+	repo := &tokenRefreshAccountRepo{snapshotReads: true}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	invalidator := &tokenCacheInvalidatorStub{}
+	svc, _ := buildPathAService(repo, nil, invalidator)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	refresher := &tokenRefresherStub{
+		started: started,
+		release: release,
+		credentials: map[string]any{
+			"access_token":  "late-provider-access",
+			"refresh_token": "late-provider-refresh",
+			"project_id":    "late-provider-project",
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	}()
+
+	<-started
+	reauthorizeAntigravityTestAccount(account)
+	close(release)
+	err := <-done
+
+	require.ErrorIs(t, err, errRefreshSkipped)
+	require.Equal(t, 1, repo.conditionalSuccessCalls)
+	require.Zero(t, repo.updateCredentialsCalls)
+	require.Zero(t, repo.conditionalErrorCalls)
+	require.Zero(t, repo.conditionalTempCalls)
+	require.Zero(t, repo.conditionalExtraCalls)
+	require.Zero(t, invalidator.calls)
+	require.Equal(t, "reauthorized-refresh", account.GetCredential("refresh_token"))
+	require.Equal(t, "reauthorized-project", account.GetCredential("project_id"))
+}
+
+func TestPathA_AntigravityLatePermanentFailureCannotPoisonConcurrentReauthorization(t *testing.T) {
+	proxyID := int64(502)
+	account := &Account{
+		ID:          120,
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{
+			"access_token":   "attempted-access",
+			"refresh_token":  "attempted-refresh",
+			"project_id":     "attempted-project",
+			"_token_version": int64(1),
+		},
+		Extra: map[string]any{antigravityForceTokenRefreshExtraKey: true},
+	}
+	repo := &tokenRefreshAccountRepo{snapshotReads: true}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	invalidator := &tokenCacheInvalidatorStub{}
+	blocker := &tokenRefreshRuntimeBlocker{}
+	svc, _ := buildPathAService(repo, nil, invalidator)
+	svc.SetAccountRuntimeBlocker(blocker)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	refresher := &tokenRefresherStub{
+		started: started,
+		release: release,
+		err:     errors.New("invalid_grant: old authorization revoked"),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	}()
+
+	<-started
+	// Keep the refresh token identical so invalid_grant race recovery cannot
+	// hide the full-document CAS being exercised here.
+	account.Credentials = map[string]any{
+		"access_token":   "reauthorized-access",
+		"refresh_token":  "attempted-refresh",
+		"project_id":     "reauthorized-project",
+		"_token_version": int64(2),
+	}
+	close(release)
+	err := <-done
+
+	require.ErrorIs(t, err, errRefreshSkipped)
+	require.Equal(t, 1, repo.conditionalErrorCalls)
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.conditionalTempCalls)
+	require.Zero(t, repo.conditionalExtraCalls)
+	require.Zero(t, blocker.blockCalls)
+	require.Zero(t, invalidator.calls)
+	require.Equal(t, StatusActive, account.Status)
+	require.True(t, account.Schedulable)
+	require.Equal(t, "reauthorized-access", account.GetCredential("access_token"))
+	require.Equal(t, true, account.Extra[antigravityForceTokenRefreshExtraKey])
+}
+
+func TestPathA_AntigravityLateTransientFailureCannotCooldownConcurrentReauthorization(t *testing.T) {
+	proxyID := int64(503)
+	account := &Account{
+		ID:          121,
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{
+			"access_token":   "attempted-access",
+			"refresh_token":  "attempted-refresh",
+			"project_id":     "attempted-project",
+			"_token_version": int64(1),
+		},
+	}
+	repo := &tokenRefreshAccountRepo{snapshotReads: true}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	blocker := &tokenRefreshRuntimeBlocker{}
+	svc, _ := buildPathAService(repo, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	refresher := &tokenRefresherStub{
+		started: started,
+		release: release,
+		err:     errors.New("temporary provider timeout"),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	}()
+
+	<-started
+	account.Credentials = map[string]any{
+		"access_token":   "reauthorized-access",
+		"refresh_token":  "attempted-refresh",
+		"project_id":     "reauthorized-project",
+		"_token_version": int64(2),
+	}
+	close(release)
+	err := <-done
+
+	require.ErrorIs(t, err, errRefreshSkipped)
+	require.Equal(t, 1, repo.conditionalTempCalls)
+	require.Zero(t, repo.setTempUnschedCalls)
+	require.Zero(t, blocker.blockCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.Empty(t, account.TempUnschedulableReason)
+	require.Equal(t, "reauthorized-access", account.GetCredential("access_token"))
 }
 
 func TestPathA_GrokPermanentFailureCASLetsConcurrentAccountRepairWin(t *testing.T) {

@@ -145,15 +145,14 @@ describe('AccountTestModal', () => {
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
 
-  it('Antigravity 测试列表优先完整 Gemini 3.7 Flash 分层模型', async () => {
+  it('Antigravity 测试列表优先展示 Gemini 3.7 Flash 三档', async () => {
     getAvailableModels.mockResolvedValue([
       { id: 'gemini-2.5-flash', display_name: 'Gemini 2.5 Flash' },
-      { id: 'gemini-3.7-flash-tiered', display_name: 'Gemini 3.7 Flash' },
+      { id: 'gemini-3.7-flash-tiered', display_name: 'Gemini 3.7 Flash Tiered' },
       { id: 'gemini-3.7-flash-low', display_name: 'Gemini 3.7 Flash Low' },
       { id: 'gemini-3.7-flash-medium', display_name: 'Gemini 3.7 Flash Medium' },
-      { id: 'gemini-3.7-flash-high', display_name: 'Gemini 3.7 Flash High' },
       { id: 'gemini-3.7-flash', display_name: 'Gemini 3.7 Flash' },
-      { id: 'gemini-3.5-flash', display_name: 'Gemini 3.5 Flash' }
+      { id: 'gemini-3.5-flash-medium', display_name: 'Gemini 3.5 Flash Medium' }
     ])
 
     const wrapper = mountModal({
@@ -167,15 +166,21 @@ describe('AccountTestModal', () => {
     await flushPromises()
 
     expect((wrapper.vm as any).availableModels.map((model: { id: string }) => model.id)).toEqual([
-      'gemini-3.7-flash',
       'gemini-3.7-flash-high',
       'gemini-3.7-flash-medium',
       'gemini-3.7-flash-low',
-      'gemini-3.7-flash-tiered',
-      'gemini-3.5-flash',
+      'gemini-3.5-flash-medium',
       'gemini-2.5-flash'
     ])
-    expect((wrapper.vm as any).selectedModelId).toBe('gemini-3.7-flash')
+    expect((wrapper.vm as any).selectedModelId).toBe('gemini-3.7-flash-high')
+    expect(JSON.stringify((wrapper.vm as any).availableModels)).not.toContain('gemini-3.7-flash-tiered')
+    expect((wrapper.vm as any).availableModels.map((model: { display_name: string }) => model.display_name)).toEqual(
+      expect.arrayContaining([
+        'Gemini 3.7 Flash High',
+        'Gemini 3.7 Flash Medium',
+        'Gemini 3.7 Flash Low'
+      ])
+    )
   })
 
   it('grok 账号测试默认选择 Grok 模型', async () => {

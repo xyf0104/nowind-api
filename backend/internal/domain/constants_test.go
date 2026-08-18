@@ -66,18 +66,47 @@ func TestDefaultAntigravityModelMapping_Gemini31ProAliases(t *testing.T) {
 }
 
 func TestDefaultAntigravityModelMapping_Gemini36FlashModels(t *testing.T) {
-	for _, model := range []string{"gemini-3.6-flash", "gemini-3.6-flash-high", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"} {
-		if got := DefaultAntigravityModelMapping[model]; got != model {
-			t.Fatalf("expected %s to map to itself, got %q", model, got)
+	cases := map[string]string{
+		"gemini-3.6-flash":        AntigravityGemini36FlashMediumModel,
+		"gemini-3.6-flash-high":   "gemini-3.6-flash-high",
+		"gemini-3.6-flash-low":    "gemini-3.6-flash-low",
+		"gemini-3.6-flash-medium": AntigravityGemini36FlashMediumModel,
+		"gemini-3.6-flash-tiered": "gemini-3.6-flash-tiered",
+	}
+	for model, want := range cases {
+		if got := DefaultAntigravityModelMapping[model]; got != want {
+			t.Fatalf("expected %s to map to %q, got %q", model, want, got)
 		}
 	}
 }
 
 func TestDefaultAntigravityModelMapping_Gemini37FlashModels(t *testing.T) {
-	for _, model := range []string{"gemini-3.7-flash", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low", "gemini-3.7-flash-tiered"} {
+	for _, model := range []string{"gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low"} {
 		if got := DefaultAntigravityModelMapping[model]; got != model {
-			t.Fatalf("expected %s to map to itself, got %q", model, got)
+			t.Fatalf("expected public model %s to remain externally self-mapped, got %q", model, got)
 		}
+	}
+	for _, internalModel := range []string{"gemini-3.7-flash", AntigravityGemini37FlashTieredModel} {
+		if _, exists := DefaultAntigravityModelMapping[internalModel]; exists {
+			t.Fatalf("internal compatibility model %s must not be advertised", internalModel)
+		}
+	}
+}
+
+func TestDefaultAntigravityModelMapping_VerifiedCompatibilityAliases(t *testing.T) {
+	cases := map[string]string{
+		"gemini-3.5-flash":           AntigravityGemini35FlashMediumModel,
+		"gemini-3.5-flash-medium":    AntigravityGemini35FlashMediumModel,
+		"gemini-3.5-flash-low":       AntigravityGemini35FlashLowModel,
+		"claude-sonnet-4-6-thinking": "claude-sonnet-4-6",
+	}
+	for model, want := range cases {
+		if got := DefaultAntigravityModelMapping[model]; got != want {
+			t.Fatalf("expected %s to map to %q, got %q", model, want, got)
+		}
+	}
+	if _, exists := DefaultAntigravityModelMapping["gemini-3.5-flash-high"]; exists {
+		t.Fatal("gemini-3.5-flash-high must not be advertised without a verified upstream model")
 	}
 }
 

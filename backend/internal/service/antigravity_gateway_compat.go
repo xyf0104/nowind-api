@@ -252,6 +252,10 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 	thinkingEnabled := claudeRequest.Thinking != nil &&
 		(claudeRequest.Thinking.Type == "enabled" || claudeRequest.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	modelProfile := resolveAntigravityWrappedModelProfile(request.originalModel, mappedModel)
+	if modelProfile.upstreamModel != "" {
+		mappedModel = modelProfile.upstreamModel
+	}
 
 	if s.tokenProvider == nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
@@ -270,6 +274,10 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 		return nil, err
 	}
 	geminiBody, err := s.buildAntigravityCompatGeminiBody(ctx, request.claudeBody, &claudeRequest, projectID, mappedModel)
+	if err != nil {
+		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
+	}
+	geminiBody, err = applyAntigravityWrappedModelProfile(geminiBody, modelProfile)
 	if err != nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
 	}

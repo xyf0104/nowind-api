@@ -52,7 +52,13 @@ func (s *stubAntigravityUpstream) Do(req *http.Request, proxyURL string, account
 		return &http.Response{
 			StatusCode: http.StatusTooManyRequests,
 			Header:     http.Header{},
-			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Resource has been exhausted"}}`)),
+			Body: io.NopCloser(strings.NewReader(`{
+					"error": {
+						"code": 429,
+						"status": "RESOURCE_EXHAUSTED",
+						"message": "Resource has been exhausted (e.g. check quota)."
+					}
+				}`)),
 		}, nil
 	}
 	return &http.Response{
@@ -104,7 +110,7 @@ func (s *stubAntigravityAccountRepo) UpdateExtra(ctx context.Context, id int64, 
 	return nil
 }
 
-func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) {
+func TestAntigravityRetryLoop_URLLevel429FallsBackAndRemembersEndpoint(t *testing.T) {
 	t.Setenv(antigravityForwardBaseURLEnv, "")
 
 	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
@@ -151,16 +157,37 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 	require.NotNil(t, result)
 	require.NotNil(t, result.resp)
 	defer func() { _ = result.resp.Body.Close() }()
-	require.Equal(t, http.StatusTooManyRequests, result.resp.StatusCode)
-	require.True(t, handleErrorCalled)
-	require.Len(t, upstream.calls, antigravityMaxRetries)
-	for _, callURL := range upstream.calls {
-		require.True(t, strings.HasPrefix(callURL, base1))
-	}
+	require.Equal(t, http.StatusOK, result.resp.StatusCode)
+	require.False(t, handleErrorCalled)
+	require.Equal(t, []string{
+		base1 + "/v1internal:generateContent",
+		base2 + "/v1internal:generateContent",
+	}, upstream.calls)
+
+	// The successful endpoint is remembered for this account and token, so the
+	// next request does not pay the failed prod probe again.
+	result, err = svc.antigravityRetryLoop(antigravityRetryLoopParams{
+		prefix:         "[test]",
+		ctx:            context.Background(),
+		account:        account,
+		accessToken:    "token",
+		action:         "generateContent",
+		body:           []byte(`{"input":"test"}`),
+		httpUpstream:   upstream,
+		requestedModel: "claude-sonnet-4-5",
+		handleError: func(context.Context, string, *Account, int, http.Header, []byte, string, int64, string, bool) *handleModelRateLimitResult {
+			handleErrorCalled = true
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.resp.StatusCode)
+	require.Len(t, upstream.calls, 3)
+	require.True(t, strings.HasPrefix(upstream.calls[2], base2))
 
 	available := antigravity.DefaultURLAvailability.GetAvailableURLs()
 	require.NotEmpty(t, available)
-	require.Equal(t, base1, available[0])
+	require.Equal(t, base2, available[0])
 }
 
 // TestHandleUpstreamError_429_ModelRateLimit 测试 429 模型限流场景
@@ -1009,7 +1036,7 @@ func TestIsAntigravityAccountSwitchError(t *testing.T) {
 	}
 }
 
-func TestResolveAntigravityForwardBaseURL_DefaultDaily(t *testing.T) {
+func TestResolveAntigravityForwardBaseURL_DefaultProd(t *testing.T) {
 	t.Setenv(antigravityForwardBaseURLEnv, "")
 
 	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
@@ -1019,10 +1046,10 @@ func TestResolveAntigravityForwardBaseURL_DefaultDaily(t *testing.T) {
 
 	prodURL := "https://prod.test"
 	dailyURL := "https://daily.test"
-	antigravity.BaseURLs = []string{dailyURL, prodURL}
+	antigravity.BaseURLs = []string{prodURL, dailyURL}
 
 	resolved := resolveAntigravityForwardBaseURL()
-	require.Equal(t, dailyURL, resolved)
+	require.Equal(t, prodURL, resolved)
 }
 
 func TestAntigravityAccountSwitchError_Error(t *testing.T) {

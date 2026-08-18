@@ -129,6 +129,9 @@ type AntigravityGatewayService struct {
 	cache             GatewayCache // 用于模型级限流时清除粘性会话绑定
 	schedulerSnapshot *SchedulerSnapshotService
 	internal500Cache  Internal500CounterCache // INTERNAL 500 渐进惩罚计数器
+
+	endpointPreferenceMu sync.RWMutex
+	endpointPreferences  map[antigravityEndpointPreferenceKey]antigravityEndpointPreference
 }
 
 func (s *AntigravityGatewayService) upstreamErrorBodyReadLimit() int64 {
@@ -342,7 +345,7 @@ type TestConnectionResult struct {
 // 通过 antigravityRetryLoop 的只读 probe 模式发出一次真实上游请求，
 // 原样报告上游状态，但不读取或修改正式调度状态。
 func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
-
+	ctx = withAntigravityReadOnlyProbeContext(ctx)
 	// 获取 token
 	if s.tokenProvider == nil {
 		return nil, errors.New("antigravity token provider not configured")
@@ -362,6 +365,10 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 	if mappedModel == "" {
 		return nil, fmt.Errorf("model %s not in whitelist", modelID)
 	}
+	modelProfile := resolveAntigravityWrappedModelProfile(modelID, mappedModel)
+	if modelProfile.upstreamModel != "" {
+		mappedModel = modelProfile.upstreamModel
+	}
 
 	// 构建请求体
 	var requestBody []byte
@@ -370,6 +377,10 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 	} else {
 		requestBody, err = s.buildClaudeTestRequest(projectID, mappedModel)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+	requestBody, err = applyAntigravityWrappedModelProfile(requestBody, modelProfile)
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}

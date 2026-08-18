@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, syncUpstreamModelsMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
+  syncUpstreamModelsMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
 
@@ -28,7 +29,8 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      checkMixedChannelRisk: checkMixedChannelRiskMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      syncUpstreamModels: syncUpstreamModelsMock
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -315,6 +317,7 @@ function mountModal(account = buildAccount()) {
 describe('EditAccountModal', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
+    syncUpstreamModelsMock.mockReset()
   })
 
   it('reopening the same account rehydrates the OpenAI whitelist from props', async () => {
@@ -1236,6 +1239,50 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.antigravity_project_id).toBe(
       'updated-project'
     )
+  })
+
+  it('旧 Antigravity 3.7 内部映射在编辑界面只回显三档外部模型', () => {
+    const account = buildAntigravityAccount()
+    account.credentials.model_mapping = {
+      'gemini-3.7-flash': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-tiered': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-high': 'gemini-3.7-flash-tiered',
+      'gemini-2.5-flash': 'gemini-2.5-flash'
+    }
+
+    const wrapper = mountModal(account)
+    const mappings = (wrapper.vm as any).antigravityModelMappings
+
+    expect(mappings).toEqual([
+      { from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high' },
+      { from: 'gemini-3.7-flash-medium', to: 'gemini-3.7-flash-medium' },
+      { from: 'gemini-3.7-flash-low', to: 'gemini-3.7-flash-low' },
+      { from: 'gemini-2.5-flash', to: 'gemini-2.5-flash' }
+    ])
+    expect(JSON.stringify(mappings)).not.toContain('gemini-3.7-flash-tiered')
+  })
+
+  it('Antigravity 上游同步只把 3.7 Flash 三档加入编辑界面', async () => {
+    syncUpstreamModelsMock.mockResolvedValue({
+      models: [
+        'gemini-3.7-flash-tiered',
+        'gemini-3.7-flash',
+        'gemini-3.7-flash-high',
+        'gemini-2.5-flash'
+      ]
+    })
+    const wrapper = mountModal(buildAntigravityAccount())
+
+    await (wrapper.vm as any).syncAntigravityUpstreamModels()
+    const mappings = (wrapper.vm as any).antigravityModelMappings
+
+    expect(mappings).toEqual([
+      { from: 'gemini-2.5-flash', to: 'gemini-2.5-flash' },
+      { from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high' },
+      { from: 'gemini-3.7-flash-medium', to: 'gemini-3.7-flash-medium' },
+      { from: 'gemini-3.7-flash-low', to: 'gemini-3.7-flash-low' }
+    ])
+    expect(JSON.stringify(mappings)).not.toContain('gemini-3.7-flash-tiered')
   })
 
   it('clears Antigravity configured project fallback when input is empty', async () => {

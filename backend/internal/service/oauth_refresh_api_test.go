@@ -441,9 +441,9 @@ func TestRefreshIfNeeded_AntigravitySuccessCASLetsConcurrentReauthorizationWin(t
 	executor := &refreshAPIExecutorStub{
 		needsRefresh: true,
 		credentials: map[string]any{
-			"access_token":  "stale-provider-access",
-			"refresh_token": "stale-provider-refresh",
-			"project_id":    "stale-provider-project",
+			"access_token":  "provider-access",
+			"refresh_token": "provider-refresh",
+			"project_id":    "provider-project",
 		},
 	}
 

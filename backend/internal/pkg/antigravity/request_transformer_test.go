@@ -565,3 +565,25 @@ func TestTransformClaudeToGeminiWithOptions_PreservesWebSearchAlongsideFunctions
 	require.Equal(t, "get_weather", req.Request.Tools[0].FunctionDeclarations[0].Name)
 	require.NotNil(t, req.Request.Tools[1].GoogleSearch)
 }
+
+func TestTransformClaudeToGemini_Gemini37TieredUsesReasoningRequestShape(t *testing.T) {
+	temperature := 0.7
+	topP := 0.8
+	claudeReq := &ClaudeRequest{
+		Model:       "gemini-3.7-flash-high",
+		Messages:    []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+		Temperature: &temperature,
+		TopP:        &topP,
+	}
+
+	body, err := TransformClaudeToGemini(claudeReq, "project-37", "gemini-3.7-flash-tiered")
+
+	require.NoError(t, err)
+	var request V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &request))
+	require.Nil(t, request.Request.ToolConfig)
+	require.NotNil(t, request.Request.GenerationConfig)
+	require.Empty(t, request.Request.GenerationConfig.StopSequences)
+	require.Nil(t, request.Request.GenerationConfig.Temperature)
+	require.Nil(t, request.Request.GenerationConfig.TopP)
+}

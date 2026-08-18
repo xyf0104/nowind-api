@@ -249,29 +249,106 @@ func TestAccountRepository_UpdateGrokOAuthCredentialsIfUnchanged_UsesExactAttemp
 	require.Equal(t, &proxyID, exec.execArgs[0][5])
 }
 
-func TestAccountRepository_UpdateAntigravityOAuthCredentialsIfUnchanged_UsesPlatformAndExactAttemptState(t *testing.T) {
-	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
-	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+func TestAccountRepository_AntigravityRefreshMutationsUseExactAttemptStateAndAtomicOutbox(t *testing.T) {
 	proxyID := int64(37)
+	expectedCredentials := map[string]any{
+		"access_token":   "attempted-access",
+		"refresh_token":  "attempted-refresh",
+		"project_id":     "attempted-project",
+		"_token_version": int64(11),
+	}
 
-	applied, err := repo.UpdateAntigravityOAuthCredentialsIfUnchanged(
-		context.Background(),
-		104,
-		map[string]any{"refresh_token": "attempted", "_token_version": int64(19)},
-		&proxyID,
-		map[string]any{"refresh_token": "rotated", "_token_version": int64(20)},
-	)
+	tests := []struct {
+		name   string
+		mutate func(context.Context, *accountRepository) (bool, error)
+		check  func(*testing.T, *recordingSQLExecutor)
+	}{
+		{
+			name: "success",
+			mutate: func(ctx context.Context, repo *accountRepository) (bool, error) {
+				return repo.UpdateAntigravityOAuthCredentialsIfUnchanged(
+					ctx,
+					42,
+					expectedCredentials,
+					&proxyID,
+					map[string]any{"refresh_token": "rotated", "_token_version": int64(12)},
+				)
+			},
+			check: func(t *testing.T, exec *recordingSQLExecutor) {
+				normalized := normalizeSQLWhitespace(exec.execQueries[0])
+				require.Contains(t, normalized, "credentials = $1::jsonb")
+				require.Contains(t, normalized, "credentials = $5::jsonb")
+				require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $6")
+				require.Equal(t, service.PlatformAntigravity, exec.execArgs[0][2])
+				require.Equal(t, &proxyID, exec.execArgs[0][5])
+			},
+		},
+		{
+			name: "permanent failure",
+			mutate: func(ctx context.Context, repo *accountRepository) (bool, error) {
+				return repo.SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(
+					ctx, 42, expectedCredentials, &proxyID, "revoked",
+				)
+			},
+			check: func(t *testing.T, exec *recordingSQLExecutor) {
+				normalized := normalizeSQLWhitespace(exec.execQueries[0])
+				require.Contains(t, normalized, "credentials = $7::jsonb")
+				require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $8")
+				require.Equal(t, service.PlatformAntigravity, exec.execArgs[0][3])
+				require.Equal(t, &proxyID, exec.execArgs[0][7])
+			},
+		},
+		{
+			name: "transient failure",
+			mutate: func(ctx context.Context, repo *accountRepository) (bool, error) {
+				return repo.SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
+					ctx, 42, expectedCredentials, &proxyID, time.Now().Add(10*time.Minute), "retry exhausted",
+				)
+			},
+			check: func(t *testing.T, exec *recordingSQLExecutor) {
+				normalized := normalizeSQLWhitespace(exec.execQueries[0])
+				require.Contains(t, normalized, "credentials = $7::jsonb")
+				require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $8")
+				require.Equal(t, service.PlatformAntigravity, exec.execArgs[0][3])
+				require.Equal(t, &proxyID, exec.execArgs[0][7])
+			},
+		},
+		{
+			name: "force refresh cleanup",
+			mutate: func(ctx context.Context, repo *accountRepository) (bool, error) {
+				return repo.UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(
+					ctx,
+					42,
+					expectedCredentials,
+					&proxyID,
+					map[string]any{"antigravity_force_token_refresh": false},
+				)
+			},
+			check: func(t *testing.T, exec *recordingSQLExecutor) {
+				normalized := normalizeSQLWhitespace(exec.execQueries[0])
+				require.Contains(t, normalized, "extra = COALESCE(a.extra, '{}'::jsonb) || $1::jsonb")
+				require.Contains(t, normalized, "credentials = $5::jsonb")
+				require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $6")
+				require.Equal(t, service.PlatformAntigravity, exec.execArgs[0][2])
+				require.Equal(t, &proxyID, exec.execArgs[0][5])
+			},
+		},
+	}
 
-	require.NoError(t, err)
-	require.True(t, applied)
-	require.Len(t, exec.execQueries, 1)
-	normalized := normalizeSQLWhitespace(exec.execQueries[0])
-	require.Contains(t, normalized, "credentials = $5::jsonb")
-	require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $6")
-	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
-	require.Len(t, exec.execArgs[0], 7)
-	require.Equal(t, service.PlatformAntigravity, exec.execArgs[0][2])
-	require.Equal(t, &proxyID, exec.execArgs[0][5])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &recordingSQLExecutor{result: rowsAffectedResult(0)}
+			repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+			applied, err := tt.mutate(context.Background(), repo)
+
+			require.NoError(t, err)
+			require.False(t, applied)
+			require.Len(t, exec.execQueries, 1)
+			require.Contains(t, normalizeSQLWhitespace(exec.execQueries[0]), "INSERT INTO scheduler_outbox")
+			tt.check(t, exec)
+		})
+	}
 }
 
 func TestAccountRepository_ListOAuthRefreshCandidatePage_SQLFilter(t *testing.T) {

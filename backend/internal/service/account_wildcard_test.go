@@ -497,7 +497,8 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 		Platform: PlatformAntigravity,
 		Credentials: map[string]any{
 			"model_mapping": map[string]any{
-				"gemini-3-pro-high": "gemini-3.1-pro-high",
+				"gemini-3-pro-high":     "gemini-3.1-pro-high",
+				"gemini-3.5-flash-high": "gemini-3.5-flash-high",
 			},
 		},
 	}
@@ -513,9 +514,34 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
 	}
 	for _, model := range []string{"gemini-3.7-flash", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low", "gemini-3.7-flash-tiered"} {
-		if mapping[model] != model {
-			t.Fatalf("expected %s passthrough to be auto-filled, got: %q", model, mapping[model])
+		if mapping[model] != domain.AntigravityGemini37FlashTieredModel {
+			t.Fatalf("expected %s to use the verified tiered model, got: %q", model, mapping[model])
 		}
+	}
+	if mapping["gemini-3.6-flash"] != domain.AntigravityGemini36FlashMediumModel {
+		t.Fatalf("expected Gemini 3.6 base alias to use medium, got: %q", mapping["gemini-3.6-flash"])
+	}
+	if mapping["gemini-3.5-flash"] != domain.AntigravityGemini35FlashMediumModel ||
+		mapping["gemini-3.5-flash-low"] != domain.AntigravityGemini35FlashLowModel {
+		t.Fatalf("unexpected Gemini 3.5 compatibility aliases: %#v", mapping)
+	}
+	if _, exists := mapping["gemini-3.5-flash-high"]; exists {
+		t.Fatal("legacy Gemini 3.5 high self-mapping must be removed")
+	}
+}
+
+func TestAccountGetModelMapping_AntigravityPreservesCustomGemini35HighTarget(t *testing.T) {
+	account := &Account{
+		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gemini-3.5-flash-high": "gemini-3.6-flash-high",
+			},
+		},
+	}
+
+	if got := account.GetModelMapping()["gemini-3.5-flash-high"]; got != "gemini-3.6-flash-high" {
+		t.Fatalf("expected deliberate custom target to survive, got %q", got)
 	}
 }
 

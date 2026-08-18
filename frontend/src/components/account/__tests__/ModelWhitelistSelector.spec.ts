@@ -29,6 +29,7 @@ vi.mock('@/composables/useClipboard', () => ({
 }))
 
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
+import { accountsAPI } from '@/api/admin/accounts'
 
 const originalInnerWidth = window.innerWidth
 const originalInnerHeight = window.innerHeight
@@ -36,12 +37,13 @@ const originalVisualViewportDescriptor = Object.getOwnPropertyDescriptor(window,
 
 let wrapper: VueWrapper | undefined
 
-function mountSelector() {
+function mountSelector(props: Record<string, unknown> = {}) {
   wrapper = mount(ModelWhitelistSelector, {
     attachTo: document.body,
     props: {
       modelValue: [],
-      platform: 'openai'
+      platform: 'openai',
+      ...props
     },
     global: {
       stubs: {
@@ -161,6 +163,32 @@ describe('ModelWhitelistSelector', () => {
 
     expect(selector.emitted('update:modelValue')).toEqual([[['gpt-5.6-sol']]])
     expect(copyToClipboard).not.toHaveBeenCalled()
+  })
+
+  it('Antigravity 上游同步把内部 3.7 模型转换成三档外部模型', async () => {
+    vi.spyOn(accountsAPI, 'syncUpstreamModels').mockResolvedValue({
+      models: [
+        'gemini-3.7-flash-tiered',
+        'gemini-3.7-flash',
+        'gemini-3.7-flash-high'
+      ]
+    } as any)
+    const selector = mountSelector({ platform: 'antigravity', accountId: 7 })
+    const syncButton = selector
+      .findAll('button')
+      .find((button) => button.text().includes('admin.accounts.syncUpstreamModels'))
+
+    if (!syncButton) throw new Error('Sync upstream button not found')
+    await syncButton.trigger('click')
+    await flushPromises()
+
+    const updates = selector.emitted('update:modelValue') || []
+    expect(updates[updates.length - 1]).toEqual([[
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash-medium',
+      'gemini-3.7-flash-low'
+    ]])
+    expect(JSON.stringify(updates)).not.toContain('gemini-3.7-flash-tiered')
   })
 
   it('uses the larger upper space and constrains max-height near the viewport bottom', async () => {

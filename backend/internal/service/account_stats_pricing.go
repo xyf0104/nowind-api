@@ -29,6 +29,25 @@ func resolveAccountStatsCost(
 	totalCost float64,
 	serviceTier string,
 ) *float64 {
+	return resolveAccountStatsCostForModels(
+		ctx, channelService, billingService, accountID, groupID,
+		upstreamModel, "", tokens, requestCount, totalCost, serviceTier,
+	)
+}
+
+func resolveAccountStatsCostForModels(
+	ctx context.Context,
+	channelService *ChannelService,
+	billingService *BillingService,
+	accountID int64,
+	groupID int64,
+	upstreamModel string,
+	requestedModel string,
+	tokens UsageTokens,
+	requestCount int,
+	totalCost float64,
+	serviceTier string,
+) *float64 {
 	if channelService == nil || upstreamModel == "" {
 		return nil
 	}
@@ -40,7 +59,11 @@ func resolveAccountStatsCost(
 	platform := channelService.GetGroupPlatform(ctx, groupID)
 
 	// 优先级 1：自定义规则（始终尝试）
-	if cost := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount); cost != nil {
+	pricingModels := []string{upstreamModel}
+	if requestedModel = strings.TrimSpace(requestedModel); requestedModel != "" && !strings.EqualFold(requestedModel, upstreamModel) {
+		pricingModels = append(pricingModels, requestedModel)
+	}
+	if cost := tryCustomRulesForModels(channel, accountID, groupID, platform, pricingModels, tokens, requestCount); cost != nil {
 		return cost
 	}
 
@@ -92,16 +115,31 @@ func tryCustomRules(
 	channel *Channel, accountID, groupID int64,
 	platform, model string, tokens UsageTokens, requestCount int,
 ) *float64 {
-	modelLower := strings.ToLower(model)
+	return tryCustomRulesForModels(channel, accountID, groupID, platform, []string{model}, tokens, requestCount)
+}
+
+func tryCustomRulesForModels(
+	channel *Channel, accountID, groupID int64,
+	platform string, models []string, tokens UsageTokens, requestCount int,
+) *float64 {
+	modelCandidates := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model == "" {
+			continue
+		}
+		modelCandidates = append(modelCandidates, model)
+	}
 	for _, rule := range channel.AccountStatsPricingRules {
 		if !matchAccountStatsRule(&rule, accountID, groupID) {
 			continue
 		}
-		pricing := findPricingForModel(rule.Pricing, platform, modelLower)
-		if pricing == nil {
-			continue // 规则匹配但模型不在规则定价中，继续下一条
+		for _, model := range modelCandidates {
+			pricing := findPricingForModel(rule.Pricing, platform, model)
+			if pricing != nil {
+				return calculateStatsCost(pricing, tokens, requestCount)
+			}
 		}
-		return calculateStatsCost(pricing, tokens, requestCount)
 	}
 	return nil
 }
@@ -249,7 +287,7 @@ func applyAccountStatsCost(
 	if usageLog != nil && usageLog.ServiceTier != nil {
 		serviceTier = *usageLog.ServiceTier
 	}
-	usageLog.AccountStatsCost = resolveAccountStatsCost(
-		ctx, cs, bs, accountID, groupID, model, tokens, requestCount, totalCost, serviceTier,
+	usageLog.AccountStatsCost = resolveAccountStatsCostForModels(
+		ctx, cs, bs, accountID, groupID, model, requestedModel, tokens, requestCount, totalCost, serviceTier,
 	)
 }

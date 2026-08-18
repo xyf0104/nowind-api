@@ -69,8 +69,16 @@ const (
 	SubscriptionStatusSuspended = "suspended"
 )
 
-// AntigravityGemini31ProAgentModel is the upstream route for Gemini 3.1 Pro High.
-const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
+const (
+	// AntigravityGemini31ProAgentModel is the upstream route for Gemini 3.1 Pro High.
+	AntigravityGemini31ProAgentModel = "gemini-pro-agent"
+
+	// These model IDs are verified against Antigravity's live daily model catalog.
+	AntigravityGemini35FlashMediumModel = "gemini-3.5-flash-low"
+	AntigravityGemini35FlashLowModel    = "gemini-3.5-flash-extra-low"
+	AntigravityGemini36FlashMediumModel = "gemini-3.6-flash-medium"
+	AntigravityGemini37FlashTieredModel = "gemini-3.7-flash-tiered"
+)
 
 // DefaultAntigravityModelMapping 是 Antigravity 平台的默认模型映射
 // 当账号未配置 model_mapping 时使用此默认值
@@ -84,6 +92,7 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"claude-opus-4-6":            "claude-opus-4-6-thinking", // 简称映射
 	"claude-opus-4-5-thinking":   "claude-opus-4-6-thinking", // 迁移旧模型
 	"claude-sonnet-4-6":          "claude-sonnet-4-6",
+	"claude-sonnet-4-6-thinking": "claude-sonnet-4-6",
 	"claude-sonnet-4-5":          "claude-sonnet-4-5",
 	"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
 	// Claude 详细版本 ID 映射
@@ -118,27 +127,23 @@ var DefaultAntigravityModelMapping = map[string]string{
 	// Gemini 3.1 image preview 映射
 	"gemini-3.1-flash-image-preview": "gemini-3.1-flash-image",
 	// Gemini 3.6 Flash tiered models
-	"gemini-3.6-flash":        "gemini-3.6-flash",
+	"gemini-3.6-flash":        AntigravityGemini36FlashMediumModel,
 	"gemini-3.6-flash-high":   "gemini-3.6-flash-high",
 	"gemini-3.6-flash-low":    "gemini-3.6-flash-low",
-	"gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
+	"gemini-3.6-flash-medium": AntigravityGemini36FlashMediumModel,
 	"gemini-3.6-flash-tiered": "gemini-3.6-flash-tiered",
-	// Gemini 3.7 Flash tiered models
-	"gemini-3.7-flash":        "gemini-3.7-flash",
+	// Gemini 3.7 only exposes the three public reasoning tiers. Runtime routing
+	// rewrites these identities to AntigravityGemini37FlashTieredModel.
 	"gemini-3.7-flash-high":   "gemini-3.7-flash-high",
 	"gemini-3.7-flash-medium": "gemini-3.7-flash-medium",
 	"gemini-3.7-flash-low":    "gemini-3.7-flash-low",
-	"gemini-3.7-flash-tiered": "gemini-3.7-flash-tiered",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",
-	// Gemini 3.5 Flash 白名单
-	"gemini-3.5-flash":        "gemini-3.5-flash",
-	"gemini-3.5-flash-medium": "gemini-3.5-flash-medium",
-	"gemini-3.5-flash-high":   "gemini-3.5-flash-high",
-	"gemini-3.5-flash-low":    "gemini-3.5-flash-low",
-	// Claude Sonnet 4.6 Thinking（显式映射）
-	"claude-sonnet-4-6-thinking": "claude-sonnet-4-6-thinking",
+	// Gemini 3.5 public tiers map to the unusual live upstream IDs.
+	"gemini-3.5-flash":        AntigravityGemini35FlashMediumModel,
+	"gemini-3.5-flash-medium": AntigravityGemini35FlashMediumModel,
+	"gemini-3.5-flash-low":    AntigravityGemini35FlashLowModel,
 	// 其他官方模型
 	"gpt-oss-120b-medium": "gpt-oss-120b-medium",
 }

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	mathrand "math/rand"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -47,58 +46,79 @@ type antigravityRetryLoopResult struct {
 	resp *http.Response
 }
 
-// antigravityReadOnlyProbe performs exactly one upstream request without
-// consulting or mutating runtime scheduling state. It deliberately bypasses
-// local cooldowns, retry/error policies, credits state, sticky sessions and
-// health counters so an administrator sees the upstream response as-is.
+// antigravityReadOnlyProbe performs at most one request per compatible endpoint
+// without consulting or mutating runtime scheduling state. It deliberately
+// bypasses local cooldowns, retry/error policies, credits state, sticky sessions
+// and health counters so an administrator sees the upstream response as-is.
 func (s *AntigravityGatewayService) antigravityReadOnlyProbe(p antigravityRetryLoopParams) (*antigravityRetryLoopResult, error) {
-	baseURL := resolveAntigravityForwardBaseURL()
-	if baseURL == "" {
-		return nil, errors.New("no antigravity forward base url configured")
-	}
 	if p.account == nil {
 		return nil, errors.New("antigravity probe account is nil")
 	}
 	if p.httpUpstream == nil {
 		return nil, errors.New("antigravity probe upstream is not configured")
 	}
-
-	upstreamReq, err := antigravity.NewAPIRequestWithURL(p.ctx, baseURL, p.action, p.accessToken, p.body)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)
-	if err != nil {
-		return nil, fmt.Errorf("upstream probe request failed: %w", err)
-	}
-	if resp == nil {
-		return nil, errors.New("upstream returned nil response")
-	}
-	return &antigravityRetryLoopResult{resp: resp}, nil
-}
-
-// resolveAntigravityForwardBaseURL 解析转发用 base URL。
-//
-// 默认使用生产端点 cloudcode-pa.googleapis.com（antigravity.BaseURLs 的首个地址，
-// 与账号 OAuth 登录/测试连接所用的 antigravity.BaseURL 一致）。
-//
-// 历史上这里改用 ForwardBaseURLs()（把 daily/sandbox 排到首位）并默认取首个地址，
-// 导致网关把带生产 OAuth token 的请求发到 daily-cloudcode-pa.sandbox.googleapis.com，
-// 上游拒绝 → 账号被 401「Invalid bearer token」/502 打入临时不可调度且无法恢复
-// （见 #3611 / #2962）。后台「测试连接」用的是生产端点，所以「测试成功但网关 401」。
-//
-// daily/sandbox 端点仅供内部联调，需显式设置
-// GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily（或 sandbox）才启用。
-func resolveAntigravityForwardBaseURL() string {
-	baseURLs := antigravity.BaseURLs
+	baseURLs := configuredAntigravityForwardBaseURLs()
 	if len(baseURLs) == 0 {
-		return ""
+		return nil, errors.New("no antigravity forward base url configured")
 	}
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv(antigravityForwardBaseURLEnv)))
-	if (mode == "daily" || mode == "sandbox") && len(baseURLs) > 1 {
-		return baseURLs[1]
+
+	var endpointExhaustionResponse *http.Response
+	for index, baseURL := range baseURLs {
+		upstreamReq, err := antigravity.NewAPIRequestWithURL(p.ctx, baseURL, p.action, p.accessToken, p.body)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)
+		if err != nil {
+			if ctxErr := p.ctx.Err(); ctxErr != nil {
+				if endpointExhaustionResponse != nil {
+					_ = endpointExhaustionResponse.Body.Close()
+				}
+				return nil, ctxErr
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if endpointExhaustionResponse != nil {
+					_ = endpointExhaustionResponse.Body.Close()
+				}
+				return nil, err
+			}
+			if endpointExhaustionResponse != nil {
+				return &antigravityRetryLoopResult{resp: endpointExhaustionResponse}, nil
+			}
+			return nil, fmt.Errorf("upstream probe request failed: %w", err)
+		}
+		if resp == nil {
+			if endpointExhaustionResponse != nil {
+				return &antigravityRetryLoopResult{resp: endpointExhaustionResponse}, nil
+			}
+			return nil, errors.New("upstream returned nil response")
+		}
+		if resp.StatusCode < http.StatusBadRequest {
+			if endpointExhaustionResponse != nil {
+				_ = endpointExhaustionResponse.Body.Close()
+			}
+			return &antigravityRetryLoopResult{resp: resp}, nil
+		}
+		respBody := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		if endpointExhaustionResponse != nil {
+			return &antigravityRetryLoopResult{resp: endpointExhaustionResponse}, nil
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if index < len(baseURLs)-1 {
+			reason := classifyAntigravityEndpointFallback(baseURL, resp.StatusCode, respBody)
+			if reason != antigravityEndpointFallbackNone {
+				if reason == antigravityEndpointFallbackExhausted {
+					endpointExhaustionResponse = resp
+				} else {
+					_ = resp.Body.Close()
+				}
+				continue
+			}
+		}
+		return &antigravityRetryLoopResult{resp: resp}, nil
 	}
-	return baseURLs[0]
+	return nil, errors.New("all antigravity probe endpoints failed")
 }
 
 // smartRetryAction 智能重试的处理结果
@@ -523,14 +543,19 @@ func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopP
 		}
 	}
 
-	baseURL := resolveAntigravityForwardBaseURL()
-	if baseURL == "" {
+	availableURLs := s.antigravityForwardBaseURLs(p)
+	if len(availableURLs) == 0 {
 		return nil, errors.New("no antigravity forward base url configured")
 	}
-	availableURLs := []string{baseURL}
 
 	var resp *http.Response
 	var usedBaseURL string
+	var endpointExhaustionResponse *http.Response
+	defer func() {
+		if endpointExhaustionResponse != nil && endpointExhaustionResponse != resp {
+			_ = endpointExhaustionResponse.Body.Close()
+		}
+	}()
 	logBody := p.settingService != nil && p.settingService.cfg != nil && p.settingService.cfg.Gateway.LogUpstreamErrorBody
 	maxBytes := 2048
 	if p.settingService != nil && p.settingService.cfg != nil && p.settingService.cfg.Gateway.LogUpstreamErrorBodyMaxBytes > 0 {
@@ -565,6 +590,12 @@ urlFallbackLoop:
 				err = errors.New("upstream returned nil response")
 			}
 			if err != nil {
+				if ctxErr := p.ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil, err
+				}
 				safeErr := sanitizeUpstreamErrorMessage(err.Error())
 				appendOpsUpstreamError(p.c, OpsUpstreamErrorEvent{
 					Platform:           p.account.Platform,
@@ -575,9 +606,9 @@ urlFallbackLoop:
 					Kind:               "request_error",
 					Message:            safeErr,
 				})
-				if shouldAntigravityFallbackToNextURL(err, 0) && urlIdx < len(availableURLs)-1 {
-					logger.LegacyPrintf("service.antigravity_gateway", "%s URL fallback (connection error): %s -> %s", p.prefix, baseURL, availableURLs[urlIdx+1])
-					continue urlFallbackLoop
+				if endpointExhaustionResponse != nil {
+					resp = endpointExhaustionResponse
+					break urlFallbackLoop
 				}
 				if attempt < antigravityMaxRetries {
 					logger.LegacyPrintf("service.antigravity_gateway", "%s status=request_failed retry=%d/%d error=%v", p.prefix, attempt, antigravityMaxRetries, err)
@@ -596,6 +627,43 @@ urlFallbackLoop:
 			if resp.StatusCode >= 400 {
 				respBody := s.readUpstreamErrorBody(resp)
 				_ = resp.Body.Close()
+				resp = &http.Response{
+					StatusCode: resp.StatusCode,
+					Header:     resp.Header.Clone(),
+					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				}
+
+				// A failed compatibility probe must not replace the original prod
+				// endpoint response or enter account/model error handling.
+				if endpointExhaustionResponse != nil {
+					_ = resp.Body.Close()
+					resp = endpointExhaustionResponse
+					break urlFallbackLoop
+				}
+
+				// Endpoint negotiation must happen before error policies so a token
+				// rejected by one Google endpoint cannot bench an otherwise healthy
+				// account that succeeds on the other endpoint.
+				if urlIdx < len(availableURLs)-1 {
+					reason := classifyAntigravityEndpointFallback(baseURL, resp.StatusCode, respBody)
+					if reason != antigravityEndpointFallbackNone {
+						logger.LegacyPrintf("service.antigravity_gateway", "%s endpoint fallback status=%d: %s -> %s", p.prefix, resp.StatusCode, baseURL, availableURLs[urlIdx+1])
+						if reason == antigravityEndpointFallbackExhausted {
+							endpointExhaustionResponse = resp
+						} else {
+							s.forgetAntigravityForwardBaseURL(p, baseURL)
+							_ = resp.Body.Close()
+						}
+						resp = nil
+						continue urlFallbackLoop
+					}
+				}
+
+				// This exact response is an endpoint compatibility failure, not an
+				// account/model quota signal. Return it without persistent cooldowns.
+				if resp.StatusCode == http.StatusTooManyRequests && isBareAntigravityEndpointExhaustion(respBody) {
+					break urlFallbackLoop
+				}
 
 				if overagesInjected && shouldMarkCreditsExhausted(resp, respBody, nil) {
 					modelKey := resolveCreditsOveragesModelKey(p.ctx, p.account, "", p.requestedModel)
@@ -723,6 +791,7 @@ urlFallbackLoop:
 
 	if resp != nil && resp.StatusCode < 400 && usedBaseURL != "" {
 		antigravity.DefaultURLAvailability.MarkSuccess(usedBaseURL)
+		s.rememberAntigravityForwardBaseURL(p, usedBaseURL)
 	}
 
 	// 成功响应时清零 INTERNAL 500 连续失败计数器（覆盖所有成功路径，含 smart retry）
@@ -747,36 +816,7 @@ func shouldRetryAntigravityError(statusCode int) bool {
 // "Resource has been exhausted" 是 URL/节点级别限流，切换 URL 可能成功
 // "exhausted your capacity on this model" 是账户/模型配额限流，切换 URL 无效
 func isURLLevelRateLimit(body []byte) bool {
-	// 快速检查：包含 "Resource has been exhausted" 且不包含 "capacity on this model"
-	bodyStr := string(body)
-	return strings.Contains(bodyStr, "Resource has been exhausted") &&
-		!strings.Contains(bodyStr, "capacity on this model")
-}
-
-// isAntigravityConnectionError 判断是否为连接错误（网络超时、DNS 失败、连接拒绝）
-func isAntigravityConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// 检查超时错误
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-
-	// 检查连接错误（DNS 失败、连接拒绝）
-	var opErr *net.OpError
-	return errors.As(err, &opErr)
-}
-
-// shouldAntigravityFallbackToNextURL 判断是否应切换到下一个 URL
-// 仅连接错误和 HTTP 429 触发 URL 降级
-func shouldAntigravityFallbackToNextURL(err error, statusCode int) bool {
-	if isAntigravityConnectionError(err) {
-		return true
-	}
-	return statusCode == http.StatusTooManyRequests
+	return isBareAntigravityEndpointExhaustion(body)
 }
 
 // getSessionID 从 gin.Context 获取 session_id（用于日志追踪）
@@ -1216,6 +1256,12 @@ func (s *AntigravityGatewayService) handleUpstreamError(
 	requestedModel string,
 	groupID int64, sessionHash string, isStickySession bool,
 ) *handleModelRateLimitResult {
+	// Google's exact bare RESOURCE_EXHAUSTED response is an endpoint
+	// compatibility failure. The retry loop may already have tried daily; it
+	// must never become a persistent account or model cooldown here.
+	if statusCode == http.StatusTooManyRequests && isBareAntigravityEndpointExhaustion(body) {
+		return nil
+	}
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return nil

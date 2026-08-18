@@ -51,7 +51,7 @@ type AccountHandler struct {
 	oauthService            *service.OAuthService
 	openaiOAuthService      *service.OpenAIOAuthService
 	geminiOAuthService      *service.GeminiOAuthService
-	antigravityOAuthService *service.AntigravityOAuthService
+	antigravityOAuthService antigravityAccountTokenRefresher
 	grokOAuthService        service.GrokOAuthTokenService
 	rateLimitService        *service.RateLimitService
 	accountUsageService     *service.AccountUsageService
@@ -64,6 +64,11 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+}
+
+type antigravityAccountTokenRefresher interface {
+	RefreshAccountToken(ctx context.Context, account *service.Account) (*service.AntigravityTokenInfo, error)
+	BuildAccountCredentials(tokenInfo *service.AntigravityTokenInfo) map[string]any
 }
 
 type activeConcurrencyAccountLister interface {
@@ -1395,24 +1400,41 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			}
 		}
 
-		// 如果 project_id 获取失败，更新凭证但不标记为 error
-		if tokenInfo.ProjectIDMissing {
-			updatedAccount, updateErr := h.adminService.UpdateAccount(ctx, account.ID, &service.UpdateAccountInput{
-				Credentials: newCredentials,
-			})
-			if updateErr != nil {
-				return nil, "", fmt.Errorf("failed to update credentials: %w", updateErr)
-			}
-			h.adminService.EnsureAntigravityPrivacy(ctx, updatedAccount)
-			return updatedAccount, "missing_project_id_temporary", nil
+		applier, ok := h.adminService.(service.AntigravityOAuthRefreshApplier)
+		if !ok {
+			return nil, "", errors.New("Antigravity OAuth refresh CAS persistence is not configured")
+		}
+		updatedAccount, applied, applyErr := applier.ApplyAntigravityOAuthRefreshIfUnchanged(ctx, account, newCredentials)
+		if applyErr != nil {
+			return nil, "", applyErr
+		}
+		if !applied {
+			// A newer interactive authorization or proxy edit won the race. Treat
+			// its durable row as authoritative and do not invalidate its token,
+			// clear its state, or run privacy work with the stale identity.
+			return updatedAccount, "", nil
 		}
 
 		// 成功获取到 project_id，如果之前是 missing_project_id 错误则清除
 		if account.Status == service.StatusError && strings.Contains(account.ErrorMessage, "missing_project_id:") {
-			if _, clearErr := h.adminService.ClearAccountError(ctx, account.ID); clearErr != nil {
+			clearedAccount, clearErr := h.adminService.ClearAccountError(ctx, account.ID)
+			if clearErr != nil {
 				return nil, "", fmt.Errorf("failed to clear account error: %w", clearErr)
 			}
+			if clearedAccount != nil {
+				updatedAccount = clearedAccount
+			}
 		}
+
+		// The project ID participates in the Antigravity cache key. Invalidate
+		// both snapshots after the CAS commit, including ProjectIDMissing where
+		// the old project may have been retained.
+		h.invalidateOAuthTokenSnapshots(ctx, account, updatedAccount)
+		h.adminService.EnsureAntigravityPrivacy(ctx, updatedAccount)
+		if tokenInfo.ProjectIDMissing {
+			return updatedAccount, "missing_project_id_temporary", nil
+		}
+		return updatedAccount, "", nil
 	} else if account.Platform == service.PlatformGrok {
 		if h.grokOAuthService == nil {
 			return nil, "", fmt.Errorf("grok oauth service is not configured")
@@ -1472,6 +1494,20 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	h.adminService.EnsureAntigravityPrivacy(ctx, updatedAccount)
 
 	return updatedAccount, "", nil
+}
+
+func (h *AccountHandler) invalidateOAuthTokenSnapshots(ctx context.Context, accounts ...*service.Account) {
+	if h == nil || h.tokenCacheInvalidator == nil {
+		return
+	}
+	for _, account := range accounts {
+		if account == nil || !account.IsOAuth() {
+			continue
+		}
+		if err := h.tokenCacheInvalidator.InvalidateToken(ctx, account); err != nil {
+			log.Printf("[WARN] Failed to invalidate token cache for account %d: %v", account.ID, err)
+		}
+	}
 }
 
 // Refresh handles refreshing account credentials

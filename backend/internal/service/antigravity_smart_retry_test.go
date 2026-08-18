@@ -101,7 +101,13 @@ func TestHandleSmartRetry_URLLevelRateLimit(t *testing.T) {
 		Platform: PlatformAntigravity,
 	}
 
-	respBody := []byte(`{"error":{"message":"Resource has been exhausted"}}`)
+	respBody := []byte(`{
+		"error": {
+			"code": 429,
+			"status": "RESOURCE_EXHAUSTED",
+			"message": "Resource has been exhausted (e.g. check quota)."
+		}
+	}`)
 	resp := &http.Response{
 		StatusCode: http.StatusTooManyRequests,
 		Header:     http.Header{},

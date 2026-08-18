@@ -2720,7 +2720,9 @@ import {
   commonErrorCodes,
   buildModelMappingObject,
   splitModelMappingObject,
-  isValidWildcardPattern
+  isValidWildcardPattern,
+  normalizeAntigravityMappingsForDisplay,
+  normalizeAntigravityModelsForDisplay
 } from '@/composables/useModelWhitelist'
 
 interface Props {
@@ -3488,16 +3490,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     // 从 model_mapping 读取映射配置
     const rawAgMapping = credentials?.model_mapping as Record<string, string> | undefined
     if (rawAgMapping && typeof rawAgMapping === 'object') {
-      const entries = Object.entries(rawAgMapping)
       // 无论是白名单样式(key===value)还是真正的映射，都统一转换为映射列表
-      antigravityModelMappings.value = entries.map(([from, to]) => ({ from, to }))
+      antigravityModelMappings.value = normalizeAntigravityMappingsForDisplay(rawAgMapping)
     } else {
       // 兼容旧数据：从 model_whitelist 读取，转换为映射格式
       const rawWhitelist = credentials?.model_whitelist
       if (Array.isArray(rawWhitelist) && rawWhitelist.length > 0) {
-        antigravityModelMappings.value = rawWhitelist
-          .map((v) => String(v).trim())
-          .filter((v) => v.length > 0)
+        antigravityModelMappings.value = normalizeAntigravityModelsForDisplay(
+          rawWhitelist.map((v) => String(v))
+        )
           .map((m) => ({ from: m, to: m }))
       } else {
         antigravityModelMappings.value = []
@@ -3721,7 +3722,7 @@ const syncAntigravityUpstreamModels = async () => {
   isSyncingAntigravityUpstream.value = true
   try {
     const result = await adminAPI.accounts.syncUpstreamModels(props.account.id)
-    const upstreamModels = result.models.map((model) => model.trim()).filter(Boolean)
+    const upstreamModels = normalizeAntigravityModelsForDisplay(result.models)
     if (upstreamModels.length === 0) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
       return

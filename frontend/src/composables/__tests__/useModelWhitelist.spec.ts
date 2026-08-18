@@ -5,12 +5,19 @@ vi.mock('@/api/admin/accounts', () => ({
 }))
 
 import {
+  allModels,
   buildModelMappingObject,
+  fetchAntigravityDefaultMappings,
   getDefaultSelectedModelsByPlatform,
   getModelsByPlatform,
   getPresetMappingsByPlatform,
+  normalizeAntigravityMappingsForDisplay,
+  normalizeAntigravityModelsForDisplay,
   splitModelMappingObject,
 } from '../useModelWhitelist'
+import { getAntigravityDefaultModelMapping } from '@/api/admin/accounts'
+
+const getAntigravityDefaultModelMappingMock = vi.mocked(getAntigravityDefaultModelMapping)
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -114,13 +121,11 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3.1-pro')
   })
 
-  it('Antigravity 白名单和映射包含完整 Gemini 3.7 Flash 分层模型', () => {
+  it('Antigravity 对外只展示 Gemini 3.7 Flash 三档自映射', () => {
     const models = [
-      'gemini-3.7-flash',
       'gemini-3.7-flash-high',
       'gemini-3.7-flash-medium',
-      'gemini-3.7-flash-low',
-      'gemini-3.7-flash-tiered'
+      'gemini-3.7-flash-low'
     ]
     const whitelist = getModelsByPlatform('antigravity')
     const presets = getPresetMappingsByPlatform('antigravity')
@@ -133,10 +138,68 @@ describe('useModelWhitelist', () => {
         ])
       )
     }
+    expect(whitelist).not.toContain('gemini-3.7-flash')
+    expect(whitelist).not.toContain('gemini-3.7-flash-tiered')
+    expect(allModels.map((model) => model.value)).toEqual(expect.arrayContaining(models))
+    expect(allModels.map((model) => model.value)).not.toContain('gemini-3.7-flash')
+    expect(allModels.map((model) => model.value)).not.toContain('gemini-3.7-flash-tiered')
+    expect(
+      presets.some((preset) =>
+        preset.from.includes('gemini-3.7-flash-tiered') ||
+        preset.to.includes('gemini-3.7-flash-tiered')
+      )
+    ).toBe(false)
 
     expect(buildModelMappingObject('whitelist', models, [])).toEqual(
       Object.fromEntries(models.map((model) => [model, model]))
     )
+  })
+
+  it('把 Antigravity 3.7 内部模型名规范化为不重复的三档外部模型', () => {
+    expect(normalizeAntigravityModelsForDisplay([
+      'gemini-2.5-flash',
+      'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash'
+    ])).toEqual([
+      'gemini-2.5-flash',
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash-medium',
+      'gemini-3.7-flash-low'
+    ])
+  })
+
+  it('旧 Antigravity 3.7 映射只回显三档自映射', () => {
+    expect(normalizeAntigravityMappingsForDisplay({
+      'gemini-3.7-flash': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-tiered': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-high': 'gemini-3.7-flash-tiered',
+      'gemini-2.5-flash': 'gemini-2.5-flash'
+    })).toEqual([
+      { from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high' },
+      { from: 'gemini-3.7-flash-medium', to: 'gemini-3.7-flash-medium' },
+      { from: 'gemini-3.7-flash-low', to: 'gemini-3.7-flash-low' },
+      { from: 'gemini-2.5-flash', to: 'gemini-2.5-flash' }
+    ])
+  })
+
+  it('默认映射 API 返回内部模型名时不会泄漏到创建账号界面', async () => {
+    getAntigravityDefaultModelMappingMock.mockResolvedValue({
+      'gemini-3.7-flash': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-high': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-medium': 'gemini-3.7-flash-tiered',
+      'gemini-3.7-flash-low': 'gemini-3.7-flash-tiered'
+    })
+
+    const mappings = await fetchAntigravityDefaultMappings()
+
+    expect(mappings).toEqual([
+      { from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high' },
+      { from: 'gemini-3.7-flash-medium', to: 'gemini-3.7-flash-medium' },
+      { from: 'gemini-3.7-flash-low', to: 'gemini-3.7-flash-low' }
+    ])
+    expect(JSON.stringify(mappings)).not.toContain('gemini-3.7-flash-tiered')
+    expect(JSON.stringify(mappings)).not.toContain('"gemini-3.7-flash"')
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

@@ -57,6 +57,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// 应用 thinking 模式自动后缀：如果 thinking 开启且目标是 claude-sonnet-4-5，自动改为 thinking 版本
 	thinkingEnabled := claudeReq.Thinking != nil && (claudeReq.Thinking.Type == "enabled" || claudeReq.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	modelProfile := resolveAntigravityWrappedModelProfile(originalModel, mappedModel)
+	if modelProfile.upstreamModel != "" {
+		mappedModel = modelProfile.upstreamModel
+	}
 	billingModel := mappedModel
 
 	// 获取 access_token
@@ -92,6 +96,13 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	geminiBody, err := antigravity.TransformClaudeToGeminiWithOptions(&claudeReq, projectID, mappedModel, transformOpts)
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
+	}
+	geminiBody, err = applyAntigravityWrappedModelProfile(geminiBody, modelProfile)
+	if err != nil {
+		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
+	}
+	if actualUpstreamModel := antigravityWrappedRequestModel(geminiBody); actualUpstreamModel != "" {
+		billingModel = actualUpstreamModel
 	}
 
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
@@ -180,6 +191,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 				logger.LegacyPrintf("service.antigravity_gateway", "Antigravity account %d: detected signature-related 400, retrying once (%s)", account.ID, stage.name)
 
 				retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, mappedModel, s.getClaudeTransformOptions(ctx))
+				if txErr != nil {
+					continue
+				}
+				retryGeminiBody, txErr = applyAntigravityWrappedModelProfile(retryGeminiBody, modelProfile)
 				if txErr != nil {
 					continue
 				}
@@ -304,6 +319,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					logger.LegacyPrintf("service.antigravity_gateway", "Antigravity account %d: detected budget_tokens constraint error, retrying with rectified budget (budget_tokens=%d, max_tokens=%d)", account.ID, BudgetRectifyBudgetTokens, BudgetRectifyMaxTokens)
 
 					retryGeminiBody, txErr := antigravity.TransformClaudeToGeminiWithOptions(&retryClaudeReq, projectID, mappedModel, transformOpts)
+					if txErr == nil {
+						retryGeminiBody, txErr = applyAntigravityWrappedModelProfile(retryGeminiBody, modelProfile)
+					}
 					if txErr == nil {
 						retryResult, retryErr := s.antigravityRetryLoop(antigravityRetryLoopParams{
 							ctx:             ctx,

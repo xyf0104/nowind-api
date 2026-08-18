@@ -593,7 +593,7 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 	if a.Credentials == nil {
 		// Antigravity 平台使用默认映射
 		if a.Platform == domain.PlatformAntigravity {
-			return domain.DefaultAntigravityModelMapping
+			return defaultAntigravityRuntimeModelMapping()
 		}
 		if a.Platform == domain.PlatformGrok {
 			return xai.DefaultModelMapping()
@@ -604,7 +604,7 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 	if len(rawMapping) == 0 {
 		// Antigravity 平台使用默认映射
 		if a.Platform == domain.PlatformAntigravity {
-			return domain.DefaultAntigravityModelMapping
+			return defaultAntigravityRuntimeModelMapping()
 		}
 		if a.Platform == domain.PlatformGrok {
 			return xai.DefaultModelMapping()
@@ -624,17 +624,12 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 				"gemini-3-flash",
 				"gemini-3.1-pro-high",
 				"gemini-3.1-pro-low",
-				"gemini-3.6-flash",
 				"gemini-3.6-flash-high",
 				"gemini-3.6-flash-low",
 				"gemini-3.6-flash-medium",
 				"gemini-3.6-flash-tiered",
-				"gemini-3.7-flash",
-				"gemini-3.7-flash-high",
-				"gemini-3.7-flash-medium",
-				"gemini-3.7-flash-low",
-				"gemini-3.7-flash-tiered",
 			})
+			applyAntigravityVerifiedAliases(result)
 			applyAntigravityGemini31ProAliases(result)
 		}
 		return result
@@ -642,7 +637,7 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 
 	// Antigravity 平台使用默认映射
 	if a.Platform == domain.PlatformAntigravity {
-		return domain.DefaultAntigravityModelMapping
+		return defaultAntigravityRuntimeModelMapping()
 	}
 	if a.Platform == domain.PlatformGrok {
 		return xai.DefaultModelMapping()
@@ -699,6 +694,53 @@ func ensureAntigravityDefaultPassthrough(mapping map[string]string, model string
 func ensureAntigravityDefaultPassthroughs(mapping map[string]string, models []string) {
 	for _, model := range models {
 		ensureAntigravityDefaultPassthrough(mapping, model)
+	}
+}
+
+func defaultAntigravityRuntimeModelMapping() map[string]string {
+	mapping := make(map[string]string, len(domain.DefaultAntigravityModelMapping)+2)
+	for requestedModel, upstreamModel := range domain.DefaultAntigravityModelMapping {
+		mapping[requestedModel] = upstreamModel
+	}
+	applyAntigravityVerifiedAliases(mapping)
+	return mapping
+}
+
+func applyAntigravityVerifiedAliases(mapping map[string]string) {
+	const removedGemini35HighAlias = "gemini-3.5-flash-high"
+	if target, exists := mapping[removedGemini35HighAlias]; exists && target == removedGemini35HighAlias {
+		delete(mapping, removedGemini35HighAlias)
+	}
+
+	aliases := []struct {
+		model  string
+		target string
+	}{
+		{model: "claude-sonnet-4-6-thinking", target: "claude-sonnet-4-6"},
+		{model: "gemini-3.5-flash", target: domain.AntigravityGemini35FlashMediumModel},
+		{model: "gemini-3.5-flash-medium", target: domain.AntigravityGemini35FlashMediumModel},
+		{model: "gemini-3.5-flash-low", target: domain.AntigravityGemini35FlashLowModel},
+		{model: "gemini-3.6-flash", target: domain.AntigravityGemini36FlashMediumModel},
+		{model: "gemini-3.7-flash", target: domain.AntigravityGemini37FlashTieredModel},
+		{model: "gemini-3.7-flash-high", target: domain.AntigravityGemini37FlashTieredModel},
+		{model: "gemini-3.7-flash-medium", target: domain.AntigravityGemini37FlashTieredModel},
+		{model: "gemini-3.7-flash-low", target: domain.AntigravityGemini37FlashTieredModel},
+		{model: "gemini-3.7-flash-tiered", target: domain.AntigravityGemini37FlashTieredModel},
+	}
+
+	for _, alias := range aliases {
+		current, exists := mapping[alias.model]
+		if exists {
+			// Repair legacy built-in passthroughs while preserving deliberate custom targets.
+			if current == alias.model {
+				mapping[alias.model] = alias.target
+			}
+			continue
+		}
+		if mappingHasWildcardForModel(mapping, alias.model) {
+			continue
+		}
+		mapping[alias.model] = alias.target
 	}
 }
 

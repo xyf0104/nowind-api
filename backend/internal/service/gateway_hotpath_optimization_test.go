@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	gocache "github.com/patrickmn/go-cache"
@@ -623,6 +624,39 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 	models := svcOK.GetAvailableModels(context.Background(), nil, "")
 	require.Equal(t, []string{"claude-3-5-sonnet", "gemini-2.5-pro"}, models)
 	require.Equal(t, int64(1), okRepo.listAllCalls.Load())
+}
+
+func TestGetAvailableModels_HidesAntigravityGemini37InternalRoutes(t *testing.T) {
+	repo := &modelsListAccountRepoStub{
+		all: []Account{
+			{
+				ID:       37,
+				Platform: PlatformAntigravity,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"gemini-3.7-flash-high":                    domain.AntigravityGemini37FlashTieredModel,
+						"gemini-3.7-flash-medium":                  domain.AntigravityGemini37FlashTieredModel,
+						"gemini-3.7-flash-low":                     domain.AntigravityGemini37FlashTieredModel,
+						"gemini-3.7-flash":                         domain.AntigravityGemini37FlashTieredModel,
+						domain.AntigravityGemini37FlashTieredModel: domain.AntigravityGemini37FlashTieredModel,
+					},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), nil, PlatformAntigravity)
+
+	require.Contains(t, models, "gemini-3.7-flash-high")
+	require.Contains(t, models, "gemini-3.7-flash-medium")
+	require.Contains(t, models, "gemini-3.7-flash-low")
+	require.NotContains(t, models, "gemini-3.7-flash")
+	require.NotContains(t, models, domain.AntigravityGemini37FlashTieredModel)
 }
 
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {

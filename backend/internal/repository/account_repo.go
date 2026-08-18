@@ -1508,19 +1508,6 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	return r.updateOAuthCredentialsIfUnchanged(ctx, id, service.PlatformGrok, expectedCredentials, expectedProxyID, credentials)
 }
 
-// UpdateAntigravityOAuthCredentialsIfUnchanged is the Antigravity counterpart
-// to the Grok refresh CAS. It compares the full credential document and proxy
-// used by the provider call, so a concurrent interactive re-authorization wins.
-func (r *accountRepository) UpdateAntigravityOAuthCredentialsIfUnchanged(
-	ctx context.Context,
-	id int64,
-	expectedCredentials map[string]any,
-	expectedProxyID *int64,
-	credentials map[string]any,
-) (bool, error) {
-	return r.updateOAuthCredentialsIfUnchanged(ctx, id, service.PlatformAntigravity, expectedCredentials, expectedProxyID, credentials)
-}
-
 func (r *accountRepository) updateOAuthCredentialsIfUnchanged(
 	ctx context.Context,
 	id int64,

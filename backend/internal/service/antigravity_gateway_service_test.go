@@ -334,6 +334,7 @@ func TestResolveAntigravityProjectID(t *testing.T) {
 }
 
 func TestAntigravityGatewayService_TestConnection_ReadOnlyProbe(t *testing.T) {
+	t.Setenv(antigravityForwardBaseURLEnv, "prod")
 	const modelID = "gemini-2.5-flash"
 	rateLimitBody := `{
 		"error": {

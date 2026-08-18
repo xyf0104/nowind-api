@@ -305,7 +305,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 
 	// 5. 设置版本号 + 更新 DB
 	if newCredentials != nil {
-		newCredentials["_token_version"] = nextOAuthTokenVersion(attemptedAccount.Credentials)
+		newCredentials["_token_version"] = nextOAuthRefreshTokenVersion(attemptedAccount.Credentials)
 
 		var updateIfUnchanged func(context.Context, int64, map[string]any, *int64, map[string]any) (bool, error)
 		switch {
@@ -328,7 +328,13 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		}
 
 		if updateIfUnchanged != nil {
-			applied, updateErr := updateIfUnchanged(ctx, freshAccount.ID, attemptedAccount.Credentials, attemptedAccount.ProxyID, newCredentials)
+			applied, updateErr := updateIfUnchanged(
+				ctx,
+				freshAccount.ID,
+				attemptedAccount.Credentials,
+				attemptedAccount.ProxyID,
+				newCredentials,
+			)
 			if updateErr != nil {
 				slog.Error("oauth_refresh_update_failed",
 					"account_id", freshAccount.ID,
@@ -428,6 +434,15 @@ func (api *OAuthRefreshAPI) loadOAuthDurableAccountAfterPersist(parent context.C
 	}
 
 	return api.accountRepo.GetByID(ctx, accountID)
+}
+
+func nextOAuthRefreshTokenVersion(credentials map[string]any) int64 {
+	current := (&Account{Credentials: credentials}).GetCredentialAsInt64("_token_version")
+	next := time.Now().UnixMilli()
+	if next <= current {
+		return current + 1
+	}
+	return next
 }
 
 // isInvalidGrantError 检查错误是否为 invalid_grant

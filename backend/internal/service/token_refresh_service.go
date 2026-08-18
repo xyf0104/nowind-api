@@ -52,6 +52,15 @@ type GrokOAuthRefreshMutationRepository interface {
 	SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, until time.Time, reason string) (bool, error)
 }
 
+// AntigravityOAuthRefreshMutationRepository protects every background state
+// mutation that follows an Antigravity refresh attempt. A late result from an
+// old identity must not quarantine or rewrite a concurrently reauthorized row.
+type AntigravityOAuthRefreshMutationRepository interface {
+	SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, errorMsg string) (bool, error)
+	SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, until time.Time, reason string) (bool, error)
+	UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, updates map[string]any) (bool, error)
+}
+
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
@@ -986,50 +995,41 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		if isNonRetryableRefreshError(err) {
 			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
 			isGrokOAuth := account.IsGrokOAuth()
-			if !isGrokOAuth {
+			isAntigravityOAuth := isAntigravityOAuthRefreshAccount(account)
+			conditionallyProtected := isGrokOAuth || isAntigravityOAuth
+			if !conditionallyProtected {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
-			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
-			persistentlyBlocked := false
-			var setErr error
-			if isGrokOAuth {
-				conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
-				if !ok {
-					return &providerConfigurationRefreshError{
-						err: errors.New("grok OAuth conditional refresh mutation repository is not configured"),
-					}
-				} else {
-					persistentlyBlocked, setErr = conditionalRepo.SetGrokOAuthRefreshErrorIfCredentialsUnchanged(
-						ctx,
-						account.ID,
-						account.Credentials,
-						account.ProxyID,
-						errorMsg,
-					)
-					if setErr == nil && !persistentlyBlocked {
-						slog.Info("token_refresh.grok_error_status_skipped_stale_credentials", "account_id", account.ID)
-						return errRefreshSkipped
-					}
-				}
-			} else {
-				setErr = s.accountRepo.SetError(ctx, account.ID, errorMsg)
-				persistentlyBlocked = setErr == nil
+			persistentlyBlocked, setErr := s.persistRefreshErrorState(ctx, account, errorMsg)
+			if setErr == nil && conditionallyProtected && !persistentlyBlocked {
+				slog.Info("token_refresh.error_status_skipped_stale_credentials",
+					"account_id", account.ID,
+					"platform", account.Platform,
+				)
+				return errRefreshSkipped
 			}
 			if setErr != nil {
 				slog.Error("token_refresh.set_error_status_failed",
 					"account_id", account.ID,
 					"error", setErr,
 				)
-				if isGrokOAuth {
+				if conditionallyProtected {
+					var configurationErr *providerConfigurationRefreshError
+					if errors.As(setErr, &configurationErr) {
+						return configurationErr
+					}
 					return &providerCycleContainmentRefreshError{
-						err: fmt.Errorf("failed to conditionally persist Grok OAuth refresh failure: %w", setErr),
+						err: fmt.Errorf("failed to conditionally persist %s OAuth refresh failure: %w", account.Platform, setErr),
 					}
 				}
-			} else if isGrokOAuth && persistentlyBlocked {
+			} else if conditionallyProtected && persistentlyBlocked {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
+			if isAntigravityOAuth && persistentlyBlocked {
+				s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
+			}
 			cacheInvalidationFailed := false
-			if account.Type == AccountTypeOAuth && (!isGrokOAuth || persistentlyBlocked) {
+			if account.Type == AccountTypeOAuth && (!conditionallyProtected || persistentlyBlocked) {
 				if s.cacheInvalidator == nil {
 					cacheInvalidationFailed = true
 				} else if invalidateErr := s.cacheInvalidator.InvalidateToken(ctx, account); invalidateErr != nil {
@@ -1087,31 +1087,25 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	if lastErr != nil {
 		reason += ": " + logredact.RedactText(lastErr.Error())
 	}
-	if account.IsGrokOAuth() {
-		conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
-		if !ok {
-			return &providerConfigurationRefreshError{
-				err: errors.New("grok OAuth conditional refresh mutation repository is not configured"),
-			}
-		}
-		applied, setErr := conditionalRepo.SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
-			ctx,
-			account.ID,
-			account.Credentials,
-			account.ProxyID,
-			until,
-			reason,
-		)
+	if account.IsGrokOAuth() || isAntigravityOAuthRefreshAccount(account) {
+		applied, setErr := s.persistRefreshTempUnschedulable(ctx, account, until, reason)
 		if setErr != nil {
 			slog.Warn("token_refresh.set_temp_unschedulable_failed",
 				"account_id", account.ID,
 				"error", setErr,
 			)
+			var configurationErr *providerConfigurationRefreshError
+			if errors.As(setErr, &configurationErr) {
+				return configurationErr
+			}
 			return &providerCycleContainmentRefreshError{
-				err: fmt.Errorf("failed to conditionally persist Grok OAuth refresh cooldown: %w", setErr),
+				err: fmt.Errorf("failed to conditionally persist %s OAuth refresh cooldown: %w", account.Platform, setErr),
 			}
 		} else if !applied {
-			slog.Info("token_refresh.grok_temp_unschedulable_skipped_stale_credentials", "account_id", account.ID)
+			slog.Info("token_refresh.temp_unschedulable_skipped_stale_credentials",
+				"account_id", account.ID,
+				"platform", account.Platform,
+			)
 			return errRefreshSkipped
 		} else {
 			s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
@@ -1137,6 +1131,90 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	}
 
 	return lastErr
+}
+
+func isAntigravityOAuthRefreshAccount(account *Account) bool {
+	return account != nil && account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth
+}
+
+func (s *TokenRefreshService) persistRefreshErrorState(ctx context.Context, account *Account, errorMsg string) (bool, error) {
+	switch {
+	case account.IsGrokOAuth():
+		conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
+		if !ok {
+			return false, &providerConfigurationRefreshError{
+				err: errors.New("grok OAuth conditional refresh mutation repository is not configured"),
+			}
+		}
+		return conditionalRepo.SetGrokOAuthRefreshErrorIfCredentialsUnchanged(
+			ctx,
+			account.ID,
+			account.Credentials,
+			account.ProxyID,
+			errorMsg,
+		)
+	case isAntigravityOAuthRefreshAccount(account):
+		conditionalRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
+		if !ok {
+			return false, &providerConfigurationRefreshError{
+				err: errors.New("Antigravity OAuth conditional refresh mutation repository is not configured"),
+			}
+		}
+		return conditionalRepo.SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(
+			ctx,
+			account.ID,
+			account.Credentials,
+			account.ProxyID,
+			errorMsg,
+		)
+	default:
+		if err := s.accountRepo.SetError(ctx, account.ID, errorMsg); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+}
+
+func (s *TokenRefreshService) persistRefreshTempUnschedulable(
+	ctx context.Context,
+	account *Account,
+	until time.Time,
+	reason string,
+) (bool, error) {
+	switch {
+	case account.IsGrokOAuth():
+		conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
+		if !ok {
+			return false, &providerConfigurationRefreshError{
+				err: errors.New("grok OAuth conditional refresh mutation repository is not configured"),
+			}
+		}
+		return conditionalRepo.SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
+			ctx,
+			account.ID,
+			account.Credentials,
+			account.ProxyID,
+			until,
+			reason,
+		)
+	case isAntigravityOAuthRefreshAccount(account):
+		conditionalRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
+		if !ok {
+			return false, &providerConfigurationRefreshError{
+				err: errors.New("Antigravity OAuth conditional refresh mutation repository is not configured"),
+			}
+		}
+		return conditionalRepo.SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
+			ctx,
+			account.ID,
+			account.Credentials,
+			account.ProxyID,
+			until,
+			reason,
+		)
+	default:
+		return false, errors.New("conditional OAuth refresh cooldown requested for an unsupported account")
+	}
 }
 
 func (s *TokenRefreshService) retryBackoff(accountID int64, attempt int) time.Duration {
@@ -1264,11 +1342,33 @@ func (s *TokenRefreshService) clearAntigravityForceTokenRefresh(ctx context.Cont
 		return
 	}
 	updates := clearAntigravityForceTokenRefreshExtra()
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+	conditionalRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
+	if !ok {
+		slog.Warn("token_refresh.clear_antigravity_force_refresh_missing_cas",
+			"account_id", account.ID,
+			"outcome", outcome,
+		)
+		return
+	}
+	applied, err := conditionalRepo.UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(
+		ctx,
+		account.ID,
+		account.Credentials,
+		account.ProxyID,
+		updates,
+	)
+	if err != nil {
 		slog.Warn("token_refresh.clear_antigravity_force_refresh_failed",
 			"account_id", account.ID,
 			"outcome", outcome,
 			"error", err,
+		)
+		return
+	}
+	if !applied {
+		slog.Info("token_refresh.clear_antigravity_force_refresh_skipped_stale_credentials",
+			"account_id", account.ID,
+			"outcome", outcome,
 		)
 		return
 	}

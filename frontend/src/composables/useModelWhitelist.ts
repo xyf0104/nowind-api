@@ -100,16 +100,101 @@ const antigravityModels = [
   'gemini-3.1-pro-high',
   'gemini-3.1-pro-low',
   'gemini-3-pro-image',
-  // Gemini 3.7 系列
-  'gemini-3.7-flash',
+  // Gemini 3.5/3.6/3.7 分档（基础别名仅后端兼容，不作为主要选项）
+  'gemini-3.5-flash-medium',
+  'gemini-3.5-flash-low',
+  'gemini-3.6-flash-high',
+  'gemini-3.6-flash-medium',
+  'gemini-3.6-flash-low',
+  'gemini-3.6-flash-tiered',
   'gemini-3.7-flash-high',
   'gemini-3.7-flash-medium',
   'gemini-3.7-flash-low',
-  'gemini-3.7-flash-tiered',
   // 其他
   'gpt-oss-120b-medium',
   'tab_flash_lite_preview'
 ]
+
+export const ANTIGRAVITY_GEMINI_37_PUBLIC_MODELS = [
+  'gemini-3.7-flash-high',
+  'gemini-3.7-flash-medium',
+  'gemini-3.7-flash-low'
+] as const
+
+const antigravityGemini37InternalModels = new Set([
+  'gemini-3.7-flash',
+  'gemini-3.7-flash-tiered'
+])
+
+const antigravityGemini37PublicModelSet = new Set<string>(ANTIGRAVITY_GEMINI_37_PUBLIC_MODELS)
+
+export function isAntigravityGemini37InternalModel(model: string): boolean {
+  return antigravityGemini37InternalModels.has(model.trim())
+}
+
+export function normalizeAntigravityModelsForDisplay(models: string[]): string[] {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+
+  const append = (model: string) => {
+    if (!model || seen.has(model)) return
+    seen.add(model)
+    normalized.push(model)
+  }
+
+  for (const rawModel of models) {
+    const model = rawModel.trim()
+    if (!model) continue
+
+    if (isAntigravityGemini37InternalModel(model)) {
+      ANTIGRAVITY_GEMINI_37_PUBLIC_MODELS.forEach(append)
+      continue
+    }
+
+    append(model)
+  }
+
+  return normalized
+}
+
+export function normalizeAntigravityMappingsForDisplay(
+  modelMapping: Record<string, unknown> | ModelMappingEntry[]
+): ModelMappingEntry[] {
+  const entries = Array.isArray(modelMapping)
+    ? modelMapping.map(({ from, to }) => [from, to] as const)
+    : Object.entries(modelMapping)
+  const normalized = new Map<string, string>()
+
+  for (const [rawFrom, rawTo] of entries) {
+    if (typeof rawTo !== 'string') continue
+    const from = rawFrom.trim()
+    const to = rawTo.trim()
+    if (!from || !to) continue
+
+    if (isAntigravityGemini37InternalModel(from)) {
+      for (const publicModel of ANTIGRAVITY_GEMINI_37_PUBLIC_MODELS) {
+        if (!normalized.has(publicModel)) {
+          normalized.set(
+            publicModel,
+            isAntigravityGemini37InternalModel(to) ? publicModel : to
+          )
+        }
+      }
+      continue
+    }
+
+    if (isAntigravityGemini37InternalModel(to)) {
+      if (antigravityGemini37PublicModelSet.has(from)) {
+        normalized.set(from, from)
+      }
+      continue
+    }
+
+    normalized.set(from, to)
+  }
+
+  return Array.from(normalized, ([from, to]) => ({ from, to }))
+}
 
 // 智谱 GLM
 const zhipuModels = [
@@ -255,10 +340,11 @@ const perplexityModels = [
 ]
 
 // 所有模型（去重）
-const allModelsList: string[] = [
+const allModelsList: string[] = Array.from(new Set([
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...antigravityModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -274,7 +360,7 @@ const allModelsList: string[] = [
   ...sparkModels,
   ...hunyuanModels,
   ...perplexityModels
-]
+]))
 
 // 转换为下拉选项格式
 export const allModels = allModelsList.map(m => ({ value: m, label: m }))
@@ -371,11 +457,9 @@ const antigravityPresetMappings = [
   { label: '3.1-Flash-Image透传', from: 'gemini-3.1-flash-image', to: 'gemini-3.1-flash-image', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
   { label: '3-Pro-Image→3.1', from: 'gemini-3-pro-image', to: 'gemini-3.1-flash-image', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
   { label: '3-Flash透传', from: 'gemini-3-flash', to: 'gemini-3-flash', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
-  { label: '3.7-Flash透传', from: 'gemini-3.7-flash', to: 'gemini-3.7-flash', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
-  { label: '3.7-Flash-High透传', from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
-  { label: '3.7-Flash-Medium透传', from: 'gemini-3.7-flash-medium', to: 'gemini-3.7-flash-medium', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
-  { label: '3.7-Flash-Low透传', from: 'gemini-3.7-flash-low', to: 'gemini-3.7-flash-low', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
-  { label: '3.7-Flash-Tiered透传', from: 'gemini-3.7-flash-tiered', to: 'gemini-3.7-flash-tiered', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
+  { label: '3.7 Flash High', from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
+  { label: '3.7 Flash Medium', from: 'gemini-3.7-flash-medium', to: 'gemini-3.7-flash-medium', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
+  { label: '3.7 Flash Low', from: 'gemini-3.7-flash-low', to: 'gemini-3.7-flash-low', color: 'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400' },
   { label: '2.5-Flash-Lite透传', from: 'gemini-2.5-flash-lite', to: 'gemini-2.5-flash-lite', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400' },
   // 精确映射
   { label: 'Sonnet 4.6', from: 'claude-sonnet-4-6', to: 'claude-sonnet-4-6', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400' },
@@ -412,7 +496,7 @@ export async function fetchAntigravityDefaultMappings(): Promise<{ from: string;
   }
   try {
     const mapping = await getAntigravityDefaultModelMapping()
-    _antigravityDefaultMappingsCache = Object.entries(mapping).map(([from, to]) => ({ from, to }))
+    _antigravityDefaultMappingsCache = normalizeAntigravityMappingsForDisplay(mapping)
   } catch (e) {
     console.warn('[fetchAntigravityDefaultMappings] API failed, using empty fallback', e)
     _antigravityDefaultMappingsCache = []

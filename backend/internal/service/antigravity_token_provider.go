@@ -35,6 +35,23 @@ type AntigravityTokenProvider struct {
 	tempUnschedCache        TempUnschedCache // 用于同步更新 Redis 临时不可调度缓存
 }
 
+type antigravityReadOnlyProbeContextKey struct{}
+
+func withAntigravityReadOnlyProbeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, antigravityReadOnlyProbeContextKey{}, true)
+}
+
+func isAntigravityReadOnlyProbeContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	readOnly, _ := ctx.Value(antigravityReadOnlyProbeContextKey{}).(bool)
+	return readOnly
+}
+
 func NewAntigravityTokenProvider(
 	accountRepo AccountRepository,
 	tokenCache AntigravityTokenCache,
@@ -84,6 +101,7 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 	if account.Type != AccountTypeOAuth {
 		return "", errors.New("not an antigravity oauth account")
 	}
+	readOnlyProbe := isAntigravityReadOnlyProbeContext(ctx)
 
 	cacheKey := AntigravityTokenCacheKey(account)
 
@@ -103,8 +121,10 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 		defer cancel()
 		result, err := p.refreshAPI.RefreshIfNeeded(refreshCtx, account, p.executor, antigravityTokenRefreshSkew)
 		if err != nil {
-			// 标记账号临时不可调度，避免后续请求继续命中
-			p.markTempUnschedulable(account, err)
+			if !readOnlyProbe {
+				// 标记账号临时不可调度，避免后续请求继续命中
+				p.markTempUnschedulable(account, err)
+			}
 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
 				return "", err
 			}
@@ -133,7 +153,7 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 	}
 
 	// Backfill project_id online when missing, with cooldown to avoid hammering.
-	if strings.TrimSpace(account.GetCredential("project_id")) == "" && p.antigravityOAuthService != nil {
+	if !readOnlyProbe && strings.TrimSpace(account.GetCredential("project_id")) == "" && p.antigravityOAuthService != nil {
 		if p.shouldAttemptBackfill(account.ID) {
 			p.markBackfillAttempted(account.ID)
 			if projectID, err := p.antigravityOAuthService.FillProjectID(ctx, account, accessToken); err == nil && projectID != "" {
