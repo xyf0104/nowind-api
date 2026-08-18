@@ -6,6 +6,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +29,7 @@ func (r *adminAntigravityRefreshCASRepo) UpdateAntigravityOAuthCredentialsIfUnch
 	id int64,
 	expectedCredentials map[string]any,
 	expectedProxyID *int64,
+	_ *time.Time,
 	credentials map[string]any,
 ) (bool, error) {
 	r.casCalls++

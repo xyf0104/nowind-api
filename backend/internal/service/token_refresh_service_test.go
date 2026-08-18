@@ -192,6 +192,7 @@ func (r *tokenRefreshAccountRepo) SetAntigravityOAuthRefreshErrorIfCredentialsUn
 	id int64,
 	expectedCredentials map[string]any,
 	expectedProxyID *int64,
+	_ *time.Time,
 	errorMsg string,
 ) (bool, error) {
 	return r.setOAuthRefreshErrorIfCredentialsUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, errorMsg)
@@ -270,6 +271,7 @@ func (r *tokenRefreshAccountRepo) UpdateAntigravityOAuthCredentialsIfUnchanged(
 	id int64,
 	expectedCredentials map[string]any,
 	expectedProxyID *int64,
+	_ *time.Time,
 	credentials map[string]any,
 ) (bool, error) {
 	return r.updateOAuthCredentialsIfUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, credentials)
@@ -325,6 +327,7 @@ func (r *tokenRefreshAccountRepo) SetAntigravityOAuthRefreshTempUnschedulableIfC
 	id int64,
 	expectedCredentials map[string]any,
 	expectedProxyID *int64,
+	_ *time.Time,
 	until time.Time,
 	reason string,
 ) (bool, error) {
@@ -394,6 +397,7 @@ func (r *tokenRefreshAccountRepo) UpdateAntigravityOAuthRefreshExtraIfCredential
 	id int64,
 	expectedCredentials map[string]any,
 	expectedProxyID *int64,
+	_ *time.Time,
 	updates map[string]any,
 ) (bool, error) {
 	r.conditionalExtraCalls++

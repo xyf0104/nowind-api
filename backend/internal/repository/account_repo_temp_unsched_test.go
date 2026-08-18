@@ -271,6 +271,7 @@ func TestAccountRepository_AntigravityRefreshMutationsUseExactAttemptStateAndAto
 					42,
 					expectedCredentials,
 					&proxyID,
+					nil,
 					map[string]any{"refresh_token": "rotated", "_token_version": int64(12)},
 				)
 			},
@@ -287,7 +288,7 @@ func TestAccountRepository_AntigravityRefreshMutationsUseExactAttemptStateAndAto
 			name: "permanent failure",
 			mutate: func(ctx context.Context, repo *accountRepository) (bool, error) {
 				return repo.SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(
-					ctx, 42, expectedCredentials, &proxyID, "revoked",
+					ctx, 42, expectedCredentials, &proxyID, nil, "revoked",
 				)
 			},
 			check: func(t *testing.T, exec *recordingSQLExecutor) {
@@ -302,7 +303,7 @@ func TestAccountRepository_AntigravityRefreshMutationsUseExactAttemptStateAndAto
 			name: "transient failure",
 			mutate: func(ctx context.Context, repo *accountRepository) (bool, error) {
 				return repo.SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
-					ctx, 42, expectedCredentials, &proxyID, time.Now().Add(10*time.Minute), "retry exhausted",
+					ctx, 42, expectedCredentials, &proxyID, nil, time.Now().Add(10*time.Minute), "retry exhausted",
 				)
 			},
 			check: func(t *testing.T, exec *recordingSQLExecutor) {
@@ -321,6 +322,7 @@ func TestAccountRepository_AntigravityRefreshMutationsUseExactAttemptStateAndAto
 					42,
 					expectedCredentials,
 					&proxyID,
+					nil,
 					map[string]any{"antigravity_force_token_refresh": false},
 				)
 			},

@@ -927,6 +927,17 @@ var antigravityOAuthIdentityCredentialKeys = []string{
 	"_token_version",
 }
 
+type antigravityOAuthReauthorizationRepository interface {
+	UpdateAntigravityOAuthCredentialsAndPrivacyIfUnchanged(
+		ctx context.Context,
+		id int64,
+		expectedCredentials map[string]any,
+		expectedProxyID *int64,
+		expectedProxyUpdatedAt *time.Time,
+		credentials map[string]any,
+	) (bool, error)
+}
+
 func nextOAuthTokenVersion(credentials map[string]any) int64 {
 	current := (&Account{Credentials: credentials}).GetCredentialAsInt64("_token_version")
 	next := time.Now().UnixMilli()
@@ -1002,23 +1013,49 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
 		return nil, err
 	}
 
-	// Reset first. If credential persistence fails, the old account merely
-	// retries privacy setup instead of inheriting a false success marker.
-	if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{"privacy_mode": AntigravityPrivacyFailed}); err != nil {
+	conditionalRepo, ok := s.accountRepo.(antigravityOAuthReauthorizationRepository)
+	if !ok {
+		return nil, errors.New("Antigravity OAuth reauthorization CAS repository is not configured")
+	}
+	applied, err := conditionalRepo.UpdateAntigravityOAuthCredentialsAndPrivacyIfUnchanged(
+		ctx,
+		id,
+		shallowCopyMap(account.Credentials),
+		cloneInt64Pointer(account.ProxyID),
+		antigravityOAuthProxyUpdatedAt(account),
+		credentials,
+	)
+	if err != nil {
 		return nil, err
 	}
-	if err := persistAccountCredentials(ctx, s.accountRepo, account, credentials); err != nil {
-		return nil, err
+	if !applied {
+		return nil, infraerrors.Conflict("ANTIGRAVITY_REAUTHORIZATION_CONFLICT", "account changed while re-authorizing; please retry")
 	}
+	account.Credentials = shallowCopyMap(credentials)
+	applyAntigravityPrivacyMode(account, AntigravityPrivacyFailed)
 
 	privacyMode := strings.TrimSpace(input.PrivacyMode)
 	if privacyMode != AntigravityPrivacySet && privacyMode != AntigravityPrivacyFailed {
 		privacyMode = AntigravityPrivacyFailed
 	}
 	if privacyMode == AntigravityPrivacySet {
-		if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{"privacy_mode": privacyMode}); err != nil {
+		privacyRepo, ok := s.accountRepo.(AntigravityOAuthRefreshMutationRepository)
+		if !ok {
+			return nil, errors.New("Antigravity OAuth privacy CAS repository is not configured")
+		}
+		applied, err := privacyRepo.UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(
+			ctx,
+			id,
+			account.Credentials,
+			cloneInt64Pointer(account.ProxyID),
+			antigravityOAuthProxyUpdatedAt(account),
+			map[string]any{"privacy_mode": privacyMode},
+		)
+		if err != nil {
 			slog.Warn("antigravity_reauthorization_privacy_persist_failed", "account_id", id, "error", err)
 			privacyMode = AntigravityPrivacyFailed
+		} else if !applied {
+			return nil, infraerrors.Conflict("ANTIGRAVITY_REAUTHORIZATION_CONFLICT", "account changed while saving privacy settings; please retry")
 		}
 	}
 	applyAntigravityPrivacyMode(account, privacyMode)

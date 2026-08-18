@@ -55,6 +55,7 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthRefreshIfUnchanged(
 		attemptedAccount.ID,
 		shallowCopyMap(attemptedAccount.Credentials),
 		cloneInt64Pointer(attemptedAccount.ProxyID),
+		antigravityOAuthProxyUpdatedAt(attemptedAccount),
 		credentials,
 	)
 	if err != nil {

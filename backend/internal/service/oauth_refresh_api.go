@@ -43,8 +43,17 @@ type AntigravityOAuthRefreshSuccessRepository interface {
 		id int64,
 		expectedCredentials map[string]any,
 		expectedProxyID *int64,
+		expectedProxyUpdatedAt *time.Time,
 		credentials map[string]any,
 	) (bool, error)
+}
+
+func antigravityOAuthProxyUpdatedAt(account *Account) *time.Time {
+	if account == nil || account.ProxyID == nil || account.Proxy == nil || account.Proxy.ID != *account.ProxyID {
+		return nil
+	}
+	updatedAt := account.Proxy.UpdatedAt
+	return &updatedAt
 }
 
 const (
@@ -131,6 +140,10 @@ func snapshotOAuthRefreshAccount(account *Account) *Account {
 	if account.ProxyID != nil {
 		proxyID := *account.ProxyID
 		snapshot.ProxyID = &proxyID
+	}
+	if account.Proxy != nil {
+		proxy := *account.Proxy
+		snapshot.Proxy = &proxy
 	}
 	return &snapshot
 }
@@ -324,7 +337,22 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 					err: fmt.Errorf("Antigravity OAuth refresh success CAS repository is not configured"),
 				}
 			}
-			updateIfUnchanged = conditionalRepo.UpdateAntigravityOAuthCredentialsIfUnchanged
+			updateIfUnchanged = func(
+				ctx context.Context,
+				id int64,
+				expectedCredentials map[string]any,
+				expectedProxyID *int64,
+				credentials map[string]any,
+			) (bool, error) {
+				return conditionalRepo.UpdateAntigravityOAuthCredentialsIfUnchanged(
+					ctx,
+					id,
+					expectedCredentials,
+					expectedProxyID,
+					antigravityOAuthProxyUpdatedAt(attemptedAccount),
+					credentials,
+				)
+			}
 		}
 
 		if updateIfUnchanged != nil {

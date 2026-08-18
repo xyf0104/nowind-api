@@ -190,7 +190,7 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 					ttl = time.Minute
 				}
 			}
-			_ = p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
+			_ = p.tokenCache.SetAccessToken(ctx, AntigravityTokenCacheKey(account), accessToken, ttl)
 		}
 	}
 

@@ -86,6 +86,7 @@ func (r *refreshAPIAccountRepo) UpdateAntigravityOAuthCredentialsIfUnchanged(
 	id int64,
 	expectedCredentials map[string]any,
 	expectedProxyID *int64,
+	_ *time.Time,
 	credentials map[string]any,
 ) (bool, error) {
 	return r.updateOAuthCredentialsIfUnchanged(PlatformAntigravity, id, expectedCredentials, expectedProxyID, credentials)

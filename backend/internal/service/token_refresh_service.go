@@ -56,9 +56,9 @@ type GrokOAuthRefreshMutationRepository interface {
 // mutation that follows an Antigravity refresh attempt. A late result from an
 // old identity must not quarantine or rewrite a concurrently reauthorized row.
 type AntigravityOAuthRefreshMutationRepository interface {
-	SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, errorMsg string) (bool, error)
-	SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, until time.Time, reason string) (bool, error)
-	UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, updates map[string]any) (bool, error)
+	SetAntigravityOAuthRefreshErrorIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, expectedProxyUpdatedAt *time.Time, errorMsg string) (bool, error)
+	SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, expectedProxyUpdatedAt *time.Time, until time.Time, reason string) (bool, error)
+	UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, expectedProxyUpdatedAt *time.Time, updates map[string]any) (bool, error)
 }
 
 // TokenRefreshService OAuth token自动刷新服务
@@ -1165,6 +1165,7 @@ func (s *TokenRefreshService) persistRefreshErrorState(ctx context.Context, acco
 			account.ID,
 			account.Credentials,
 			account.ProxyID,
+			antigravityOAuthProxyUpdatedAt(account),
 			errorMsg,
 		)
 	default:
@@ -1209,6 +1210,7 @@ func (s *TokenRefreshService) persistRefreshTempUnschedulable(
 			account.ID,
 			account.Credentials,
 			account.ProxyID,
+			antigravityOAuthProxyUpdatedAt(account),
 			until,
 			reason,
 		)
@@ -1355,6 +1357,7 @@ func (s *TokenRefreshService) clearAntigravityForceTokenRefresh(ctx context.Cont
 		account.ID,
 		account.Credentials,
 		account.ProxyID,
+		antigravityOAuthProxyUpdatedAt(account),
 		updates,
 	)
 	if err != nil {
