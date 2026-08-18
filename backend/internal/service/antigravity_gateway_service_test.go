@@ -444,6 +444,106 @@ func TestAntigravityGatewayService_TestConnection_ReadOnlyProbe(t *testing.T) {
 	})
 }
 
+func TestAntigravityGatewayService_TestConnection_RequiresUsableContent(t *testing.T) {
+	t.Setenv(antigravityForwardBaseURLEnv, "prod")
+	const modelID = "gemini-3.6-flash-low"
+
+	newAccount := func() *Account {
+		return &Account{
+			ID:          403,
+			Name:        "response-validation-account",
+			Platform:    PlatformAntigravity,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token": "probe-token",
+				"expires_at":   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				"project_id":   "probe-project",
+				"model_mapping": map[string]any{
+					modelID: modelID,
+				},
+			},
+		}
+	}
+
+	t.Run("returns real response content and reserves enough output tokens", func(t *testing.T) {
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body: io.NopCloser(strings.NewReader(
+				`data: {"response":{"candidates":[{"content":{"parts":[{"text":"OK"}]},"finishReason":"STOP"}]}}` + "\n",
+			)),
+		}}}
+		svc := &AntigravityGatewayService{
+			tokenProvider: &AntigravityTokenProvider{},
+			httpUpstream:  upstream,
+		}
+
+		result, err := svc.TestConnection(context.Background(), newAccount(), modelID)
+
+		require.NoError(t, err)
+		require.Equal(t, "OK", result.Text)
+		require.Len(t, upstream.requestBodies, 1)
+
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(upstream.requestBodies[0], &payload))
+		request := payload["request"].(map[string]any)
+		generationConfig := request["generationConfig"].(map[string]any)
+		require.Equal(t, float64(antigravityConnectionTestMaxOutputTokens), generationConfig["maxOutputTokens"])
+		contents := request["contents"].([]any)
+		parts := contents[0].(map[string]any)["parts"].([]any)
+		require.Equal(t, antigravityConnectionTestPrompt, parts[0].(map[string]any)["text"])
+	})
+
+	t.Run("rejects empty successful response", func(t *testing.T) {
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body: io.NopCloser(strings.NewReader(
+				`data: {"response":{"candidates":[{"finishReason":"MAX_TOKENS"}]}}` + "\n",
+			)),
+		}}}
+		svc := &AntigravityGatewayService{tokenProvider: &AntigravityTokenProvider{}, httpUpstream: upstream}
+
+		result, err := svc.TestConnection(context.Background(), newAccount(), modelID)
+
+		require.Nil(t, result)
+		require.ErrorContains(t, err, "没有有效响应内容")
+	})
+
+	t.Run("rejects model retirement notice returned as normal text", func(t *testing.T) {
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body: io.NopCloser(strings.NewReader(
+				`data: {"response":{"candidates":[{"content":{"parts":[{"text":"Gemini 3 Pro is no longer available. Please switch to Gemini 3.1 Pro."}]},"finishReason":"STOP"}]}}` + "\n",
+			)),
+		}}}
+		svc := &AntigravityGatewayService{tokenProvider: &AntigravityTokenProvider{}, httpUpstream: upstream}
+
+		result, err := svc.TestConnection(context.Background(), newAccount(), modelID)
+
+		require.Nil(t, result)
+		require.ErrorContains(t, err, "模型已不可用")
+	})
+
+	t.Run("requires HTTP 200", func(t *testing.T) {
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}}}
+		svc := &AntigravityGatewayService{tokenProvider: &AntigravityTokenProvider{}, httpUpstream: upstream}
+
+		result, err := svc.TestConnection(context.Background(), newAccount(), modelID)
+
+		require.Nil(t, result)
+		require.ErrorContains(t, err, "API 返回 204")
+	})
+}
+
 func TestAntigravityRetryLoop_Runtime429StillMutatesSchedulingState(t *testing.T) {
 	const modelID = "gemini-2.5-flash"
 	rateLimitBody := `{

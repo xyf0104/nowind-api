@@ -80,6 +80,14 @@ func TestDefaultAntigravityModelMapping_Gemini36FlashModels(t *testing.T) {
 	}
 }
 
+func TestDefaultAntigravityModelMapping_LiveCatalogAdditions(t *testing.T) {
+	for _, model := range []string{"gemini-3-flash-agent", "gemini-3.1-flash-lite"} {
+		if got := DefaultAntigravityModelMapping[model]; got != model {
+			t.Fatalf("expected live model %s to map to itself, got %q", model, got)
+		}
+	}
+}
+
 func TestDefaultAntigravityModelMapping_Gemini37FlashModels(t *testing.T) {
 	for _, model := range []string{"gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low"} {
 		if got := DefaultAntigravityModelMapping[model]; got != model {

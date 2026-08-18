@@ -61,45 +61,23 @@ const geminiModels = [
   'learnlm-1.5-pro-experimental'
 ]
 
-// Antigravity 官方支持的模型（精确匹配）
-// 基于官方 API 返回的模型列表，只支持 Claude 4.5+ 和 Gemini 2.5+
+// Antigravity 当前可用模型。旧名称仍由后端兼容映射处理，不在新建界面继续展示。
 const antigravityModels = [
-  // Claude 4.5+ 系列
-  'claude-fable-5',
-  'claude-opus-4-6',
+  // Claude
   'claude-opus-4-6-thinking',
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-opus-4-5-thinking',
   'claude-sonnet-4-6',
-  'claude-sonnet-4-5',
-  'claude-sonnet-4-5-thinking',
-  // Gemini 2.5 系列及旧版
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
-  'gemini-1.5-flash-8b',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-2.0-flash-thinking-exp',
-  'gemini-2.0-flash-thinking-exp-0121',
-  'gemini-2.0-pro-exp-0205',
-  'gemini-exp-1206',
-  'learnlm-1.5-pro-experimental',
   'gemini-3.1-flash-image',
-  'gemini-2.5-flash-image',
+  // Gemini 2.5
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
   'gemini-2.5-flash-thinking',
   'gemini-2.5-pro',
-  // Gemini 3 系列
+  // Gemini 3 / 3.1
   'gemini-3-flash',
-  'gemini-3-pro-high',
-  'gemini-3-pro-low',
-  // Gemini 3.1 系列
-  'gemini-3.1-pro',
+  'gemini-3-flash-agent',
+  'gemini-3.1-flash-lite',
   'gemini-3.1-pro-high',
   'gemini-3.1-pro-low',
-  'gemini-3-pro-image',
   // Gemini 3.5/3.6/3.7 分档（基础别名仅后端兼容，不作为主要选项）
   'gemini-3.5-flash-medium',
   'gemini-3.5-flash-low',
@@ -111,8 +89,7 @@ const antigravityModels = [
   'gemini-3.7-flash-medium',
   'gemini-3.7-flash-low',
   // 其他
-  'gpt-oss-120b-medium',
-  'tab_flash_lite_preview'
+  'gpt-oss-120b-medium'
 ]
 
 export const ANTIGRAVITY_GEMINI_37_PUBLIC_MODELS = [

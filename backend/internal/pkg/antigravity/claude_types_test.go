@@ -2,7 +2,7 @@ package antigravity
 
 import "testing"
 
-func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
+func TestDefaultModels_AdvertisesOnlyVerifiedCurrentModels(t *testing.T) {
 	t.Parallel()
 
 	models := DefaultModels()
@@ -18,7 +18,10 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",
 		"gemini-2.5-flash-thinking",
+		"gemini-2.5-pro",
 		"gemini-3-flash",
+		"gemini-3-flash-agent",
+		"gemini-3.1-flash-lite",
 		"gemini-3.1-pro-low",
 		"gemini-3.5-flash-medium",
 		"gemini-3.5-flash-low",
@@ -35,6 +38,21 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	for _, id := range requiredIDs {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("expected model %q to be exposed in DefaultModels", id)
+		}
+	}
+
+	removedIDs := []string{
+		"gemini-2.5-flash-image",
+		"gemini-2.5-flash-image-preview",
+		"gemini-3-pro-low",
+		"gemini-3-pro-high",
+		"gemini-3-pro-preview",
+		"gemini-3-pro-image",
+		"gemini-3.1-flash-image-preview",
+	}
+	for _, id := range removedIDs {
+		if _, ok := byID[id]; ok {
+			t.Fatalf("obsolete or compatibility-only model %q must not be advertised", id)
 		}
 	}
 }

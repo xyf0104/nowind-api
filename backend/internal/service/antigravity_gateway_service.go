@@ -25,6 +25,9 @@ const (
 	antigravityRetryBaseDelay   = 1 * time.Second
 	antigravityRetryMaxDelay    = 16 * time.Second
 
+	antigravityConnectionTestPrompt          = "Reply with exactly OK"
+	antigravityConnectionTestMaxOutputTokens = 256
+
 	// 限流相关常量
 	// antigravityRateLimitThreshold 限流等待/切换阈值
 	// - 智能重试：retryDelay < 此阈值时等待后重试，>= 此阈值时直接限流模型
@@ -423,23 +426,26 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
-	if result.resp.StatusCode >= 400 {
+	if result.resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API 返回 %d: %s", result.resp.StatusCode, string(respBody))
 	}
 
-	text := extractTextFromSSEResponse(respBody)
+	text, err := extractTextFromSSEResponse(respBody)
+	if err != nil {
+		return nil, err
+	}
 	return &TestConnectionResult{Text: text, MappedModel: mappedModel}, nil
 }
 
 // buildGeminiTestRequest 构建 Gemini 格式测试请求
-// 使用最小 token 消耗：输入 "." + maxOutputTokens: 1
+// 推理模型会先消耗内部思考 token；过小的输出上限会造成 HTTP 200 但正文为空。
 func (s *AntigravityGatewayService) buildGeminiTestRequest(projectID, model string) ([]byte, error) {
 	payload := map[string]any{
 		"contents": []map[string]any{
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": "."},
+					{"text": antigravityConnectionTestPrompt},
 				},
 			},
 		},
@@ -450,7 +456,7 @@ func (s *AntigravityGatewayService) buildGeminiTestRequest(projectID, model stri
 			},
 		},
 		"generationConfig": map[string]any{
-			"maxOutputTokens": 1,
+			"maxOutputTokens": antigravityConnectionTestMaxOutputTokens,
 		},
 	}
 	payloadBytes, _ := json.Marshal(payload)
@@ -458,17 +464,17 @@ func (s *AntigravityGatewayService) buildGeminiTestRequest(projectID, model stri
 }
 
 // buildClaudeTestRequest 构建 Claude 格式测试请求并转换为 Gemini 格式
-// 使用最小 token 消耗：输入 "." + MaxTokens: 1
+// 与 Gemini 测试保持相同的最小有效输出空间，确保界面能展示真实响应。
 func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedModel string) ([]byte, error) {
 	claudeReq := &antigravity.ClaudeRequest{
 		Model: mappedModel,
 		Messages: []antigravity.ClaudeMessage{
 			{
 				Role:    "user",
-				Content: json.RawMessage(`"."`),
+				Content: json.RawMessage(`"Reply with exactly OK"`),
 			},
 		},
-		MaxTokens: 1,
+		MaxTokens: antigravityConnectionTestMaxOutputTokens,
 		Stream:    false,
 	}
 	return antigravity.TransformClaudeToGemini(claudeReq, projectID, mappedModel)
@@ -484,9 +490,12 @@ func (s *AntigravityGatewayService) getClaudeTransformOptions(ctx context.Contex
 	return opts
 }
 
-// extractTextFromSSEResponse 从 SSE 流式响应中提取文本
-func extractTextFromSSEResponse(respBody []byte) string {
+// extractTextFromSSEResponse 从 SSE 流式响应中提取并验证有效内容。
+func extractTextFromSSEResponse(respBody []byte) (string, error) {
 	var texts []string
+	seenJSON := false
+	seenCandidate := false
+	hasImage := false
 	lines := bytes.Split(respBody, []byte("\n"))
 
 	for _, line := range lines {
@@ -511,6 +520,15 @@ func extractTextFromSSEResponse(respBody []byte) string {
 		if err := json.Unmarshal(line, &data); err != nil {
 			continue
 		}
+		seenJSON = true
+
+		if errorData, ok := data["error"].(map[string]any); ok {
+			message, _ := errorData["message"].(string)
+			if strings.TrimSpace(message) == "" {
+				message = "上游返回业务错误"
+			}
+			return "", errors.New(message)
+		}
 
 		// 尝试从 response.candidates[0].content.parts[].text 提取
 		response, ok := data["response"].(map[string]any)
@@ -518,11 +536,19 @@ func extractTextFromSSEResponse(respBody []byte) string {
 			// 尝试直接从 candidates 提取（某些响应格式）
 			response = data
 		}
+		if errorData, ok := response["error"].(map[string]any); ok {
+			message, _ := errorData["message"].(string)
+			if strings.TrimSpace(message) == "" {
+				message = "上游返回业务错误"
+			}
+			return "", errors.New(message)
+		}
 
 		candidates, ok := response["candidates"].([]any)
 		if !ok || len(candidates) == 0 {
 			continue
 		}
+		seenCandidate = true
 
 		candidate, ok := candidates[0].(map[string]any)
 		if !ok {
@@ -544,11 +570,37 @@ func extractTextFromSSEResponse(respBody []byte) string {
 				if text, ok := partMap["text"].(string); ok && text != "" {
 					texts = append(texts, text)
 				}
+				if inlineData, ok := partMap["inlineData"].(map[string]any); ok {
+					data, _ := inlineData["data"].(string)
+					hasImage = hasImage || strings.TrimSpace(data) != ""
+				}
 			}
 		}
 	}
 
-	return strings.Join(texts, "")
+	text := strings.TrimSpace(strings.Join(texts, ""))
+	if isUnavailableAntigravityTestResponse(text) {
+		return "", fmt.Errorf("模型已不可用: %s", text)
+	}
+	if text != "" {
+		return text, nil
+	}
+	if hasImage {
+		return "上游已返回图片内容", nil
+	}
+	if !seenJSON {
+		return "", errors.New("上游返回了无法识别的响应")
+	}
+	if !seenCandidate {
+		return "", errors.New("上游未返回候选响应")
+	}
+	return "", errors.New("上游返回成功状态，但没有有效响应内容")
+}
+
+func isUnavailableAntigravityTestResponse(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(normalized, "is no longer available") ||
+		strings.Contains(normalized, "model has been deprecated")
 }
 
 // injectIdentityPatchToGeminiRequest 为 Gemini 格式请求注入身份提示词

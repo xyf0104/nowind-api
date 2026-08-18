@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.17-0ea5e9" alt="当前版本 v1.1.17" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.18-0ea5e9" alt="当前版本 v1.1.18" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.17
+> 当前版本：v1.1.18
 
-v1.1.17 为 Antigravity 增加 Gemini 3.7 Flash High、Medium、Low 三档公开模型，并分别固定为 `thinkingBudget=-1/4000/1000`；修复 OAuth 账号在不同上游端点返回裸 429 时的兼容与故障转移，刷新凭据使用原子状态校验，避免旧刷新覆盖重新授权。账号管理首次进入直接加载完整账号数据，不再先显示缺少邮箱、订阅、分组和运行状态的轻量占位数据。
+v1.1.18 修正 Antigravity 账号模型测试：展示上游真实响应，拒绝空内容、异常状态和已退役模型提示，不再把 HTTP 200 的业务失败误判为成功；模型目录仅展示实测可用的当前公开名称，同时保留旧名称的后端兼容映射，避免已有配置升级后中断。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 
