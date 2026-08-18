@@ -249,7 +249,7 @@ func applyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 }
 
 // applyToolsLastCacheBreakpoint 在最后一个非延迟加载工具上注入 cache_control
-// 断点。Anthropic 不允许 defer_loading=true 的工具携带 cache_control，
+// 断点。Anthropic 不允许顶层或 custom.defer_loading=true 的工具携带 cache_control，
 // 因此会先清理所有延迟加载工具上的客户端断点。其余行为对齐 Parrot
 // `tools[-1]["cache_control"] = {"type":"ephemeral","ttl":"1h"}`，
 // 但 ttl 按本仓规则：
@@ -258,6 +258,7 @@ func applyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 //
 // 纯副作用函数，tools 不存在或为空数组时 no-op。
 func applyToolsLastCacheBreakpoint(body []byte) []byte {
+	body = stripDeferredToolCacheControl(body)
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.IsArray() {
 		return body
@@ -266,7 +267,17 @@ func applyToolsLastCacheBreakpoint(body []byte) []byte {
 	if len(arr) == 0 {
 		return body
 	}
-	lastIdx := len(arr) - 1
+	lastIdx := -1
+	for idx, tool := range arr {
+		if isDeferredLoadingTool(tool) {
+			continue
+		}
+		lastIdx = idx
+	}
+	if lastIdx == -1 {
+		return body
+	}
+
 	existingCC := arr[lastIdx].Get("cache_control")
 
 	if existingCC.Exists() && existingCC.Get("ttl").String() != "" {
@@ -288,7 +299,8 @@ func applyToolsLastCacheBreakpoint(body []byte) []byte {
 }
 
 func isDeferredLoadingTool(tool gjson.Result) bool {
-	return tool.Get("defer_loading").Type == gjson.True
+	return tool.Get("defer_loading").Type == gjson.True ||
+		tool.Get("custom.defer_loading").Type == gjson.True
 }
 
 // stripDeferredToolCacheControl removes the cache marker Anthropic rejects on

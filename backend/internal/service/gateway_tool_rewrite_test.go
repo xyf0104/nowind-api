@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -158,12 +159,13 @@ func TestApplyToolsLastCacheBreakpoint_StripsDeferredToolCacheControl(t *testing
 }
 
 func TestApplyToolsLastCacheBreakpoint_SkipsDeferredFinalTool(t *testing.T) {
-	body := []byte(`{"tools":[{"name":"a","input_schema":{}},{"name":"b","defer_loading":true}]}`)
+	body := []byte(`{"tools":[{"name":"a","input_schema":{}},{"name":"b","defer_loading":true},{"name":"c","custom":{"defer_loading":true}}]}`)
 	out := applyToolsLastCacheBreakpoint(body)
 
 	require.Equal(t, "ephemeral", gjson.GetBytes(out, "tools.0.cache_control.type").String())
 	require.Equal(t, "5m", gjson.GetBytes(out, "tools.0.cache_control.ttl").String())
 	require.False(t, gjson.GetBytes(out, "tools.1.cache_control").Exists())
+	require.False(t, gjson.GetBytes(out, "tools.2.cache_control").Exists())
 }
 
 func TestApplyToolsLastCacheBreakpoint_OnlyLiteralTrueIsDeferred(t *testing.T) {
