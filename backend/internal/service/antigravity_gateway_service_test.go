@@ -489,12 +489,22 @@ func TestAntigravityGatewayService_TestConnection_RequiresUsableContent(t *testi
 
 		var payload map[string]any
 		require.NoError(t, json.Unmarshal(upstream.requestBodies[0], &payload))
-		request := payload["request"].(map[string]any)
-		generationConfig := request["generationConfig"].(map[string]any)
+		request, ok := payload["request"].(map[string]any)
+		require.True(t, ok)
+		generationConfig, ok := request["generationConfig"].(map[string]any)
+		require.True(t, ok)
 		require.Equal(t, float64(antigravityConnectionTestMaxOutputTokens), generationConfig["maxOutputTokens"])
-		contents := request["contents"].([]any)
-		parts := contents[0].(map[string]any)["parts"].([]any)
-		require.Equal(t, antigravityConnectionTestPrompt, parts[0].(map[string]any)["text"])
+		contents, ok := request["contents"].([]any)
+		require.True(t, ok)
+		require.NotEmpty(t, contents)
+		content, ok := contents[0].(map[string]any)
+		require.True(t, ok)
+		parts, ok := content["parts"].([]any)
+		require.True(t, ok)
+		require.NotEmpty(t, parts)
+		part, ok := parts[0].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, antigravityConnectionTestPrompt, part["text"])
 	})
 
 	t.Run("rejects empty successful response", func(t *testing.T) {

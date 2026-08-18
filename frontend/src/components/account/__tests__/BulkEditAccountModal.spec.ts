@@ -120,7 +120,7 @@ describe('BulkEditAccountModal', () => {
     expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.rateSyncConflict')
   })
 
-  it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', async () => {
+  it('antigravity 白名单只展示当前 Gemini 图片模型且过滤掉普通 GPT 模型', async () => {
     const wrapper = mountModal()
     const selector = wrapper.findComponent(ModelWhitelistSelector)
     expect(selector.exists()).toBe(true)
@@ -130,7 +130,7 @@ describe('BulkEditAccountModal', () => {
     const dropdown = document.body.querySelector('[data-testid="model-dropdown"]')
     expect(dropdown).not.toBeNull()
     expect(dropdown?.textContent).toContain('gemini-3.1-flash-image')
-    expect(dropdown?.textContent).toContain('gemini-2.5-flash-image')
+    expect(dropdown?.textContent).not.toContain('gemini-2.5-flash-image')
     expect(dropdown?.textContent).not.toContain('gpt-5.3-codex')
 
     wrapper.unmount()
