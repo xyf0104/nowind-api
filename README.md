@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.20-0ea5e9" alt="当前版本 v1.1.20" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.21-0ea5e9" alt="当前版本 v1.1.21" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.20
+> 当前版本：v1.1.21
 
-v1.1.20 修正 OpenAI OAuth 周额度估算：重新登录、重新授权或重新导入后，以当时的 7 天使用百分比和 XIASS 账号已用美元作为双基准，只按之后的本地累计差额估算周额度，排除账号在其他客户端产生但未计入 XIASS 的额度消耗；首次观察及额度窗口、账号身份变化时显示“统计中”。普通 Token 续期、手动刷新和账号编辑不会重置统计基准。
+v1.1.21 融合 sub2api v0.1.178 的 Gemini/Antigravity、OpenAI、Claude、订阅、邀请与仓储修复，同时保留 XIASS 全部二开：新增默认关闭、可按账号启用的 Codex OAuth 指纹收敛与系统随机种子，完善 HTTP/透传/WebSocket 身份一致性、批量关闭、CRS 导入和故障转移隔离；修正 Gemini 混合工具、真实 4xx、池模式 429、Claude `web_search` 同名函数识别，以及 Antigravity 重新授权后的 project、privacy 与临时停调竞态；恢复 OpenAI API Key、WebSocket 和终端事件中的客户端工具，并继续按有效完整额度段稳定估算周额度。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 

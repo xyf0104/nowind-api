@@ -61,6 +61,29 @@ type AntigravityOAuthRefreshMutationRepository interface {
 	UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, expectedProxyUpdatedAt *time.Time, updates map[string]any) (bool, error)
 }
 
+func updateAntigravityOAuthExtraIfCredentialsUnchanged(
+	ctx context.Context,
+	repo AccountRepository,
+	attemptedAccount *Account,
+	updates map[string]any,
+) (bool, error) {
+	if attemptedAccount == nil || attemptedAccount.Platform != PlatformAntigravity || attemptedAccount.Type != AccountTypeOAuth {
+		return false, errors.New("account is not an Antigravity OAuth account")
+	}
+	conditionalRepo, ok := repo.(AntigravityOAuthRefreshMutationRepository)
+	if !ok {
+		return false, errors.New("antigravity OAuth extra CAS repository is not configured")
+	}
+	return conditionalRepo.UpdateAntigravityOAuthRefreshExtraIfCredentialsUnchanged(
+		ctx,
+		attemptedAccount.ID,
+		shallowCopyMap(attemptedAccount.Credentials),
+		cloneInt64Pointer(attemptedAccount.ProxyID),
+		antigravityOAuthProxyUpdatedAt(attemptedAccount),
+		updates,
+	)
+}
+
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
@@ -1615,16 +1638,17 @@ func (s *TokenRefreshService) ensureAntigravityPrivacy(ctx context.Context, acco
 		}
 	}
 
-	token, _ := account.Credentials["access_token"].(string)
+	attemptedAccount := snapshotOAuthRefreshAccount(account)
+	token, _ := attemptedAccount.Credentials["access_token"].(string)
 	if token == "" {
 		return
 	}
 
-	projectID, _ := account.Credentials["project_id"].(string)
+	projectID, _ := attemptedAccount.Credentials["project_id"].(string)
 
 	var proxyURL string
-	if account.ProxyID != nil && s.proxyRepo != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
+	if attemptedAccount.ProxyID != nil && s.proxyRepo != nil {
+		if p, err := s.proxyRepo.GetByID(ctx, *attemptedAccount.ProxyID); err == nil && p != nil {
 			proxyURL = p.URL()
 		}
 	}
@@ -1634,16 +1658,19 @@ func (s *TokenRefreshService) ensureAntigravityPrivacy(ctx context.Context, acco
 		return
 	}
 
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode}); err != nil {
+	applied, err := updateAntigravityOAuthExtraIfCredentialsUnchanged(ctx, s.accountRepo, attemptedAccount, map[string]any{"privacy_mode": mode})
+	if err != nil {
 		slog.Warn("token_refresh.update_antigravity_privacy_mode_failed",
 			"account_id", account.ID,
 			"error", err,
 		)
-	} else {
+	} else if applied {
 		applyAntigravityPrivacyMode(account, mode)
 		slog.Info("token_refresh.antigravity_privacy_mode_set",
 			"account_id", account.ID,
 			"privacy_mode", mode,
 		)
+	} else {
+		slog.Debug("token_refresh.antigravity_privacy_mode_skipped_stale_identity", "account_id", account.ID)
 	}
 }

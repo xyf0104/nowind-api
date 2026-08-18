@@ -286,6 +286,96 @@ func TestBuildTools_PreservesWebSearchAlongsideFunctions(t *testing.T) {
 	require.Equal(t, 5, result[1].GoogleSearch.EnhancedContent.ImageSearch.MaxResultCount)
 }
 
+func TestTransformClaudeToGeminiWithOptions_DistinguishesNativeWebSearchFromSameNamedFunctions(t *testing.T) {
+	const mappedModel = "gemini-3.7-flash-tiered"
+
+	tests := []struct {
+		name       string
+		tool       ClaudeTool
+		wantNative bool
+	}{
+		{
+			name: "versioned web search type is native",
+			tool: ClaudeTool{
+				Type: "web_search_20250305",
+				Name: "web_search",
+			},
+			wantNative: true,
+		},
+		{
+			name: "google search type is native",
+			tool: ClaudeTool{
+				Type: "google_search",
+				Name: "google_search",
+			},
+			wantNative: true,
+		},
+		{
+			name: "standard function named web_search stays a function",
+			tool: ClaudeTool{
+				Name:        "web_search",
+				Description: "Search through the client's own service",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		{
+			name: "custom function named web_search stays a function",
+			tool: ClaudeTool{
+				Type: "custom",
+				Name: "web_search",
+				Custom: &ClaudeCustomToolSpec{
+					Description: "Search through a custom MCP service",
+					InputSchema: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"query": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := TransformClaudeToGeminiWithOptions(&ClaudeRequest{
+				Model: "claude-sonnet-4-6",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`[{"type":"text","text":"hello"}]`),
+					},
+				},
+				Tools: []ClaudeTool{tt.tool},
+			}, "project-1", mappedModel, DefaultTransformOptions())
+			require.NoError(t, err)
+
+			var req V1InternalRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			require.Len(t, req.Request.Tools, 1)
+
+			if tt.wantNative {
+				require.Equal(t, "web_search", req.RequestType)
+				require.Equal(t, webSearchFallbackModel, req.Model)
+				require.Empty(t, req.Request.Tools[0].FunctionDeclarations)
+				require.NotNil(t, req.Request.Tools[0].GoogleSearch)
+				return
+			}
+
+			require.Equal(t, "agent", req.RequestType)
+			require.Equal(t, mappedModel, req.Model)
+			require.Len(t, req.Request.Tools[0].FunctionDeclarations, 1)
+			require.Equal(t, "web_search", req.Request.Tools[0].FunctionDeclarations[0].Name)
+			require.Nil(t, req.Request.Tools[0].GoogleSearch)
+		})
+	}
+}
+
 func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 	tests := []struct {
 		name        string

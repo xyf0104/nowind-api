@@ -145,7 +145,10 @@ func TestAdminUpdateAccountExtraStripsSeedAndLeavesAtomicEnsureToRepository(t *t
 }
 
 func TestBulkUpdateAccountsDoesNotPrewriteCodexSeed(t *testing.T) {
-	repo := &upstreamBillingProbeAccountRepo{}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+		301: {ID: 301, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		302: {ID: 302, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+	}}
 
 	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
 		AccountIDs: []int64{301, 302},
@@ -162,6 +165,70 @@ func TestBulkUpdateAccountsDoesNotPrewriteCodexSeed(t *testing.T) {
 	require.True(t, repo.bulkUpdates[0].EnsureCodexFingerprintSeed)
 	require.Equal(t, "session", repo.bulkUpdates[0].Extra[codexFingerprintModeExtraKey])
 	require.NotContains(t, repo.bulkUpdates[0].Extra, codexFingerprintSeedExtraKey)
+}
+
+func TestBulkUpdateAccountsExplicitlyPersistsCodexFingerprintOff(t *testing.T) {
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+		303: {
+			ID:       303,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{codexFingerprintModeExtraKey: "session"},
+		},
+	}}
+
+	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{303},
+		Extra:      map[string]any{codexFingerprintModeExtraKey: "off"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Len(t, repo.bulkUpdates, 1)
+	require.Equal(t, "off", repo.bulkUpdates[0].Extra[codexFingerprintModeExtraKey])
+	require.False(t, repo.bulkUpdates[0].EnsureCodexFingerprintSeed)
+}
+
+func TestBulkUpdateAccountsRejectsCodexFingerprintForNonOAuthTargets(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountType string
+	}{
+		{name: "setup token", accountType: AccountTypeSetupToken},
+		{name: "api key", accountType: AccountTypeAPIKey},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+				304: {ID: 304, Platform: PlatformOpenAI, Type: tt.accountType},
+			}}
+
+			result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+				AccountIDs: []int64{304},
+				Extra:      map[string]any{codexFingerprintModeExtraKey: "device"},
+			})
+
+			require.Nil(t, result)
+			require.ErrorContains(t, err, "only available for OpenAI OAuth accounts")
+			require.Empty(t, repo.bulkUpdates)
+		})
+	}
+}
+
+func TestBulkUpdateAccountsRejectsMixedCodexFingerprintTargets(t *testing.T) {
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+		305: {ID: 305, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		306: {ID: 306, Platform: PlatformOpenAI, Type: AccountTypeSetupToken},
+	}}
+
+	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{305, 306},
+		Extra:      map[string]any{codexFingerprintModeExtraKey: "session"},
+	})
+
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "only available for OpenAI OAuth accounts")
+	require.Empty(t, repo.bulkUpdates)
 }
 
 type codexSeedDuplicateRepo struct {

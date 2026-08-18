@@ -659,6 +659,11 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		if existing != nil {
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
+		if existing != nil && existing.IsOpenAIOAuth() {
+			extra = prepareCodexFingerprintExtraForUpdate(existing, extra)
+		} else {
+			extra = prepareCodexFingerprintExtraForCreate(PlatformOpenAI, AccountTypeOAuth, extra)
+		}
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformOpenAI, AccountTypeOAuth, credentials, extra)
 
 		if existing == nil {

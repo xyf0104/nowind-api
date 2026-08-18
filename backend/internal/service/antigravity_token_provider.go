@@ -122,8 +122,13 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 		result, err := p.refreshAPI.RefreshIfNeeded(refreshCtx, account, p.executor, antigravityTokenRefreshSkew)
 		if err != nil {
 			if !readOnlyProbe {
-				// 标记账号临时不可调度，避免后续请求继续命中
-				p.markTempUnschedulable(account, err)
+				// Only quarantine the exact credential identity used by the failed
+				// attempt. A concurrent interactive reauthorization must win.
+				attemptedAccount := account
+				if result != nil && result.Account != nil {
+					attemptedAccount = result.Account
+				}
+				p.markTempUnschedulable(attemptedAccount, err)
 			}
 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
 				return "", err
@@ -157,8 +162,7 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 		if p.shouldAttemptBackfill(account.ID) {
 			p.markBackfillAttempted(account.ID)
 			if projectID, err := p.antigravityOAuthService.FillProjectID(ctx, account, accessToken); err == nil && projectID != "" {
-				account.Credentials["project_id"] = projectID
-				if updateErr := persistAccountCredentials(ctx, p.accountRepo, account, account.Credentials); updateErr != nil {
+				if _, updateErr := p.persistProjectIDIfUnchanged(ctx, account, projectID); updateErr != nil {
 					slog.Warn("antigravity_project_id_backfill_persist_failed",
 						"account_id", account.ID,
 						"error", updateErr,
@@ -197,6 +201,32 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 	return accessToken, nil
 }
 
+func (p *AntigravityTokenProvider) persistProjectIDIfUnchanged(ctx context.Context, account *Account, projectID string) (bool, error) {
+	if p == nil || account == nil || strings.TrimSpace(projectID) == "" {
+		return false, errors.New("antigravity project backfill input is invalid")
+	}
+	conditionalRepo, ok := p.accountRepo.(AntigravityOAuthRefreshSuccessRepository)
+	if !ok {
+		return false, errors.New("antigravity OAuth project backfill CAS repository is not configured")
+	}
+	attemptedAccount := snapshotOAuthRefreshAccount(account)
+	credentials := shallowCopyMap(attemptedAccount.Credentials)
+	credentials["project_id"] = strings.TrimSpace(projectID)
+	applied, err := conditionalRepo.UpdateAntigravityOAuthCredentialsIfUnchanged(
+		ctx,
+		attemptedAccount.ID,
+		attemptedAccount.Credentials,
+		attemptedAccount.ProxyID,
+		antigravityOAuthProxyUpdatedAt(attemptedAccount),
+		credentials,
+	)
+	if err != nil || !applied {
+		return applied, err
+	}
+	account.Credentials = credentials
+	return true, nil
+}
+
 // shouldAttemptBackfill checks backfill cooldown.
 func (p *AntigravityTokenProvider) shouldAttemptBackfill(accountID int64) bool {
 	if v, ok := p.backfillCooldown.Load(accountID); ok {
@@ -218,11 +248,29 @@ func (p *AntigravityTokenProvider) markTempUnschedulable(account *Account, refre
 	until := now.Add(tokenRefreshTempUnschedDuration)
 	reason := "token refresh failed on request path: " + refreshErr.Error()
 	bgCtx := context.Background()
-	if err := p.accountRepo.SetTempUnschedulable(bgCtx, account.ID, until, reason); err != nil {
+	conditionalRepo, ok := p.accountRepo.(AntigravityOAuthRefreshMutationRepository)
+	if !ok {
+		slog.Warn("antigravity_token_provider.temp_unschedulable_cas_unavailable", "account_id", account.ID)
+		return
+	}
+	applied, err := conditionalRepo.SetAntigravityOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
+		bgCtx,
+		account.ID,
+		shallowCopyMap(account.Credentials),
+		cloneInt64Pointer(account.ProxyID),
+		antigravityOAuthProxyUpdatedAt(account),
+		until,
+		reason,
+	)
+	if err != nil {
 		slog.Warn("antigravity_token_provider.set_temp_unschedulable_failed",
 			"account_id", account.ID,
 			"error", err,
 		)
+		return
+	}
+	if !applied {
+		slog.Debug("antigravity_token_provider.temp_unschedulable_skipped_stale_identity", "account_id", account.ID)
 		return
 	}
 	slog.Warn("antigravity_token_provider.temp_unschedulable_set",

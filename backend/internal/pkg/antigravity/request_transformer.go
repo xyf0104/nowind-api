@@ -697,8 +697,14 @@ func hasWebSearchTool(tools []ClaudeTool) bool {
 }
 
 func isWebSearchTool(tool ClaudeTool) bool {
-	if strings.HasPrefix(tool.Type, "web_search") || tool.Type == "google_search" {
+	toolType := strings.TrimSpace(tool.Type)
+	if toolType == "web_search" || strings.HasPrefix(toolType, "web_search_") || toolType == "google_search" {
 		return true
+	}
+	// A same-named function is still a client function when it carries a
+	// function schema/custom definition or an explicit non-native type.
+	if toolType != "" || tool.InputSchema != nil || tool.Custom != nil {
+		return false
 	}
 
 	name := strings.TrimSpace(tool.Name)

@@ -331,6 +331,67 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
   })
 
+  it('OpenAI OAuth 批量关闭 Codex 指纹收敛时显式提交 off', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['oauth']
+    })
+
+    expect(wrapper.find('[data-testid="bulk-codex-fingerprint-mode-select"]').exists()).toBe(true)
+    await wrapper.get('#bulk-edit-codex-fingerprint-mode-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        codex_fingerprint_mode: 'off'
+      }
+    })
+  })
+
+  it.each([
+    ['setup-token', ['openai'], ['setup-token']],
+    ['API Key', ['openai'], ['apikey']],
+    ['OAuth/setup-token 混合', ['openai'], ['oauth', 'setup-token']],
+    ['OAuth/API Key 混合', ['openai'], ['oauth', 'apikey']],
+    ['非 OpenAI OAuth', ['anthropic'], ['oauth']],
+    ['混合平台 OAuth', ['openai', 'anthropic'], ['oauth']]
+  ])('%s 选择不展示 Codex 指纹收敛选项', (_label, selectedPlatforms, selectedTypes) => {
+    const wrapper = mountModal({
+      selectedPlatforms,
+      selectedTypes
+    })
+
+    expect(wrapper.find('#bulk-edit-codex-fingerprint-mode-enabled').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="bulk-codex-fingerprint-mode-select"]').exists()).toBe(false)
+  })
+
+  it.each([
+    ['setup-token', ['openai'], ['setup-token']],
+    ['API Key', ['openai'], ['apikey']],
+    ['混合类型', ['openai'], ['oauth', 'setup-token']],
+    ['非 OpenAI OAuth', ['anthropic'], ['oauth']],
+    ['混合平台 OAuth', ['openai', 'anthropic'], ['oauth']]
+  ])('目标切换为%s后不提交已暂存的 Codex 指纹模式', async (_label, selectedPlatforms, selectedTypes) => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['oauth']
+    })
+
+    await wrapper.get('#bulk-edit-codex-fingerprint-mode-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-codex-fingerprint-mode-select"]').setValue('device')
+    await wrapper.setProps({ selectedPlatforms, selectedTypes })
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      status: 'active'
+    })
+  })
+
   it('OpenAI API Key 批量编辑应提交 API Key 专属 WS mode 字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

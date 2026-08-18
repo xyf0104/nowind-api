@@ -1110,6 +1110,19 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
+	fingerprintModeValue, hasFingerprintModeUpdate := input.Extra[codexFingerprintModeExtraKey]
+	if hasFingerprintModeUpdate {
+		mode, ok := fingerprintModeValue.(string)
+		if !ok {
+			return nil, infraerrors.BadRequest("INVALID_CODEX_FINGERPRINT_MODE", "codex fingerprint mode must be a string")
+		}
+		switch codexFingerprintMode(strings.TrimSpace(mode)) {
+		case codexFingerprintOff, codexFingerprintDevice, codexFingerprintSession, codexFingerprintFull:
+			input.Extra[codexFingerprintModeExtraKey] = strings.TrimSpace(mode)
+		default:
+			return nil, infraerrors.BadRequest("INVALID_CODEX_FINGERPRINT_MODE", "unsupported codex fingerprint mode")
+		}
+	}
 	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingProbeExtraKey)
@@ -1145,12 +1158,30 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || hasFingerprintModeUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
 		cachedTargets = loaded
+	}
+	if hasFingerprintModeUpdate {
+		targetsByID := make(map[int64]*Account, len(cachedTargets))
+		for _, account := range cachedTargets {
+			if account != nil {
+				targetsByID[account.ID] = account
+			}
+		}
+		for _, accountID := range input.AccountIDs {
+			account, ok := targetsByID[accountID]
+			if !ok {
+				return nil, ErrAccountNotFound
+			}
+			if !account.IsOpenAIOAuth() {
+				return nil, infraerrors.Newf(http.StatusBadRequest, "CODEX_FINGERPRINT_OPENAI_OAUTH_ONLY",
+					"Codex fingerprint mode is only available for OpenAI OAuth accounts; account %d is %s/%s", account.ID, account.Platform, account.Type)
+			}
+		}
 	}
 	if input.ProbeEnabled != nil {
 		targetsByID := make(map[int64]*Account, len(cachedTargets))
@@ -1860,16 +1891,17 @@ func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account
 		}
 	}
 
-	token, _ := account.Credentials["access_token"].(string)
+	attemptedAccount := snapshotOAuthRefreshAccount(account)
+	token, _ := attemptedAccount.Credentials["access_token"].(string)
 	if token == "" {
 		return ""
 	}
 
-	projectID, _ := account.Credentials["project_id"].(string)
+	projectID, _ := attemptedAccount.Credentials["project_id"].(string)
 
 	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
+	if attemptedAccount.ProxyID != nil {
+		if p, err := s.proxyRepo.GetByID(ctx, *attemptedAccount.ProxyID); err == nil && p != nil {
 			proxyURL = p.URL()
 		}
 	}
@@ -1879,9 +1911,14 @@ func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account
 		return ""
 	}
 
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode}); err != nil {
+	applied, err := updateAntigravityOAuthExtraIfCredentialsUnchanged(ctx, s.accountRepo, attemptedAccount, map[string]any{"privacy_mode": mode})
+	if err != nil {
 		logger.LegacyPrintf("service.admin", "update_antigravity_privacy_mode_failed: account_id=%d err=%v", account.ID, err)
-		return mode
+		return ""
+	}
+	if !applied {
+		logger.LegacyPrintf("service.admin", "update_antigravity_privacy_mode_skipped_stale_identity: account_id=%d", account.ID)
+		return ""
 	}
 	applyAntigravityPrivacyMode(account, mode)
 	return mode
@@ -1893,16 +1930,17 @@ func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account 
 		return ""
 	}
 
-	token, _ := account.Credentials["access_token"].(string)
+	attemptedAccount := snapshotOAuthRefreshAccount(account)
+	token, _ := attemptedAccount.Credentials["access_token"].(string)
 	if token == "" {
 		return ""
 	}
 
-	projectID, _ := account.Credentials["project_id"].(string)
+	projectID, _ := attemptedAccount.Credentials["project_id"].(string)
 
 	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
+	if attemptedAccount.ProxyID != nil {
+		if p, err := s.proxyRepo.GetByID(ctx, *attemptedAccount.ProxyID); err == nil && p != nil {
 			proxyURL = p.URL()
 		}
 	}
@@ -1912,9 +1950,14 @@ func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account 
 		return ""
 	}
 
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode}); err != nil {
+	applied, err := updateAntigravityOAuthExtraIfCredentialsUnchanged(ctx, s.accountRepo, attemptedAccount, map[string]any{"privacy_mode": mode})
+	if err != nil {
 		logger.LegacyPrintf("service.admin", "force_update_antigravity_privacy_mode_failed: account_id=%d err=%v", account.ID, err)
-		return mode
+		return ""
+	}
+	if !applied {
+		logger.LegacyPrintf("service.admin", "force_update_antigravity_privacy_mode_skipped_stale_identity: account_id=%d", account.ID)
+		return ""
 	}
 	applyAntigravityPrivacyMode(account, mode)
 	return mode
