@@ -297,7 +297,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Estimated from cumulative account billing and utilization since the current login baseline',
+    weeklyEstimateHint: 'Estimated from the latest completed 1% quota segment; the previous result remains while the current segment is incomplete',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',
