@@ -55,9 +55,12 @@ describe('AppSidebar header styles', () => {
 })
 
 describe('AppSidebar XIASS update flow', () => {
-  it('keeps the established single update entry instead of the unsupported rollback badge', () => {
-    expect(componentSource).toContain('appStore.fetchVersion()')
+  it('only checks for updates after an explicit manual action', () => {
     expect(componentSource).toContain('appStore.fetchVersion(true)')
+    expect(componentSource).toContain('function manualCheckVersion()')
+    expect(componentSource).not.toContain('appStore.fetchVersion()')
+    expect(componentSource).not.toContain('function checkVersion()')
+    expect(componentSource).not.toContain('checkVersion()')
     expect(componentSource).toContain('triggerUpdateConfirm')
     expect(componentSource).not.toContain('<VersionBadge')
     expect(componentSource).not.toContain("import VersionBadge")

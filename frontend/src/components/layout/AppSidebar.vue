@@ -175,8 +175,8 @@
     <div class="mt-auto border-t border-gray-100 p-3 dark:border-dark-800">
       
       <!-- Version & Update (Admin Only) -->
-      <div v-if="isAdmin && currentVersion" class="mb-2 w-full px-3 py-2 text-xs flex flex-col items-center justify-center border border-gray-100 dark:border-dark-700 rounded-xl bg-gray-50 dark:bg-dark-800" :class="{ 'hidden': sidebarCollapsed }">
-        <div class="text-gray-500 font-medium">v{{ currentVersion }}</div>
+      <div v-if="isAdmin" class="mb-2 w-full px-3 py-2 text-xs flex flex-col items-center justify-center border border-gray-100 dark:border-dark-700 rounded-xl bg-gray-50 dark:bg-dark-800" :class="{ 'hidden': sidebarCollapsed }">
+        <div class="text-gray-500 font-medium">{{ currentVersion ? 'v' + currentVersion : '当前版本' }}</div>
         
         <button v-if="hasUpdate" @click="triggerUpdateConfirm" :disabled="isUpdating" class="mt-1 px-2 py-1 bg-orange-100 text-orange-600 hover:bg-orange-200 dark:bg-orange-500/20 dark:text-orange-400 dark:hover:bg-orange-500/30 rounded text-[10px] font-bold transition-colors w-full flex items-center justify-center">
           <span v-if="isUpdating" class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin mr-1"></span>
@@ -989,20 +989,11 @@ function handleGroupClick(item: NavItem) {
 isDark.value = getCurrentTheme() === 'dark'
 
 
-// --- Admin Auto Update Logic ---
-const currentVersion = ref('')
+// --- Admin Update Logic ---
+const currentVersion = computed(() => appStore.currentVersion || appStore.siteVersion || '')
 const latestVersion = ref('')
 const hasUpdate = ref(false)
 const isUpdating = ref(false)
-
-async function checkVersion() {
-  if (!isAdmin.value) return
-  const version = await appStore.fetchVersion()
-  if (!version) return
-  currentVersion.value = version.current_version || 'unknown'
-  latestVersion.value = version.latest_version
-  hasUpdate.value = version.has_update
-}
 
 const isCheckingUpdate = ref(false)
 
@@ -1014,7 +1005,6 @@ async function manualCheckVersion() {
     if (!version) {
       throw new Error('检查更新失败')
     }
-    currentVersion.value = version.current_version || 'unknown'
     latestVersion.value = version.latest_version
     hasUpdate.value = version.has_update
     if (hasUpdate.value) {
@@ -1092,7 +1082,6 @@ async function performUpdate() {
 watch(isAdmin, (v) => {
   if (v) {
     adminSettingsStore.fetch()
-    checkVersion()
   }
 }, { immediate: true })
 

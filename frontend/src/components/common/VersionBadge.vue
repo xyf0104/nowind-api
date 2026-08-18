@@ -671,7 +671,7 @@ const dropdownRef = ref<HTMLElement | null>(null)
 
 // Use store's cached version state
 const loading = computed(() => appStore.versionLoading)
-const currentVersion = computed(() => appStore.currentVersion || props.version || '')
+const currentVersion = computed(() => appStore.currentVersion || props.version || appStore.siteVersion || '')
 const latestVersion = computed(() => appStore.latestVersion)
 const hasUpdate = computed(() => appStore.hasUpdate)
 const releaseInfo = computed(() => appStore.releaseInfo)
@@ -910,10 +910,6 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 onMounted(() => {
-  if (isAdmin.value) {
-    // Use cached version if available, otherwise fetch
-    appStore.fetchVersion(false)
-  }
   document.addEventListener('click', handleClickOutside)
 })
 
