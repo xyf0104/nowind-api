@@ -538,6 +538,47 @@ func TestLoadOpenAICompactModelFromEnv(t *testing.T) {
 	require.Equal(t, "gpt-5.3-codex", cfg.Gateway.OpenAICompactModel)
 }
 
+func TestLoadDefaultGrokFreeQuotaSoftGate(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.Grok.PasswordAuthEnabled)
+	require.True(t, cfg.Gateway.Grok.FreeQuotaSoftGateEnabled)
+	require.Equal(t, int64(500_000), cfg.Gateway.Grok.FreeQuotaTokenLimit)
+	require.Equal(t, 95, cfg.Gateway.Grok.FreeQuotaSoftGatePercent)
+	require.Equal(t, 24, cfg.Gateway.Grok.FreeQuotaWindowHours)
+	require.Equal(t, 60, cfg.Gateway.Grok.FreeQuotaStatsCacheSeconds)
+	require.True(t, cfg.Gateway.CNProviders.BalanceCheckEnabled)
+	require.Equal(t, 0.5, cfg.Gateway.CNProviders.BalanceThreshold)
+	require.Equal(t, 10, cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes)
+}
+
+func TestValidateGrokFreeQuotaSoftGate(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		value   any
+		message string
+	}{
+		{name: "token limit", key: "gateway.grok.free_quota_token_limit", value: 0, message: "free_quota_token_limit must be positive"},
+		{name: "percent below range", key: "gateway.grok.free_quota_soft_gate_percent", value: 0, message: "free_quota_soft_gate_percent must be between 1 and 100"},
+		{name: "percent above range", key: "gateway.grok.free_quota_soft_gate_percent", value: 101, message: "free_quota_soft_gate_percent must be between 1 and 100"},
+		{name: "window", key: "gateway.grok.free_quota_window_hours", value: 0, message: "free_quota_window_hours must be positive"},
+		{name: "negative cache TTL", key: "gateway.grok.free_quota_stats_cache_seconds", value: -1, message: "free_quota_stats_cache_seconds must be non-negative"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			viper.Set(tt.key, tt.value)
+
+			_, err := Load()
+			require.ErrorContains(t, err, tt.message)
+		})
+	}
+}
+
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

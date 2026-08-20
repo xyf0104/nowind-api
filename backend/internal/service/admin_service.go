@@ -406,7 +406,7 @@ type UpdateAccountInput struct {
 	AutoPauseOnExpired        *bool
 	ProbeEnabled              *bool
 	RateSyncEnabled           *bool
-	ResetOpenAIWeeklyEstimate bool // 仅重新授权或重新导入时重置周额度分段状态
+	ResetOpenAIWeeklyEstimate bool // 重新授权/导入后仅在 OpenAI 账号身份改变时重置周额度状态
 	SkipMixedChannelCheck     bool // 跳过混合渠道检查（用户已确认风险）
 }
 

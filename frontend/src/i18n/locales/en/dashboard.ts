@@ -297,7 +297,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Smoothed from recent completed 2% quota segments; the previous result remains until completion, and 100% shows actual account cost',
+    weeklyEstimateHint: 'When usage crosses into the next percentage point, the account cost at that boundary becomes the completed 1% checkpoint; the estimate is actual cost plus remaining quota at the cumulative per-percent average, the same percentage keeps the previous result, and 100% shows actual cost',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

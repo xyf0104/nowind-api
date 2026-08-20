@@ -1389,7 +1389,7 @@ export interface UsageProgress {
   resets_at: string | null
   remaining_seconds: number
   window_stats?: WindowStats | null // 窗口期统计（从窗口开始到当前的使用量）
-  weekly_estimate_usd?: number | null // 最近完整 2% 样本智能估算；100% 时等于账号已用
+  weekly_estimate_usd?: number | null // 实际已用 + 剩余额度 × 完整百分点累计均值；100% 时等于账号已用
   used_requests?: number
   limit_requests?: number
 }

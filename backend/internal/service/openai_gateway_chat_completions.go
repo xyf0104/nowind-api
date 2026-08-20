@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -412,7 +413,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID)
 	if err != nil {
-		return nil, err
+		return nil, s.newOpenAICompatBufferedReadFailoverError(c, account, resp, requestID, err)
 	}
 
 	if finalResponse == nil {
@@ -492,6 +493,55 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		Stream:                        false,
 		Duration:                      time.Since(startTime),
 	}, nil
+}
+
+func (s *OpenAIGatewayService) newOpenAICompatBufferedReadFailoverError(
+	c *gin.Context,
+	account *Account,
+	resp *http.Response,
+	requestID string,
+	err error,
+) error {
+	if !shouldFailoverOpenAICompatBufferedReadError(c, err) {
+		return err
+	}
+
+	classifiedErr := newOpenAIUpstreamStreamReadError(err)
+	code, message, ok := OpenAIUpstreamStreamReadErrorDetails(classifiedErr)
+	if !ok {
+		return err
+	}
+	payload, _ := json.Marshal(gin.H{
+		"error": gin.H{
+			"type":    "upstream_error",
+			"code":    code,
+			"message": message,
+		},
+	})
+	var responseHeaders http.Header
+	if resp != nil {
+		responseHeaders = resp.Header
+	}
+	failoverErr := s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message, responseHeaders)
+	// Preserve the stable transport code if all retry candidates are exhausted.
+	failoverErr.ResponseBody = payload
+	return failoverErr
+}
+
+func shouldFailoverOpenAICompatBufferedReadError(c *gin.Context, err error) bool {
+	if err == nil || errors.Is(err, bufio.ErrTooLong) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
+		return false
+	}
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(err.Error()))
+	if lower == "upstream response body is nil" || strings.Contains(lower, "stream data interval timeout") {
+		return false
+	}
+	return true
 }
 
 // handleChatStreamingResponse reads Responses SSE events from upstream,

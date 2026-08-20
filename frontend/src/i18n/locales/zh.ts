@@ -896,7 +896,7 @@ export default {
     requestCountUnit: '次请求',
     openBillingBreakdown: '查看用户与模型扣费明细',
     weeklyEstimate: '周额度约',
-    weeklyEstimateHint: '按最近完整 2% 区间智能估算，当前区间未完成时保留上一结果，100% 时显示实际账号已用',
+    weeklyEstimateHint: '每跨入下一百分点时，以当时累计账号已用作为完整 1% 的终点检查点，再按“实际账号已用 + 剩余额度 × 可信基准以来每 1% 的累计均值”估算；同一百分点内保持上次结果，100% 时显示实际账号已用',
     weeklyEstimatePending: '统计中',
     oauthBillingDetails: '账号扣费明细',
     currentUsageWindow: '当前 {window} 窗口',

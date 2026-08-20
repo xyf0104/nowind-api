@@ -23,7 +23,27 @@ const (
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
 	PlatformGrok        = "grok"
+	PlatformKimi        = "kimi"     // Kimi (Moonshot)
+	PlatformZhipu       = "zhipu"    // Zhipu GLM (BigModel)
+	PlatformDeepseek    = "deepseek" // DeepSeek
 	PlatformComposite   = "composite"
+)
+
+// Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
+// 存储于 credentials["account_mode"]，决定 base_url 预设与额度监控方式。
+const (
+	AccountModePayG   = "payg"
+	AccountModeCoding = "coding"
+)
+
+// API protocol constants 国产供应商的上游 API 协议维度。存储于
+// credentials["api_protocol"]，与 account_mode 正交：协议决定转发端点与格式，
+// 模式决定额度监控方式。同协议请求零转换直通；跨协议组合才走转换链。
+const (
+	APIProtocolChatCompletions = "chat_completions"
+	APIProtocolAnthropic       = "anthropic"
+	APIProtocolResponses       = "responses"
+	APIProtocolAdaptive        = "adaptive"
 )
 
 // Account type constants

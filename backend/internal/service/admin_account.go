@@ -634,6 +634,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
+	previousOpenAIWeeklyEstimateIdentity := strings.TrimSpace(account.GetCredential("chatgpt_account_id"))
 	resetOpenAIWeeklyEstimate := input.ResetOpenAIWeeklyEstimate &&
 		account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
 	// 安全/身份不变量(影子账号):通用更新路径被 edit/re-auth/refresh/batch 共用,
@@ -807,7 +808,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			delete(account.Extra, OllamaCloudUsageAutoRefreshExtraKey)
 			delete(account.Extra, OllamaCloudUsageSnapshotExtraKey)
 		}
-		if resetOpenAIWeeklyEstimate {
+		if resetOpenAIWeeklyEstimate &&
+			previousOpenAIWeeklyEstimateIdentity != strings.TrimSpace(account.GetCredential("chatgpt_account_id")) {
 			clearOpenAIWeeklyEstimateBaseline(account.Extra)
 		}
 	}

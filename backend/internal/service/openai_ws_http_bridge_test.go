@@ -334,19 +334,167 @@ func TestProxyOpenAIWSHTTPBridgeTurnSSEErrorFailoverSafety(t *testing.T) {
 			)
 
 			var failoverErr *UpstreamFailoverError
-			if turn == 1 {
-				require.Nil(t, result)
-				require.ErrorAs(t, err, &failoverErr)
-				require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
-				require.Empty(t, writes)
-			} else {
-				require.NotNil(t, result)
-				require.Error(t, err)
-				require.False(t, errors.As(err, &failoverErr))
-				require.Len(t, writes, 1)
-			}
+			require.Nil(t, result)
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+			require.Empty(t, writes)
 		})
 	}
+}
+
+func TestProxyResponsesWebSocketFromClientTurn2ResponseFailedRateLimitPreservesRetryPayload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	firstSSEBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_retry_first","model":"gpt-5.1","output":[{"type":"function_call","id":"fc_retry_1","call_id":"call_retry_1","name":"shell","arguments":"{}"}],"usage":{"input_tokens":9,"output_tokens":1}}}`,
+		"",
+	}, "\n")
+	secondSSEBody := strings.Join([]string{
+		`data: {"type":"response.failed","response":{"id":"resp_retry_second","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for account, please retry later"}}}`,
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(firstSSEBody)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(secondSSEBody)),
+		},
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
+	cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	cfg.Gateway.OpenAIWS.QueueLimitPerConn = 8
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		cache:            &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+	}
+	account := &Account{
+		ID:          20,
+		Name:        "api-key-turn2-rate-limit",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-upstream"},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled": true,
+		},
+		Concurrency: 1,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	errCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		msgType, firstMessage, err := conn.Read(readCtx)
+		cancelRead()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+			errCh <- NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "unexpected client websocket message type", nil)
+			return
+		}
+
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+		req := r.Clone(r.Context())
+		req.Header = req.Header.Clone()
+		req.Header.Set("User-Agent", "codex_cli_rs/0.135.0")
+		ginCtx.Request = req
+
+		errCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeMessage := func(payload string) {
+		writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelWrite()
+		require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(payload)))
+	}
+	readMessage := func() []byte {
+		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelRead()
+		msgType, event, readErr := clientConn.Read(readCtx)
+		require.NoError(t, readErr)
+		require.Equal(t, coderws.MessageText, msgType)
+		return event
+	}
+
+	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":true,"instructions":"first-turn-instructions","input":"first-turn-input"}`)
+	firstTurnEvent := readMessage()
+	require.Equal(t, "response.completed", gjson.GetBytes(firstTurnEvent, "type").String())
+	require.Equal(t, "resp_retry_first", gjson.GetBytes(firstTurnEvent, "response.id").String())
+
+	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"instructions":"second-turn-instructions","previous_response_id":"resp_retry_first","input":[{"type":"function_call_output","call_id":"call_retry_1","output":"second-turn-output"}]}`)
+
+	var proxyErr error
+	select {
+	case proxyErr = <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second-turn rate-limit failover")
+	}
+	require.Error(t, proxyErr)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, proxyErr, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+
+	retryPayload, retryCurrentTurn := OpenAIWSCurrentTurnRetryPayload(proxyErr)
+	require.True(t, retryCurrentTurn)
+	require.NotEmpty(t, retryPayload)
+	require.Equal(t, "response.create", gjson.GetBytes(retryPayload, "type").String())
+	require.Equal(t, "gpt-5.1", gjson.GetBytes(retryPayload, "model").String())
+	require.False(t, gjson.GetBytes(retryPayload, "stream").Bool())
+	require.Equal(t, "second-turn-instructions", gjson.GetBytes(retryPayload, "instructions").String())
+	require.False(t, gjson.GetBytes(retryPayload, "previous_response_id").Exists())
+	retryInput := gjson.GetBytes(retryPayload, "input").Array()
+	require.Len(t, retryInput, 3)
+	require.Equal(t, "first-turn-input", retryInput[0].String())
+	require.Equal(t, "function_call", retryInput[1].Get("type").String())
+	require.Equal(t, "call_retry_1", retryInput[1].Get("call_id").String())
+	require.Equal(t, "function_call_output", retryInput[2].Get("type").String())
+	require.Equal(t, "call_retry_1", retryInput[2].Get("call_id").String())
+	require.Equal(t, "second-turn-output", retryInput[2].Get("output").String())
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, unexpectedEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, readErr)
+	require.Empty(t, unexpectedEvent, "second-turn response.failed must not be written downstream before failover")
+	require.Len(t, upstream.bodies, 2)
 }
 
 // 桥接转发 error / response.failed 给 WS 客户端前必须把容量降载码改写为可重试
@@ -368,10 +516,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient(t *testing
 			wantErr: true,
 		},
 		{
-			// response.failed 不走 error 事件分支：即便 turn 1 也会被当终止事件
-			// 原样转发（不 failover），因此改写必须在这里同样生效。
-			name: "turn1_bare_response_failed",
-			turn: 1,
+			// response.failed 不走 error 事件分支；后续 turn 不允许 replay，
+			// 因此改写必须在这里同样生效。
+			name: "turn2_bare_response_failed",
+			turn: 2,
 			body: "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_shed\",\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}}\n\n",
 		},
 	}
@@ -423,10 +571,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnRequiresTerminalEvent(t *testing.T) {
 	}{
 		{name: "done_without_events_fails_over", body: "data: [DONE]\n\n", wantFailover: true},
 		{
-			name: "created_then_done_is_truncated_not_success",
+			name: "created_then_done_fails_over_before_semantic_output",
 			body: "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_truncated\"}}\n\n" +
 				"data: [DONE]\n\n",
-			wantWrites: 1,
+			wantFailover: true,
 		},
 	}
 	for _, tt := range tests {

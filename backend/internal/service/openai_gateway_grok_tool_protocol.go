@@ -16,25 +16,11 @@ import (
 const grokResponsesClientToolMappingContextKey = "grok_responses_client_tool_mapping"
 
 func adaptResponsesClientToolsForFunctionUpstream(body []byte, upstream string) ([]byte, apicompat.ResponsesClientToolMapping, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var requestBody map[string]any
-	if err := decoder.Decode(&requestBody); err != nil {
-		return body, apicompat.ResponsesClientToolMapping{}, fmt.Errorf("decode %s Responses client tools: %w", upstream, err)
-	}
-
-	mapping, changed, err := apicompat.AdaptResponsesClientTools(requestBody)
-	if err != nil {
-		return body, apicompat.ResponsesClientToolMapping{}, err
-	}
-	if !changed {
-		return body, mapping, nil
-	}
-	rebuilt, err := marshalOpenAIUpstreamJSON(requestBody)
-	if err != nil {
-		return body, apicompat.ResponsesClientToolMapping{}, fmt.Errorf("encode %s Responses client tools: %w", upstream, err)
-	}
-	return rebuilt, mapping, nil
+	return adaptResponsesClientToolsForFunctionUpstreamWithMapping(
+		body,
+		upstream,
+		apicompat.ResponsesClientToolMapping{},
+	)
 }
 
 func adaptGrokResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {

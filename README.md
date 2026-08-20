@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.21-0ea5e9" alt="当前版本 v1.1.21" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.22-0ea5e9" alt="当前版本 v1.1.22" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.21
+> 当前版本：v1.1.22
 
-v1.1.21 融合 sub2api v0.1.178 的 Gemini/Antigravity、OpenAI、Claude、订阅、邀请与仓储修复，同时保留 XIASS 全部二开：新增默认关闭、可按账号启用的 Codex OAuth 指纹收敛与系统随机种子，完善 HTTP/透传/WebSocket 身份一致性、批量关闭、CRS 导入和故障转移隔离；修正 Gemini 混合工具、真实 4xx、池模式 429、Claude `web_search` 同名函数识别，以及 Antigravity 重新授权后的 project、privacy 与临时停调竞态；恢复 OpenAI API Key、WebSocket 和终端事件中的客户端工具，并继续按有效完整额度段稳定估算周额度。
+v1.1.22 在 XIASS v1.1.21 完整二开基线上对齐 sub2api v0.1.179 的 OpenAI 调用与账号调度：候选账号统一按优先级、订阅、健康度、负载、排队、首字延迟、错误率、额度和成本综合评分并进行 Top-K 加权选择，普通粘性恢复默认 1 小时的 weighted sticky 与高延迟/高错误/满并发逃逸，HTTP、透传、WebSocket、旧调度和故障转移使用相同上游语义，瞬时错误退避及网络错误状态处理也回归原版。调用链同时补齐最终模型/服务层级路由提示、跨账号 Codex turn-state 隔离、远程压缩能力、多轮客户端工具、Chat/Responses/图片与 HTTP/2 断流恢复、WebSocket 后续轮次 429 重建重放、真实可见首字延迟，以及 Grok 模型别名、额度门控和上游故障分类；Gemini 按真实图片输出数量计费并兼容整数 `exclusiveMinimum`。XIASS 品牌、界面、计费展示、Antigravity/Gemini 模型契约、OAuth/接码/令牌转换器、运维能力继续保留；OpenAI 周额度改为跨入下一百分点时冻结当时累计账号已用，并以可信基准以来完整百分点累计均值估算，100% 时直接等于实际账号已用。
 
 发布版本固定使用 `主版本.次版本.修订版本` 三段数字，每段最高为 99；修订版本超过 99 时进位到次版本，次版本超过 99 时进位到主版本。
 

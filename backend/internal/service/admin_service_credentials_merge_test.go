@@ -116,7 +116,7 @@ func TestUpdateAccount_EmptyCredentialsSkipsUpdate(t *testing.T) {
 	require.Equal(t, "renamed", repo.account.Name)
 }
 
-func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateBaseline(t *testing.T) {
+func TestUpdateAccount_OpenAIReauthorizationPreservesWeeklyEstimateForSameIdentity(t *testing.T) {
 	accountID := int64(205)
 	repo := &updateAccountCredsRepoStub{
 		account: &Account{
@@ -143,8 +143,46 @@ func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateBaseline(t *test
 
 	_, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
 		Credentials: map[string]any{
-			"access_token":  "access-new",
-			"refresh_token": "refresh-new",
+			"access_token":       "access-new",
+			"refresh_token":      "refresh-new",
+			"chatgpt_account_id": "workspace-a",
+		},
+		ResetOpenAIWeeklyEstimate: true,
+	})
+	require.NoError(t, err)
+	require.Contains(t, repo.account.Extra, openAIWeeklyEstimateBaselineKey)
+}
+
+func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateForNewIdentity(t *testing.T) {
+	accountID := int64(207)
+	repo := &updateAccountCredsRepoStub{
+		account: &Account{
+			ID:       accountID,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"access_token":       "access-old",
+				"refresh_token":      "refresh-old",
+				"chatgpt_account_id": "workspace-a",
+			},
+			Extra: map[string]any{
+				openAIWeeklyEstimateBaselineKey: map[string]any{
+					"percent":  10.0,
+					"cost":     100.0,
+					"reset_at": "2026-08-25T05:17:50Z",
+					"identity": "workspace-a",
+				},
+			},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	_, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Credentials: map[string]any{
+			"access_token":       "access-new",
+			"refresh_token":      "refresh-new",
+			"chatgpt_account_id": "workspace-b",
 		},
 		ResetOpenAIWeeklyEstimate: true,
 	})
@@ -179,8 +217,9 @@ func TestUpdateAccount_OpenAITokenRefreshPreservesWeeklyEstimateBaseline(t *test
 
 	_, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
 		Credentials: map[string]any{
-			"access_token":  "access-refreshed",
-			"refresh_token": "refresh-rotated",
+			"access_token":       "access-refreshed",
+			"refresh_token":      "refresh-rotated",
+			"chatgpt_account_id": "workspace-a",
 		},
 	})
 	require.NoError(t, err)

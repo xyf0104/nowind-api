@@ -282,6 +282,9 @@ type OpenAIForwardResult struct {
 
 	wsReplayInput       []json.RawMessage
 	wsReplayInputExists bool
+	// wsAccountFailoverReplayInput stores the original turn payload so a later
+	// WebSocket bridge turn can rebuild the request on another account.
+	wsAccountFailoverReplayInput []json.RawMessage
 }
 
 // SucceededForScheduling reports whether this result is an upstream success
@@ -458,6 +461,8 @@ type OpenAIGatewayService struct {
 	codexModelsManifestCache            codexModelsManifestCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+	openaiCodexTurnStateOrigins         sync.Map
+	openaiCodexTurnStateWrites          atomic.Int64
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
