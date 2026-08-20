@@ -36,16 +36,13 @@ func TestChatCompletionsBufferedResponsesReadErrorReturnsFailover(t *testing.T) 
 
 	for _, readError := range readErrors {
 		t.Run(readError.name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(recorder)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			resp := &http.Response{
 				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"upstream-rid"},
-				},
-				Body: &openAICompatBufferedReadErrorCloser{err: readError.err},
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"upstream-rid"}},
+				Body:       &openAICompatBufferedReadErrorCloser{err: readError.err},
 			}
 			account := &Account{ID: 40, Name: "openai-oauth", Platform: PlatformOpenAI}
 
@@ -60,7 +57,7 @@ func TestChatCompletionsBufferedResponsesReadErrorReturnsFailover(t *testing.T) 
 			require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 			require.Equal(t, "upstream-rid", failoverErr.ResponseHeaders.Get("x-request-id"))
 			require.Equal(t, readError.expectedCode, gjson.GetBytes(failoverErr.ResponseBody, "error.code").String())
-			require.Empty(t, recorder.Body.String())
+			require.Empty(t, rec.Body.String())
 			require.False(t, c.Writer.Written())
 		})
 	}
@@ -68,8 +65,9 @@ func TestChatCompletionsBufferedResponsesReadErrorReturnsFailover(t *testing.T) 
 
 func TestChatCompletionsBufferedResponsesReadErrorDoesNotFailoverAfterClientCancel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
 	requestContext, cancel := context.WithCancel(context.Background())
 	cancel()
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(requestContext)
@@ -80,20 +78,27 @@ func TestChatCompletionsBufferedResponsesReadErrorDoesNotFailoverAfterClientCanc
 	}
 
 	result, err := (&OpenAIGatewayService{}).handleChatBufferedStreamingResponse(
-		resp, c, &Account{ID: 40, Platform: PlatformOpenAI},
-		"gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", time.Now(),
+		resp,
+		c,
+		&Account{ID: 40, Name: "openai-oauth", Platform: PlatformOpenAI},
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		time.Now(),
 	)
 
 	require.Error(t, err)
 	require.Nil(t, result)
 	var failoverErr *UpstreamFailoverError
 	require.NotErrorAs(t, err, &failoverErr)
+	require.Empty(t, rec.Body.String())
 }
 
 func TestChatCompletionsBufferedResponsesOversizedLineDoesNotFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -102,8 +107,13 @@ func TestChatCompletionsBufferedResponsesOversizedLineDoesNotFailover(t *testing
 	}
 
 	result, err := (&OpenAIGatewayService{}).handleChatBufferedStreamingResponse(
-		resp, c, &Account{ID: 40, Platform: PlatformOpenAI},
-		"gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", time.Now(),
+		resp,
+		c,
+		&Account{ID: 40, Name: "openai-oauth", Platform: PlatformOpenAI},
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		time.Now(),
 	)
 
 	require.ErrorIs(t, err, bufio.ErrTooLong)
@@ -126,4 +136,33 @@ func TestChatCompletionsBufferedIntervalTimeoutDoesNotUseReadFailover(t *testing
 	require.ErrorIs(t, got, err)
 	var failoverErr *UpstreamFailoverError
 	require.NotErrorAs(t, got, &failoverErr)
+}
+
+func TestAnthropicBufferedResponsesReadErrorKeepsExistingBehavior(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       &openAICompatBufferedReadErrorCloser{err: io.ErrUnexpectedEOF},
+	}
+
+	result, err := (&OpenAIGatewayService{}).handleAnthropicBufferedStreamingResponse(
+		resp,
+		c,
+		&Account{ID: 40, Name: "openai-oauth", Platform: PlatformOpenAI},
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		time.Now(),
+	)
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Equal(t, io.ErrUnexpectedEOF, err, "Messages 路径必须保持原始读取错误，不引入 Chat failover 包装")
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.NotErrorAs(t, err, &failoverErr)
 }

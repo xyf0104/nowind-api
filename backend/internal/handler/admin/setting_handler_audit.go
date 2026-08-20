@@ -41,6 +41,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if !equalStringSlice(before.RegistrationEmailSuffixWhitelist, after.RegistrationEmailSuffixWhitelist) {
 		changed = append(changed, "registration_email_suffix_whitelist")
 	}
+	if before.RegistrationEmailDomainQuotaEnabled != after.RegistrationEmailDomainQuotaEnabled {
+		changed = append(changed, "registration_email_domain_quota_enabled")
+	}
 	if before.PromoCodeEnabled != after.PromoCodeEnabled {
 		changed = append(changed, "promo_code_enabled")
 	}
@@ -121,6 +124,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if req.TencentCaptchaCloudSecretKey != "" {
 		changed = append(changed, "tencent_captcha_cloud_secret_key")
+	}
+	if before.TencentCaptchaRegion != after.TencentCaptchaRegion {
+		changed = append(changed, "tencent_captcha_region")
 	}
 	if before.AliyunCaptchaEnabled != after.AliyunCaptchaEnabled {
 		changed = append(changed, "aliyun_captcha_enabled")
@@ -331,6 +337,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.HomeContent != after.HomeContent {
 		changed = append(changed, "home_content")
+	}
+	if before.CompactHomeEnabled != after.CompactHomeEnabled {
+		changed = append(changed, "compact_home_enabled")
 	}
 	if before.HideCcsImportButton != after.HideCcsImportButton {
 		changed = append(changed, "hide_ccs_import_button")
@@ -561,11 +570,41 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.ChannelMonitorEnabled != after.ChannelMonitorEnabled {
 		changed = append(changed, "channel_monitor_enabled")
 	}
+	if before.ChannelMonitorMode != after.ChannelMonitorMode {
+		changed = append(changed, "channel_monitor_mode")
+	}
 	if before.ChannelMonitorDefaultIntervalSeconds != after.ChannelMonitorDefaultIntervalSeconds {
 		changed = append(changed, "channel_monitor_default_interval_seconds")
 	}
+	if before.ChannelMonitorHideThroughput != after.ChannelMonitorHideThroughput {
+		changed = append(changed, "channel_monitor_hide_throughput")
+	}
+	if before.ChannelMonitorShowQuota != after.ChannelMonitorShowQuota {
+		changed = append(changed, "channel_monitor_show_quota")
+	}
+	if before.GrokDefaultTextModel != after.GrokDefaultTextModel {
+		changed = append(changed, "grok_default_text_model")
+	}
+	if before.GrokCrossClientModelMapEnabled != after.GrokCrossClientModelMapEnabled {
+		changed = append(changed, "grok_cross_client_model_map_enabled")
+	}
+	if before.GrokDefaultBaseURLMode != after.GrokDefaultBaseURLMode {
+		changed = append(changed, "grok_default_base_url_mode")
+	}
 	if before.AvailableChannelsEnabled != after.AvailableChannelsEnabled {
 		changed = append(changed, "available_channels_enabled")
+	}
+	if before.ModelPricingEnabled != after.ModelPricingEnabled {
+		changed = append(changed, "model_pricing_enabled")
+	}
+	if before.ModelPlazaEnabled != after.ModelPlazaEnabled {
+		changed = append(changed, "model_plaza_enabled")
+	}
+	if before.ModelPlazaRequireAuth != after.ModelPlazaRequireAuth {
+		changed = append(changed, "model_plaza_require_auth")
+	}
+	if before.ModelPlazaDescription != after.ModelPlazaDescription {
+		changed = append(changed, "model_plaza_description")
 	}
 	if before.AffiliateEnabled != after.AffiliateEnabled {
 		changed = append(changed, "affiliate_enabled")
@@ -582,6 +621,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	// Default platform quotas（JSON map，整体比较）
 	if !equalPlatformQuotaSettings(before.DefaultPlatformQuotas, after.DefaultPlatformQuotas) {
 		changed = append(changed, service.SettingKeyDefaultPlatformQuotas)
+	}
+	if !equalAccountSchedulingThresholds(before.AccountSchedulingThresholds, after.AccountSchedulingThresholds) {
+		changed = append(changed, service.SettingKeyAccountSchedulingThresholds)
 	}
 	changed = appendAuthSourceDefaultChanges(changed, beforeAuthSourceDefaults, afterAuthSourceDefaults)
 	return changed
@@ -762,6 +804,27 @@ func equalNotifyEmailEntries(a, b []service.NotifyEmailEntry) bool {
 	}
 	for i := range a {
 		if a[i].Email != b[i].Email || a[i].Verified != b[i].Verified || a[i].Disabled != b[i].Disabled {
+			return false
+		}
+	}
+	return true
+}
+
+func equalAccountSchedulingThresholds(before, after map[string]int) bool {
+	for _, platform := range service.AllowedSchedulingThresholdPlatforms {
+		beforeValue := 100
+		if before != nil {
+			if value, ok := before[platform]; ok {
+				beforeValue = value
+			}
+		}
+		afterValue := 100
+		if after != nil {
+			if value, ok := after[platform]; ok {
+				afterValue = value
+			}
+		}
+		if beforeValue != afterValue {
 			return false
 		}
 	}

@@ -57,16 +57,19 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyRegistrationEnabled:                       "true",
 		SettingKeyEmailVerifyEnabled:                        "false",
 		SettingKeyRegistrationEmailSuffixWhitelist:          "[]",
+		SettingKeyRegistrationEmailDomainQuotaEnabled:       "false",
 		SettingKeyPromoCodeEnabled:                          "true", // 默认启用优惠码功能
 		SettingKeyLoginAgreementEnabled:                     "false",
 		SettingKeyLoginAgreementMode:                        defaultLoginAgreementMode,
 		SettingKeyLoginAgreementUpdatedAt:                   defaultLoginAgreementDate,
 		SettingKeyLoginAgreementDocuments:                   loginAgreementDocumentsJSON,
+		SettingKeyTencentCaptchaRegion:                      TencentCaptchaRegionCN,
 		SettingKeyAPIKeyACLTrustForwardedIP:                 "false",
 		SettingKeyForwardedClientIPHeaders:                  string(forwardedClientIPHeadersJSON),
 		settingKeyForwardedClientIPModeV2:                   "true",
 		SettingKeySiteName:                                  "XIASS API",
 		SettingKeySiteLogo:                                  "",
+		SettingKeyCompactHomeEnabled:                        "false",
 		SettingKeyPurchaseSubscriptionEnabled:               "false",
 		SettingKeyPurchaseSubscriptionURL:                   "",
 		SettingKeyTableDefaultPageSize:                      "20",
@@ -185,10 +188,27 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// Channel monitor defaults (enabled, 60s)
 		SettingKeyChannelMonitorEnabled:                "true",
+		SettingKeyChannelMonitorMode:                   ChannelMonitorModeV1,
 		SettingKeyChannelMonitorDefaultIntervalSeconds: "60",
+		SettingKeyChannelMonitorHideThroughput:         "true",
+		SettingKeyChannelMonitorShowQuota:              "false",
+
+		// Grok default mapping policy. Keep cross-client mapping compatible with
+		// the upstream default; operators can disable it explicitly.
+		SettingKeyGrokDefaultTextModel:           "grok-4.5",
+		SettingKeyGrokCrossClientModelMapEnabled: "true",
+		SettingKeyGrokDefaultBaseURLMode:         "cli",
 
 		// Available channels feature (default disabled; opt-in)
 		SettingKeyAvailableChannelsEnabled: "false",
+		// XIASS model pricing is independent from the opt-in channel view and
+		// remains visible by default for both new and upgraded installations.
+		SettingKeyModelPricingEnabled: "true",
+
+		// Model plaza feature (default disabled; opt-in, public unless require_auth)
+		SettingKeyModelPlazaEnabled:     "false",
+		SettingKeyModelPlazaRequireAuth: "false",
+		SettingKeyModelPlazaDescription: "",
 
 		// Affiliate (邀请返利) feature (default disabled; opt-in)
 		SettingKeyAffiliateEnabled:              "false",
@@ -297,6 +317,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		RegistrationEnabled:                    settings[SettingKeyRegistrationEnabled] == "true",
 		EmailVerifyEnabled:                     emailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:       ParseRegistrationEmailSuffixWhitelist(settings[SettingKeyRegistrationEmailSuffixWhitelist]),
+		RegistrationEmailDomainQuotaEnabled:    settings[SettingKeyRegistrationEmailDomainQuotaEnabled] == "true",
 		PromoCodeEnabled:                       settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
 		PasswordResetEnabled:                   emailVerifyEnabled && settings[SettingKeyPasswordResetEnabled] == "true",
 		FrontendURL:                            settings[SettingKeyFrontendURL],
@@ -324,6 +345,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		TencentCaptchaAppSecretKeyConfigured:   settings[SettingKeyTencentCaptchaAppSecretKey] != "",
 		TencentCaptchaCloudSecretIDConfigured:  settings[SettingKeyTencentCaptchaCloudSecretID] != "",
 		TencentCaptchaCloudSecretKeyConfigured: settings[SettingKeyTencentCaptchaCloudSecretKey] != "",
+		TencentCaptchaRegion:                   NormalizeTencentCaptchaRegion(settings[SettingKeyTencentCaptchaRegion]),
 		AliyunCaptchaEnabled:                   settings[SettingKeyAliyunCaptchaEnabled] == "true",
 		AliyunCaptchaAccessKeyID:               settings[SettingKeyAliyunCaptchaAccessKeyID],
 		AliyunCaptchaAccessKeySecretConfigured: settings[SettingKeyAliyunCaptchaAccessKeySecret] != "",
@@ -339,6 +361,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		ContactInfo:                            settings[SettingKeyContactInfo],
 		DocURL:                                 settings[SettingKeyDocURL],
 		HomeContent:                            settings[SettingKeyHomeContent],
+		CompactHomeEnabled:                     settings[SettingKeyCompactHomeEnabled] == "true",
 		HideCcsImportButton:                    settings[SettingKeyHideCcsImportButton] == "true",
 		PurchaseSubscriptionEnabled:            settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
 		PurchaseSubscriptionURL:                strings.TrimSpace(settings[SettingKeyPurchaseSubscriptionURL]),
@@ -772,14 +795,39 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		}
 	}
 
-	// Channel monitor feature (default: enabled, 60s)
+	// Channel monitor feature. Missing legacy keys retain the upstream-safe
+	// defaults: v1 active probes, hidden throughput, and quota snapshots hidden.
 	result.ChannelMonitorEnabled = !isFalseSettingValue(settings[SettingKeyChannelMonitorEnabled])
+	result.ChannelMonitorMode = normalizeChannelMonitorMode(settings[SettingKeyChannelMonitorMode])
 	result.ChannelMonitorDefaultIntervalSeconds = parseChannelMonitorInterval(
 		settings[SettingKeyChannelMonitorDefaultIntervalSeconds],
 	)
+	result.ChannelMonitorHideThroughput = !isFalseSettingValue(settings[SettingKeyChannelMonitorHideThroughput])
+	result.ChannelMonitorShowQuota = settings[SettingKeyChannelMonitorShowQuota] == "true"
+
+	// Grok default mapping policy. The gateway owns the runtime interpretation;
+	// settings parsing only supplies stable, compatible defaults.
+	result.GrokDefaultTextModel = strings.TrimSpace(settings[SettingKeyGrokDefaultTextModel])
+	if result.GrokDefaultTextModel == "" {
+		result.GrokDefaultTextModel = "grok-4.5"
+	}
+	result.GrokCrossClientModelMapEnabled = !isFalseSettingValue(settings[SettingKeyGrokCrossClientModelMapEnabled])
+	result.GrokDefaultBaseURLMode = strings.TrimSpace(settings[SettingKeyGrokDefaultBaseURLMode])
+	if result.GrokDefaultBaseURLMode == "" {
+		result.GrokDefaultBaseURLMode = "cli"
+	}
 
 	// Available channels feature (default: disabled; strict true)
 	result.AvailableChannelsEnabled = settings[SettingKeyAvailableChannelsEnabled] == "true"
+	// XIASS model pricing must not inherit the opt-in available-channel default.
+	// Existing installations have no row until their next save, so only an
+	// explicit false disables the established price surface.
+	result.ModelPricingEnabled = !isFalseSettingValue(settings[SettingKeyModelPricingEnabled])
+
+	// Model plaza feature (default: disabled; strict true)
+	result.ModelPlazaEnabled = settings[SettingKeyModelPlazaEnabled] == "true"
+	result.ModelPlazaRequireAuth = settings[SettingKeyModelPlazaRequireAuth] == "true"
+	result.ModelPlazaDescription = settings[SettingKeyModelPlazaDescription]
 
 	// Affiliate (邀请返利) feature (default: disabled; strict true)
 	result.AffiliateEnabled = settings[SettingKeyAffiliateEnabled] == "true"

@@ -64,6 +64,21 @@ func TestDiffSettings_NoChangeWhenEqual(t *testing.T) {
 	}
 }
 
+func TestDiffSettings_DetectsModelPricingChangeIndependently(t *testing.T) {
+	before := &service.SystemSettings{
+		AvailableChannelsEnabled: true,
+		ModelPricingEnabled:      true,
+	}
+	after := &service.SystemSettings{
+		AvailableChannelsEnabled: true,
+		ModelPricingEnabled:      false,
+	}
+
+	changed := diffSettings(before, after, nil, nil, UpdateSettingsRequest{})
+	require.Contains(t, changed, "model_pricing_enabled")
+	require.NotContains(t, changed, "available_channels_enabled")
+}
+
 func TestSettingsAuditRequestDoesNotInheritStoredTencentSecrets(t *testing.T) {
 	req := UpdateSettingsRequest{
 		TencentCaptchaAppSecretKey:   "  ",

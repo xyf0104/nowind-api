@@ -305,7 +305,7 @@ func TestPricingRequestToService_Defaults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := pricingRequestToService([]channelModelPricingRequest{tt.req})
+			result := pricingRequestToService([]channelModelPricingRequest{tt.req}, true)
 			require.Len(t, result, 1)
 			switch tt.wantField {
 			case "BillingMode":
@@ -332,7 +332,7 @@ func TestPricingRequestToService_WithAllFields(t *testing.T) {
 		},
 	}
 
-	result := pricingRequestToService(reqs)
+	result := pricingRequestToService(reqs, true)
 	require.Len(t, result, 1)
 	r := result[0]
 	require.Equal(t, "openai", r.Platform)
@@ -373,7 +373,7 @@ func TestPricingRequestToService_WithIntervals(t *testing.T) {
 		},
 	}
 
-	result := pricingRequestToService(reqs)
+	result := pricingRequestToService(reqs, true)
 	require.Len(t, result, 1)
 	require.Len(t, result[0].Intervals, 2)
 
@@ -396,7 +396,7 @@ func TestPricingRequestToService_WithIntervals(t *testing.T) {
 }
 
 func TestPricingRequestToService_EmptySlice(t *testing.T) {
-	result := pricingRequestToService([]channelModelPricingRequest{})
+	result := pricingRequestToService([]channelModelPricingRequest{}, true)
 	require.NotNil(t, result)
 	require.Empty(t, result)
 }
@@ -410,7 +410,7 @@ func TestPricingRequestToService_NilPriceFields(t *testing.T) {
 		},
 	}
 
-	result := pricingRequestToService(reqs)
+	result := pricingRequestToService(reqs, true)
 	require.Len(t, result, 1)
 	r := result[0]
 	require.Nil(t, r.InputPrice)
@@ -419,6 +419,44 @@ func TestPricingRequestToService_NilPriceFields(t *testing.T) {
 	require.Nil(t, r.CacheReadPrice)
 	require.Nil(t, r.ImageOutputPrice)
 	require.Nil(t, r.PerRequestPrice)
+}
+
+func TestPricingRequestToService_Multipliers(t *testing.T) {
+	req := channelModelPricingRequest{
+		Models:         []string{"gpt-5"},
+		FastMultiplier: float64Ptr(2.5),
+		FlexMultiplier: float64Ptr(0.5),
+		Intervals: []pricingIntervalRequest{{
+			MinTokens:            272000,
+			InputMultiplier:      float64Ptr(2),
+			OutputMultiplier:     float64Ptr(1.5),
+			CacheWriteMultiplier: float64Ptr(2),
+			CacheReadMultiplier:  float64Ptr(2),
+		}},
+	}
+
+	allowed := pricingRequestToService([]channelModelPricingRequest{req}, true)
+	require.Equal(t, float64Ptr(2.5), allowed[0].FastMultiplier)
+	require.Equal(t, float64Ptr(0.5), allowed[0].FlexMultiplier)
+	require.Equal(t, float64Ptr(2), allowed[0].Intervals[0].InputMultiplier)
+	require.Equal(t, float64Ptr(1.5), allowed[0].Intervals[0].OutputMultiplier)
+
+	dropped := pricingRequestToService([]channelModelPricingRequest{req}, false)
+	require.Nil(t, dropped[0].FastMultiplier)
+	require.Nil(t, dropped[0].FlexMultiplier)
+	require.Nil(t, dropped[0].Intervals[0].InputMultiplier)
+	require.Nil(t, dropped[0].Intervals[0].OutputMultiplier)
+	require.Nil(t, dropped[0].Intervals[0].CacheWriteMultiplier)
+	require.Nil(t, dropped[0].Intervals[0].CacheReadMultiplier)
+}
+
+func TestPricingToResponse_Multipliers(t *testing.T) {
+	response := pricingToResponse(&service.ChannelModelPricing{
+		FastMultiplier: float64Ptr(2),
+		FlexMultiplier: float64Ptr(0.5),
+	})
+	require.Equal(t, float64Ptr(2), response.FastMultiplier)
+	require.Equal(t, float64Ptr(0.5), response.FlexMultiplier)
 }
 
 // ---------------------------------------------------------------------------
@@ -459,7 +497,7 @@ func TestSyncPricingModels_ValidPlatform_EmptyService(t *testing.T) {
 	svc := service.NewPricingService(nil, nil)
 	router := setupSyncPricingModelsRouter(svc)
 
-	for _, platform := range []string{"anthropic", "openai", "gemini", "antigravity"} {
+	for _, platform := range []string{"anthropic", "openai", "gemini", "antigravity", "grok", "kimi", "zhipu", "deepseek"} {
 		req := httptest.NewRequest(http.MethodGet, "/channels/pricing/sync-models?platform="+platform, nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)

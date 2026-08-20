@@ -30,8 +30,12 @@ import (
 const (
 	claudeAPIURL            = "https://api.anthropic.com/v1/messages?beta=true"
 	claudeAPICountTokensURL = "https://api.anthropic.com/v1/messages/count_tokens?beta=true"
-	stickySessionTTL        = time.Hour // 粘性会话TTL
-	defaultMaxLineSize      = 500 * 1024 * 1024
+	// Normal session_hash bindings use a rolling one-minute TTL. A request hit
+	// refreshes the binding; a quiet session is reselected under the current
+	// hard priority order. previous_response_id continuation is handled by its
+	// own non-migratable binding and is intentionally not governed by this TTL.
+	stickySessionTTL   = time.Minute
+	defaultMaxLineSize = 500 * 1024 * 1024
 	// Canonical Claude Code banner. Keep it EXACT (no trailing whitespace/newlines)
 	// to match real Claude CLI traffic as closely as possible. When we need a visual
 	// separator between system blocks, we add "\n\n" at concatenation time.
@@ -449,6 +453,10 @@ var allowedHeaders = map[string]bool{
 // cache implementation (e.g. redis.Nil), mirroring ErrRefreshTokenNotFound.
 var ErrStickySessionNotFound = errors.New("sticky session not found")
 
+// ErrReasoningContentNotFound is returned by GatewayCache.GetReasoningContent
+// when no cached reasoning content exists for the reasoning item ID.
+var ErrReasoningContentNotFound = errors.New("reasoning content not found")
+
 // GatewayCache 定义网关服务的缓存操作接口。
 // 提供粘性会话（Sticky Session）的存储、查询、刷新和删除功能。
 //
@@ -472,6 +480,26 @@ type GatewayCache interface {
 	// DeleteSessionAccountID 删除粘性会话绑定，用于账号不可用时主动清理
 	// Delete sticky session binding, used to proactively clean up when account becomes unavailable
 	DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error
+	// Grok async video billing snapshot (create → status success).
+	// SetGrokVideoPendingBilling stores create-time model/duration/resolution for status billing.
+	SetGrokVideoPendingBilling(ctx context.Context, key string, payload []byte, ttl time.Duration) error
+	// GetGrokVideoPendingBilling returns the create-time billing snapshot; miss → nil, nil.
+	GetGrokVideoPendingBilling(ctx context.Context, key string) ([]byte, error)
+	// ClaimGrokVideoBilled atomically marks a video request as billed (SetNX).
+	// Returns true when this caller won the claim; false when already billed or claim unavailable.
+	ClaimGrokVideoBilled(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	// ReleaseGrokVideoBilled clears a claim so a failed RecordUsage can retry billing.
+	ReleaseGrokVideoBilled(ctx context.Context, key string) error
+
+	// Reasoning content cache (Responses→Chat Completions 桥接）。
+	// SetReasoningContent 按 reasoning item id 缓存 reasoning 全文，供后续请求
+	// 在客户端不回传明文 summary 时回注 reasoning_content（DeepSeek thinking
+	// mode 要求回传，否则 400）。
+	SetReasoningContent(ctx context.Context, itemID string, content string, ttl time.Duration) error
+	// GetReasoningContent 返回缓存的 reasoning 全文；未命中返回
+	// ErrReasoningContentNotFound，使 service 层无需依赖具体缓存实现即可
+	// 区分"未缓存"与真实读取失败。
+	GetReasoningContent(ctx context.Context, itemID string) (string, error)
 }
 
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil
@@ -586,6 +614,9 @@ type ForwardResult struct {
 	FirstTokenMs                  *int // 首字时间（流式请求）
 	ClientDisconnect              bool // 客户端是否在流式传输过程中断开
 	ReasoningEffort               *string
+	// ServiceTier records the billable request tier. OpenAI uses service_tier;
+	// Anthropic speed=fast is normalized to "fast".
+	ServiceTier *string
 
 	// 图片生成计费字段（图片生成模型使用）
 	ImageCount         int    // 生成的图片数量

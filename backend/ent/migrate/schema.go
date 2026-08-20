@@ -929,6 +929,8 @@ var (
 		{Name: "video_price_720p", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
 		{Name: "video_price_1080p", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
 		{Name: "web_search_price_per_call", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "long_context_pricing_enabled", Type: field.TypeBool, Default: true},
+		{Name: "model_pricing", Type: field.TypeJSON, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "claude_code_only", Type: field.TypeBool, Default: false},
 		{Name: "fallback_group_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "fallback_group_id_on_invalid_request", Type: field.TypeInt64, Nullable: true},
@@ -986,7 +988,7 @@ var (
 			{
 				Name:    "group_sort_order",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[42]},
+				Columns: []*schema.Column{GroupsColumns[44]},
 			},
 			{
 				Name:    "idx_groups_duplicate_operation_id_active",

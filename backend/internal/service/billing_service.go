@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 // APIKeyRateLimitCacheData holds rate limit usage data cached in Redis.
@@ -100,10 +101,13 @@ type ModelPricing struct {
 	CacheCreationPriceExplicit         bool    // 是否由渠道/区间定价显式设定（为 true 时即使 == 0 也不回退）
 	CacheReadPricePerToken             float64 // 缓存读取每token价格 (USD)
 	CacheReadPricePerTokenPriority     float64 // priority service tier 下缓存读取每token价格 (USD)
+	FastMultiplier                     *float64
+	FlexMultiplier                     *float64
 	CacheCreation5mPrice               float64 // 5分钟缓存创建每token价格 (USD)
 	CacheCreation1hPrice               float64 // 1小时缓存创建每token价格 (USD)
 	SupportsCacheBreakdown             bool    // 是否支持详细的缓存分类
 	LongContextInputThreshold          int     // 超过阈值后按整次会话提升输入价格
+	LongContextThresholdInclusive      bool    // 达到阈值即应用；默认保持严格大于
 	LongContextInputMultiplier         float64 // 长上下文整次会话输入倍率
 	LongContextOutputMultiplier        float64 // 长上下文整次会话输出倍率
 	ImageOutputPricePerToken           float64 // 图片输出 token 价格 (USD)
@@ -121,7 +125,14 @@ func normalizeBillingServiceTier(serviceTier string) string {
 }
 
 func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bool {
-	if pricing == nil || normalizeBillingServiceTier(serviceTier) != "priority" {
+	if pricing == nil {
+		return false
+	}
+	tier := normalizeBillingServiceTier(serviceTier)
+	if tier != "priority" && tier != "fast" {
+		return false
+	}
+	if pricing.FastMultiplier != nil {
 		return false
 	}
 	return pricing.InputPricePerTokenPriority > 0 || pricing.OutputPricePerTokenPriority > 0 ||
@@ -130,13 +141,41 @@ func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bo
 
 func serviceTierCostMultiplier(serviceTier string) float64 {
 	switch normalizeBillingServiceTier(serviceTier) {
-	case "priority":
+	case "priority", "fast":
 		return 2.0
 	case "flex":
 		return 0.5
 	default:
 		return 1.0
 	}
+}
+
+func configuredServiceTierMultiplier(serviceTier string, pricing *ModelPricing) float64 {
+	if pricing != nil {
+		switch normalizeBillingServiceTier(serviceTier) {
+		case "priority", "fast":
+			if pricing.FastMultiplier != nil {
+				return *pricing.FastMultiplier
+			}
+		case "flex":
+			if pricing.FlexMultiplier != nil {
+				return *pricing.FlexMultiplier
+			}
+		}
+	}
+	return serviceTierCostMultiplier(serviceTier)
+}
+
+func pricingWithPriorityMultiplier(base *ModelPricing, multiplier float64) *ModelPricing {
+	if base == nil {
+		return nil
+	}
+	cloned := *base
+	cloned.InputPricePerTokenPriority = cloned.InputPricePerToken * multiplier
+	cloned.OutputPricePerTokenPriority = cloned.OutputPricePerToken * multiplier
+	cloned.CacheCreationPricePerTokenPriority = cloned.CacheCreationPricePerToken * multiplier
+	cloned.CacheReadPricePerTokenPriority = cloned.CacheReadPricePerToken * multiplier
+	return &cloned
 }
 
 // UsageTokens 使用的token数量
@@ -258,10 +297,9 @@ func (s *BillingService) initFallbackPricing() {
 	// Claude 4.7 Opus (暂与4.6同价，待官方定价更新)
 	s.fallbackPrices["claude-opus-4.7"] = s.fallbackPrices["claude-opus-4.6"]
 
-	// Claude 4.8 Opus / Claude Opus 5（官方同价：$5 输入 / $25 输出 per MTok）。
-	// 缺少这两条时 getFallbackPricing 会掉到 claude-3-opus（$15/$75），造成 3 倍超收。
-	s.fallbackPrices["claude-opus-4.8"] = s.fallbackPrices["claude-opus-4.7"]
-	s.fallbackPrices["claude-opus-5"] = s.fallbackPrices["claude-opus-4.8"]
+	// Claude 4.8 Opus / Claude Opus 5：标准 $5/$25，Fast $10/$50 per MTok。
+	s.fallbackPrices["claude-opus-4.8"] = pricingWithPriorityMultiplier(s.fallbackPrices["claude-opus-4.7"], 2)
+	s.fallbackPrices["claude-opus-5"] = pricingWithPriorityMultiplier(s.fallbackPrices["claude-opus-4.8"], 2)
 
 	// Gemini 3.1 Pro
 	s.fallbackPrices["gemini-3.1-pro"] = &ModelPricing{
@@ -305,9 +343,28 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:     openAIGPT54LongContextInputMultiplier,
 		LongContextOutputMultiplier:    openAIGPT54LongContextOutputMultiplier,
 	}
-	// GPT-5.5 / GPT-5.5 Pro 暂无独立定价，回退到 GPT-5.4。
-	s.fallbackPrices["gpt-5.5"] = s.fallbackPrices["gpt-5.4"]
-	s.fallbackPrices["gpt-5.5-pro"] = s.fallbackPrices["gpt-5.4"]
+	// OpenAI GPT-5.5 官方价格；Fast 为标准价 2.5 倍。
+	s.fallbackPrices["gpt-5.5"] = pricingWithPriorityMultiplier(&ModelPricing{
+		InputPricePerToken:          5e-6,
+		OutputPricePerToken:         30e-6,
+		CacheCreationPricePerToken:  5e-6,
+		CacheReadPricePerToken:      0.5e-6,
+		SupportsCacheBreakdown:      false,
+		LongContextInputThreshold:   openAIGPT54LongContextInputThreshold,
+		LongContextInputMultiplier:  openAIGPT54LongContextInputMultiplier,
+		LongContextOutputMultiplier: openAIGPT54LongContextOutputMultiplier,
+	}, 2.5)
+	// GPT-5.5 Pro 当前不提供 Fast。
+	s.fallbackPrices["gpt-5.5-pro"] = &ModelPricing{
+		InputPricePerToken:          30e-6,
+		OutputPricePerToken:         180e-6,
+		CacheCreationPricePerToken:  30e-6,
+		CacheReadPricePerToken:      30e-6,
+		SupportsCacheBreakdown:      false,
+		LongContextInputThreshold:   openAIGPT54LongContextInputThreshold,
+		LongContextInputMultiplier:  openAIGPT54LongContextInputMultiplier,
+		LongContextOutputMultiplier: openAIGPT54LongContextOutputMultiplier,
+	}
 
 	// OpenAI GPT-5.6 官方价格（USD/token）。缓存写入为输入价的 1.25 倍。
 	s.fallbackPrices["gpt-5.6-sol"] = &ModelPricing{
@@ -593,32 +650,55 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:  false,
 	}
 
-	// xAI Grok 4.5 (official docs: $2 input / $0.50 cached input / $6 output per MTok)
+	// xAI Grok 4.5: $2 input / $0.30 cached input / $6 output below 200k.
 	s.fallbackPrices["grok-4.5"] = &ModelPricing{
-		InputPricePerToken:     2e-6,
-		OutputPricePerToken:    6e-6,
-		CacheReadPricePerToken: 0.5e-6,
-		SupportsCacheBreakdown: false,
+		InputPricePerToken:            2e-6,
+		OutputPricePerToken:           6e-6,
+		CacheReadPricePerToken:        0.3e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
 	}
 
-	// xAI Grok 4.3 (official docs: $1.25 input / $2.50 output per MTok)
+	// xAI Grok 4.6: $2 input / $0.50 cached input / $6 output below 200k;
+	// input, cached input, and output are all 2x from 200k onward.
+	s.fallbackPrices["grok-4.6"] = &ModelPricing{
+		InputPricePerToken:            2e-6,
+		OutputPricePerToken:           6e-6,
+		CacheReadPricePerToken:        0.5e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
+	}
+
+	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k.
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
-		InputPricePerToken:         1.25e-6,
-		OutputPricePerToken:        2.5e-6,
-		CacheReadPricePerToken:     0.2e-6,
-		SupportsCacheBreakdown:     false,
-		LongContextInputThreshold:  1000000,
-		LongContextInputMultiplier: 1,
+		InputPricePerToken:            1.25e-6,
+		OutputPricePerToken:           2.5e-6,
+		CacheReadPricePerToken:        0.2e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
 	}
 	// xAI Grok Build 0.1 (official docs: $1 input / $0.20 cached input /
 	// $2 output per MTok). Composer is available only through Grok Build and
 	// has no standalone public API rate card, so its aliases use this coding
 	// model rate instead of silently billing at zero.
 	s.fallbackPrices["grok-build-0.1"] = &ModelPricing{
-		InputPricePerToken:     1e-6,
-		OutputPricePerToken:    2e-6,
-		CacheReadPricePerToken: 0.2e-6,
-		SupportsCacheBreakdown: false,
+		InputPricePerToken:            1e-6,
+		OutputPricePerToken:           2e-6,
+		CacheReadPricePerToken:        0.2e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    2,
+		LongContextOutputMultiplier:   2,
 	}
 }
 
@@ -814,8 +894,10 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 
 	switch modelLower {
-	case "grok", "grok-latest", "grok-4.5", "grok-4.5-latest", "grok-build-latest":
+	case "grok", "grok-latest", "grok-4.5", "grok-4.5-latest":
 		return s.fallbackPrices["grok-4.5"]
+	case "grok-4.6", "grok-4.6-latest":
+		return s.fallbackPrices["grok-4.6"]
 	case "grok-4.3",
 		"grok-4.20-0309-reasoning",
 		"grok-4.20-0309-non-reasoning",
@@ -823,11 +905,56 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		"grok-4.20-reasoning",
 		"grok-4.20-non-reasoning":
 		return s.fallbackPrices["grok-4.3"]
-	case "grok-build", "grok-build-0.1", "grok-composer", "grok-composer-2.5-fast", "composer-2.5":
+	case "grok-build", "grok-build-latest", "grok-build-0.1", "grok-composer", "grok-composer-2.5-fast", "composer-2.5":
 		return s.fallbackPrices["grok-build-0.1"]
 	}
 
+	// Unknown Grok text IDs inherit the current default text card so a new
+	// text model cannot silently become unbilled. Media families are billed by
+	// image/video/audio units and must never enter this token-pricing fallback.
+	if pricing := s.grokUnknownTextFamilyFallback(modelLower); pricing != nil {
+		return pricing
+	}
+
 	return nil
+}
+
+func (s *BillingService) grokUnknownTextFamilyFallback(model string) *ModelPricing {
+	if s == nil || !isGrokUnknownTextFamilyModel(model) {
+		return nil
+	}
+	return s.fallbackPrices["grok-4.5"]
+}
+
+func isGrokUnknownTextFamilyModel(model string) bool {
+	native := strings.ToLower(strings.TrimSpace(xai.StripGrokProviderPrefix(model)))
+	if isGrokMediaFamilyModel(native) {
+		return false
+	}
+	switch {
+	case native == "grok", native == "grok-latest":
+		return true
+	case strings.HasPrefix(native, "grok-build"),
+		strings.HasPrefix(native, "grok-composer"),
+		strings.HasPrefix(native, "composer-"):
+		return true
+	case len(native) > len("grok-") && strings.HasPrefix(native, "grok-"):
+		rest := native[len("grok-"):]
+		return rest[0] >= '0' && rest[0] <= '9'
+	default:
+		return false
+	}
+}
+
+// isGrokMediaFamilyModel matches IDs priced per image/video/audio unit rather
+// than per token, so they cannot pick up a text fallback by accident.
+func isGrokMediaFamilyModel(native string) bool {
+	for _, marker := range []string{"imagine", "image", "video", "audio", "speech", "tts", "transcribe", "realtime"} {
+		if strings.Contains(native, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetModelPricing 获取模型价格配置
@@ -901,25 +1028,9 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 	// 防止修改 fallbackPrices 中的共享指针
 	cloned := *pricing
 	pricing = &cloned
-	if channelPricing.InputPrice != nil {
-		pricing.InputPricePerToken = *channelPricing.InputPrice
-		pricing.InputPricePerTokenPriority = *channelPricing.InputPrice
-	}
-	if channelPricing.OutputPrice != nil {
-		pricing.OutputPricePerToken = *channelPricing.OutputPrice
-		pricing.OutputPricePerTokenPriority = *channelPricing.OutputPrice
-	}
-	if channelPricing.CacheWritePrice != nil {
-		pricing.CacheCreationPricePerToken = *channelPricing.CacheWritePrice
-		pricing.CacheCreationPricePerTokenPriority = *channelPricing.CacheWritePrice
-		pricing.CacheCreationPriceExplicit = true
-		pricing.CacheCreation5mPrice = *channelPricing.CacheWritePrice
-		pricing.CacheCreation1hPrice = *channelPricing.CacheWritePrice
-	}
-	if channelPricing.CacheReadPrice != nil {
-		pricing.CacheReadPricePerToken = *channelPricing.CacheReadPrice
-		pricing.CacheReadPricePerTokenPriority = *channelPricing.CacheReadPrice
-	}
+	applyChannelTokenPriceOverrides(pricing, channelPricing)
+	pricing.FastMultiplier = channelPricing.FastMultiplier
+	pricing.FlexMultiplier = channelPricing.FlexMultiplier
 	if channelPricing.ImageOutputPrice != nil {
 		pricing.ImageOutputPricePerToken = *channelPricing.ImageOutputPrice
 	} else {
@@ -930,17 +1041,61 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 	return pricing, nil
 }
 
+// channelTierOverridePrice applies a standard-tier override while preserving
+// an explicit model-catalog Fast/Priority ratio.
+func channelTierOverridePrice(baseStandard, baseTier, channelStandard float64) float64 {
+	if baseStandard > 0 && baseTier > 0 {
+		return channelStandard * (baseTier / baseStandard)
+	}
+	return 0
+}
+
+func applyChannelTokenPriceOverrides(pricing *ModelPricing, channelPricing *ChannelModelPricing) {
+	if pricing == nil || channelPricing == nil {
+		return
+	}
+	if channelPricing.InputPrice != nil {
+		priority := channelTierOverridePrice(pricing.InputPricePerToken, pricing.InputPricePerTokenPriority, *channelPricing.InputPrice)
+		pricing.InputPricePerToken = *channelPricing.InputPrice
+		pricing.InputPricePerTokenPriority = priority
+	}
+	if channelPricing.OutputPrice != nil {
+		priority := channelTierOverridePrice(pricing.OutputPricePerToken, pricing.OutputPricePerTokenPriority, *channelPricing.OutputPrice)
+		pricing.OutputPricePerToken = *channelPricing.OutputPrice
+		pricing.OutputPricePerTokenPriority = priority
+	}
+	if channelPricing.CacheWritePrice != nil {
+		priority := channelTierOverridePrice(pricing.CacheCreationPricePerToken, pricing.CacheCreationPricePerTokenPriority, *channelPricing.CacheWritePrice)
+		pricing.CacheCreationPricePerToken = *channelPricing.CacheWritePrice
+		pricing.CacheCreationPricePerTokenPriority = priority
+		pricing.CacheCreationPriceExplicit = true
+		pricing.CacheCreation5mPrice = *channelPricing.CacheWritePrice
+		pricing.CacheCreation1hPrice = *channelPricing.CacheWritePrice
+	}
+	if channelPricing.CacheReadPrice != nil {
+		priority := channelTierOverridePrice(pricing.CacheReadPricePerToken, pricing.CacheReadPricePerTokenPriority, *channelPricing.CacheReadPrice)
+		pricing.CacheReadPricePerToken = *channelPricing.CacheReadPrice
+		pricing.CacheReadPricePerTokenPriority = priority
+	}
+}
+
 // --- 统一计费入口 ---
 
 // CostInput 统一计费输入
 type CostInput struct {
-	Ctx                       context.Context
-	Model                     string
-	GroupID                   *int64 // 用于渠道定价查找
-	Tokens                    UsageTokens
-	RequestCount              int    // 按次计费时使用
-	SizeTier                  string // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
-	RateMultiplier            float64
+	Ctx            context.Context
+	Model          string
+	GroupID        *int64 // 用于渠道定价查找
+	Group          *Group
+	Tokens         UsageTokens
+	RequestCount   int     // 按次计费时使用
+	UsageUnits     float64 // 音频等连续计量单位（分钟/小时/百万字符）
+	SizeTier       string  // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
+	RateMultiplier float64
+	// PricingAt is kept with the unified input so frozen usage records can
+	// retain their accounting timestamp. XIASS deliberately does not apply
+	// upstream time-of-day pricing.
+	PricingAt                 time.Time
 	ServiceTier               string                // "priority","flex","" 等
 	Resolver                  *ModelPricingResolver // 定价解析器
 	Resolved                  *ResolvedPricing      // 可选：预解析的定价结果（避免重复 Resolve 调用）
@@ -972,6 +1127,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 		resolved = input.Resolver.Resolve(input.Ctx, PricingInput{
 			Model:   input.Model,
 			GroupID: input.GroupID,
+			Group:   input.Group,
 		})
 	}
 
@@ -983,7 +1139,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 	var breakdown *CostBreakdown
 	var err error
 	switch resolved.Mode {
-	case BillingModePerRequest, BillingModeImage:
+	case BillingModePerRequest, BillingModeImage, BillingModeVideo:
 		breakdown, err = s.calculatePerRequestCost(resolved, input)
 	default: // BillingModeToken
 		breakdown, err = s.calculateTokenCost(resolved, input)
@@ -1001,18 +1157,28 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
 	totalContext := input.Tokens.InputTokens + input.Tokens.CacheCreationTokens + input.Tokens.CacheReadTokens
 
-	pricing := input.Resolver.GetIntervalPricing(resolved, totalContext)
+	// A group may deliberately disable long-context tiers. An account-level
+	// opt-in remains an additive override for the existing compatibility path.
+	contextTierPricingEnabled := resolved.longContextPricingEnabled
+	if input.LongContextBillingEnabled != nil && *input.LongContextBillingEnabled {
+		contextTierPricingEnabled = true
+	}
+
+	pricingContext := totalContext
+	if !contextTierPricingEnabled {
+		// Select the lowest interval rather than an arbitrarily high tier when
+		// long-context pricing is disabled. Flat channel pricing still wins.
+		pricingContext = 1
+	}
+	pricing := input.Resolver.GetIntervalPricing(resolved, pricingContext)
 	if pricing == nil {
 		return nil, fmt.Errorf("no pricing available for model: %s: %w", input.Model, ErrModelPricingUnavailable)
 	}
 
 	pricing = s.applyModelSpecificPricingPolicy(input.Model, pricing)
 
-	// 长上下文定价仅在无区间定价时应用（区间定价已包含上下文分层）
-	applyLongCtx := len(resolved.Intervals) == 0
-	if input.LongContextBillingEnabled != nil {
-		applyLongCtx = applyLongCtx && *input.LongContextBillingEnabled
-	}
+	// 长上下文定价仅在无区间定价时应用（区间定价已包含上下文分层）。
+	applyLongCtx := len(resolved.Intervals) == 0 && contextTierPricingEnabled
 
 	return s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx), nil
 }
@@ -1050,7 +1216,7 @@ func (s *BillingService) computeTokenBreakdown(
 			cacheCreationPrice = pricing.CacheCreationPricePerTokenPriority
 		}
 	} else {
-		tierMultiplier = serviceTierCostMultiplier(serviceTier)
+		tierMultiplier = configuredServiceTierMultiplier(serviceTier, pricing)
 	}
 
 	longContextPricingEligible := applyLongCtx && s.shouldApplySessionLongContextPricing(tokens, pricing)
@@ -1144,9 +1310,13 @@ func (s *BillingService) computeCacheCreationCost(pricing *ModelPricing, tokens 
 
 // calculatePerRequestCost 按次/图片计费
 func (s *BillingService) calculatePerRequestCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
-	count := input.RequestCount
-	if count <= 0 {
-		count = 1
+	units := input.UsageUnits
+	if units <= 0 {
+		count := input.RequestCount
+		if count <= 0 {
+			count = 1
+		}
+		units = float64(count)
 	}
 
 	var unitPrice float64
@@ -1165,7 +1335,7 @@ func (s *BillingService) calculatePerRequestCost(resolved *ResolvedPricing, inpu
 		unitPrice = resolved.DefaultPerRequestPrice
 	}
 
-	totalCost := unitPrice * float64(count)
+	totalCost := unitPrice * units
 	actualCost := totalCost * input.RateMultiplier
 
 	return &CostBreakdown{
@@ -1267,6 +1437,9 @@ func (s *BillingService) shouldApplySessionLongContextPricing(tokens UsageTokens
 		return false
 	}
 	totalInputTokens := tokens.InputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
+	if pricing.LongContextThresholdInclusive {
+		return totalInputTokens >= pricing.LongContextInputThreshold
+	}
 	return totalInputTokens > pricing.LongContextInputThreshold
 }
 

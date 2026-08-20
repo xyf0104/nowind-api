@@ -563,6 +563,67 @@ func TestSettingService_InitializeDefaultSettingsPersistsConfiguredForwardedClie
 	require.JSONEq(t, `["X-Cdn-Ip","True-Client-Ip"]`, repo.values[SettingKeyForwardedClientIPHeaders])
 }
 
+func TestSettingService_InitializeDefaultSettingsPersistsIndependentModelPricingDefault(t *testing.T) {
+	repo := &forwardedIPMigrationRepoStub{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	require.NoError(t, svc.InitializeDefaultSettings(context.Background()))
+	require.Equal(t, "true", repo.values[SettingKeyModelPricingEnabled])
+	require.Equal(t, "false", repo.values[SettingKeyAvailableChannelsEnabled])
+}
+
+func TestSettingService_ParseSettings_ModelPricingIsIndependentFromAvailableChannels(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	defaults := svc.parseSettings(map[string]string{})
+	require.True(t, defaults.ModelPricingEnabled)
+	require.False(t, defaults.AvailableChannelsEnabled)
+
+	explicit := svc.parseSettings(map[string]string{
+		SettingKeyModelPricingEnabled:      "false",
+		SettingKeyAvailableChannelsEnabled: "true",
+	})
+	require.False(t, explicit.ModelPricingEnabled)
+	require.True(t, explicit.AvailableChannelsEnabled)
+}
+
+func TestSettingService_UpdateSettings_PersistsPublicMonitorAndModelPricingSettings(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		RegistrationEmailDomainQuotaEnabled: true,
+		TencentCaptchaRegion:                TencentCaptchaRegionINTL,
+		CompactHomeEnabled:                  true,
+		ChannelMonitorMode:                  ChannelMonitorModeV2,
+		ChannelMonitorHideThroughput:        false,
+		ChannelMonitorShowQuota:             true,
+		GrokDefaultTextModel:                "grok-4.1",
+		GrokCrossClientModelMapEnabled:      false,
+		GrokDefaultBaseURLMode:              "api",
+		AvailableChannelsEnabled:            true,
+		ModelPricingEnabled:                 false,
+		ModelPlazaEnabled:                   true,
+		ModelPlazaRequireAuth:               true,
+		ModelPlazaDescription:               "Public model notes",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "true", repo.updates[SettingKeyRegistrationEmailDomainQuotaEnabled])
+	require.Equal(t, TencentCaptchaRegionINTL, repo.updates[SettingKeyTencentCaptchaRegion])
+	require.Equal(t, "true", repo.updates[SettingKeyCompactHomeEnabled])
+	require.Equal(t, ChannelMonitorModeV2, repo.updates[SettingKeyChannelMonitorMode])
+	require.Equal(t, "false", repo.updates[SettingKeyChannelMonitorHideThroughput])
+	require.Equal(t, "true", repo.updates[SettingKeyChannelMonitorShowQuota])
+	require.Equal(t, "grok-4.1", repo.updates[SettingKeyGrokDefaultTextModel])
+	require.Equal(t, "false", repo.updates[SettingKeyGrokCrossClientModelMapEnabled])
+	require.Equal(t, "api", repo.updates[SettingKeyGrokDefaultBaseURLMode])
+	require.Equal(t, "true", repo.updates[SettingKeyAvailableChannelsEnabled])
+	require.Equal(t, "false", repo.updates[SettingKeyModelPricingEnabled])
+	require.Equal(t, "true", repo.updates[SettingKeyModelPlazaEnabled])
+	require.Equal(t, "true", repo.updates[SettingKeyModelPlazaRequireAuth])
+	require.Equal(t, "Public model notes", repo.updates[SettingKeyModelPlazaDescription])
+}
+
 func TestSettingService_UpdateSettings_APIKeyACLTrustForwardedIPRefreshesConfig(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	cfg := &config.Config{}

@@ -13,7 +13,7 @@
         <div class="flex flex-wrap items-center gap-2">
           <div class="inline-flex w-fit items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 dark:border-emerald-800/70 dark:bg-emerald-950/30 dark:text-emerald-300">
             <Icon name="shield" size="sm" />
-            {{ t('tokenConverter.localOnly') }}
+            {{ authStore.isAdmin ? t('tokenConverter.localOnlyWithImport') : t('tokenConverter.localOnly') }}
           </div>
           <button
             v-if="authStore.isAdmin"
@@ -144,14 +144,31 @@
                 </div>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ selectedOutputDescription }}</p>
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center justify-end gap-2">
                 <button type="button" class="btn btn-secondary btn-sm" :disabled="!outputText" @click="copyOutput">
                   <Icon :name="copied ? 'check' : 'copy'" size="sm" />
                   {{ t('common.copy') }}
                 </button>
-                <button type="button" class="btn btn-primary btn-sm" :disabled="!outputText" @click="downloadOutput">
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="canDirectImport ? 'btn-secondary' : 'btn-primary'"
+                  :disabled="!outputText"
+                  @click="downloadOutput"
+                >
                   <Icon name="download" size="sm" />
                   {{ t('tokenConverter.download') }}
+                </button>
+                <button
+                  v-if="authStore.isAdmin && outputFormat === 'xiass'"
+                  type="button"
+                  data-test="open-direct-import"
+                  class="btn btn-primary btn-sm"
+                  :disabled="!canDirectImport"
+                  @click="openDirectImport"
+                >
+                  <Icon name="upload" size="sm" />
+                  {{ t('tokenConverter.directImport.action') }}
                 </button>
               </div>
             </div>
@@ -271,6 +288,13 @@
       @cancel="closeAdminAccountPicker"
       @confirm="importSelectedAdminAccounts"
     />
+    <DirectAccountImportDialog
+      :show="directImportVisible"
+      :payload="directImportPayload"
+      :account-count="directImportPayload?.accounts.length ?? 0"
+      @close="closeDirectImport"
+      @imported="handleDirectImportComplete"
+    />
     <TotpStepUpDialog :controller="stepUp" />
   </component>
 </template>
@@ -281,6 +305,7 @@ import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import PublicToolLayout from '@/components/layout/PublicToolLayout.vue'
 import AdminAccountPicker from '@/components/token-converter/AdminAccountPicker.vue'
+import DirectAccountImportDialog from '@/components/token-converter/DirectAccountImportDialog.vue'
 import OpenAIReauthorizationPanel from '@/components/token-converter/OpenAIReauthorizationPanel.vue'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -289,7 +314,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
 import { useAppStore } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
-import type { Account } from '@/types'
+import type { Account, AdminDataImportResult, AdminDataPayload } from '@/types'
 import {
   areTokenAccountsCompatibleWithFormat,
   exportTokenAccounts,
@@ -325,6 +350,8 @@ const dragActive = ref(false)
 const adminAccountPickerVisible = ref(false)
 const adminAccountsLoading = ref(false)
 const adminAccounts = shallowRef<Account[]>([])
+const directImportVisible = ref(false)
+const directImportPayload = shallowRef<AdminDataPayload | null>(null)
 let parseTimer: ReturnType<typeof setTimeout> | undefined
 
 const MAX_FILE_COUNT = 20
@@ -360,6 +387,12 @@ const exported = computed(() => {
 })
 
 const outputText = computed(() => exported.value?.text ?? '')
+const canDirectImport = computed(() => (
+  authStore.isAdmin
+  && outputFormat.value === 'xiass'
+  && parseResult.value.accounts.length > 0
+  && !!outputText.value
+))
 const selectedOutputDescription = computed(() => t(`tokenConverter.formatDescriptions.${outputFormat.value}`))
 const visibleWarnings = computed(() => parseResult.value.warnings.slice(0, 6))
 const detectedFormatLabel = computed(() => {
@@ -559,11 +592,42 @@ function downloadOutput(): void {
   URL.revokeObjectURL(url)
 }
 
+function isAdminDataPayload(value: unknown): value is AdminDataPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const candidate = value as Record<string, unknown>
+  return Array.isArray(candidate.accounts)
+    && candidate.accounts.length > 0
+    && Array.isArray(candidate.proxies)
+    && typeof candidate.exported_at === 'string'
+}
+
+function openDirectImport(): void {
+  if (!canDirectImport.value) return
+  try {
+    const payload = JSON.parse(outputText.value) as unknown
+    if (!isAdminDataPayload(payload)) throw new Error('invalid XIASS import payload')
+    directImportPayload.value = payload
+    directImportVisible.value = true
+  } catch {
+    appStore.showError(t('tokenConverter.directImport.invalidOutput'))
+  }
+}
+
+function closeDirectImport(): void {
+  directImportVisible.value = false
+  directImportPayload.value = null
+}
+
+function handleDirectImportComplete(_result: AdminDataImportResult): void {
+  // Keep the converted JSON visible so the administrator can inspect or download it after import.
+}
+
 onBeforeUnmount(() => {
   if (parseTimer) clearTimeout(parseTimer)
   inputText.value = ''
   parseResult.value = emptyResult()
   adminAccounts.value = []
+  directImportPayload.value = null
 })
 </script>
 

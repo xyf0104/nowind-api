@@ -143,6 +143,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		RegistrationEnabled:                                    settings.RegistrationEnabled,
 		EmailVerifyEnabled:                                     settings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:                       settings.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailDomainQuotaEnabled:                    settings.RegistrationEmailDomainQuotaEnabled,
 		PromoCodeEnabled:                                       settings.PromoCodeEnabled,
 		PasswordResetEnabled:                                   settings.PasswordResetEnabled,
 		FrontendURL:                                            settings.FrontendURL,
@@ -175,6 +176,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		TencentCaptchaAppSecretKeyConfigured:                   settings.TencentCaptchaAppSecretKeyConfigured,
 		TencentCaptchaCloudSecretIDConfigured:                  settings.TencentCaptchaCloudSecretIDConfigured,
 		TencentCaptchaCloudSecretKeyConfigured:                 settings.TencentCaptchaCloudSecretKeyConfigured,
+		TencentCaptchaRegion:                                   settings.TencentCaptchaRegion,
 		AliyunCaptchaEnabled:                                   settings.AliyunCaptchaEnabled,
 		AliyunCaptchaAccessKeyID:                               settings.AliyunCaptchaAccessKeyID,
 		AliyunCaptchaAccessKeySecretConfigured:                 settings.AliyunCaptchaAccessKeySecretConfigured,
@@ -258,6 +260,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		ContactInfo:                                            settings.ContactInfo,
 		DocURL:                                                 settings.DocURL,
 		HomeContent:                                            settings.HomeContent,
+		CompactHomeEnabled:                                     settings.CompactHomeEnabled,
 		HideCcsImportButton:                                    settings.HideCcsImportButton,
 		PurchaseSubscriptionEnabled:                            settings.PurchaseSubscriptionEnabled,
 		PurchaseSubscriptionURL:                                settings.PurchaseSubscriptionURL,
@@ -377,11 +380,25 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		PaymentAlipayMobilePrecreateDeepLink:                   paymentCfg.AlipayMobilePrecreateDeepLink,
 
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
+		ChannelMonitorMode:                   settings.ChannelMonitorMode,
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
+		ChannelMonitorHideThroughput:         settings.ChannelMonitorHideThroughput,
+		ChannelMonitorShowQuota:              settings.ChannelMonitorShowQuota,
+
+		GrokDefaultTextModel:           settings.GrokDefaultTextModel,
+		GrokCrossClientModelMapEnabled: settings.GrokCrossClientModelMapEnabled,
+		GrokDefaultBaseURLMode:         settings.GrokDefaultBaseURLMode,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
+		ModelPricingEnabled:      settings.ModelPricingEnabled,
+
+		ModelPlazaEnabled:     settings.ModelPlazaEnabled,
+		ModelPlazaRequireAuth: settings.ModelPlazaRequireAuth,
+		ModelPlazaDescription: settings.ModelPlazaDescription,
 
 		AffiliateEnabled: settings.AffiliateEnabled,
+
+		AccountSchedulingThresholds: settings.AccountSchedulingThresholds,
 
 		AllowUserViewErrorRequests: settings.AllowUserViewErrorRequests,
 	}

@@ -1,30 +1,34 @@
 <template>
   <AppLayout>
-    <MonitorHero
-      :overall-status="overallStatus"
-      :interval-seconds="DEFAULT_INTERVAL_SECONDS"
-      :window="currentWindow"
-      :loading="loading"
-      :auto-refresh="autoRefresh"
-      @update:window="handleWindowChange"
-      @refresh="manualReload"
-    />
+    <div class="space-y-6">
+      <PricingAreaTabs active-tab="monitor" />
 
-    <MonitorCardGrid
-      :items="items"
-      :window="currentWindow"
-      :countdown-seconds="countdown"
-      :loading="loading"
-      :detail-cache="detailCache"
-      @card-click="openDetail"
-    />
+      <MonitorHero
+        :overall-status="overallStatus"
+        :interval-seconds="DEFAULT_INTERVAL_SECONDS"
+        :window="currentWindow"
+        :loading="loading"
+        :auto-refresh="autoRefresh"
+        @update:window="handleWindowChange"
+        @refresh="manualReload"
+      />
 
-    <MonitorDetailDialog
-      :show="showDetail"
-      :monitor-id="detailTarget?.id ?? null"
-      :title="detailTitle"
-      @close="closeDetail"
-    />
+      <MonitorCardGrid
+        :items="items"
+        :window="currentWindow"
+        :countdown-seconds="countdown"
+        :loading="loading"
+        :detail-cache="detailCache"
+        @card-click="openDetail"
+      />
+
+      <MonitorDetailDialog
+        :show="showDetail"
+        :monitor-id="detailTarget?.id ?? null"
+        :title="detailTitle"
+        @close="closeDetail"
+      />
+    </div>
   </AppLayout>
 </template>
 
@@ -40,6 +44,7 @@ import {
   type UserMonitorDetail,
 } from '@/api/channelMonitor'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import PricingAreaTabs from '@/components/user/PricingAreaTabs.vue'
 import MonitorHero, {
   type MonitorWindow,
   type OverallStatus,
@@ -148,6 +153,20 @@ function closeDetail() {
   detailTarget.value = null
 }
 
+function clearDisabledMonitorState() {
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+  items.value = []
+  for (const id of Object.keys(detailCache)) {
+    delete detailCache[Number(id)]
+  }
+  closeDetail()
+  loading.value = false
+  autoRefresh.stop()
+}
+
 watch(items, () => {
   void ensureDetailsForWindow()
 })
@@ -155,18 +174,20 @@ watch(items, () => {
 watch(
   () => appStore.cachedPublicSettings?.channel_monitor_enabled,
   (enabled) => {
-    if (enabled === false) autoRefresh.stop()
-    else if (autoRefresh.enabled.value) autoRefresh.start()
+    if (enabled === false) {
+      clearDisabledMonitorState()
+      return
+    }
+    if (autoRefresh.enabled.value) autoRefresh.start()
   },
 )
 
 onMounted(() => {
+  if (appStore.cachedPublicSettings?.channel_monitor_enabled === false) return
   void reload(false)
   if (autoRefresh.enabled.value) {
     autoRefresh.resetCountdown()
-    if (appStore.cachedPublicSettings?.channel_monitor_enabled !== false) {
-      autoRefresh.start()
-    }
+    autoRefresh.start()
   }
 })
 

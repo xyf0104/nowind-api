@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -56,6 +57,10 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 	if groupIn == nil {
 		return errors.New("group is nil")
 	}
+	modelPricing, err := marshalGroupModelPricing(groupIn.ModelPricing)
+	if err != nil {
+		return err
+	}
 	builder := client.Group.Create().
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
@@ -83,6 +88,8 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetNillableVideoPrice720p(groupIn.VideoPrice720P).
 		SetNillableVideoPrice1080p(groupIn.VideoPrice1080P).
 		SetNillableWebSearchPricePerCall(groupIn.WebSearchPricePerCall).
+		SetLongContextPricingEnabled(groupIn.LongContextPricingEnabled).
+		SetModelPricing(modelPricing).
 		SetDefaultValidityDays(groupIn.DefaultValidityDays).
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
 		SetNillableFallbackGroupID(groupIn.FallbackGroupID).
@@ -230,6 +237,10 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 }
 
 func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) error {
+	modelPricing, err := marshalGroupModelPricing(groupIn.ModelPricing)
+	if err != nil {
+		return err
+	}
 	builder := r.client.Group.UpdateOneID(groupIn.ID).
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
@@ -255,6 +266,8 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetNillableVideoPrice480p(groupIn.VideoPrice480P).
 		SetNillableVideoPrice720p(groupIn.VideoPrice720P).
 		SetNillableVideoPrice1080p(groupIn.VideoPrice1080P).
+		SetLongContextPricingEnabled(groupIn.LongContextPricingEnabled).
+		SetModelPricing(modelPricing).
 		SetDefaultValidityDays(groupIn.DefaultValidityDays).
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
@@ -366,6 +379,17 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group update failed: group=%d err=%v", groupIn.ID, err)
 	}
 	return nil
+}
+
+func marshalGroupModelPricing(pricing []service.ChannelModelPricing) ([]byte, error) {
+	if pricing == nil {
+		pricing = []service.ChannelModelPricing{}
+	}
+	payload, err := json.Marshal(pricing)
+	if err != nil {
+		return nil, fmt.Errorf("marshal group model pricing: %w", err)
+	}
+	return payload, nil
 }
 
 func (r *groupRepository) Delete(ctx context.Context, id int64) error {

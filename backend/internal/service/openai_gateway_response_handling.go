@@ -64,7 +64,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 	// x-codex-turn-state is protocol state rather than a generally safe response
-	// header. Keep it attempt-local until this account actually commits output.
+	// header. Keep it attempt-local until this account commits semantic output;
+	// only then can the client safely replay it on a later request.
 	if stageFirstOutput {
 		stageOpenAICodexTurnState(&attemptResponseHeaders, resp.Header)
 	} else {

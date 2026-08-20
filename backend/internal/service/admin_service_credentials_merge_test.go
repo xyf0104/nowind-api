@@ -116,7 +116,7 @@ func TestUpdateAccount_EmptyCredentialsSkipsUpdate(t *testing.T) {
 	require.Equal(t, "renamed", repo.account.Name)
 }
 
-func TestUpdateAccount_OpenAIReauthorizationPreservesWeeklyEstimateForSameIdentity(t *testing.T) {
+func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateForSameIdentity(t *testing.T) {
 	accountID := int64(205)
 	repo := &updateAccountCredsRepoStub{
 		account: &Account{
@@ -150,7 +150,7 @@ func TestUpdateAccount_OpenAIReauthorizationPreservesWeeklyEstimateForSameIdenti
 		ResetOpenAIWeeklyEstimate: true,
 	})
 	require.NoError(t, err)
-	require.Contains(t, repo.account.Extra, openAIWeeklyEstimateBaselineKey)
+	require.NotContains(t, repo.account.Extra, openAIWeeklyEstimateBaselineKey)
 }
 
 func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateForNewIdentity(t *testing.T) {

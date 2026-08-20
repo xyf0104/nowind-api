@@ -757,6 +757,7 @@ const ChevronDownIcon = {
 // yet. Admin-only flags (not in public settings) stay inline below.
 const flagChannelMonitor = makeSidebarFlag(FeatureFlags.channelMonitor)
 const flagPayment = makeSidebarFlag(FeatureFlags.payment)
+const flagModelPricing = makeSidebarFlag(FeatureFlags.modelPricing)
 const flagAvailableChannels = makeSidebarFlag(FeatureFlags.availableChannels)
 const flagAffiliate = makeSidebarFlag(FeatureFlags.affiliate)
 const flagRiskControl = makeSidebarFlag(FeatureFlags.riskControl)
@@ -767,8 +768,8 @@ const flagBatchImageAccess = () => canUseBatchImage.value
 // buildSelfNavItems 构造用户自己的导航项（用户端主菜单和管理员的"我的账户"子菜单共享这组声明）。
 // withDashboard=true 时包含仪表盘（用户端），false 时不含（管理员的个人区已经有独立仪表盘入口）。
 //
-// 条目顺序：密钥 → 用量 → 可用渠道 → 渠道状态 → 订阅/支付 → 兑换/资料。
-// 可用渠道紧挨渠道状态之上，让用户"先看自己能用什么、再看对应状态"。
+// 条目顺序：密钥 → 用量 → 模型价格 / 模型渠道 → 订阅/支付 → 兑换/资料。
+// 两个浏览入口使用各自的开关：XIASS 模型价格保持独立，上游可用渠道按需启用。
 function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   const items: NavItem[] = []
   if (withDashboard) {
@@ -779,7 +780,8 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/token-converter', label: t('nav.tokenConverter'), icon: TokenConverterIcon },
     { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
-    { path: '/pricing', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
+    { path: '/pricing', label: t('nav.modelPricing'), icon: PriceTagIcon, hideInSimpleMode: true, featureFlag: flagModelPricing },
+    { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/purchase', label: t('nav.buySubscription'), icon: RechargeSubscriptionIcon, hideInSimpleMode: true, featureFlag: flagPayment },
     { path: '/orders', label: t('nav.myOrders'), icon: OrderListIcon, hideInSimpleMode: true, featureFlag: flagPayment },
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },

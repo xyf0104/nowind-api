@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -23,6 +24,11 @@ const openaiResponsesProbeTimeout = 15 * time.Second
 
 // responsesProbeMaxBodyBytes 限制读取探测响应体的字节数,够判定 output 项类型即可。
 const responsesProbeMaxBodyBytes = 256 * 1024
+
+// openaiResponsesProbeMaxOutputTokens is deliberately bounded, so a model
+// that spends the whole budget on reasoning produces an inconclusive probe
+// rather than being permanently classified as lacking tool support.
+const openaiResponsesProbeMaxOutputTokens = 512
 
 // openaiResponsesProbePayload 构造探测用的 Responses 请求体。
 //
@@ -61,7 +67,7 @@ func openaiResponsesProbePayload(modelID string) []byte {
 			},
 		},
 		"tool_choice":       "required",
-		"max_output_tokens": 512,
+		"max_output_tokens": openaiResponsesProbeMaxOutputTokens,
 		"stream":            false,
 	})
 	return body
@@ -113,7 +119,29 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)
 		return
 	}
-	if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+	if account.Type != AccountTypeAPIKey {
+		return
+	}
+	if account.IsCNProvider() {
+		// 国产 OpenAI 兼容上游（kimi/zhipu/deepseek）普遍仅支持 /v1/chat/completions，
+		// 不存在 /v1/responses 端点。直接落标 false 走 Chat Completions 直转，跳过网络探测。
+		// 例外：deepseek 的固定 responses 和 adaptive 账号使用官方原生 /responses
+		// 端点，落标 force_responses；其余协议显式重置为 auto，避免切换后残留强制模式。
+		if account.GetAPIProtocol() == APIProtocolResponses ||
+			(account.Platform == PlatformDeepseek && account.IsAdaptiveAPIProtocol()) {
+			_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+				openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeForceResponses),
+				openai_compat.ExtraKeyResponsesSupported: true,
+			})
+			return
+		}
+		_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+			openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeAuto),
+			openai_compat.ExtraKeyResponsesSupported: false,
+		})
+		return
+	}
+	if account.Platform != PlatformOpenAI {
 		// 仅 OpenAI APIKey 账号需要探测；其他账号类型无能力差异。
 		return
 	}
@@ -175,6 +203,16 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
+	if !responsesProbeVerdictIsConclusive(resp.StatusCode, bodyBytes) {
+		logger.LegacyPrintf("service.openai_probe",
+			"probe_inconclusive_keep_unknown: account_id=%d base_url=%s probe_model=%s status=%d response_status=%s reason=%s",
+			accountID, normalizedBaseURL, probeModel, resp.StatusCode,
+			gjson.GetBytes(bodyBytes, "status").String(),
+			gjson.GetBytes(bodyBytes, "incomplete_details.reason").String(),
+		)
+		return
+	}
+
 	supported := decideResponsesProbeSupport(resp.StatusCode, bodyBytes)
 
 	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
@@ -183,11 +221,39 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		logger.LegacyPrintf("service.openai_probe", "probe_persist_failed: account_id=%d supported=%v err=%v", accountID, supported, err)
 		return
 	}
+	if !supported {
+		slog.Warn(
+			"openai_responses_probe_marked_unsupported",
+			"account_id", accountID,
+			"account_name", account.Name,
+			"base_url", normalizedBaseURL,
+			"probe_model", probeModel,
+			"upstream_status", resp.StatusCode,
+		)
+	}
 
 	logger.LegacyPrintf("service.openai_probe",
 		"probe_done: account_id=%d base_url=%s probe_model=%s status=%d supported=%v",
 		accountID, normalizedBaseURL, probeModel, resp.StatusCode, supported,
 	)
+}
+
+// responsesProbeVerdictIsConclusive prevents a transient or budget-truncated
+// 2xx response from pinning an account to Chat Completions until its next edit.
+// Completed 2xx responses remain conclusive, including a completed response
+// that contains reasoning but no function call.
+func responsesProbeVerdictIsConclusive(status int, body []byte) bool {
+	if status < 200 || status >= 300 {
+		return true
+	}
+	switch strings.TrimSpace(gjson.GetBytes(body, "status").String()) {
+	case "failed":
+		return false
+	case "incomplete":
+		return strings.TrimSpace(gjson.GetBytes(body, "incomplete_details.reason").String()) != "max_output_tokens"
+	default:
+		return true
+	}
 }
 
 // isResponsesEndpointSupportedByStatus 根据探测响应的 HTTP 状态码判定上游

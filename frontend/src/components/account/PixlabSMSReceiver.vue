@@ -29,9 +29,9 @@
         type="button"
         class="btn btn-primary w-full !py-2.5 text-sm"
         data-testid="request-sms-phone"
-        :disabled="!active || isStartingPhone"
+        :disabled="!active || isStartingPhone || confirmationAction !== null"
         :title="active ? '领取用于当前授权的手机号' : '请先生成授权链接'"
-        @click="requestPhone"
+        @click="requestPhoneConfirmation"
       >
         <svg v-if="isStartingPhone" class="mr-1.5 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -137,8 +137,8 @@
       <button
         type="button"
         class="btn btn-secondary !px-2.5 !py-1.5 text-xs text-red-600 hover:!border-red-300 hover:!bg-red-50 hover:!text-red-700 dark:text-red-300 dark:hover:!border-red-700 dark:hover:!bg-red-950/40"
-        :disabled="!canCancel"
-        @click="cancel"
+        :disabled="!canCancel || confirmationAction !== null"
+        @click="requestCancelConfirmation"
       >
         <svg v-if="isCancelling" class="mr-1 h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -195,6 +195,23 @@
       </div>
     </template>
   </BaseDialog>
+
+  <SMSReceiverActionDialog
+    :show="confirmationAction !== null"
+    :title="confirmationAction === 'cancel' ? '取消当前号码' : '领取授权手机号'"
+    :message="confirmationAction === 'cancel'
+      ? '确认取消当前手机号并结束本次 OAuth 授权接码会话吗？'
+      : '确认领取一个用于当前 OAuth 授权的手机号吗？'"
+    :detail="confirmationAction === 'cancel'
+      ? '尚未收到验证码时会释放当前号码和卡密；已经收到验证码时仍按实际结果处理。'
+      : '领取成功后会立即开始监听验证码，可随时刷新、换号或在未收到验证码时取消。'"
+    :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : '确认领取号码'"
+    :pending-label="confirmationAction === 'cancel' ? '正在取消…' : '正在领取…'"
+    :pending="confirmationPending"
+    :danger="confirmationAction === 'cancel'"
+    @cancel="closeConfirmation"
+    @confirm="confirmReceiverAction"
+  />
 </template>
 
 <script setup lang="ts">
@@ -204,6 +221,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { usePixlabSMSReceiver } from '@/composables/usePixlabSMSReceiver'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
+import SMSReceiverActionDialog from '@/components/sms/SMSReceiverActionDialog.vue'
 
 const props = withDefaults(defineProps<{
   active?: boolean
@@ -242,7 +260,9 @@ const isSavingKeys = ref(false)
 const isClearingKeys = ref(false)
 const hasManuallyStarted = ref(false)
 const isStartingPhone = ref(false)
+const confirmationAction = ref<'claim' | 'cancel' | null>(null)
 const needsManualStart = computed(() => !hasManuallyStarted.value)
+const confirmationPending = computed(() => confirmationAction.value === 'claim' ? isStartingPhone.value : isCancelling.value)
 
 function showError(error: unknown): void {
   appStore.showError(error instanceof Error ? error.message : '接码服务暂时不可用，请稍后重试。')
@@ -267,6 +287,11 @@ async function requestPhone(): Promise<void> {
     hasManuallyStarted.value = false
   }
   isStartingPhone.value = false
+}
+
+function requestPhoneConfirmation(): void {
+  if (!props.active || isStartingPhone.value) return
+  confirmationAction.value = 'claim'
 }
 
 async function refresh(): Promise<void> {
@@ -297,6 +322,26 @@ async function cancel(): Promise<void> {
     appStore.showInfo('已取消当前手机号。')
   } catch (error) {
     showError(error)
+  }
+}
+
+function requestCancelConfirmation(): void {
+  if (!canCancel.value || isCancelling.value) return
+  confirmationAction.value = 'cancel'
+}
+
+function closeConfirmation(): void {
+  if (!confirmationPending.value) confirmationAction.value = null
+}
+
+async function confirmReceiverAction(): Promise<void> {
+  const action = confirmationAction.value
+  if (!action || confirmationPending.value) return
+  try {
+    if (action === 'claim') await requestPhone()
+    else await cancel()
+  } finally {
+    if (confirmationAction.value === action) confirmationAction.value = null
   }
 }
 
@@ -359,6 +404,7 @@ watch(
   (active) => {
     if (!active) {
       hasManuallyStarted.value = false
+      confirmationAction.value = null
       receiver.stop()
       return
     }
@@ -367,5 +413,8 @@ watch(
   { immediate: true }
 )
 
-onBeforeUnmount(() => receiver.stop())
+onBeforeUnmount(() => {
+  confirmationAction.value = null
+  receiver.stop()
+})
 </script>

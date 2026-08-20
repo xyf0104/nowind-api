@@ -234,6 +234,10 @@ type CreateGroupInput struct {
 	DailyLimitUSD    *float64 // 日限额 (USD)
 	WeeklyLimitUSD   *float64 // 周限额 (USD)
 	MonthlyLimitUSD  *float64 // 月限额 (USD)
+	// nil 表示使用默认开启，显式 false 才关闭分组长上下文区间定价。
+	LongContextPricingEnabled *bool
+	// 分组逐模型定价，优先于渠道和内置模型定价；不支持分时定价。
+	ModelPricing []ChannelModelPricing
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         bool
 	AllowBatchImageGeneration    bool
@@ -301,6 +305,10 @@ type UpdateGroupInput struct {
 	DailyLimitUSD    *float64 // 日限额 (USD)
 	WeeklyLimitUSD   *float64 // 周限额 (USD)
 	MonthlyLimitUSD  *float64 // 月限额 (USD)
+	// nil 表示不修改。
+	LongContextPricingEnabled *bool
+	// nil 表示不修改，空数组表示清空。
+	ModelPricing *[]ChannelModelPricing
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         *bool
 	AllowBatchImageGeneration    *bool
@@ -406,7 +414,7 @@ type UpdateAccountInput struct {
 	AutoPauseOnExpired        *bool
 	ProbeEnabled              *bool
 	RateSyncEnabled           *bool
-	ResetOpenAIWeeklyEstimate bool // 重新授权/导入后仅在 OpenAI 账号身份改变时重置周额度状态
+	ResetOpenAIWeeklyEstimate bool // 交互式重新授权/导入后重建 OpenAI 周额度基准；普通 Token 刷新不得设置
 	SkipMixedChannelCheck     bool // 跳过混合渠道检查（用户已确认风险）
 }
 

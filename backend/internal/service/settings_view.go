@@ -12,22 +12,23 @@ func firstNonEmpty(values ...string) string {
 }
 
 type SystemSettings struct {
-	RegistrationEnabled              bool
-	EmailVerifyEnabled               bool
-	RegistrationEmailSuffixWhitelist []string
-	PromoCodeEnabled                 bool
-	PasswordResetEnabled             bool
-	FrontendURL                      string
-	InvitationCodeEnabled            bool
-	TotpEnabled                      bool // TOTP 双因素认证
-	PasskeyEnabled                   bool // Passkey 登录
-	SessionBindingEnabled            bool // 会话 IP/UA 绑定（变更即失效）
-	StepUpEnabled                    bool // 敏感操作 step-up 2FA 门控
-	AuditLogRetentionDays            int  // 审计日志保留天数（<=0 永久保留）
-	LoginAgreementEnabled            bool
-	LoginAgreementMode               string
-	LoginAgreementUpdatedAt          string
-	LoginAgreementDocuments          []LoginAgreementDocument
+	RegistrationEnabled                 bool
+	EmailVerifyEnabled                  bool
+	RegistrationEmailSuffixWhitelist    []string
+	RegistrationEmailDomainQuotaEnabled bool
+	PromoCodeEnabled                    bool
+	PasswordResetEnabled                bool
+	FrontendURL                         string
+	InvitationCodeEnabled               bool
+	TotpEnabled                         bool // TOTP 双因素认证
+	PasskeyEnabled                      bool // Passkey 登录
+	SessionBindingEnabled               bool // 会话 IP/UA 绑定（变更即失效）
+	StepUpEnabled                       bool // 敏感操作 step-up 2FA 门控
+	AuditLogRetentionDays               int  // 审计日志保留天数（<=0 永久保留）
+	LoginAgreementEnabled               bool
+	LoginAgreementMode                  string
+	LoginAgreementUpdatedAt             string
+	LoginAgreementDocuments             []LoginAgreementDocument
 
 	SMTPHost               string
 	SMTPPort               int
@@ -50,6 +51,7 @@ type SystemSettings struct {
 	TencentCaptchaCloudSecretIDConfigured  bool
 	TencentCaptchaCloudSecretKey           string
 	TencentCaptchaCloudSecretKeyConfigured bool
+	TencentCaptchaRegion                   string
 	AliyunCaptchaEnabled                   bool
 	AliyunCaptchaAccessKeyID               string
 	AliyunCaptchaAccessKeySecret           string
@@ -154,6 +156,7 @@ type SystemSettings struct {
 	ContactInfo                 string
 	DocURL                      string
 	HomeContent                 string
+	CompactHomeEnabled          bool
 	HideCcsImportButton         bool
 	PurchaseSubscriptionEnabled bool
 	PurchaseSubscriptionURL     string
@@ -194,11 +197,26 @@ type SystemSettings struct {
 	OpsMetricsIntervalSeconds    int
 
 	// Channel Monitor feature
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
+	ChannelMonitorShowQuota              bool   `json:"channel_monitor_show_quota"`
+
+	// Grok default mapping policy.
+	GrokDefaultTextModel           string `json:"grok_default_text_model"`
+	GrokCrossClientModelMapEnabled bool   `json:"grok_cross_client_model_map_enabled"`
+	GrokDefaultBaseURLMode         string `json:"grok_default_base_url_mode"`
 
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
+	// XIASS model-price display stays independent from the available-channel view.
+	ModelPricingEnabled bool `json:"model_pricing_enabled"`
+
+	// Model Plaza feature (public group/model pricing showcase)
+	ModelPlazaEnabled     bool   `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth bool   `json:"model_plaza_require_auth"`
+	ModelPlazaDescription string `json:"model_plaza_description"`
 
 	// Claude Code version check
 	MinClaudeCodeVersion string
@@ -298,36 +316,39 @@ type DefaultSubscriptionSetting struct {
 }
 
 type PublicSettings struct {
-	RegistrationEnabled              bool
-	EmailVerifyEnabled               bool
-	ForceEmailOnThirdPartySignup     bool
-	RegistrationEmailSuffixWhitelist []string
-	PromoCodeEnabled                 bool
-	PasswordResetEnabled             bool
-	InvitationCodeEnabled            bool
-	TotpEnabled                      bool // TOTP 双因素认证
-	PasskeyEnabled                   bool
-	LoginAgreementEnabled            bool
-	LoginAgreementMode               string
-	LoginAgreementUpdatedAt          string
-	LoginAgreementRevision           string
-	LoginAgreementDocuments          []LoginAgreementDocument
-	TurnstileEnabled                 bool
-	TurnstileSiteKey                 string
-	TencentCaptchaEnabled            bool
-	TencentCaptchaAppID              string
-	AliyunCaptchaEnabled             bool
-	AliyunCaptchaSceneID             string
-	AliyunCaptchaPrefix              string
-	AliyunCaptchaRegion              string
-	SiteName                         string
-	SiteLogo                         string
-	SiteSubtitle                     string
-	APIBaseURL                       string
-	ContactInfo                      string
-	DocURL                           string
-	HomeContent                      string
-	HideCcsImportButton              bool
+	RegistrationEnabled                 bool
+	EmailVerifyEnabled                  bool
+	ForceEmailOnThirdPartySignup        bool
+	RegistrationEmailSuffixWhitelist    []string
+	RegistrationEmailDomainQuotaEnabled bool
+	PromoCodeEnabled                    bool
+	PasswordResetEnabled                bool
+	InvitationCodeEnabled               bool
+	TotpEnabled                         bool // TOTP 双因素认证
+	PasskeyEnabled                      bool
+	LoginAgreementEnabled               bool
+	LoginAgreementMode                  string
+	LoginAgreementUpdatedAt             string
+	LoginAgreementRevision              string
+	LoginAgreementDocuments             []LoginAgreementDocument
+	TurnstileEnabled                    bool
+	TurnstileSiteKey                    string
+	TencentCaptchaEnabled               bool
+	TencentCaptchaAppID                 string
+	TencentCaptchaRegion                string
+	AliyunCaptchaEnabled                bool
+	AliyunCaptchaSceneID                string
+	AliyunCaptchaPrefix                 string
+	AliyunCaptchaRegion                 string
+	SiteName                            string
+	SiteLogo                            string
+	SiteSubtitle                        string
+	APIBaseURL                          string
+	ContactInfo                         string
+	DocURL                              string
+	HomeContent                         string
+	CompactHomeEnabled                  bool
+	HideCcsImportButton                 bool
 
 	PurchaseSubscriptionEnabled bool
 	PurchaseSubscriptionURL     string
@@ -356,11 +377,19 @@ type PublicSettings struct {
 	BalanceLowNotifyRechargeURL string
 
 	// Channel Monitor feature
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
+	ChannelMonitorShowQuota              bool   `json:"channel_monitor_show_quota"`
 
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
+	ModelPricingEnabled      bool `json:"model_pricing_enabled"`
+
+	// Model Plaza feature (public group/model pricing showcase)
+	ModelPlazaEnabled     bool `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth bool `json:"model_plaza_require_auth"`
 
 	// Affiliate (邀请返利) feature toggle
 	AffiliateEnabled bool `json:"affiliate_enabled"`

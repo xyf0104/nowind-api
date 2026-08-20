@@ -135,9 +135,10 @@
             <button
               v-if="canStart"
               type="button"
+              data-testid="claim-sms-number"
               class="sms-start-button"
-              :disabled="isStarting"
-              @click="begin"
+              :disabled="isStarting || confirmationAction !== null"
+              @click="requestBeginConfirmation"
             >
               <Icon name="bolt" size="sm" :class="{ 'animate-pulse': isStarting }" />
               <span>{{ isStarting ? '正在领取号码…' : (authStore.isAuthenticated ? startButtonLabel : '登录后领取号码') }}</span>
@@ -167,10 +168,11 @@
               </button>
               <button
               type="button"
+              data-testid="cancel-sms-number"
               class="sms-action sms-action--danger"
               title="取消当前号码并将未使用卡密退回队列"
-              :disabled="!canCancel && !isLocalPreview"
-                @click="cancelSession"
+              :disabled="(!canCancel && !isLocalPreview) || confirmationAction !== null"
+                @click="requestCancelConfirmation"
               >
                 <Icon name="x" size="md" :class="{ 'animate-spin': isCancelling }" />
                 <span>取消</span>
@@ -384,6 +386,18 @@
       </section>
     </div>
     <SMSRechargeDialog :open="rechargeDialogOpen" @close="rechargeDialogOpen = false" @success="handleRechargeSuccess" />
+    <SMSReceiverActionDialog
+      :show="confirmationAction !== null"
+      :title="confirmationTitle"
+      :message="confirmationMessage"
+      :detail="confirmationDetail"
+      :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : '确认领取号码'"
+      :pending-label="confirmationAction === 'cancel' ? '正在取消…' : '正在领取…'"
+      :pending="confirmationPending"
+      :danger="confirmationAction === 'cancel'"
+      @cancel="closeConfirmation"
+      @confirm="confirmReceiverAction"
+    />
   </main>
 </template>
 
@@ -393,6 +407,7 @@ import { useRouter, useRoute } from 'vue-router'
 import Icon from '@/components/icons/Icon.vue'
 import DarkVideoBackground from '@/components/common/DarkVideoBackground.vue'
 import SMSRechargeDialog from '@/components/sms/SMSRechargeDialog.vue'
+import SMSReceiverActionDialog from '@/components/sms/SMSReceiverActionDialog.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { usePixlabSMSReceiver } from '@/composables/usePixlabSMSReceiver'
 import { updateMemberFee } from '@/api/admin/smsReceiver'
@@ -446,12 +461,32 @@ const phoneCopied = ref(false)
 const codeCopied = ref(false)
 const memberFeeInput = ref('')
 const rechargeDialogOpen = ref(false)
+const confirmationAction = ref<'claim' | 'cancel' | null>(null)
 let clearConfirmationTimer: number | undefined
 let previewNumberIndex = 0
 
 const hasCode = computed(() => Boolean(code.value && code.value !== '--'))
 const memberBalance = computed(() => balance.value ?? authStore.user?.balance ?? null)
 const currentFeeAmount = computed(() => feeAmount.value > 0 ? feeAmount.value : 2)
+const confirmationPending = computed(() => confirmationAction.value === 'claim' ? isStarting.value : isCancelling.value)
+const confirmationTitle = computed(() => confirmationAction.value === 'cancel' ? '取消当前号码' : '领取接码号码')
+const confirmationMessage = computed(() => {
+  if (confirmationAction.value === 'cancel') {
+    return '确认取消当前号码并结束本次接码会话吗？'
+  }
+  if (isAdmin.value) return '确认从待用卡密队列领取一个号码并开始监听验证码吗？'
+  return `确认领取一个接码号码吗？本次将按 ${formatMoney(currentFeeAmount.value)} 预扣费用。`
+})
+const confirmationDetail = computed(() => {
+  if (confirmationAction.value === 'cancel') {
+    return isAdmin.value
+      ? '尚未收到验证码时，卡密会释放回待用队列；已经收到验证码的会话仍按实际结果处理。'
+      : '尚未收到验证码时会按规则释放号码并退回预扣；已经收到验证码的会话不会撤销结算。'
+  }
+  return isAdmin.value
+    ? '领取成功后会立即占用一个待用卡密，直到收到验证码、取消、换号或超时。'
+    : '只有服务端实际收到验证码后才最终结算；未使用的会话按现有规则退款。'
+})
 const mainSiteHomeURL = computed(() => {
   const currentHost = window.location.host
   const mainHost = currentHost.replace(/^sms\./i, 'api.')
@@ -605,6 +640,14 @@ async function begin(): Promise<void> {
   }
 }
 
+function requestBeginConfirmation(): void {
+  if (!isLocalPreview.value && !authStore.isAuthenticated) {
+    void begin()
+    return
+  }
+  if (!isStarting.value) confirmationAction.value = 'claim'
+}
+
 async function refreshCode(): Promise<void> {
   if (isLocalPreview.value) {
     previewSession(phoneForCopy.value || '+1 816 215 0598', '846 217')
@@ -658,6 +701,26 @@ async function cancelSession(): Promise<void> {
     appStore.showInfo(outcome === 'received' ? '验证码已收到，当前会话已按实际结果结算。' : '已取消当前会话，未使用卡密已退回队列。')
   } catch (error) {
     appStore.showError(describeError(error, '取消会话失败，请稍后重试。'))
+  }
+}
+
+function requestCancelConfirmation(): void {
+  if ((!canCancel.value && !isLocalPreview.value) || isCancelling.value) return
+  confirmationAction.value = 'cancel'
+}
+
+function closeConfirmation(): void {
+  if (!confirmationPending.value) confirmationAction.value = null
+}
+
+async function confirmReceiverAction(): Promise<void> {
+  const action = confirmationAction.value
+  if (!action || confirmationPending.value) return
+  try {
+    if (action === 'claim') await begin()
+    else await cancelSession()
+  } finally {
+    if (confirmationAction.value === action) confirmationAction.value = null
   }
 }
 

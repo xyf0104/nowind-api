@@ -99,6 +99,11 @@ export const FeatureFlags = {
     mode: 'opt-out',
     label: 'Channel Monitor',
   }),
+  modelPricing: defineFlag({
+    key: 'model_pricing_enabled',
+    mode: 'opt-out',
+    label: 'Model Pricing',
+  }),
   availableChannels: defineFlag({
     key: 'available_channels_enabled',
     mode: 'opt-in',
@@ -146,4 +151,10 @@ export function isFeatureFlagEnabled(flag: FeatureFlagDefinition): boolean {
  */
 export function makeSidebarFlag(flag: FeatureFlagDefinition): () => boolean {
   return () => isFeatureFlagEnabled(flag)
+}
+
+/** User-facing quota snapshots are opt-in and also filtered server-side. */
+export function isChannelMonitorQuotaVisible(): boolean {
+  const appStore = useAppStore()
+  return appStore.cachedPublicSettings?.channel_monitor_show_quota === true
 }

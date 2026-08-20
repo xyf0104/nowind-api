@@ -49,6 +49,9 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	if strings.TrimSpace(upstreamModel) == "" {
 		upstreamModel = grokDefaultResponsesModel
 	}
+	// Account mappings are optional. Canonicalize client aliases even when the
+	// account has no explicit model_mapping.
+	upstreamModel = xai.ResolveGrokTextResponsesModelID(upstreamModel, grokDefaultResponsesModel)
 	if isGrokImageGenerationModel(upstreamModel) {
 		return nil, fmt.Errorf("model %s is an image model and is not available on the Responses endpoint; use /v1/images/generations instead", upstreamModel)
 	}
@@ -410,7 +413,13 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 	if !json.Valid(body) {
 		return nil, fmt.Errorf("invalid json request body")
 	}
-	out, err := sjson.SetBytes(body, "model", upstreamModel)
+	// sjson may reuse its input backing array. The original request is also used
+	// by retry and billing paths, so keep it immutable.
+	out, err := sjson.SetBytes(append([]byte(nil), body...), "model", upstreamModel)
+	if err != nil {
+		return nil, err
+	}
+	out, err = normalizeGrokResponsesReasoningEffort(out, upstreamModel)
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +437,16 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 	}
 	if strings.EqualFold(upstreamModel, "grok-4.5") {
 		for _, unsupportedField := range []string{"presence_penalty", "presencePenalty", "frequency_penalty", "frequencyPenalty", "stop"} {
+			if gjson.GetBytes(out, unsupportedField).Exists() {
+				out, err = sjson.DeleteBytes(out, unsupportedField)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if grokModelRejectsLogprobs(upstreamModel) {
+		for _, unsupportedField := range []string{"logprobs", "top_logprobs"} {
 			if gjson.GetBytes(out, unsupportedField).Exists() {
 				out, err = sjson.DeleteBytes(out, unsupportedField)
 				if err != nil {
@@ -463,6 +482,15 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 	return out, nil
 }
 
+// Grok 4.20 models reject OpenAI logprobs fields.
+func grokModelRejectsLogprobs(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if slash := strings.LastIndex(model, "/"); slash >= 0 {
+		model = strings.TrimSpace(model[slash+1:])
+	}
+	return strings.HasPrefix(model, "grok-4.20")
+}
+
 func sanitizeGrokResponsesModelCapabilities(body []byte, upstreamModel string) ([]byte, error) {
 	if !grokModelRejectsReasoningEffort(upstreamModel) {
 		return body, nil
@@ -489,6 +517,109 @@ func grokModelRejectsReasoningEffort(model string) bool {
 	}
 	switch model {
 	case "grok-composer", "grok-composer-2.5-fast", "composer-2.5":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeGrokResponsesReasoningEffort(body []byte, upstreamModel string) ([]byte, error) {
+	supportsEffort := grokSupportsReasoningEffort(upstreamModel)
+	out := body
+	var err error
+	for _, field := range []string{"reasoning.effort", "reasoning_effort"} {
+		value := gjson.GetBytes(out, field)
+		if !value.Exists() {
+			continue
+		}
+		normalized, keep := normalizeGrokReasoningEffortValue(value.String(), upstreamModel)
+		if !supportsEffort || !keep {
+			out, err = sjson.DeleteBytes(out, field)
+		} else {
+			out, err = sjson.SetBytes(out, field, normalized)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("normalize Grok reasoning field %s: %w", field, err)
+		}
+	}
+	if camel := gjson.GetBytes(out, "reasoningEffort"); camel.Exists() {
+		normalized, keep := normalizeGrokReasoningEffortValue(camel.String(), upstreamModel)
+		out, err = sjson.DeleteBytes(out, "reasoningEffort")
+		if err != nil {
+			return nil, fmt.Errorf("remove Grok reasoningEffort: %w", err)
+		}
+		if supportsEffort && keep && !gjson.GetBytes(out, "reasoning_effort").Exists() {
+			out, err = sjson.SetBytes(out, "reasoning_effort", normalized)
+			if err != nil {
+				return nil, fmt.Errorf("set Grok reasoning_effort: %w", err)
+			}
+		}
+	}
+	if reasoning := gjson.GetBytes(out, "reasoning"); reasoning.Exists() && reasoning.IsObject() && len(reasoning.Map()) == 0 {
+		out, err = sjson.DeleteBytes(out, "reasoning")
+		if err != nil {
+			return nil, fmt.Errorf("remove empty Grok reasoning: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func normalizeGrokChatReasoningEffort(body []byte, upstreamModel string) ([]byte, error) {
+	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
+	if raw == "" {
+		raw = strings.TrimSpace(gjson.GetBytes(body, "reasoningEffort").String())
+	}
+	normalized, keep := normalizeGrokReasoningEffortValue(raw, upstreamModel)
+	keep = keep && grokSupportsReasoningEffort(upstreamModel)
+	out := body
+	var err error
+	if gjson.GetBytes(out, "reasoningEffort").Exists() {
+		out, err = sjson.DeleteBytes(out, "reasoningEffort")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !keep {
+		if gjson.GetBytes(out, "reasoning_effort").Exists() {
+			out, err = sjson.DeleteBytes(out, "reasoning_effort")
+		}
+		return out, err
+	}
+	out, err = sjson.SetBytes(out, "reasoning_effort", normalized)
+	return out, err
+}
+
+func normalizeGrokReasoningEffortValue(raw, model string) (string, bool) {
+	value := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(raw)))
+	switch value {
+	case "none", "low", "medium", "high":
+		return value, true
+	case "minimal":
+		return "low", true
+	case "xhigh", "extrahigh":
+		if grokSupportsXHighReasoningEffort(model) {
+			return "xhigh", true
+		}
+		return "high", true
+	case "max", "ultra":
+		return "high", true
+	default:
+		return "", false
+	}
+}
+
+func grokSupportsXHighReasoningEffort(model string) bool {
+	model = strings.ToLower(xai.StripGrokProviderPrefix(strings.TrimSpace(model)))
+	return model == "grok-4.6" || model == "grok-4.6-latest"
+}
+
+func grokSupportsReasoningEffort(model string) bool {
+	model = strings.ToLower(xai.StripGrokProviderPrefix(strings.TrimSpace(model)))
+	switch model {
+	case xai.DefaultTextModel, "grok-4.5-latest", "grok-4.6", "grok-4.6-latest",
+		"grok-4.3", "grok-4.3-latest",
+		"grok-3-mini", "grok-3-mini-fast", "grok-4.20-0309-reasoning",
+		"grok-4.20-reasoning", "grok-4.20-multi-agent-0309":
 		return true
 	default:
 		return false
@@ -673,7 +804,6 @@ func stripRedundantGrokViewImageTool(body []byte) ([]byte, error) {
 	}
 	return sjson.SetRawBytes(body, "tools", encoded)
 }
-
 func grokResponsesToolDedupKey(tool gjson.Result) string {
 	toolType := strings.TrimSpace(tool.Get("type").String())
 	if toolType != "" {

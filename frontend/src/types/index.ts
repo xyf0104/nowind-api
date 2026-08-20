@@ -262,6 +262,8 @@ export interface PublicSettings {
   balance_low_notify_threshold: number
   channel_monitor_enabled: boolean
   channel_monitor_default_interval_seconds: number
+  channel_monitor_show_quota?: boolean
+  model_pricing_enabled: boolean
   available_channels_enabled: boolean
   service_quota_enabled: boolean
   affiliate_enabled: boolean
@@ -517,7 +519,18 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'composite'
+export type GroupPlatform =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'antigravity'
+  | 'grok'
+  | 'kimi'
+  | 'zhipu'
+  | 'deepseek'
+  | 'composite'
+
+export type VideoModelPrices = Record<string, Record<string, number>>
 
 export type SubscriptionType = 'standard' | 'subscription'
 
@@ -548,6 +561,8 @@ export interface Group {
   daily_limit_usd: number | null
   weekly_limit_usd: number | null
   monthly_limit_usd: number | null
+  long_context_pricing_enabled: boolean
+  model_pricing?: import('@/api/admin/channels').ChannelModelPricing[]
   // 图片生成计费配置
   allow_image_generation: boolean
   allow_batch_image_generation: boolean
@@ -563,8 +578,13 @@ export interface Group {
   video_price_480p: number | null
   video_price_720p: number | null
   video_price_1080p: number | null
-  // Codex 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
+  video_model_prices?: VideoModelPrices
+  // Codex 网页搜索单次价格（人民币/次）；null 表示使用默认价 0.01
   web_search_price_per_call: number | null
+  search_price_per_1k: number | null
+  audio_realtime_price_per_min: number | null
+  audio_tts_price_per_million_chars: number | null
+  audio_stt_price_per_hour: number | null
   // 高峰时段倍率配置
   peak_rate_enabled: boolean
   peak_start: string
@@ -751,6 +771,8 @@ export interface CreateGroupRequest {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  long_context_pricing_enabled?: boolean
+  model_pricing?: import('@/api/admin/channels').ChannelModelPricing[]
   allow_image_generation?: boolean
   allow_batch_image_generation?: boolean
   image_rate_independent?: boolean
@@ -765,7 +787,12 @@ export interface CreateGroupRequest {
   video_price_480p?: number | null
   video_price_720p?: number | null
   video_price_1080p?: number | null
+  video_model_prices?: VideoModelPrices
   web_search_price_per_call?: number | null
+  search_price_per_1k?: number | null
+  audio_realtime_price_per_min?: number | null
+  audio_tts_price_per_million_chars?: number | null
+  audio_stt_price_per_hour?: number | null
   peak_rate_enabled?: boolean
   peak_start?: string
   peak_end?: string
@@ -807,6 +834,8 @@ export interface UpdateGroupRequest {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  long_context_pricing_enabled?: boolean
+  model_pricing?: import('@/api/admin/channels').ChannelModelPricing[]
   allow_image_generation?: boolean
   allow_batch_image_generation?: boolean
   image_rate_independent?: boolean
@@ -821,7 +850,12 @@ export interface UpdateGroupRequest {
   video_price_480p?: number | null
   video_price_720p?: number | null
   video_price_1080p?: number | null
+  video_model_prices?: VideoModelPrices
   web_search_price_per_call?: number | null
+  search_price_per_1k?: number | null
+  audio_realtime_price_per_min?: number | null
+  audio_tts_price_per_million_chars?: number | null
+  audio_stt_price_per_hour?: number | null
   peak_rate_enabled?: boolean
   peak_start?: string
   peak_end?: string
@@ -853,7 +887,15 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok'
+export type AccountPlatform =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'antigravity'
+  | 'grok'
+  | 'kimi'
+  | 'zhipu'
+  | 'deepseek'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'

@@ -73,7 +73,7 @@ func TestOpenAIResponsesTTFTStartsAtCompletedImage(t *testing.T) {
 
 func TestOpenAINativeMetadataDoesNotDisarmFirstOutputTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	service := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
 		MaxLineSize:                     defaultMaxLineSize,
 		OpenAIFirstOutputTimeoutSeconds: 1,
 	}}}
@@ -93,7 +93,7 @@ func TestOpenAINativeMetadataDoesNotDisarmFirstOutputTimeout(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
 	account := &Account{ID: 1, Name: "account_test", Platform: PlatformOpenAI}
 
-	_, err := service.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "test-model", "test-model")
+	_, err := svc.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "test-model", "test-model")
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.True(t, failoverErr.SafeToFailoverAfterWrite)

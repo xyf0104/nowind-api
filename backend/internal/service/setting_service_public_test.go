@@ -108,6 +108,77 @@ func TestSettingService_GetPublicSettings_ExposesAllowUserViewErrorRequests(t *t
 	require.True(t, settings.AllowUserViewErrorRequests)
 }
 
+func TestSettingService_GetPublicSettings_ModelPricingIsIndependentFromAvailableChannels(t *testing.T) {
+	tests := []struct {
+		name                    string
+		values                  map[string]string
+		wantModelPricingEnabled bool
+		wantAvailableChannelsOn bool
+	}{
+		{
+			name:                    "missing settings preserve XIASS model pricing default",
+			values:                  map[string]string{},
+			wantModelPricingEnabled: true,
+		},
+		{
+			name: "explicit model pricing disable leaves channels disabled",
+			values: map[string]string{
+				SettingKeyModelPricingEnabled: "false",
+			},
+			wantModelPricingEnabled: false,
+		},
+		{
+			name: "available channels opt in does not hide model pricing",
+			values: map[string]string{
+				SettingKeyAvailableChannelsEnabled: "true",
+			},
+			wantModelPricingEnabled: true,
+			wantAvailableChannelsOn: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewSettingService(&settingPublicRepoStub{values: tt.values}, &config.Config{})
+
+			settings, err := svc.GetPublicSettings(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, tt.wantModelPricingEnabled, settings.ModelPricingEnabled)
+			require.Equal(t, tt.wantAvailableChannelsOn, settings.AvailableChannelsEnabled)
+		})
+	}
+}
+
+func TestSettingService_GetPublicSettingsForInjection_ExposesModelPricingAndPublicMonitorSettings(t *testing.T) {
+	svc := NewSettingService(&settingPublicRepoStub{values: map[string]string{
+		SettingKeyRegistrationEmailDomainQuotaEnabled: "true",
+		SettingKeyTencentCaptchaRegion:                TencentCaptchaRegionINTL,
+		SettingKeyCompactHomeEnabled:                  "true",
+		SettingKeyChannelMonitorMode:                  ChannelMonitorModeV2,
+		SettingKeyChannelMonitorHideThroughput:        "false",
+		SettingKeyChannelMonitorShowQuota:             "true",
+		SettingKeyAvailableChannelsEnabled:            "true",
+		SettingKeyModelPricingEnabled:                 "false",
+		SettingKeyModelPlazaEnabled:                   "true",
+		SettingKeyModelPlazaRequireAuth:               "true",
+	}}, &config.Config{})
+
+	injected, err := svc.GetPublicSettingsForInjection(context.Background())
+	require.NoError(t, err)
+	payload, ok := injected.(*PublicSettingsInjectionPayload)
+	require.True(t, ok)
+	require.True(t, payload.RegistrationEmailDomainQuotaEnabled)
+	require.Equal(t, TencentCaptchaRegionINTL, payload.TencentCaptchaRegion)
+	require.True(t, payload.CompactHomeEnabled)
+	require.Equal(t, ChannelMonitorModeV2, payload.ChannelMonitorMode)
+	require.False(t, payload.ChannelMonitorHideThroughput)
+	require.True(t, payload.ChannelMonitorShowQuota)
+	require.True(t, payload.AvailableChannelsEnabled)
+	require.False(t, payload.ModelPricingEnabled)
+	require.True(t, payload.ModelPlazaEnabled)
+	require.True(t, payload.ModelPlazaRequireAuth)
+}
+
 func TestSettingService_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *testing.T) {
 	svc := NewSettingService(&settingPublicRepoStub{
 		values: map[string]string{

@@ -3,11 +3,15 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,6 +68,41 @@ func TestUpdateSettingsSMTPFromAliasIsWritable(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	require.Equal(t, "new@example.com", repo.values[service.SettingKeySMTPFrom])
+}
+
+func TestUpdateSettings_ModelPricingRemainsIndependentFromAvailableChannels(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+		service.SettingKeyModelPricingEnabled:      "true",
+		service.SettingKeyAvailableChannelsEnabled: "false",
+	})
+
+	rec := doUpdateSettings(t, h, map[string]any{
+		"available_channels_enabled": true,
+	}, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "true", repo.values[service.SettingKeyAvailableChannelsEnabled])
+	require.Equal(t, "true", repo.values[service.SettingKeyModelPricingEnabled])
+
+	rec = doUpdateSettings(t, h, map[string]any{
+		"model_pricing_enabled": false,
+	}, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "true", repo.values[service.SettingKeyAvailableChannelsEnabled])
+	require.Equal(t, "false", repo.values[service.SettingKeyModelPricingEnabled])
+
+	gin.SetMode(gin.TestMode)
+	getRecorder := httptest.NewRecorder()
+	getContext, _ := gin.CreateTestContext(getRecorder)
+	getContext.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	h.GetSettings(getContext)
+	require.Equal(t, http.StatusOK, getRecorder.Code)
+
+	var result response.Response
+	require.NoError(t, json.Unmarshal(getRecorder.Body.Bytes(), &result))
+	data, ok := result.Data.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, data["available_channels_enabled"])
+	require.Equal(t, false, data["model_pricing_enabled"])
 }
 
 func TestUpdateSettingsRejectsTwoCaptchaProviders(t *testing.T) {

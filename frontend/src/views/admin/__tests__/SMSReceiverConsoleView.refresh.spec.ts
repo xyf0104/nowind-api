@@ -25,7 +25,7 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
   const { ref } = await import('vue')
   return {
     usePixlabSMSReceiver: () => ({
-      phase: ref('waiting'),
+      phase: ref(receiverState.hasActiveSession ? 'waiting' : 'idle'),
       phoneForCopy: ref('+27749433060'),
       countryCallingCode: ref('27'),
       localPhoneNumber: ref('749433060'),
@@ -70,6 +70,30 @@ vi.mock('@/api/admin/smsReceiver', () => ({ updateMemberFee: vi.fn() }))
 
 import SMSReceiverConsoleView from '../SMSReceiverConsoleView.vue'
 
+const SMSReceiverActionDialogStub = {
+  props: ['show'],
+  emits: ['cancel', 'confirm'],
+  template: `
+    <div v-if="show" data-testid="sms-confirm-dialog">
+      <button type="button" data-testid="confirm-sms-receiver-action" @click="$emit('confirm')">confirm</button>
+      <button type="button" data-testid="close-sms-receiver-action" @click="$emit('cancel')">close</button>
+    </div>
+  `,
+}
+
+function mountConsole() {
+  return mount(SMSReceiverConsoleView, {
+    global: {
+      stubs: {
+        DarkVideoBackground: true,
+        SMSRechargeDialog: true,
+        SMSReceiverActionDialog: SMSReceiverActionDialogStub,
+        Icon: true,
+      },
+    },
+  })
+}
+
 describe('SMSReceiverConsoleView refresh status', () => {
   beforeEach(() => {
     receiverState.hasActiveSession = true
@@ -79,15 +103,7 @@ describe('SMSReceiverConsoleView refresh status', () => {
   })
 
   it('refreshes the active receiver session instead of reading queue status only', async () => {
-    const wrapper = mount(SMSReceiverConsoleView, {
-      global: {
-        stubs: {
-          DarkVideoBackground: true,
-          SMSRechargeDialog: true,
-          Icon: true
-        }
-      }
-    })
+    const wrapper = mountConsole()
     await flushPromises()
     receiverMocks.refresh.mockClear()
     receiverMocks.refreshQueueStatus.mockClear()
@@ -102,15 +118,7 @@ describe('SMSReceiverConsoleView refresh status', () => {
 
   it('reads queue status only when there is no current session', async () => {
     receiverState.hasActiveSession = false
-    const wrapper = mount(SMSReceiverConsoleView, {
-      global: {
-        stubs: {
-          DarkVideoBackground: true,
-          SMSRechargeDialog: true,
-          Icon: true
-        }
-      }
-    })
+    const wrapper = mountConsole()
     await flushPromises()
     receiverMocks.refresh.mockClear()
     receiverMocks.refreshQueueStatus.mockClear()
@@ -120,5 +128,36 @@ describe('SMSReceiverConsoleView refresh status', () => {
 
     expect(receiverMocks.refresh).not.toHaveBeenCalled()
     expect(receiverMocks.refreshQueueStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires an in-app confirmation before claiming a number', async () => {
+    receiverState.hasActiveSession = false
+    receiverMocks.start.mockResolvedValue('waiting')
+    const wrapper = mountConsole()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-sms-number"]').trigger('click')
+    await flushPromises()
+    expect(receiverMocks.start).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="sms-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
+    await flushPromises()
+    expect(receiverMocks.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires an in-app confirmation before cancelling the current number', async () => {
+    receiverMocks.cancel.mockResolvedValue('cancelled')
+    const wrapper = mountConsole()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="cancel-sms-number"]').trigger('click')
+    await flushPromises()
+    expect(receiverMocks.cancel).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="sms-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
+    await flushPromises()
+    expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
   })
 })

@@ -5,10 +5,46 @@
 
 import { apiClient } from '../client'
 
-export type Provider = 'openai' | 'anthropic' | 'gemini' | 'grok'
+export type Provider =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'grok'
+  | 'antigravity'
+  | 'kimi'
+  | 'zhipu'
+  | 'deepseek'
 export type MonitorStatus = 'operational' | 'degraded' | 'failed' | 'error'
 export type BodyOverrideMode = 'off' | 'merge' | 'replace'
 export type APIMode = 'chat_completions' | 'responses'
+export type CheckMode = 'probe' | 'quota' | 'quota_probe'
+
+export interface MonitorQuotaTier {
+  window: string
+  label?: string
+  used_percent: number
+  used?: number
+  limit?: number
+  reset_at?: string
+}
+
+export interface MonitorBalance {
+  currency: string
+  balance: number
+}
+
+export interface MonitorQuotaSnapshot {
+  source: string
+  success: boolean
+  tiers?: MonitorQuotaTier[]
+  balance?: number | null
+  balances?: MonitorBalance[]
+  currency?: string
+  plan_level?: string
+  credential_invalid?: boolean
+  error?: string
+  fetched_at: string
+}
 
 export interface ChannelMonitor {
   id: number
@@ -47,6 +83,9 @@ export interface ChannelMonitor {
   extra_headers: Record<string, string>
   body_override_mode: BodyOverrideMode
   body_override: Record<string, unknown> | null
+  check_mode: CheckMode
+  account_id: number | null
+  latest_quota?: MonitorQuotaSnapshot | null
 }
 
 export interface ExtraModelStatus {
@@ -77,6 +116,10 @@ export interface CreateParams {
   api_mode?: APIMode
   endpoint: string
   api_key: string
+  /** 缺省 probe；antigravity 仅支持 quota。 */
+  check_mode?: CheckMode
+  /** 创建时必须是有效账号 ID；更新时 0 表示显式解绑。 */
+  account_id?: number | null
   primary_model: string
   extra_models?: string[]
   group_name?: string
@@ -89,7 +132,8 @@ export interface CreateParams {
   body_override?: Record<string, unknown> | null
 }
 
-// Update request: api_key 空串 = 不修改；clear_template=true 时把 template_id 置空
+// Update request: api_key 空串 = 不修改；clear_template=true 时把 template_id 置空；
+// account_id=0 显式解绑关联账号（null = 不动，见 CreateParams 注释）
 export type UpdateParams = Partial<CreateParams> & {
   clear_template?: boolean
 }
@@ -101,6 +145,7 @@ export interface CheckResult {
   ping_latency_ms: number | null
   message: string
   checked_at: string
+  quota?: MonitorQuotaSnapshot | null
 }
 
 export interface RunNowResponse {
@@ -115,6 +160,7 @@ export interface HistoryItem {
   ping_latency_ms: number | null
   message: string
   checked_at: string
+  quota?: MonitorQuotaSnapshot | null
 }
 
 export interface HistoryParams {

@@ -595,8 +595,6 @@ export default {
       failedToAdjust: '调整失败',
       emailRequired: '请输入邮箱',
       concurrencyMin: '并发数不能小于1',
-      soraStorageQuota: 'Sora 存储配额',
-      soraStorageQuotaHint: '单位 GB，0 表示使用分组或系统默认配额',
       amountRequired: '请输入有效金额',
       insufficientBalance: '余额不足',
       setAllowedGroups: '设置允许分组',
@@ -990,6 +988,27 @@ export default {
           '视频按秒计费：费用 = 每秒价格 × 时长（1-15 秒，未指定默认 8 秒）。默认叠加当前分组有效倍率；开启独立倍率后改用视频独立倍率。',
         finalPricePreview: '最终每秒价格预览',
         notConfigured: '未配置'
+      },
+      explicitPricing: {
+        title: 'Grok 搜索与 Voice 定价',
+        description: '分组级 web_search（每千次）与 Voice realtime / TTS / STT 单价（人民币）。留空表示未配置。',
+        searchPricePer1k: '搜索每千次价格（¥）',
+        pricePlaceholder: '可选'
+      },
+      modelPricing: {
+        title: '分组逐模型定价',
+        description: '匹配模型后覆盖渠道和内置价格。长上下文阶梯沿用官方/预设价卡，无需再手填区间。音频可用按次层级配置 realtime、tts、stt。',
+        longContext: '启用长上下文阶梯定价',
+        longContextHint: '勾选后按渠道区间或官方预设阶梯计费；关闭后默认按第一档，账号显式开启时除外。',
+        add: '添加模型价格'
+      },
+      voicePricing: {
+        title: 'Grok Voice 定价',
+        description: '分组级 Voice realtime / TTS / STT 单价（人民币）。留空表示未配置。',
+        audioRealtimePerMin: 'Realtime 每分钟价格（¥）',
+        audioTtsPerMillionChars: 'TTS 每百万字符价格（¥）',
+        audioSttPerHour: 'STT 每小时价格（¥）',
+        pricePlaceholder: '可选'
       },
       webSearchPricing: {
         title: 'Codex 网页搜索计费',

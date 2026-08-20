@@ -475,7 +475,37 @@ export default {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
       gemini: 'Gemini',
-      grok: 'Grok'
+      grok: 'Grok',
+      antigravity: 'Antigravity',
+      kimi: 'Kimi',
+      zhipu: '智谱 GLM',
+      deepseek: 'DeepSeek'
+    },
+    checkMode: {
+      probe: '探活',
+      quota: '配额',
+      quota_probe: '探活 + 配额'
+    },
+    quota: {
+      unavailable: '配额信息不可用',
+      resetSoon: '即将重置',
+      windows: {
+        '5h': '5 小时',
+        '7d': '7 天',
+        '7dSonnet': '7 天 Sonnet',
+        '7dFable': '7 天 Fable',
+        weekly: '周',
+        daily: '日',
+        '30d': '30 天',
+        total: '总量'
+      },
+      labels: {
+        requests: '请求',
+        tokens: 'Token',
+        shared: '共享',
+        pro: 'Pro',
+        flash: 'Flash'
+      }
     },
     extraModelsHeader: '附加模型',
     extraModelsEmpty: '无附加模型',
@@ -495,6 +525,12 @@ export default {
     relativeMinutesAgo: '{n} 分钟前',
     relativeHoursAgo: '{n} 小时前',
     relativeDaysAgo: '{n} 天前'
+  },
+
+  pricingAreaTabs: {
+    label: '模型价格与渠道监控',
+    pricing: '模型价格',
+    monitor: '渠道监控',
   },
 
   // Channel Status (user-facing read-only view)

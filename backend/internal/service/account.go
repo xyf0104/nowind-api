@@ -1432,6 +1432,8 @@ func (a *Account) IsAdaptiveAPIProtocol() bool {
 }
 
 // GetCNProtocolBaseURL 返回国产供应商指定协议的上游 base URL。
+// adaptive 账号优先使用 api_base_urls 中的分协议地址，缺失时按平台和
+// account_mode 使用官方默认端点。base_url 继续作为 Chat Completions 地址兼容旧字段。
 func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 	if a == nil || !a.IsCNProvider() {
 		return ""
@@ -1484,7 +1486,8 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 	return ""
 }
 
-// IsAnthropicProtocol 报告账号是否以原生 Anthropic 协议接入上游。
+// IsAnthropicProtocol 报告账号是否以原生 Anthropic 协议接入上游
+// （/v1/messages 直通，适配 Claude Code 等客户端）。
 func (a *Account) IsAnthropicProtocol() bool {
 	return a.GetAPIProtocol() == APIProtocolAnthropic
 }

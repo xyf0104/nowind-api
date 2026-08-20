@@ -25,6 +25,7 @@ const appStore = vi.hoisted(() => ({
   cachedPublicSettings: null as null | {
     payment_enabled?: boolean
     risk_control_enabled?: boolean
+    channel_monitor_enabled?: boolean
     custom_menu_items?: []
   },
   fetchPublicSettings: vi.fn(),
@@ -142,6 +143,7 @@ describe('feature route guard', () => {
   it.each([
     ['payment', { requiresPayment: true }, '/purchase'],
     ['risk control', { requiresRiskControl: true }, '/admin/risk-control'],
+    ['channel monitor', { requiresChannelMonitor: true }, '/pricing/monitor'],
   ])('does not treat a failed %s settings load as explicitly disabled', async (_name, meta, path) => {
     authStore.isAdmin = meta.requiresRiskControl === true
     appStore.fetchPublicSettings.mockResolvedValue(null)
@@ -161,6 +163,12 @@ describe('feature route guard', () => {
       { requiresRiskControl: true },
       { risk_control_enabled: false },
       '/admin/settings',
+    ],
+    [
+      'channel monitor',
+      { requiresChannelMonitor: true },
+      { channel_monitor_enabled: false },
+      '/pricing',
     ],
   ])('redirects when loaded settings explicitly disable %s', async (_name, meta, settings, target) => {
     authStore.isAdmin = meta.requiresRiskControl === true

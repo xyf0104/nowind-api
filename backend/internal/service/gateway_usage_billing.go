@@ -723,7 +723,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	// 计算费用
-	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, opts)
+	cost := s.calculateRecordUsageCostAt(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, pricingAt, opts)
 
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -805,16 +805,31 @@ func (s *GatewayService) calculateRecordUsageCost(
 	imageMultiplier float64,
 	opts *recordUsageOpts,
 ) *CostBreakdown {
+	return s.calculateRecordUsageCostAt(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, time.Time{}, opts)
+}
+
+// calculateRecordUsageCostAt carries the request timestamp into unified token
+// pricing while preserving the legacy helper used by existing call sites.
+func (s *GatewayService) calculateRecordUsageCostAt(
+	ctx context.Context,
+	result *ForwardResult,
+	apiKey *APIKey,
+	billingModel string,
+	multiplier float64,
+	imageMultiplier float64,
+	pricingAt time.Time,
+	opts *recordUsageOpts,
+) *CostBreakdown {
 	// 图片生成：渠道定价为 token 计费时走 token 路径，否则走图片计费
 	if result.ImageCount > 0 {
 		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
-			return s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+			return s.calculateTokenCostAt(ctx, result, apiKey, billingModel, multiplier, pricingAt, opts)
 		}
 		return s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier)
 	}
 
 	// Token 计费
-	return s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+	return s.calculateTokenCostAt(ctx, result, apiKey, billingModel, multiplier, pricingAt, opts)
 }
 
 // compositeBillableModel 决定 composite 分组请求的计费模型：来源覆盖把计费模型
@@ -931,6 +946,18 @@ func (s *GatewayService) calculateTokenCost(
 	multiplier float64,
 	opts *recordUsageOpts,
 ) *CostBreakdown {
+	return s.calculateTokenCostAt(ctx, result, apiKey, billingModel, multiplier, time.Time{}, opts)
+}
+
+func (s *GatewayService) calculateTokenCostAt(
+	ctx context.Context,
+	result *ForwardResult,
+	apiKey *APIKey,
+	billingModel string,
+	multiplier float64,
+	pricingAt time.Time,
+	opts *recordUsageOpts,
+) *CostBreakdown {
 	tokens := UsageTokens{
 		InputTokens:           result.Usage.InputTokens,
 		OutputTokens:          result.Usage.OutputTokens,
@@ -951,15 +978,25 @@ func (s *GatewayService) calculateTokenCost(
 			Ctx:            ctx,
 			Model:          billingModel,
 			GroupID:        &gid,
+			Group:          apiKey.Group,
 			Tokens:         tokens,
 			RequestCount:   1,
 			RateMultiplier: multiplier,
+			PricingAt:      pricingAt,
+			ServiceTier:    optionalStringValue(result.ServiceTier),
 			Resolver:       s.resolver,
 			Resolved:       resolved,
 		})
 	} else if opts.LongContextThreshold > 0 {
 		// 长上下文双倍计费（如 Gemini 200K 阈值）
 		cost, err = s.billingService.CalculateCostWithLongContext(billingModel, tokens, multiplier, opts.LongContextThreshold, opts.LongContextMultiplier)
+	} else if s.resolver != nil && apiKey.Group != nil {
+		gid := apiKey.Group.ID
+		cost, err = s.billingService.CalculateCostUnified(CostInput{
+			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
+			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, PricingAt: pricingAt,
+			ServiceTier: optionalStringValue(result.ServiceTier), Resolver: s.resolver,
+		})
 	} else {
 		cost, err = s.billingService.CalculateCost(billingModel, tokens, multiplier)
 	}
@@ -1010,6 +1047,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		UpstreamModel:         optionalTrimmedStringPtr(result.UpstreamModel),
 		UpstreamResponseModel: optionalTrimmedStringPtr(result.UpstreamResponseModel),
 		UpstreamModelMismatch: upstreamModelMismatch(sentModel, result.UpstreamResponseModel),
+		ServiceTier:           result.ServiceTier,
 		ReasoningEffort:       result.ReasoningEffort,
 		InboundEndpoint:       optionalTrimmedStringPtr(input.InboundEndpoint),
 		UpstreamEndpoint:      optionalTrimmedStringPtr(input.UpstreamEndpoint),

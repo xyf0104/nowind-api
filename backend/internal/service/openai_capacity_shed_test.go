@@ -161,25 +161,25 @@ func TestOpenAIStreamMetadataPreambleAndMessageOnlyOverloadFailOver(t *testing.T
 	}{
 		{
 			name: "native",
-			run: func(service *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
-				_, err := service.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+			run: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
 				return err
 			},
 		},
 		{
 			name: "passthrough",
-			run: func(service *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
-				_, err := service.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+			run: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
 				return err
 			},
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			service := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
-			recorder := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(recorder)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
 			c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 			resp := &http.Response{
 				StatusCode: http.StatusOK,
@@ -188,14 +188,14 @@ func TestOpenAIStreamMetadataPreambleAndMessageOnlyOverloadFailOver(t *testing.T
 			}
 			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "acc"}
 
-			err := test.run(service, c, resp, account)
+			err := tt.run(svc, c, resp, account)
 			require.Error(t, err)
 			var failoverErr *UpstreamFailoverError
 			require.ErrorAs(t, err, &failoverErr)
 			require.True(t, failoverErr.RetryableOnSameAccount)
 			require.True(t, failoverErr.RequestScopedTransient)
 			require.False(t, c.Writer.Written())
-			require.Empty(t, recorder.Body.String())
+			require.Empty(t, rec.Body.String())
 		})
 	}
 }
@@ -247,6 +247,8 @@ func TestOpenAIStreamCapacityShedErrorFramePrecedingFailedStillFailsOver(t *test
 // 并终止会话，对其余错误码执行内置退避重试。消息原样保留。
 func TestOpenAIStreamCapacityShedAfterOutputRewritesCodeForClient(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	logSink, restore := captureStructuredLog(t)
+	defer restore()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
 	}
@@ -286,6 +288,9 @@ func TestOpenAIStreamCapacityShedAfterOutputRewritesCodeForClient(t *testing.T) 
 	require.Contains(t, body, `"code":"server_error"`)
 	require.NotContains(t, body, "server_is_overloaded")
 	require.Contains(t, body, "Our servers are currently overloaded")
+	require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
+	require.True(t, logSink.ContainsFieldValue("path", "native_sse"))
+	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-shed-after-output"))
 }
 
 // helper 单测：只有降载码被改写，其余错误码（尤其 rate_limit_exceeded，客户端

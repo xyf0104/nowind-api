@@ -1080,6 +1080,44 @@ func TestAdminService_CreateGroup_ClearsMessagesDispatchFieldsForNonOpenAIPlatfo
 	require.Equal(t, OpenAIMessagesDispatchModelConfig{}, repo.created.MessagesDispatchModelConfig)
 }
 
+func TestAdminService_CreateCompositeGroupPreservesLive(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "composite-group",
+		Platform:       PlatformComposite,
+		RateMultiplier: 1.0,
+		AllowLive:      true,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.True(t, repo.created.AllowLive)
+}
+
+func TestAdminService_UpdateCompositeGroupPreservesLive(t *testing.T) {
+	existingGroup := &Group{
+		ID:       1,
+		Name:     "composite-group",
+		Platform: PlatformComposite,
+		Status:   StatusActive,
+	}
+	repo := &groupRepoStubForAdmin{getByID: existingGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+	allowLive := true
+
+	group, err := svc.UpdateGroup(context.Background(), existingGroup.ID, &UpdateGroupInput{
+		AllowLive: &allowLive,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.updated)
+	require.True(t, repo.updated.AllowLive)
+}
+
 func TestAdminService_UpdateGroup_ClearsMessagesDispatchFieldsWhenPlatformChangesAwayFromOpenAI(t *testing.T) {
 	existingGroup := &Group{
 		ID:                    1,
@@ -1797,4 +1835,70 @@ func TestAdminService_PreviewCompositeRouteUsesExplicitRoutes(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4-6", decision.UpstreamModel)
 	require.NotNil(t, decision.Route)
 	require.Equal(t, int64(11), decision.Route.ID)
+}
+
+func TestAdminService_CreateGroup_ModelPricingDefaultsLongContextAndNormalizesEntries(t *testing.T) {
+	price := 0.00001
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "group-model-pricing-default",
+		Platform:       PlatformOpenAI,
+		RateMultiplier: 1,
+		ModelPricing: []ChannelModelPricing{{
+			ID:         99,
+			ChannelID:  88,
+			Models:     []string{" gpt-5.6-terra "},
+			InputPrice: &price,
+		}},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.True(t, repo.created.LongContextPricingEnabled)
+	require.Len(t, repo.created.ModelPricing, 1)
+	require.Zero(t, repo.created.ModelPricing[0].ID)
+	require.Zero(t, repo.created.ModelPricing[0].ChannelID)
+	require.Equal(t, PlatformOpenAI, repo.created.ModelPricing[0].Platform)
+	require.Equal(t, []string{"gpt-5.6-terra"}, repo.created.ModelPricing[0].Models)
+}
+
+func TestAdminService_CreateAndUpdateGroup_ModelPricingCanExplicitlyDisableLongContext(t *testing.T) {
+	disabled := false
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	created, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                      "group-model-pricing-disabled",
+		Platform:                  PlatformOpenAI,
+		RateMultiplier:            1,
+		LongContextPricingEnabled: &disabled,
+	})
+	require.NoError(t, err)
+	require.False(t, created.LongContextPricingEnabled)
+	require.Empty(t, created.ModelPricing)
+
+	existing := &Group{
+		ID:                        7,
+		Name:                      "group-model-pricing-update",
+		Platform:                  PlatformOpenAI,
+		RateMultiplier:            1,
+		SubscriptionType:          SubscriptionTypeStandard,
+		LongContextPricingEnabled: true,
+	}
+	updatedRepo := &groupRepoStubForAdmin{getByID: existing}
+	updatedSvc := &adminServiceImpl{groupRepo: updatedRepo}
+	pricing := []ChannelModelPricing{{Models: []string{"gpt-5.6-terra"}}}
+
+	updated, err := updatedSvc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+		LongContextPricingEnabled: &disabled,
+		ModelPricing:              &pricing,
+	})
+	require.NoError(t, err)
+	require.False(t, updated.LongContextPricingEnabled)
+	require.Len(t, updated.ModelPricing, 1)
+	require.Equal(t, PlatformOpenAI, updated.ModelPricing[0].Platform)
+	require.NotNil(t, updatedRepo.updated)
 }

@@ -101,6 +101,9 @@ type Group struct {
 	DailyLimitUSD    *float64 `json:"daily_limit_usd"`
 	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd"`
 	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
+	// LongContextPricingEnabled controls whether the existing static long-context
+	// model tiers apply. ModelPricing itself remains admin-only below.
+	LongContextPricingEnabled bool `json:"long_context_pricing_enabled"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         bool    `json:"allow_image_generation"`
@@ -165,6 +168,9 @@ type AdminGroup struct {
 	ProfitControlEnabled bool    `json:"profit_control_enabled"`
 	ProfitMinMargin      float64 `json:"profit_min_margin"`
 	ProfitSafetyBuffer   float64 `json:"profit_safety_buffer"`
+	// ModelPricing is administration-only. It overrides channel and built-in
+	// prices without introducing upstream time-pricing behavior.
+	ModelPricing []service.ChannelModelPricing `json:"model_pricing"`
 
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`

@@ -23,6 +23,33 @@ func adaptResponsesClientToolsForFunctionUpstream(body []byte, upstream string) 
 	)
 }
 
+func adaptResponsesClientToolsForFunctionUpstreamWithMapping(
+	body []byte,
+	upstream string,
+	inherited apicompat.ResponsesClientToolMapping,
+	inheritedLoweredTools ...[]any,
+) ([]byte, apicompat.ResponsesClientToolMapping, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var requestBody map[string]any
+	if err := decoder.Decode(&requestBody); err != nil {
+		return body, apicompat.ResponsesClientToolMapping{}, fmt.Errorf("decode %s Responses client tools: %w", upstream, err)
+	}
+
+	mapping, changed, err := apicompat.AdaptResponsesClientToolsWithInheritedMapping(requestBody, inherited, inheritedLoweredTools...)
+	if err != nil {
+		return body, apicompat.ResponsesClientToolMapping{}, err
+	}
+	if !changed {
+		return body, mapping, nil
+	}
+	rebuilt, err := marshalOpenAIUpstreamJSON(requestBody)
+	if err != nil {
+		return body, apicompat.ResponsesClientToolMapping{}, fmt.Errorf("encode %s Responses client tools: %w", upstream, err)
+	}
+	return rebuilt, mapping, nil
+}
+
 func adaptGrokResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {
 	return adaptResponsesClientToolsForFunctionUpstream(body, "Grok")
 }

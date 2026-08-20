@@ -267,7 +267,7 @@ func defaultAllowImageGenerationForPlatform(platform string) bool {
 func compositeDefaultModelsListCandidateIDs() []string {
 	seen := make(map[string]struct{})
 	ids := make([]string, 0)
-	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok} {
+	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek} {
 		for _, id := range defaultModelsListCandidateIDs(platform) {
 			if _, ok := seen[id]; ok {
 				continue
@@ -301,6 +301,14 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 
 	platform := NormalizeGroupPlatform(input.Platform)
+	modelPricing, err := normalizeGroupModelPricing(platform, input.ModelPricing)
+	if err != nil {
+		return nil, err
+	}
+	longContextPricingEnabled := true
+	if input.LongContextPricingEnabled != nil {
+		longContextPricingEnabled = *input.LongContextPricingEnabled
+	}
 	maxReasoningEffort, err := normalizeMaxReasoningEffortForPlatform(platform, input.MaxReasoningEffort)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_MAX_REASONING_EFFORT", "%v", err)
@@ -455,6 +463,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		DailyLimitUSD:                   dailyLimit,
 		WeeklyLimitUSD:                  weeklyLimit,
 		MonthlyLimitUSD:                 monthlyLimit,
+		LongContextPricingEnabled:       longContextPricingEnabled,
+		ModelPricing:                    modelPricing,
 		AllowImageGeneration:            allowImageGeneration,
 		AllowBatchImageGeneration:       allowBatchImageGeneration,
 		ImageRateIndependent:            input.ImageRateIndependent,
@@ -497,7 +507,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		ReasoningEffortMappings:         reasoningEffortMappings,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
-	if group.Platform != PlatformOpenAI {
+	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite {
 		group.AllowLive = false
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
@@ -648,6 +658,16 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.Status != "" {
 		group.Status = input.Status
+	}
+	if input.LongContextPricingEnabled != nil {
+		group.LongContextPricingEnabled = *input.LongContextPricingEnabled
+	}
+	if input.ModelPricing != nil {
+		modelPricing, normalizeErr := normalizeGroupModelPricing(group.Platform, *input.ModelPricing)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		group.ModelPricing = modelPricing
 	}
 
 	// 订阅相关字段
@@ -852,7 +872,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		group.ReasoningEffortMappings = reasoningEffortMappings
 	}
 	sanitizeGroupMessagesDispatchFields(group)
-	if group.Platform != PlatformOpenAI {
+	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite {
 		group.AllowLive = false
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
@@ -934,6 +954,51 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 
 	return group, nil
+}
+
+// normalizeGroupModelPricing keeps group-owned pricing detached from channel
+// records. It intentionally reuses XIASS's model/interval validation while
+// accepting only the existing static pricing structure: group time pricing is
+// not part of the XIASS contract.
+func normalizeGroupModelPricing(platform string, pricing []ChannelModelPricing) ([]ChannelModelPricing, error) {
+	if len(pricing) == 0 {
+		return []ChannelModelPricing{}, nil
+	}
+
+	platform = NormalizeGroupPlatform(platform)
+	out := make([]ChannelModelPricing, len(pricing))
+	for i := range pricing {
+		out[i] = pricing[i].Clone()
+		out[i].ID = 0
+		out[i].ChannelID = 0
+		out[i].Platform = strings.TrimSpace(out[i].Platform)
+		if out[i].Platform == "" {
+			out[i].Platform = platform
+		}
+
+		for j := range out[i].Models {
+			out[i].Models[j] = strings.TrimSpace(out[i].Models[j])
+			if out[i].Models[j] == "" {
+				return nil, infraerrors.New(
+					http.StatusBadRequest,
+					"GROUP_MODEL_PRICING_MODELS_REQUIRED",
+					"group model pricing entry requires at least one non-empty model",
+				)
+			}
+		}
+		if len(out[i].Models) == 0 {
+			return nil, infraerrors.New(
+				http.StatusBadRequest,
+				"GROUP_MODEL_PRICING_MODELS_REQUIRED",
+				"group model pricing entry requires at least one model",
+			)
+		}
+	}
+
+	if err := validatePricingEntries(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {

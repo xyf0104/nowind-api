@@ -98,9 +98,17 @@ func openAIForwardSucceededForScheduling(result *service.OpenAIForwardResult) bo
 	return result.SucceededForScheduling()
 }
 
-func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
+func resolveOpenAIMessagesDispatchMappedModel(c *gin.Context, apiKey *service.APIKey, requestedModel string) string {
 	if apiKey == nil || apiKey.Group == nil {
 		return ""
+	}
+	// composite 解析到 grok/CN 目标时调度级映射不适用（Group 级映射的 gpt-5.x
+	// 默认值是 openai 专属,发给这些上游必错）,模型改写交给账号级 model_mapping。
+	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
+		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
+			(platform == service.PlatformGrok || service.IsCNProvider(platform)) {
+			return ""
+		}
 	}
 	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
 }
@@ -164,13 +172,16 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 
 func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey) string {
 	if platform, ok := service.ResolvedTargetPlatformFromContext(ctx); ok {
-		if platform == service.PlatformGrok {
-			return service.PlatformGrok
+		if platform == service.PlatformGrok || service.IsCNProvider(platform) {
+			return platform
 		}
 		return service.PlatformOpenAI
 	}
-	if apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
-		return service.PlatformGrok
+	if apiKey != nil && apiKey.Group != nil {
+		platform := apiKey.Group.Platform
+		if platform == service.PlatformGrok || service.IsCNProvider(platform) {
+			return platform
+		}
 	}
 	return service.PlatformOpenAI
 }
@@ -182,18 +193,59 @@ func openAIResponsesRequiredCapability(imageIntent bool, platform string) servic
 	return service.OpenAIEndpointCapabilityChatCompletions
 }
 
-func allowOpenAICompatibleMessagesDispatch(apiKey *service.APIKey) bool {
+// openAIResponsesRequiredCapabilityForRequest returns the endpoint capability
+// required by an image or Responses request. needsResponses includes both the
+// legacy /responses/compact endpoint and native remote compaction v2.
+func openAIResponsesRequiredCapabilityForRequest(imageIntent bool, needsResponses bool, platform string) service.OpenAIEndpointCapability {
+	if needsResponses && platform == service.PlatformOpenAI {
+		return service.OpenAIEndpointCapabilityResponses
+	}
+	return openAIResponsesRequiredCapability(imageIntent, platform)
+}
+
+func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKey) bool {
 	if apiKey == nil || apiKey.Group == nil {
 		return true
 	}
 	if apiKey.Group.Platform == service.PlatformGrok {
 		return true
 	}
+	// 国产供应商分组与 grok 同语义:/v1/messages 就是其主要服务形态(anthropic
+	// 协议账号原生直通 Claude Code),无需 allow_messages_dispatch 开关授权——
+	// 该开关对非 openai 平台恒被 sanitizeGroupMessagesDispatchFields 置 false,
+	// 若不豁免,CN 分组将永远 403。
+	if service.IsCNProvider(apiKey.Group.Platform) {
+		return true
+	}
+	// composite 分组解析到 grok/CN 目标时与对应独立分组同语义豁免：sanitize
+	// 对 composite 同样恒置 false,不豁免则这些目标的 /v1/messages 永远 403；
+	// 解析到 openai 目标仍受开关控制,维持现状。
+	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
+		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
+			(platform == service.PlatformGrok || service.IsCNProvider(platform)) {
+			return true
+		}
+	}
 	return apiKey.Group.AllowMessagesDispatch
 }
 
 func openAICompatibleTextTargetAllowed(c *gin.Context, apiKey *service.APIKey, model string) bool {
-	return compositeTargetPlatformAllowed(c, apiKey, model, service.PlatformOpenAI, service.PlatformGrok)
+	return compositeTargetPlatformAllowed(c, apiKey, model,
+		service.PlatformOpenAI, service.PlatformGrok,
+		service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek)
+}
+
+// isResponsesWebSocketCompositePlatform 限定 composite 分组在 Responses WebSocket
+// 上可服务的目标平台。CN 供应商（kimi/zhipu/deepseek）刻意排除：其账号无法通过
+// WSv2 ingress 的 transport 过滤，且 WS HTTP 桥没有面向 CN 的 Responses 转换，
+// 放行只会把明确的策略拒绝变成误导性的 "no available account"。
+func isResponsesWebSocketCompositePlatform(platform string) bool {
+	switch platform {
+	case service.PlatformOpenAI, service.PlatformGrok:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -284,9 +336,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
+	nativeCompactionV2 := isBareOpenAIResponsesPath(c) &&
+		service.HasCompactionTriggerInInput(body) &&
+		isOpenAIRemoteCompactionV2Request(c, body)
 	body, ok = h.normalizeOpenAIResponsesCompactRequest(c, reqLog, body)
 	if !ok {
 		return
+	}
+	if nativeCompactionV2 {
+		service.MarkOpenAINativeCompactionV2(c)
 	}
 	// body-signal compact：上游 unary 等待期间向下游发 SSE 注释行心跳，防止
 	// 反向代理空闲超时掐断长压缩连接（#3887）。首拍延迟一个心跳间隔，快速
@@ -309,7 +367,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	reqModel := modelResult.String()
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
-	if !compositeTargetPlatformAllowed(c, apiKey, reqModel, service.PlatformOpenAI, service.PlatformGrok) {
+	if !openAICompatibleTextTargetAllowed(c, apiKey, reqModel) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
@@ -438,7 +496,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 仅对 OpenAI 平台生效：Grok 生图走独立的 forwardGrokResponses 路径，不应被过滤。
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
-	requiredCapability := openAIResponsesRequiredCapability(imageIntent, requestPlatform)
+	requiredCapability := openAIResponsesRequiredCapabilityForRequest(imageIntent, requireCompact || nativeCompactionV2, requestPlatform)
 
 	// 分组利润控制：请求级装配定价上下文——pricingAt 固定本请求的
 	// D 与计费高峰因子，选号、槽位终检与全部 failover 重入共用同一门与阈值。
@@ -541,7 +599,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		// 用扣除 compact 心跳字节的口径快照：心跳注释不构成语义响应，
+		// 用扣除非语义心跳字节的口径快照：心跳注释不构成语义响应，
 		// 不能因心跳字节变化而放弃 failover 换号（#3887）。
 		writerSizeBeforeForward := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
 		// 跨 passthrough 边界的 failover：从 Kiro 等透传账号切到 Bedrock 等非透传账号前，
@@ -913,7 +971,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	)
 
 	// 检查分组是否允许 /v1/messages 调度
-	if !allowOpenAICompatibleMessagesDispatch(apiKey) {
+	if !allowOpenAICompatibleMessagesDispatch(c, apiKey) {
 		h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error",
 			"This group does not allow /v1/messages dispatch")
 		return
@@ -956,7 +1014,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	}
 	bindOpenAIReasoningEffortPolicyForMessagesRequest(c, apiKey, body)
 	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel)
-	preferredMappedModel := resolveOpenAIMessagesDispatchMappedModel(apiKey, reqModel)
+	preferredMappedModel := resolveOpenAIMessagesDispatchMappedModel(c, apiKey, reqModel)
 	reqStream := gjson.GetBytes(body, "stream").Bool()
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
@@ -1709,7 +1767,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	ctx = c.Request.Context()
 	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
 		platform, ok := service.ResolvedTargetPlatformFromContext(ctx)
-		if !ok || (platform != service.PlatformOpenAI && platform != service.PlatformGrok) {
+		if !ok || !isResponsesWebSocketCompositePlatform(platform) {
 			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "Responses WebSocket API only supports OpenAI-compatible models for composite groups")
 			return
 		}
@@ -2894,6 +2952,16 @@ func closeOpenAIClientWS(conn *coderws.Conn, status coderws.StatusCode, reason s
 	}
 	_ = conn.Close(status, reason)
 	_ = conn.CloseNow()
+}
+
+func openAIWSNextAttemptMessage(current, retryPayload []byte, retryCurrentTurn bool) ([]byte, bool) {
+	if !retryCurrentTurn {
+		return append([]byte(nil), current...), true
+	}
+	if len(retryPayload) == 0 {
+		return nil, false
+	}
+	return append([]byte(nil), retryPayload...), true
 }
 
 func closeOpenAIWSFailoverExhausted(conn *coderws.Conn, failoverErr *service.UpstreamFailoverError) {

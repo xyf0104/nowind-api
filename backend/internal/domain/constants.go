@@ -167,7 +167,8 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3.5-flash-medium": AntigravityGemini35FlashMediumModel,
 	"gemini-3.5-flash-low":    AntigravityGemini35FlashLowModel,
 	// 其他官方模型
-	"gpt-oss-120b-medium": "gpt-oss-120b-medium",
+	"gpt-oss-120b-medium":    "gpt-oss-120b-medium",
+	"tab_flash_lite_preview": "tab_flash_lite_preview",
 }
 
 // DefaultBedrockModelMapping 是 AWS Bedrock 平台的默认模型映射

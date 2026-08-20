@@ -360,11 +360,34 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
 
+	return s.getUsageForAccount(ctx, account, forceProbe)
+}
+
+func supportsAnthropicPassiveUsage(account *Account) bool {
+	return account != nil && account.IsAnthropicOAuthOrSetupToken()
+}
+
+func batchUsageErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// getUsageForAccount queries usage for an already-loaded account. It keeps the
+// existing XIASS platform-specific paths intact while allowing batch callers to
+// avoid an additional account repository lookup.
+func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *Account, forceProbe bool) (*UsageInfo, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is required")
+	}
+	accountID := account.ID
+
 	// Dedicated UI load-test accounts must remain fully interactive without ever
 	// contacting Anthropic with synthetic credentials. Reuse the same persisted
 	// passive snapshot that the account table loads on mount.
 	if account.IsSyntheticUITest() && account.IsAnthropicOAuthOrSetupToken() {
-		return s.GetPassiveUsage(ctx, accountID)
+		return s.getPassiveUsageForAccount(ctx, account)
 	}
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
@@ -497,6 +520,90 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 	return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
 }
 
+// GetUsageForAccount 已加载账号的使用量直通入口（配额监控 fetcher 复用，
+// 避免缓存未命中时账号被加载两次——每次 GetByID 含 proxies/groups 联查）。
+func (s *AccountUsageService) GetUsageForAccount(ctx context.Context, account *Account, force ...bool) (*UsageInfo, error) {
+	forceProbe := len(force) > 0 && force[0]
+	return s.getUsageForAccount(ctx, account, forceProbe)
+}
+
+// GetUsageBatch 批量获取账号使用量。
+// Anthropic OAuth/SetupToken 统一走 passive 链路，其他账号复用现有主动查询逻辑。
+// 单个账号失败不会中断整批请求，错误会按账号返回。
+func (s *AccountUsageService) GetUsageBatch(ctx context.Context, accountIDs []int64, force bool) (map[int64]*UsageInfo, map[int64]string, error) {
+	uniqueIDs := make([]int64, 0, len(accountIDs))
+	seen := make(map[int64]struct{}, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID <= 0 {
+			continue
+		}
+		if _, ok := seen[accountID]; ok {
+			continue
+		}
+		seen[accountID] = struct{}{}
+		uniqueIDs = append(uniqueIDs, accountID)
+	}
+
+	usageByAccount := make(map[int64]*UsageInfo, len(uniqueIDs))
+	errorsByAccount := make(map[int64]string)
+	if len(uniqueIDs) == 0 {
+		return usageByAccount, errorsByAccount, nil
+	}
+
+	accounts, err := s.accountRepo.GetByIDs(ctx, uniqueIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get accounts failed: %w", err)
+	}
+
+	accountsByID := make(map[int64]*Account, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		accountsByID[account.ID] = account
+	}
+
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(6)
+
+	for _, accountID := range uniqueIDs {
+		id := accountID
+		account := accountsByID[id]
+		if account == nil {
+			mu.Lock()
+			errorsByAccount[id] = ErrAccountNotFound.Error()
+			mu.Unlock()
+			continue
+		}
+
+		g.Go(func() error {
+			var usage *UsageInfo
+			var usageErr error
+			if supportsAnthropicPassiveUsage(account) {
+				usage, usageErr = s.getPassiveUsageForAccount(gctx, account)
+			} else {
+				usage, usageErr = s.getUsageForAccount(gctx, account, force)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if usageErr != nil {
+				errorsByAccount[id] = batchUsageErrorMessage(usageErr)
+				return nil
+			}
+			usageByAccount[id] = usage
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, nil, err
+	}
+
+	return usageByAccount, errorsByAccount, nil
+}
+
 // GetPassiveUsage 从 Account.Extra 中的被动采样数据构建 UsageInfo，不调用外部 API。
 // 仅适用于 Anthropic OAuth / SetupToken 账号。
 func (s *AccountUsageService) GetPassiveUsage(ctx context.Context, accountID int64) (*UsageInfo, error) {
@@ -505,7 +612,11 @@ func (s *AccountUsageService) GetPassiveUsage(ctx context.Context, accountID int
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
 
-	if !account.IsAnthropicOAuthOrSetupToken() {
+	return s.getPassiveUsageForAccount(ctx, account)
+}
+
+func (s *AccountUsageService) getPassiveUsageForAccount(ctx context.Context, account *Account) (*UsageInfo, error) {
+	if !supportsAnthropicPassiveUsage(account) {
 		return nil, fmt.Errorf("passive usage only supported for Anthropic OAuth/SetupToken accounts")
 	}
 

@@ -9,6 +9,8 @@
         </p>
       </div>
 
+      <PricingAreaTabs active-tab="pricing" />
+
       <!-- 产品类别 Tab -->
       <div class="custom-scrollbar flex max-w-full items-center gap-3 overflow-x-auto rounded-xl border border-gray-200/60 bg-white/40 p-2 shadow-sm backdrop-blur-sm dark:border-dark-700/60 dark:bg-dark-800/40">
         <button
@@ -299,6 +301,7 @@ import Icon from '@/components/icons/Icon.vue'
 import BrandIcon from '@/components/icons/BrandIcon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import PriceCell from '@/components/pricing/PriceCell.vue'
+import PricingAreaTabs from '@/components/user/PricingAreaTabs.vue'
 import userChannelsAPI, {
   type UserAvailableChannel,
   type UserAvailableGroup,
@@ -682,7 +685,7 @@ async function loadChannels() {
   loading.value = true
   try {
     const [availableChannels, rates] = await Promise.all([
-      userChannelsAPI.getAvailable(),
+      userChannelsAPI.getPricing(),
       userGroupsAPI.getUserGroupRates().catch((error: unknown) => {
         console.error('Failed to load user group rates:', error)
         return {} as Record<number, number>

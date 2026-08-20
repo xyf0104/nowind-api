@@ -169,6 +169,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		return nil, fmt.Errorf("marshal registration email suffix whitelist: %w", err)
 	}
 	updates[SettingKeyRegistrationEmailSuffixWhitelist] = string(registrationEmailSuffixWhitelistJSON)
+	updates[SettingKeyRegistrationEmailDomainQuotaEnabled] = strconv.FormatBool(settings.RegistrationEmailDomainQuotaEnabled)
 	updates[SettingKeyPromoCodeEnabled] = strconv.FormatBool(settings.PromoCodeEnabled)
 	updates[SettingKeyPasswordResetEnabled] = strconv.FormatBool(settings.PasswordResetEnabled)
 	updates[SettingKeyFrontendURL] = settings.FrontendURL
@@ -221,6 +222,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.TencentCaptchaCloudSecretKey != "" {
 		updates[SettingKeyTencentCaptchaCloudSecretKey] = settings.TencentCaptchaCloudSecretKey
 	}
+	updates[SettingKeyTencentCaptchaRegion] = NormalizeTencentCaptchaRegion(settings.TencentCaptchaRegion)
 	// 阿里云验证码 2.0 设置（只有非空才更新密钥）
 	updates[SettingKeyAliyunCaptchaEnabled] = strconv.FormatBool(settings.AliyunCaptchaEnabled)
 	updates[SettingKeyAliyunCaptchaAccessKeyID] = settings.AliyunCaptchaAccessKeyID
@@ -341,6 +343,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyContactInfo] = settings.ContactInfo
 	updates[SettingKeyDocURL] = settings.DocURL
 	updates[SettingKeyHomeContent] = settings.HomeContent
+	updates[SettingKeyCompactHomeEnabled] = strconv.FormatBool(settings.CompactHomeEnabled)
 	updates[SettingKeyHideCcsImportButton] = strconv.FormatBool(settings.HideCcsImportButton)
 	updates[SettingKeyPurchaseSubscriptionEnabled] = strconv.FormatBool(settings.PurchaseSubscriptionEnabled)
 	updates[SettingKeyPurchaseSubscriptionURL] = strings.TrimSpace(settings.PurchaseSubscriptionURL)
@@ -409,12 +412,35 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// Channel monitor feature switch
 	updates[SettingKeyChannelMonitorEnabled] = strconv.FormatBool(settings.ChannelMonitorEnabled)
+	updates[SettingKeyChannelMonitorMode] = normalizeChannelMonitorMode(settings.ChannelMonitorMode)
 	if v := clampChannelMonitorInterval(settings.ChannelMonitorDefaultIntervalSeconds); v > 0 {
 		updates[SettingKeyChannelMonitorDefaultIntervalSeconds] = strconv.Itoa(v)
+	}
+	updates[SettingKeyChannelMonitorHideThroughput] = strconv.FormatBool(settings.ChannelMonitorHideThroughput)
+	updates[SettingKeyChannelMonitorShowQuota] = strconv.FormatBool(settings.ChannelMonitorShowQuota)
+
+	// Grok default mapping policy
+	if value := strings.TrimSpace(settings.GrokDefaultTextModel); value != "" {
+		updates[SettingKeyGrokDefaultTextModel] = value
+	} else {
+		updates[SettingKeyGrokDefaultTextModel] = "grok-4.5"
+	}
+	updates[SettingKeyGrokCrossClientModelMapEnabled] = strconv.FormatBool(settings.GrokCrossClientModelMapEnabled)
+	if value := strings.TrimSpace(settings.GrokDefaultBaseURLMode); value != "" {
+		updates[SettingKeyGrokDefaultBaseURLMode] = value
+	} else {
+		updates[SettingKeyGrokDefaultBaseURLMode] = "cli"
 	}
 
 	// Available channels feature switch
 	updates[SettingKeyAvailableChannelsEnabled] = strconv.FormatBool(settings.AvailableChannelsEnabled)
+	// XIASS model prices are deliberately independent from available channels.
+	updates[SettingKeyModelPricingEnabled] = strconv.FormatBool(settings.ModelPricingEnabled)
+
+	// Model plaza feature switches + description
+	updates[SettingKeyModelPlazaEnabled] = strconv.FormatBool(settings.ModelPlazaEnabled)
+	updates[SettingKeyModelPlazaRequireAuth] = strconv.FormatBool(settings.ModelPlazaRequireAuth)
+	updates[SettingKeyModelPlazaDescription] = settings.ModelPlazaDescription
 
 	// Affiliate (邀请返利) feature switch
 	updates[SettingKeyAffiliateEnabled] = strconv.FormatBool(settings.AffiliateEnabled)

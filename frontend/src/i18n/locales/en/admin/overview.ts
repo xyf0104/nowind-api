@@ -574,8 +574,6 @@ export default {
       failedToLoadApiKeys: 'Failed to load user API keys',
       emailRequired: 'Please enter email',
       concurrencyMin: 'Concurrency must be at least 1',
-      soraStorageQuota: 'Sora Storage Quota',
-      soraStorageQuotaHint: 'In GB, 0 means use group or system default quota',
       amountRequired: 'Please enter a valid amount',
       insufficientBalance: 'Insufficient balance',
       adjustBalance: 'Adjust Balance',
@@ -994,11 +992,32 @@ export default {
         finalPricePreview: 'Final per-second price preview',
         notConfigured: 'Not configured'
       },
+      explicitPricing: {
+        title: 'Grok Search & Voice Pricing',
+        description: 'Optional per-group prices for web_search (per 1k calls) and Voice realtime / TTS / STT (CNY). Leave empty if unused.',
+        searchPricePer1k: 'Search price per 1k calls (CNY)',
+        pricePlaceholder: 'optional'
+      },
+      modelPricing: {
+        title: 'Per-model group pricing',
+        description: 'Overrides channel and built-in prices for matching models. Long-context tiers come from official presets — do not enter custom intervals. Use per-request tiers such as realtime, tts, and stt for audio.',
+        longContext: 'Enable long-context tier pricing',
+        longContextHint: 'When checked, channel intervals or official preset tiers apply. Otherwise the first tier is used unless the account explicitly enables long-context billing.',
+        add: 'Add model price'
+      },
+      voicePricing: {
+        title: 'Grok Voice Pricing',
+        description: 'Optional per-group prices for Voice realtime / TTS / STT (CNY). Leave empty to leave unpriced.',
+        audioRealtimePerMin: 'Realtime price per minute (CNY)',
+        audioTtsPerMillionChars: 'TTS price per million chars (CNY)',
+        audioSttPerHour: 'STT price per hour (CNY)',
+        pricePlaceholder: 'optional'
+      },
       webSearchPricing: {
         title: 'Codex Web Search Pricing',
-        pricePerCall: 'Price per search call (USD)',
+        pricePerCall: 'Price per search call (CNY)',
         pricePerCallHint:
-          'Leave empty to use the default 0.01 USD per call (official pricing: 10 USD per 1,000 calls); 0 means free. The group rate multiplier is applied on top.',
+          'Leave empty to use the default base price of ¥0.01 per call; 0 means free. The group rate multiplier is applied on top.',
         finalPricePreview: 'Per-call price after current multiplier: {price}'
       },
       peakRate: {

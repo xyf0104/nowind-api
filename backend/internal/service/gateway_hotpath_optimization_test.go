@@ -182,6 +182,26 @@ func (s *stickyGatewayCacheHotpathStub) DeleteSessionAccountID(ctx context.Conte
 	return nil
 }
 
+func (s *stickyGatewayCacheHotpathStub) SetGrokVideoPendingBilling(_ context.Context, _ string, _ []byte, _ time.Duration) error {
+	return nil
+}
+func (s *stickyGatewayCacheHotpathStub) GetGrokVideoPendingBilling(_ context.Context, _ string) ([]byte, error) {
+	return nil, nil
+}
+func (s *stickyGatewayCacheHotpathStub) ClaimGrokVideoBilled(_ context.Context, _ string, _ time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (s *stickyGatewayCacheHotpathStub) ReleaseGrokVideoBilled(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *stickyGatewayCacheHotpathStub) SetReasoningContent(_ context.Context, _ string, _ string, _ time.Duration) error {
+	return nil
+}
+func (s *stickyGatewayCacheHotpathStub) GetReasoningContent(_ context.Context, _ string) (string, error) {
+	return "", ErrReasoningContentNotFound
+}
 func (s *modelsListAccountRepoStub) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
 	s.listByGroupCalls.Add(1)
 	if s.err != nil {

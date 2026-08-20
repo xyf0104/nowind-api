@@ -3,13 +3,13 @@ import { flushPromises, mount } from '@vue/test-utils'
 import type { UserAvailableChannel, UserSupportedModelPricing } from '@/api/channels'
 import PricingView from '../PricingView.vue'
 
-const getAvailable = vi.hoisted(() => vi.fn())
+const getPricing = vi.hoisted(() => vi.fn())
 const getUserGroupRates = vi.hoisted(() => vi.fn())
 const showError = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/channels', () => ({
-  default: { getAvailable },
-  userChannelsAPI: { getAvailable }
+  default: { getPricing },
+  userChannelsAPI: { getPricing }
 }))
 
 vi.mock('@/api/groups', () => ({
@@ -106,12 +106,12 @@ function grokChannelFixture(): UserAvailableChannel[] {
 
 describe('PricingView', () => {
   beforeEach(() => {
-    getAvailable.mockReset()
+    getPricing.mockReset()
     getUserGroupRates.mockReset().mockResolvedValue({})
   })
 
   it('keeps the compact token columns and renders all Grok price types in CNY', async () => {
-    getAvailable.mockResolvedValue(grokChannelFixture())
+    getPricing.mockResolvedValue(grokChannelFixture())
 
     const wrapper = mount(PricingView, {
       global: {
@@ -119,11 +119,14 @@ describe('PricingView', () => {
           AppLayout: { template: '<main><slot /></main>' },
           Icon: { template: '<span />' },
           BrandIcon: { template: '<span />' },
-          PlatformIcon: { template: '<span />' }
+          PlatformIcon: { template: '<span />' },
+          PricingAreaTabs: { template: '<div data-test="pricing-area-tabs" />' }
         }
       }
     })
     await flushPromises()
+
+    expect(wrapper.find('[data-test="pricing-area-tabs"]').exists()).toBe(true)
 
     for (const platform of ['anthropic', 'openai', 'gemini', 'antigravity', 'grok']) {
       expect(wrapper.find(`[data-test="platform-${platform}"]`).exists()).toBe(true)
@@ -169,7 +172,7 @@ describe('PricingView', () => {
     group.peak_start = '14:00'
     group.peak_end = '18:00'
     group.peak_rate_multiplier = 2
-    getAvailable.mockResolvedValue(channels)
+    getPricing.mockResolvedValue(channels)
     getUserGroupRates.mockResolvedValue({ 9: 2 })
 
     const wrapper = mount(PricingView, {
@@ -178,7 +181,8 @@ describe('PricingView', () => {
           AppLayout: { template: '<main><slot /></main>' },
           Icon: { template: '<span />' },
           BrandIcon: { template: '<span />' },
-          PlatformIcon: { template: '<span />' }
+          PlatformIcon: { template: '<span />' },
+          PricingAreaTabs: { template: '<div data-test="pricing-area-tabs" />' }
         }
       }
     })

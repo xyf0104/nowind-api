@@ -1,6 +1,8 @@
 package schema
 
 import (
+	"encoding/json"
+
 	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 
@@ -153,6 +155,15 @@ func (Group) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}).
 			Comment("Codex alpha/search 网页搜索单次价格（USD/次）；nil 表示使用默认价 0.01（官方 $10/1000 次）"),
+		// 分组模型定价：优先于渠道和内置模型价格。长上下文区间仍由
+		// long_context_pricing_enabled 独立控制，不支持分时定价。
+		field.Bool("long_context_pricing_enabled").
+			Default(true).
+			Comment("是否启用模型长上下文区间定价；默认开启以保持既有计费行为"),
+		field.JSON("model_pricing", json.RawMessage{}).
+			Default(json.RawMessage("[]")).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("分组逐模型定价，优先于渠道和内置模型价格；不支持分时定价"),
 
 		// Claude Code 客户端限制 (added by migration 029)
 		field.Bool("claude_code_only").
