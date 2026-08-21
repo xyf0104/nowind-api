@@ -71,38 +71,43 @@ CREATE TABLE accounts (
 		deletedAccountID int64 = 830000000002
 	)
 
-	_, err = conn.ExecContext(ctx, `
+	seedTx, err := conn.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = seedTx.Rollback() })
+
+	_, err = seedTx.ExecContext(ctx, `
 INSERT INTO users (id, deleted_at) VALUES
     ($1, NULL),
     ($2, NOW())
 `, activeUserID, deletedUserID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = seedTx.ExecContext(ctx, `
 INSERT INTO groups (id, deleted_at) VALUES
     ($1, NULL),
     ($2, NOW())
 `, activeGroupID, deletedGroupID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = seedTx.ExecContext(ctx, `
 INSERT INTO accounts (id, deleted_at) VALUES
     ($1, NULL),
     ($2, NOW())
 `, activeAccountID, deletedAccountID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = seedTx.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlist_scopes (user_id, group_id) VALUES
     ($1, $2),
     ($3, $2),
     ($1, $4)
 `, activeUserID, activeGroupID, deletedUserID, deletedGroupID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = seedTx.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlists (user_id, group_id, account_id) VALUES
     ($1, $2, $3),
     ($4, $2, $5),
     ($1, $6, $5)
 `, activeUserID, activeGroupID, deletedAccountID, deletedUserID, activeAccountID, deletedGroupID)
 	require.NoError(t, err)
+	require.NoError(t, seedTx.Commit())
 
 	// Simulate an earlier development draft that created the detail table but did
 	// not include the account_id reverse index. Migration 233 must repair it.
@@ -120,22 +125,23 @@ INSERT INTO user_group_account_allowlists (user_id, group_id, account_id) VALUES
 		fmt.Sprintf("%d:%d", activeUserID, deletedGroupID): {},
 	}
 
-	tx, err := conn.BeginTx(ctx, nil)
+	migrationTx, err := conn.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, string(migration233))
+	t.Cleanup(func() { _ = migrationTx.Rollback() })
+	_, err = migrationTx.ExecContext(ctx, string(migration233))
 	require.NoError(t, err)
 
-	requireRowCount(t, tx, 1, `
+	requireRowCount(t, migrationTx, 1, `
 SELECT COUNT(*)
 FROM user_group_account_allowlist_scopes
 WHERE user_id = $1 AND group_id = $2
 `, activeUserID, activeGroupID)
-	requireRowCount(t, tx, 0, `
+	requireRowCount(t, migrationTx, 0, `
 SELECT COUNT(*)
 FROM user_group_account_allowlists
 WHERE user_id = $1 AND group_id = $2
 `, activeUserID, activeGroupID)
-	requireRowCount(t, tx, 0, `
+	requireRowCount(t, migrationTx, 0, `
 SELECT COUNT(*)
 FROM user_group_account_allowlist_scopes
 WHERE (user_id = $1 AND group_id = $2)
@@ -143,7 +149,7 @@ WHERE (user_id = $1 AND group_id = $2)
 `, deletedUserID, activeGroupID, activeUserID, deletedGroupID)
 
 	var indexExists bool
-	err = tx.QueryRowContext(ctx, `
+	err = migrationTx.QueryRowContext(ctx, `
 SELECT EXISTS (
     SELECT 1
     FROM pg_indexes
@@ -155,7 +161,7 @@ SELECT EXISTS (
 	require.True(t, indexExists)
 
 	requireNoMatchingAllowlistNotifications(t, listener, cleanupPayloads, 200*time.Millisecond)
-	require.NoError(t, tx.Commit())
+	require.NoError(t, migrationTx.Commit())
 	requireMatchingAllowlistNotifications(t, listener, cleanupPayloads, 3*time.Second)
 
 	// Re-running the follow-up migration is safe and leaves the repaired state
@@ -172,32 +178,37 @@ SELECT EXISTS (
 		remainingAccountID   int64 = 830000000102
 	)
 
-	_, err = conn.ExecContext(ctx, `
+	triggerSeedTx, err := conn.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = triggerSeedTx.Rollback() })
+
+	_, err = triggerSeedTx.ExecContext(ctx, `
 INSERT INTO users (id, deleted_at) VALUES ($1, NULL), ($2, NULL)
 `, accountUserID, deletedParentUserID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = triggerSeedTx.ExecContext(ctx, `
 INSERT INTO groups (id, deleted_at) VALUES ($1, NULL), ($2, NULL)
 `, accountGroupID, deletedParentGroupID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = triggerSeedTx.ExecContext(ctx, `
 INSERT INTO accounts (id, deleted_at) VALUES ($1, NULL), ($2, NULL)
 `, softDeletedAccountID, remainingAccountID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = triggerSeedTx.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlist_scopes (user_id, group_id) VALUES
     ($1, $2),
     ($3, $2),
     ($1, $4)
 `, accountUserID, accountGroupID, deletedParentUserID, deletedParentGroupID)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `
+	_, err = triggerSeedTx.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlists (user_id, group_id, account_id) VALUES
     ($1, $2, $3),
     ($4, $2, $5),
     ($1, $6, $5)
 `, accountUserID, accountGroupID, softDeletedAccountID, deletedParentUserID, remainingAccountID, deletedParentGroupID)
 	require.NoError(t, err)
+	require.NoError(t, triggerSeedTx.Commit())
 
 	triggerPayloads := map[string]struct{}{
 		fmt.Sprintf("%d:%d", accountUserID, accountGroupID):       {},
@@ -206,26 +217,27 @@ INSERT INTO user_group_account_allowlists (user_id, group_id, account_id) VALUES
 	}
 	requireMatchingAllowlistNotifications(t, listener, triggerPayloads, 3*time.Second)
 
-	tx, err = conn.BeginTx(ctx, nil)
+	softDeleteTx, err := conn.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `UPDATE accounts SET deleted_at = NOW() WHERE id = $1`, softDeletedAccountID)
+	t.Cleanup(func() { _ = softDeleteTx.Rollback() })
+	_, err = softDeleteTx.ExecContext(ctx, `UPDATE accounts SET deleted_at = NOW() WHERE id = $1`, softDeletedAccountID)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `UPDATE users SET deleted_at = NOW() WHERE id = $1`, deletedParentUserID)
+	_, err = softDeleteTx.ExecContext(ctx, `UPDATE users SET deleted_at = NOW() WHERE id = $1`, deletedParentUserID)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `UPDATE groups SET deleted_at = NOW() WHERE id = $1`, deletedParentGroupID)
+	_, err = softDeleteTx.ExecContext(ctx, `UPDATE groups SET deleted_at = NOW() WHERE id = $1`, deletedParentGroupID)
 	require.NoError(t, err)
 
-	requireRowCount(t, tx, 1, `
+	requireRowCount(t, softDeleteTx, 1, `
 SELECT COUNT(*)
 FROM user_group_account_allowlist_scopes
 WHERE user_id = $1 AND group_id = $2
 `, accountUserID, accountGroupID)
-	requireRowCount(t, tx, 0, `
+	requireRowCount(t, softDeleteTx, 0, `
 SELECT COUNT(*)
 FROM user_group_account_allowlists
 WHERE user_id = $1 AND group_id = $2
 `, accountUserID, accountGroupID)
-	requireRowCount(t, tx, 0, `
+	requireRowCount(t, softDeleteTx, 0, `
 SELECT COUNT(*)
 FROM user_group_account_allowlist_scopes
 WHERE (user_id = $1 AND group_id = $2)
@@ -233,7 +245,7 @@ WHERE (user_id = $1 AND group_id = $2)
 `, deletedParentUserID, accountGroupID, accountUserID, deletedParentGroupID)
 
 	requireNoMatchingAllowlistNotifications(t, listener, triggerPayloads, 200*time.Millisecond)
-	require.NoError(t, tx.Commit())
+	require.NoError(t, softDeleteTx.Commit())
 	requireMatchingAllowlistNotifications(t, listener, triggerPayloads, 3*time.Second)
 }
 
