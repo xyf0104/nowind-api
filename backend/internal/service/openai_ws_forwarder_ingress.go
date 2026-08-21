@@ -559,7 +559,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			grokCacheIdentity := ""
 			if account.Platform == PlatformGrok {
-				grokCacheIdentity, err = resolveGrokWSCacheIdentity(
+				grokCacheIdentity, err = s.resolveGrokWSCacheIdentity(
+					ctx,
 					c,
 					account,
 					grokCacheSeedPayload,

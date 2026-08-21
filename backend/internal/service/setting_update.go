@@ -687,6 +687,20 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	if settings == nil {
 		return
 	}
+	s.grokRuntimeSettingsSF.Forget("grok_runtime_settings")
+	grokTextModel := strings.TrimSpace(settings.GrokDefaultTextModel)
+	if grokTextModel == "" {
+		grokTextModel = grokDefaultResponsesModel
+	}
+	grokBaseMode := normalizeGrokDefaultBaseURLMode(settings.GrokDefaultBaseURLMode)
+	s.grokRuntimeSettingsCache.Store(&cachedGrokRuntimeSettings{
+		settings: GrokRuntimeSettings{
+			DefaultTextModel:      grokTextModel,
+			CrossClientMapEnabled: settings.GrokCrossClientModelMapEnabled,
+			DefaultBaseURLMode:    grokBaseMode,
+		},
+		expiresAt: time.Now().Add(grokRuntimeSettingsCacheTTL).UnixNano(),
+	})
 
 	// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
 	versionBoundsSF.Forget("version_bounds")

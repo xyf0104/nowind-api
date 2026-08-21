@@ -73,7 +73,9 @@ func TestStageOpenAICodexTurnStateRecordsOnlyAfterCommit(t *testing.T) {
 	svc.noteStagedOpenAICodexTurnStateCommitted(c, &Account{ID: 44}, staged)
 	raw, ok := svc.openaiCodexTurnStateOrigins.Load("9\x00sess-staged")
 	require.True(t, ok)
-	require.Equal(t, int64(44), raw.(openAICodexTurnStateOrigin).accountID)
+	origin, ok := raw.(openAICodexTurnStateOrigin)
+	require.True(t, ok)
+	require.Equal(t, int64(44), origin.accountID)
 }
 
 func TestGuardOpenAICodexTurnStateEchoProtectsAccountProvenance(t *testing.T) {

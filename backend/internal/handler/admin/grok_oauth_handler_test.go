@@ -24,6 +24,7 @@ type grokQuotaHandlerAccountRepo struct {
 	service.AccountRepository
 	account *service.Account
 	updates map[int64]map[string]any
+	mu      sync.Mutex
 }
 
 func (r *grokQuotaHandlerAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
@@ -34,11 +35,25 @@ func (r *grokQuotaHandlerAccountRepo) GetByID(_ context.Context, id int64) (*ser
 }
 
 func (r *grokQuotaHandlerAccountRepo) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.updates == nil {
 		r.updates = make(map[int64]map[string]any)
 	}
-	r.updates[id] = updates
+	if r.updates[id] == nil {
+		r.updates[id] = make(map[string]any)
+	}
+	for key, value := range updates {
+		r.updates[id][key] = value
+	}
 	return nil
+}
+
+func (r *grokQuotaHandlerAccountRepo) hasUpdate(id int64, key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.updates[id][key]
+	return ok
 }
 
 type grokQuotaHandlerUpstream struct {
@@ -77,6 +92,13 @@ func (u *grokQuotaHandlerUpstream) Do(req *http.Request, _ string, _ int64, _ in
 				"X-Ratelimit-Remaining-Requests": []string{"8"},
 			},
 			Body: io.NopCloser(strings.NewReader(`{"id":"resp_probe"}`)),
+		}, nil
+	}
+	if req.URL.Path == "/v1/models" {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"grok-4.5"}]}`)),
 		}, nil
 	}
 	payload := `{"config":{"billingPeriodStart":"2026-07-01T00:00:00Z","billingPeriodEnd":"2026-08-01T00:00:00Z"}}`
@@ -128,13 +150,23 @@ func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"snapshot":`)
 	require.Contains(t, rec.Body.String(), `"headers_observed":true`)
 	require.NotContains(t, rec.Body.String(), "access-token")
+	require.Eventually(t, func() bool {
+		upstream.mu.Lock()
+		defer upstream.mu.Unlock()
+		return len(upstream.requests) == 4
+	}, time.Second, 10*time.Millisecond)
 	upstream.mu.Lock()
 	requests := append([]*http.Request(nil), upstream.requests...)
 	bodies := append([][]byte(nil), upstream.bodies...)
 	upstream.mu.Unlock()
-	require.Len(t, requests, 3)
+	require.Len(t, requests, 4)
+	modelsObserved := false
 	for i, upstreamReq := range requests {
 		require.Equal(t, "Bearer access-token", upstreamReq.Header.Get("Authorization"))
+		if upstreamReq.URL.Path == "/v1/models" {
+			modelsObserved = true
+			require.Empty(t, bodies[i])
+		}
 		if upstreamReq.URL.String() == xai.DefaultCLIBaseURL+"/responses" {
 			require.Equal(t, "application/json, text/event-stream", upstreamReq.Header.Get("Accept"))
 			require.Contains(t, string(bodies[i]), `"model":"grok-4.5"`)
@@ -144,7 +176,10 @@ func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 			require.NotContains(t, string(bodies[i]), `"store"`)
 		}
 	}
-	require.NotNil(t, repo.updates[42])
+	require.True(t, modelsObserved)
+	require.Eventually(t, func() bool {
+		return repo.hasUpdate(42, "grok_observed_models")
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestGrokOAuthHandlerResetQuotaReturnsUnsupported(t *testing.T) {

@@ -805,8 +805,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.ChannelMonitorHideThroughput = !isFalseSettingValue(settings[SettingKeyChannelMonitorHideThroughput])
 	result.ChannelMonitorShowQuota = settings[SettingKeyChannelMonitorShowQuota] == "true"
 
-	// Grok default mapping policy. The gateway owns the runtime interpretation;
-	// settings parsing only supplies stable, compatible defaults.
+	// Grok default mapping policy. These values are copied into the gateway
+	// runtime cache after settings load/update; parsing keeps stable defaults
+	// for existing installations that predate the keys.
 	result.GrokDefaultTextModel = strings.TrimSpace(settings[SettingKeyGrokDefaultTextModel])
 	if result.GrokDefaultTextModel == "" {
 		result.GrokDefaultTextModel = "grok-4.5"

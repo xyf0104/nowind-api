@@ -39,6 +39,12 @@ type QuotaSnapshot struct {
 	LastProbeAt       string            `json:"last_probe_at,omitempty"`
 	LastHeadersSeenAt string            `json:"last_headers_seen_at,omitempty"`
 	UpdatedAt         string            `json:"updated_at"`
+	// Model is the final upstream model that produced these rate-limit headers.
+	Model string `json:"model,omitempty"`
+	// PlanFrom45Responses is inferred from a fresh grok-4.5 Responses quota
+	// window and carried across observations from other model families.
+	PlanFrom45Responses   string `json:"plan_from_45_responses,omitempty"`
+	PlanFrom45ResponsesAt string `json:"plan_from_45_responses_at,omitempty"`
 }
 
 func (s *QuotaSnapshot) HasObservedHeaders() bool {

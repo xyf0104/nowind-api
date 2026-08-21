@@ -340,16 +340,22 @@ func TestFingerprintIDs_HeaderAndBody_TurnID_Consistent(t *testing.T) {
 	// 从头 turn-metadata JSON 提取 turn_id
 	var headerMeta map[string]any
 	require.NoError(t, json.Unmarshal([]byte(h.Get("x-codex-turn-metadata")), &headerMeta))
-	headerTurnID := headerMeta["turn_id"].(string)
+	headerTurnID, ok := headerMeta["turn_id"].(string)
+	require.True(t, ok, "header turn_id must be a string")
 
 	// 从体 client_metadata 提取 turn_id
-	cm := reqBody["client_metadata"].(map[string]any)
-	bodyTurnID := cm["turn_id"].(string)
+	cm, ok := reqBody["client_metadata"].(map[string]any)
+	require.True(t, ok, "client_metadata must be an object")
+	bodyTurnID, ok := cm["turn_id"].(string)
+	require.True(t, ok, "body turn_id must be a string")
 
 	// 从体内嵌 turn-metadata JSON 提取 turn_id
 	var bodyMeta map[string]any
-	require.NoError(t, json.Unmarshal([]byte(cm["x-codex-turn-metadata"].(string)), &bodyMeta))
-	bodyEmbeddedTurnID := bodyMeta["turn_id"].(string)
+	embeddedMetadata, ok := cm["x-codex-turn-metadata"].(string)
+	require.True(t, ok, "embedded turn metadata must be a string")
+	require.NoError(t, json.Unmarshal([]byte(embeddedMetadata), &bodyMeta))
+	bodyEmbeddedTurnID, ok := bodyMeta["turn_id"].(string)
+	require.True(t, ok, "embedded turn_id must be a string")
 
 	assert.Equal(t, headerTurnID, bodyTurnID, "头和体的 turn_id 必须一致")
 	assert.Equal(t, headerTurnID, bodyEmbeddedTurnID, "头和体内嵌 turn-metadata 的 turn_id 必须一致")
@@ -423,12 +429,15 @@ func TestApplyCodexFingerprintClientMetadata_DeviceMode(t *testing.T) {
 	modified := applyCodexFingerprintClientMetadata(reqBody, ids)
 	require.True(t, modified)
 
-	cm := reqBody["client_metadata"].(map[string]any)
+	cm, ok := reqBody["client_metadata"].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "converged-device", cm["x-codex-installation-id"])
 	assert.Equal(t, "user-session", cm["session_id"], "device 模式不改 session_id")
 
 	var meta map[string]any
-	require.NoError(t, json.Unmarshal([]byte(cm["x-codex-turn-metadata"].(string)), &meta))
+	encodedMeta, ok := cm["x-codex-turn-metadata"].(string)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(encodedMeta), &meta))
 	assert.Equal(t, "converged-device", meta["installation_id"])
 	assert.Equal(t, "seccomp", meta["sandbox"], "非指纹字段保留原样")
 }
@@ -469,7 +478,9 @@ func TestApplyCodexFingerprintClientMetadata_SessionMode(t *testing.T) {
 	assert.Equal(t, convergedThread+":0", cm["x-codex-window-id"])
 
 	var meta map[string]any
-	require.NoError(t, json.Unmarshal([]byte(cm["x-codex-turn-metadata"].(string)), &meta))
+	encodedMeta, ok := cm["x-codex-turn-metadata"].(string)
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(encodedMeta), &meta))
 	assert.Equal(t, convergedInstall, meta["installation_id"])
 	assert.Equal(t, convergedSession, meta["session_id"])
 	assert.Equal(t, "seccomp", meta["sandbox"], "非指纹字段保留原样")

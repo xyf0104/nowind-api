@@ -312,6 +312,9 @@ func (s *OpenAIGatewayService) isOpenAIAccountModelRuntimeBlocked(account *Accou
 		return false
 	}
 	canonicalModel := canonicalOpenAIAccountSchedulingModel(account, requestedModel)
+	if account.IsGrok() {
+		canonicalModel = s.canonicalGrokSchedulingModel(context.Background(), account, requestedModel)
+	}
 	return state.isBlocked(account.ID, openAIAccountModelTransientModel(canonicalModel), time.Now())
 }
 

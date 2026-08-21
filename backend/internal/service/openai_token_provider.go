@@ -141,14 +141,24 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	}
 
 	cacheKey := OpenAITokenCacheKey(account)
+	recoveryRefresh := !account.IsOpenAIPersonalAccessToken() && isOAuthRefreshRecoveryReason(account.TempUnschedulableReason)
 
 	// 1) Try cache first.
 	if p.tokenCache != nil {
-		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
-			slog.Debug("openai_token_cache_hit", "account_id", account.ID)
-			return token, nil
-		} else if err != nil {
-			slog.Warn("openai_token_cache_get_failed", "account_id", account.ID, "error", err)
+		if recoveryRefresh {
+			// The cached access token is the one the upstream has already rejected.
+			// Remove it before entering the refresh lock so a lock-race waiter cannot
+			// immediately reuse the known-bad value.
+			if err := p.tokenCache.DeleteAccessToken(ctx, cacheKey); err != nil {
+				slog.Warn("openai_token_recovery_cache_delete_failed", "account_id", account.ID, "error", err)
+			}
+		} else {
+			if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
+				slog.Debug("openai_token_cache_hit", "account_id", account.ID)
+				return token, nil
+			} else if err != nil {
+				slog.Warn("openai_token_cache_get_failed", "account_id", account.ID, "error", err)
+			}
 		}
 	}
 
@@ -156,7 +166,8 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 	// 2) Refresh if needed (pre-expiry skew).
 	expiresAt := account.GetCredentialAsTime("expires_at")
-	needsRefresh := !account.IsOpenAIPersonalAccessToken() && (expiresAt == nil || time.Until(*expiresAt) <= openAITokenRefreshSkew)
+	needsRefresh := !account.IsOpenAIPersonalAccessToken() &&
+		(expiresAt == nil || time.Until(*expiresAt) <= openAITokenRefreshSkew || recoveryRefresh)
 	if needsRefresh && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
 		if expiresAt != nil && !time.Now().Before(*expiresAt) {
 			const reason = "openai access_token expired and refresh_token is missing"

@@ -316,7 +316,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	var upstreamReq *http.Request
 	if account.Platform == PlatformGrok {
-		upstreamModel := resolveGrokWSUpstreamModel(account, body, originalModel)
+		upstreamModel := s.resolveGrokWSUpstreamModel(ctx, account, body, originalModel)
 		body, err = patchGrokResponsesBody(body, upstreamModel)
 		if err != nil {
 			releaseUpstreamCtx()
@@ -333,7 +333,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			releaseUpstreamCtx()
 			return nil, fmt.Errorf("apply grok Free function-tool cache route: %w", err)
 		}
-		upstreamReq, err = buildGrokResponsesRequest(upstreamCtx, c, account, body, token, grokCacheIdentity, s.cfg)
+		upstreamReq, err = buildGrokResponsesRequest(upstreamCtx, c, account, body, token, grokCacheIdentity, s.cfg, s.settingService)
 	} else {
 		upstreamReq, err = s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 	}
@@ -375,7 +375,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody)
 		if account.Platform == PlatformGrok {
 			shouldFailover = s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody)
-			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			upstreamModel := s.resolveGrokWSUpstreamModel(ctx, account, body, originalModel)
+			s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.StatusCode, resp.Header, respBody)
 			if shouldFailover && (turn == 1 || resp.StatusCode == http.StatusTooManyRequests) {
 				return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, false)
 			}
@@ -390,7 +391,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		return nil, fmt.Errorf("upstream http bridge error: status=%d message=%s", resp.StatusCode, upstreamMsg)
 	}
 	if account.Platform == PlatformGrok {
-		s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
+		upstreamModel := s.resolveGrokWSUpstreamModel(ctx, account, body, originalModel)
+		s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.Header, resp.StatusCode)
 	}
 
 	responseID := ""
@@ -546,7 +548,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 					shouldFailover = false
 				} else {
 					shouldFailover = s.shouldFailoverGrokUpstreamError(statusCode, upstreamMessage)
-					s.handleGrokAccountUpstreamError(ctx, account, statusCode, resp.Header, upstreamMessage)
+					upstreamModel := s.resolveGrokWSUpstreamModel(ctx, account, body, originalModel)
+					s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, statusCode, resp.Header, upstreamMessage)
 				}
 			} else if eventType == "error" && shouldFailover && !requestScopedCapacity {
 				accountStatus := statusCode
@@ -674,12 +677,12 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	return resultWithUsage(), terminalErr
 }
 
-func resolveGrokWSCacheIdentity(c *gin.Context, account *Account, seedPayload, currentPayload []byte, originalModel string) (string, error) {
+func (s *OpenAIGatewayService) resolveGrokWSCacheIdentity(ctx context.Context, c *gin.Context, account *Account, seedPayload, currentPayload []byte, originalModel string) (string, error) {
 	body, err := prepareOpenAIWSHTTPBridgeBody(seedPayload)
 	if err != nil {
 		return "", err
 	}
-	upstreamModel := resolveGrokWSUpstreamModel(account, currentPayload, originalModel)
+	upstreamModel := s.resolveGrokWSUpstreamModel(ctx, account, currentPayload, originalModel)
 	body, err = patchGrokResponsesBody(body, upstreamModel)
 	if err != nil {
 		return "", err
@@ -687,7 +690,7 @@ func resolveGrokWSCacheIdentity(c *gin.Context, account *Account, seedPayload, c
 	return resolveGrokCacheIdentity(c, body, "", upstreamModel), nil
 }
 
-func resolveGrokWSUpstreamModel(account *Account, body []byte, originalModel string) string {
+func (s *OpenAIGatewayService) resolveGrokWSUpstreamModel(ctx context.Context, account *Account, body []byte, originalModel string) string {
 	upstreamModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	originalModel = strings.TrimSpace(originalModel)
 	// Shared ingress has already applied channel and account mappings when the
@@ -698,8 +701,5 @@ func resolveGrokWSUpstreamModel(account *Account, body []byte, originalModel str
 			upstreamModel = mappedModel
 		}
 	}
-	if upstreamModel == "" {
-		upstreamModel = grokDefaultResponsesModel
-	}
-	return upstreamModel
+	return s.resolveGrokTextModel(ctx, account, upstreamModel)
 }

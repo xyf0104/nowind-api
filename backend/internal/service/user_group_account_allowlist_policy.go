@@ -224,13 +224,3 @@ func (r *userGroupAccountFilteringRepository) ListSchedulableUngroupedByPlatform
 	}
 	return r.FilterCandidates(ctx, nil, accounts)
 }
-
-func requireUserGroupAccountCandidate(ctx context.Context, repo AccountRepository, groupID *int64, accountID int64) error {
-	policy, ok := repo.(interface {
-		RequireCandidate(context.Context, *int64, int64) error
-	})
-	if !ok {
-		return nil
-	}
-	return policy.RequireCandidate(ctx, groupID, accountID)
-}

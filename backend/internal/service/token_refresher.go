@@ -107,12 +107,25 @@ func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time
 	if strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
 		return false
 	}
+	// A real upstream 401 is stronger evidence than the locally stored expiry.
+	// Access tokens can be revoked or rejected before expires_at, so force a
+	// refresh during the recovery cooldown instead of waiting for the timestamp.
+	if isOAuthRefreshRecoveryReason(account.TempUnschedulableReason) {
+		return true
+	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
 		return account.IsRateLimited()
 	}
 
 	return time.Until(*expiresAt) < refreshWindow
+}
+
+func isOAuthRefreshRecoveryReason(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	return strings.HasPrefix(reason, "oauth 401") ||
+		strings.HasPrefix(reason, "authentication failed (401)") ||
+		strings.HasPrefix(reason, "token refresh retry exhausted")
 }
 
 // Refresh 执行token刷新

@@ -443,6 +443,9 @@ const baseSettingsResponse = {
   fallback_model_openai: "",
   fallback_model_gemini: "",
   fallback_model_antigravity: "",
+  grok_default_text_model: "grok-4.5",
+  grok_cross_client_model_map_enabled: false,
+  grok_default_base_url_mode: "cli",
   enable_identity_patch: false,
   identity_patch_prompt: "",
   ops_monitoring_enabled: false,
@@ -1216,6 +1219,44 @@ describe("admin SettingsView payment visible method controls", () => {
       interval_minutes: 60,
     });
     expect(showSuccess).toHaveBeenCalledWith("上游倍率自动探测设置已保存");
+  });
+
+  it("loads and saves the complete Grok model and upstream defaults", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      grok_default_text_model: "grok-4.1-fast",
+      grok_cross_client_model_map_enabled: true,
+      grok_default_base_url_mode: "us-west-2",
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const modelInput = wrapper.get('[data-testid="grok-default-text-model"]');
+    const mappingToggle = wrapper.get(
+      '[data-testid="grok-cross-client-model-map-toggle"]',
+    );
+    const baseURLMode = wrapper.get(
+      '[data-testid="grok-default-base-url-mode"]',
+    );
+    expect((modelInput.element as HTMLInputElement).value).toBe("grok-4.1-fast");
+    expect((mappingToggle.element as HTMLInputElement).checked).toBe(true);
+    expect((baseURLMode.element as HTMLSelectElement).value).toBe("us-west-2");
+
+    await modelInput.setValue("grok-custom-text");
+    await mappingToggle.setValue(false);
+    await baseURLMode.setValue("eu-west-1");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grok_default_text_model: "grok-custom-text",
+        grok_cross_client_model_map_enabled: false,
+        grok_default_base_url_mode: "eu-west-1",
+      }),
+    );
   });
 
   it("loads fail-safe-off Ollama Cloud usage refresh settings and saves an explicit opt-in", async () => {

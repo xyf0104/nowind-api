@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -84,6 +85,48 @@ func TestAccountTestService_TestAccountConnection_GrokUsesXAIResponses(t *testin
 	require.NotContains(t, rec.Body.String(), "claude")
 	require.Contains(t, rec.Body.String(), `"model":"grok-4.3"`)
 	require.Contains(t, rec.Body.String(), `"type":"test_complete"`)
+}
+
+func TestAccountTestService_TestAccountConnection_GrokRegionalDefaultOmitsCLIHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	account := &Account{
+		ID: 130, Name: "grok-oauth-regional", Platform: PlatformGrok,
+		Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":  "grok-access-token",
+			"refresh_token": "grok-refresh-token",
+			"expires_at":    time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	repo := &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.completed\"}\n\n",
+		)),
+	}}
+	settings := NewSettingService(&grokBaseURLSettingRepoStub{values: map[string]string{
+		SettingKeyGrokDefaultBaseURLMode: GrokDefaultBaseURLModeEUWest1,
+	}}, nil)
+	svc := &AccountTestService{
+		accountRepo:       repo,
+		grokTokenProvider: NewGrokTokenProvider(repo, nil),
+		httpUpstream:      upstream,
+		settingService:    settings,
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/130/test", nil)
+
+	err := svc.TestAccountConnection(c, account.ID, "grok-4.5", "", AccountTestModeDefault)
+
+	require.NoError(t, err)
+	require.Equal(t, xai.DefaultEUWest1BaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Mode"))
+	require.NotEqual(t, grokUpstreamUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 }
 
 func TestAccountTestService_TestAccountConnection_GrokDefaultsEmptyModelTo45(t *testing.T) {

@@ -115,6 +115,13 @@ func (s *OpenAIGatewayService) GenerateExplicitSessionHash(c *gin.Context, body 
 //  5. Header: x-grok-conv-id (Grok groups only)
 //  6. Body:   prompt_cache_key
 //  7. Body:   content-based fallback (model + system + tools + first user message)
+//
+// Grok sticky affinity is intentionally separate from the upstream
+// prompt_cache_key identity (resolveGrokCacheIdentity): sticky pins an OAuth
+// account for multi-turn routing, while the cache identity is tenant+model
+// isolated for xAI server-side prompt cache. For Grok groups we scope the
+// sticky seed with the client-requested model so switching models does not
+// inherit a stale account binding.
 func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) string {
 	if c == nil {
 		return ""
@@ -128,9 +135,30 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 		return ""
 	}
 
+	if isGrokRequestContext(c) {
+		sessionID = grokStickyAffinitySeed(sessionID, body)
+	}
+
 	currentHash, legacyHash := deriveOpenAISessionHashes(sessionID)
 	attachOpenAILegacySessionHashToGin(c, legacyHash)
 	return currentHash
+}
+
+// grokStickyAffinitySeed scopes sticky routing by model without changing the
+// upstream prompt_cache_key written by applyGrokResponsesCacheIdentity.
+func grokStickyAffinitySeed(sessionID string, body []byte) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	model := ""
+	if len(body) > 0 {
+		model = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	}
+	if model == "" {
+		return "grok-affinity:v1:" + sessionID
+	}
+	return "grok-affinity:v1:" + model + ":" + sessionID
 }
 
 // GenerateSessionHashWithFallback 先按常规信号生成会话哈希；
@@ -266,6 +294,10 @@ func openAICompactSupportTier(account *Account) int {
 // 注意：对 spark 影子账号，调用方还须额外调用 parentHealthyForShadow(account, lookup)
 // 检查母账号凭据可用性；该检查未内置于本函数，以避免注入 DB 依赖。
 func isOpenAICompatibleAccountEligibleForRequest(ctx context.Context, account *Account, platform string, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) bool {
+	return isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, account, platform, requestedModel, requireCompact, requiredCapability, nil)
+}
+
+func isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx context.Context, account *Account, platform string, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, settings *SettingService) bool {
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if account == nil || account.Platform != platform || !account.IsOpenAICompatible() || !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 		return false
@@ -294,7 +326,7 @@ func isOpenAICompatibleAccountEligibleForRequest(ctx context.Context, account *A
 			return false
 		}
 	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+	if requestedModel != "" && !grokModelSupportedBySettings(ctx, account, requestedModel, settings) {
 		return false
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
@@ -313,6 +345,19 @@ func isOpenAICompatibleAccountEligibleForRequest(ctx context.Context, account *A
 		return false
 	}
 	return true
+}
+
+func grokModelSupportedBySettings(ctx context.Context, account *Account, requestedModel string, settings *SettingService) bool {
+	if account == nil {
+		return false
+	}
+	if account.IsModelSupported(requestedModel) {
+		return true
+	}
+	if !account.IsGrok() || len(account.GetModelMapping()) != 0 || settings == nil {
+		return false
+	}
+	return settings.GetGrokCrossClientModelMapEnabled(ctx) && isGrokCrossClientModel(requestedModel)
 }
 
 type openAIQuotaAutoPauseDecision struct {
@@ -704,7 +749,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
-	if !isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, requestedModel, false, requiredCapability) {
+	if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, account, platform, requestedModel, false, requiredCapability, s.settingService) {
 		return nil
 	}
 	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -921,7 +966,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		account, err := s.getSchedulableAccount(ctx, stickyAccountID)
 		if err == nil {
 			clearSticky := shouldClearStickySession(account, requestedModel)
-			eligible := !clearSticky && isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, requestedModel, false, requiredCapability)
+			eligible := !clearSticky && isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, account, platform, requestedModel, false, requiredCapability, s.settingService)
 			if eligible {
 				account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, groupID, platform, requestedModel, requireCompact, requiredCapability)
 			}
@@ -976,7 +1021,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
-		if !isOpenAICompatibleAccountEligibleForRequest(ctx, acc, platform, requestedModel, false, requiredCapability) {
+		if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, acc, platform, requestedModel, false, requiredCapability, s.settingService) {
 			continue
 		}
 		if !parentHealthyForShadow(acc, parentLookupL2) {
@@ -1252,7 +1297,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		fresh = current
 	}
 
-	if !isOpenAICompatibleAccountEligibleForRequest(ctx, fresh, platform, requestedModel, requireCompact, requiredCapability) {
+	if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, fresh, platform, requestedModel, requireCompact, requiredCapability, s.settingService) {
 		return nil
 	}
 	if !parentHealthyForShadow(fresh, s.parentAccountLookup(ctx)) {
@@ -1287,7 +1332,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	}
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
-		if !isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, requestedModel, requireCompact, requiredCapability) {
+		if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, account, platform, requestedModel, requireCompact, requiredCapability, s.settingService) {
 			return nil
 		}
 		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -1306,7 +1351,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if !s.openAIAccountMatchesSchedulingGroup(latest, groupID) {
 		return nil
 	}
-	if !isOpenAICompatibleAccountEligibleForRequest(ctx, latest, platform, requestedModel, requireCompact, requiredCapability) {
+	if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, latest, platform, requestedModel, requireCompact, requiredCapability, s.settingService) {
 		return nil
 	}
 	if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {

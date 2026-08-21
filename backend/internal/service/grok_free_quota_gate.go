@@ -36,6 +36,8 @@ type grokFreeQuotaGateCacheEntry struct {
 var grokFreeQuotaGateQueryFailureTotal atomic.Int64
 var grokFreeQuotaGateBlockedTotal atomic.Int64
 
+const grokFreeQuotaGateQueryTimeout = 10 * time.Second
+
 func resolveGrokFreeQuotaGateSettings(cfg *config.Config) (grokFreeQuotaGateSettings, bool) {
 	if cfg == nil || !cfg.Gateway.Grok.FreeQuotaSoftGateEnabled {
 		return grokFreeQuotaGateSettings{}, false
@@ -96,7 +98,6 @@ func (s *GatewayService) filterGrokFreeQuotaAccountsForGateway(ctx context.Conte
 }
 
 var gatewayGrokFreeQuotaGateCache sync.Map
-var openaiGrokFreeQuotaGateCache sync.Map
 var freeQuotaRefreshInFlight sync.Map
 
 func filterGrokFreeQuotaAccountsCore(ctx context.Context, cfg *config.Config, usageLogRepo UsageLogRepository, cache *sync.Map, accounts []Account) []Account {
@@ -177,7 +178,9 @@ func scheduleGrokFreeQuotaStatsRefresh(usageLogRepo UsageLogRepository, cache *s
 			}
 		}()
 		now := time.Now().UTC()
-		statsByID, err := queryGrokFreeQuotaWindowStats(context.Background(), usageLogRepo, toFetch, now.Add(-window))
+		queryCtx, cancel := context.WithTimeout(context.Background(), grokFreeQuotaGateQueryTimeout)
+		statsByID, err := queryGrokFreeQuotaWindowStats(queryCtx, usageLogRepo, toFetch, now.Add(-window))
+		cancel()
 		if err != nil {
 			grokFreeQuotaGateQueryFailureTotal.Add(1)
 			for _, accountID := range toFetch {

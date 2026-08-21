@@ -1584,8 +1584,29 @@ func (a *Account) GetOpenAIRefreshToken() string {
 const grokCustomBaseURLEnabledCredentialKey = "grok_custom_base_url_enabled"
 
 func (a *Account) GetGrokBaseURL() string {
-	if !a.IsGrok() {
+	if a == nil || !a.IsGrok() {
 		return ""
+	}
+	if a.IsGrokOAuth() {
+		return a.GetGrokBaseURLOr(xai.DefaultCLIBaseURL)
+	}
+	return a.GetGrokBaseURLOr(xai.DefaultBaseURL)
+}
+
+// GetGrokBaseURLOr applies an operator-selected default while retaining the
+// XIASS legacy-safe OAuth opt-in: historical stored base_url values never
+// become active unless grok_custom_base_url_enabled was explicitly set.
+func (a *Account) GetGrokBaseURLOr(defaultBaseURL string) string {
+	if a == nil || !a.IsGrok() {
+		return ""
+	}
+	defaultBaseURL = strings.TrimRight(strings.TrimSpace(defaultBaseURL), "/")
+	if defaultBaseURL == "" {
+		if a.IsGrokOAuth() {
+			defaultBaseURL = xai.DefaultCLIBaseURL
+		} else {
+			defaultBaseURL = xai.DefaultBaseURL
+		}
 	}
 	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
 	if a.IsGrokOAuth() {
@@ -1594,14 +1615,14 @@ func (a *Account) GetGrokBaseURL() string {
 		// cannot silently change an existing account's upstream after upgrade.
 		enabled, _ := a.Credentials[grokCustomBaseURLEnabledCredentialKey].(bool)
 		if !enabled || baseURL == "" || !xai.IsParseableBaseURL(baseURL) {
-			return xai.DefaultCLIBaseURL
+			return defaultBaseURL
 		}
-		return baseURL
+		return strings.TrimRight(baseURL, "/")
 	}
 	if baseURL != "" {
-		return baseURL
+		return strings.TrimRight(baseURL, "/")
 	}
-	return xai.DefaultBaseURL
+	return defaultBaseURL
 }
 
 // GetGrokMediaBaseURL keeps explicitly selected API/regional/relay endpoints,

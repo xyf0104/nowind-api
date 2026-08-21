@@ -1308,6 +1308,11 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	s.ensureOpenAIPrivacy(ctx, account)
 	// Antigravity OAuth: 刷新成功后，检查是否已设置 privacy_mode，未设置则调用 setUserSettings
 	s.ensureAntigravityPrivacy(ctx, account)
+	// Grok: a successful credential refresh clears the soft spending-limit
+	// reauthorization marker without changing unrelated account settings.
+	if account != nil && account.Platform == PlatformGrok && accountGrokNeedsReauth(account) {
+		clearGrokNeedsReauthExtra(ctx, s.accountRepo, account.ID)
+	}
 }
 
 func shouldClearTempUnschedulableAfterRefresh(account *Account) bool {
@@ -1315,10 +1320,7 @@ func shouldClearTempUnschedulableAfterRefresh(account *Account) bool {
 		return false
 	}
 
-	reason := strings.ToLower(strings.TrimSpace(account.TempUnschedulableReason))
-	if strings.HasPrefix(reason, "oauth 401") ||
-		strings.HasPrefix(reason, "authentication failed (401)") ||
-		strings.HasPrefix(reason, "token refresh retry exhausted") {
+	if isOAuthRefreshRecoveryReason(account.TempUnschedulableReason) {
 		return true
 	}
 

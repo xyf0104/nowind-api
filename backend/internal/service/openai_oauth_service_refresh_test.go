@@ -144,6 +144,25 @@ func TestOpenAITokenRefresher_NeedsRefresh_SkipsAccountWithoutRefreshToken(t *te
 	require.False(t, refresher.NeedsRefresh(patWithStaleRT, 5*time.Minute))
 }
 
+func TestOpenAITokenRefresher_NeedsRefresh_ForcesRecoveryAfterOAuth401(t *testing.T) {
+	refresher := NewOpenAITokenRefresher(nil, nil)
+	account := &Account{
+		Platform:                PlatformOpenAI,
+		Type:                    AccountTypeOAuth,
+		TempUnschedulableReason: "OAuth 401: access token rejected before local expiry",
+		Credentials: map[string]any{
+			"access_token":  "rejected-access-token",
+			"refresh_token": "refresh-token",
+			"expires_at":    time.Now().Add(6 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+
+	require.True(t, refresher.NeedsRefresh(account, 5*time.Minute), "an upstream 401 must override a future expires_at")
+
+	account.Credentials["refresh_token"] = ""
+	require.False(t, refresher.NeedsRefresh(account, 5*time.Minute), "an account without refresh_token cannot recover")
+}
+
 func TestOpenAITokenRefresher_Refresh_PATRemovesStaleOAuthFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")

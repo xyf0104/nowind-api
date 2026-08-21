@@ -5,12 +5,145 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"golang.org/x/sync/singleflight"
 )
+
+const (
+	GrokDefaultBaseURLModeAPI     = "api"
+	GrokDefaultBaseURLModeUSEast1 = "us-east-1"
+	GrokDefaultBaseURLModeUSWest2 = "us-west-2"
+	GrokDefaultBaseURLModeEUWest1 = "eu-west-1"
+	GrokDefaultBaseURLModeCLI     = "cli"
+)
+
+func normalizeGrokDefaultBaseURLMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case GrokDefaultBaseURLModeAPI:
+		return GrokDefaultBaseURLModeAPI
+	case GrokDefaultBaseURLModeUSEast1:
+		return GrokDefaultBaseURLModeUSEast1
+	case GrokDefaultBaseURLModeUSWest2:
+		return GrokDefaultBaseURLModeUSWest2
+	case GrokDefaultBaseURLModeEUWest1:
+		return GrokDefaultBaseURLModeEUWest1
+	case GrokDefaultBaseURLModeCLI:
+		return GrokDefaultBaseURLModeCLI
+	default:
+		return GrokDefaultBaseURLModeCLI
+	}
+}
+
+func GrokBaseURLForMode(mode string) string {
+	switch normalizeGrokDefaultBaseURLMode(mode) {
+	case GrokDefaultBaseURLModeAPI:
+		return xai.DefaultBaseURL
+	case GrokDefaultBaseURLModeUSEast1:
+		return xai.DefaultUSEast1BaseURL
+	case GrokDefaultBaseURLModeUSWest2:
+		return xai.DefaultUSWest2BaseURL
+	case GrokDefaultBaseURLModeEUWest1:
+		return xai.DefaultEUWest1BaseURL
+	default:
+		return xai.DefaultCLIBaseURL
+	}
+}
+
+func (s *SettingService) GetGrokDefaultBaseURLMode(ctx context.Context) string {
+	return s.GetGrokRuntimeSettings(ctx).DefaultBaseURLMode
+}
+
+func (s *SettingService) GetGrokDefaultBaseURL(ctx context.Context) string {
+	return GrokBaseURLForMode(s.GetGrokDefaultBaseURLMode(ctx))
+}
+
+// GetGrokRuntimeSettings returns the cached Grok routing policy.  A database
+// failure is fail-open: the last known value is retained when available, or
+// the stable CLI/grok-4.5 defaults are used for a short error TTL.
+func (s *SettingService) GetGrokRuntimeSettings(ctx context.Context) GrokRuntimeSettings {
+	defaults := GrokRuntimeSettings{
+		DefaultTextModel:      grokDefaultResponsesModel,
+		CrossClientMapEnabled: true,
+		DefaultBaseURLMode:    GrokDefaultBaseURLModeCLI,
+	}
+	if s == nil || s.settingRepo == nil {
+		return defaults
+	}
+	if cached, ok := s.grokRuntimeSettingsCache.Load().(*cachedGrokRuntimeSettings); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.settings
+		}
+	}
+	result, _, _ := s.grokRuntimeSettingsSF.Do("grok_runtime_settings", func() (any, error) {
+		if cached, ok := s.grokRuntimeSettingsCache.Load().(*cachedGrokRuntimeSettings); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached, nil
+			}
+		}
+		baseCtx := ctx
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), grokRuntimeSettingsDBTimeout)
+		defer cancel()
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyGrokDefaultTextModel,
+			SettingKeyGrokCrossClientModelMapEnabled,
+			SettingKeyGrokDefaultBaseURLMode,
+		})
+		if err != nil {
+			// Retain a still-useful previous value on transient DB failure.
+			if prior, ok := s.grokRuntimeSettingsCache.Load().(*cachedGrokRuntimeSettings); ok && prior != nil {
+				entry := &cachedGrokRuntimeSettings{settings: prior.settings, expiresAt: time.Now().Add(grokRuntimeSettingsErrorTTL).UnixNano()}
+				s.grokRuntimeSettingsCache.Store(entry)
+				return entry, nil
+			}
+			entry := &cachedGrokRuntimeSettings{settings: defaults, expiresAt: time.Now().Add(grokRuntimeSettingsErrorTTL).UnixNano()}
+			s.grokRuntimeSettingsCache.Store(entry)
+			return entry, nil
+		}
+		settings := defaults
+		if raw := strings.TrimSpace(values[SettingKeyGrokDefaultTextModel]); raw != "" {
+			settings.DefaultTextModel = raw
+		}
+		settings.CrossClientMapEnabled = !isFalseSettingValue(values[SettingKeyGrokCrossClientModelMapEnabled])
+		if raw := strings.TrimSpace(values[SettingKeyGrokDefaultBaseURLMode]); raw != "" {
+			settings.DefaultBaseURLMode = normalizeGrokDefaultBaseURLMode(raw)
+		}
+		entry := &cachedGrokRuntimeSettings{settings: settings, expiresAt: time.Now().Add(grokRuntimeSettingsCacheTTL).UnixNano()}
+		s.grokRuntimeSettingsCache.Store(entry)
+		return entry, nil
+	})
+	if entry, ok := result.(*cachedGrokRuntimeSettings); ok && entry != nil {
+		return entry.settings
+	}
+	return defaults
+}
+
+func (s *SettingService) GetGrokDefaultTextModel(ctx context.Context) string {
+	return s.GetGrokRuntimeSettings(ctx).DefaultTextModel
+}
+
+func (s *SettingService) GetGrokCrossClientModelMapEnabled(ctx context.Context) bool {
+	return s.GetGrokRuntimeSettings(ctx).CrossClientMapEnabled
+}
+
+func (s *SettingService) ResolveGrokBaseURL(ctx context.Context, account *Account) string {
+	defaultBaseURL := xai.DefaultCLIBaseURL
+	if s != nil {
+		defaultBaseURL = s.GetGrokDefaultBaseURL(ctx)
+	}
+	if account == nil {
+		return defaultBaseURL
+	}
+	return account.GetGrokBaseURLOr(defaultBaseURL)
+}
 
 var (
 	ErrRegistrationDisabled   = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
@@ -78,6 +211,13 @@ type SettingService struct {
 	// instance owns its own cache, no shared package-level state.
 	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
+
+	// grokRuntimeSettingsCache keeps the Grok model-mapping and default endpoint
+	// settings off the request hot path.  It is deliberately per SettingService
+	// (rather than package-global) so tests and multiple app instances cannot
+	// leak configuration into one another.
+	grokRuntimeSettingsCache atomic.Value // *cachedGrokRuntimeSettings
+	grokRuntimeSettingsSF    singleflight.Group
 }
 
 // DefaultPlatformQuotaSetting 单 platform 三档限额（nil = 沿用上层；0 = 显式禁用；>0 = 上限）

@@ -50,13 +50,20 @@ type GrokQuotaResetResult struct {
 }
 
 type GrokQuotaService struct {
-	accountRepo   AccountRepository
-	proxyRepo     ProxyRepository
-	tokenProvider *GrokTokenProvider
-	httpUpstream  HTTPUpstream
-	usageLogRepo  UsageLogRepository
-	cfg           *config.Config
-	probeFlight   singleflight.Group
+	accountRepo    AccountRepository
+	proxyRepo      ProxyRepository
+	tokenProvider  *GrokTokenProvider
+	httpUpstream   HTTPUpstream
+	usageLogRepo   UsageLogRepository
+	settingService *SettingService
+	cfg            *config.Config
+	probeFlight    singleflight.Group
+}
+
+func (s *GrokQuotaService) SetSettingService(settingService *SettingService) {
+	if s != nil {
+		s.settingService = settingService
+	}
 }
 
 func NewGrokQuotaService(
@@ -86,6 +93,9 @@ func NewGrokQuotaService(
 func (s *GrokQuotaService) QueryQuota(ctx context.Context, accountID int64) (*GrokQuotaProbeResult, error) {
 	billingResult, billingErr := s.ProbeBilling(ctx, accountID)
 	if billingErr == nil && billingResult != nil && grokBillingHasAuthoritativeQuota(billingResult.Billing) {
+		if account, err := s.accountRepo.GetByID(ctx, accountID); err == nil {
+			s.scheduleGrokObservedModelsSync(account)
+		}
 		return billingResult, nil
 	}
 
@@ -110,6 +120,9 @@ func (s *GrokQuotaService) QueryQuota(ctx context.Context, accountID int64) (*Gr
 		probeResult.LocalUsage7d = billingResult.LocalUsage7d
 		probeResult.LocalUsageMonthly = billingResult.LocalUsageMonthly
 		probeResult.Persisted = probeResult.Persisted || billingResult.Persisted
+	}
+	if account, err := s.accountRepo.GetByID(ctx, accountID); err == nil {
+		s.scheduleGrokObservedModelsSync(account)
 	}
 	return probeResult, nil
 }
@@ -141,7 +154,7 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build probe body: %v", err)
 	}
-	targetURL, err := buildGrokResponsesURL(account, s.cfg)
+	targetURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid Grok base_url: %v", err)
 	}
@@ -155,7 +168,7 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	if account.IsGrokOAuth() {
+	if account.IsGrokOAuth() && isGrokCLIProxyTarget(targetURL) {
 		applyGrokCLIHeaders(req.Header)
 	}
 	// 探测请求与真实转发保持同一套账号级请求头覆写，避免探测通过但转发失败。
@@ -168,13 +181,22 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	defer func() { _ = resp.Body.Close() }()
 
 	snapshot := xai.ObserveQuotaHeaders(resp.Header, resp.StatusCode, "active_probe")
+	stampGrokQuotaSnapshotForPlan(account, snapshot, probeModel)
 	resetAt, limited := grokRateLimitResetAtForAccount(account, snapshot, time.Now())
 	if limited {
 		normalizeGrokExhaustedWindowResets(snapshot, resetAt, time.Now())
 	}
-	persistErr := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
-		grokQuotaSnapshotExtraKey: snapshot,
-	})
+	// Authentication/server failures commonly omit quota headers. Do not erase
+	// a previously informative snapshot with an empty failure observation.
+	var persistErr error
+	persisted := false
+	shouldPersist := resp.StatusCode < http.StatusBadRequest || resp.StatusCode == http.StatusTooManyRequests
+	if shouldPersist && (snapshot.HeadersObserved || resp.StatusCode == http.StatusOK) {
+		persistErr = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+			grokQuotaSnapshotExtraKey: snapshot,
+		})
+		persisted = persistErr == nil
+	}
 	if limited {
 		persistGrokRateLimit(ctx, s.accountRepo, account, resetAt)
 	} else if isSuccessfulGrokRateLimitRecovery(account, snapshot) {
@@ -189,7 +211,7 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 		HeadersObserved: snapshot.HeadersObserved,
 		ResetSupported:  false,
 		FetchedAt:       time.Now().Unix(),
-		Persisted:       persistErr == nil,
+		Persisted:       persisted,
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return result, nil

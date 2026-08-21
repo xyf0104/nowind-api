@@ -5030,6 +5030,83 @@
               </p>
             </div>
             <div class="space-y-5 p-6">
+              <div
+                class="grid gap-5 border-b border-gray-100 pb-5 dark:border-dark-700 md:grid-cols-[minmax(0,1fr)_auto] md:items-end"
+              >
+                <div>
+                  <label
+                    for="grok-default-text-model"
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{ t("admin.settings.gatewayForwarding.grokDefaultTextModel") }}
+                  </label>
+                  <input
+                    id="grok-default-text-model"
+                    v-model.trim="form.grok_default_text_model"
+                    type="text"
+                    class="input mt-2 w-full"
+                    list="grok-default-text-model-options"
+                    data-testid="grok-default-text-model"
+                    placeholder="grok-4.5"
+                  />
+                  <datalist id="grok-default-text-model-options">
+                    <option value="grok-4.5" />
+                    <option value="grok-4.1-fast" />
+                    <option value="grok-4" />
+                  </datalist>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.grokDefaultTextModelHint") }}
+                  </p>
+                </div>
+                <div class="flex items-center justify-between gap-5 md:min-w-72">
+                  <div>
+                    <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.grokCrossClientMap") }}
+                    </label>
+                    <p class="mt-0.5 max-w-sm text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayForwarding.grokCrossClientMapHint") }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.grok_cross_client_model_map_enabled"
+                    data-testid="grok-cross-client-model-map-toggle"
+                  />
+                </div>
+                <div class="md:col-span-2">
+                  <label
+                    for="grok-default-base-url-mode"
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{ t("admin.settings.gatewayForwarding.grokDefaultBaseURLMode") }}
+                  </label>
+                  <select
+                    id="grok-default-base-url-mode"
+                    v-model="form.grok_default_base_url_mode"
+                    class="input mt-2 w-full"
+                    data-testid="grok-default-base-url-mode"
+                  >
+                    <option value="cli">
+                      {{ t("admin.settings.gatewayForwarding.grokBaseURLModeCLI") }}
+                    </option>
+                    <option value="api">
+                      {{ t("admin.settings.gatewayForwarding.grokBaseURLModeAPI") }}
+                    </option>
+                    <option value="us-east-1">
+                      {{ t("admin.settings.gatewayForwarding.grokBaseURLModeUSEast1") }}
+                    </option>
+                    <option value="us-west-2">
+                      {{ t("admin.settings.gatewayForwarding.grokBaseURLModeUSWest2") }}
+                    </option>
+                    <option value="eu-west-1">
+                      {{ t("admin.settings.gatewayForwarding.grokBaseURLModeEUWest1") }}
+                    </option>
+                  </select>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.grokDefaultBaseURLModeHint") }}
+                  </p>
+                </div>
+              </div>
+
               <!-- Fingerprint Unification -->
               <div class="flex items-center justify-between">
                 <div>
@@ -9471,6 +9548,9 @@ const form = reactive<SettingsForm>({
   fallback_model_openai: "gpt-4o",
   fallback_model_gemini: "gemini-2.5-pro",
   fallback_model_antigravity: "gemini-2.5-pro",
+  grok_default_text_model: "grok-4.5",
+  grok_cross_client_model_map_enabled: true,
+  grok_default_base_url_mode: "cli",
   // Identity patch (Claude -> Gemini)
   enable_identity_patch: true,
   identity_patch_prompt: "",
@@ -11039,6 +11119,11 @@ async function saveSettings() {
       fallback_model_openai: form.fallback_model_openai,
       fallback_model_gemini: form.fallback_model_gemini,
       fallback_model_antigravity: form.fallback_model_antigravity,
+      grok_default_text_model:
+        form.grok_default_text_model.trim() || "grok-4.5",
+      grok_cross_client_model_map_enabled:
+        form.grok_cross_client_model_map_enabled,
+      grok_default_base_url_mode: form.grok_default_base_url_mode,
       enable_identity_patch: form.enable_identity_patch,
       identity_patch_prompt: form.identity_patch_prompt,
       min_claude_code_version: form.min_claude_code_version,

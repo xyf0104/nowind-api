@@ -458,8 +458,11 @@ func TestBuildUpstreamModelsRequestGrokOAuthDoesNotSendIdentityToCustomBase(t *t
 	req, err := svc.buildUpstreamModelsRequest(context.Background(), grokOAuthModelSyncTestAccount("https://relay.example/v1"))
 	require.NoError(t, err)
 	require.Equal(t, "https://relay.example/v1/models", req.URL.String())
+	require.Empty(t, req.Header.Get("X-Grok-Client-Version"))
+	require.Empty(t, req.Header.Get("X-Grok-Client-Mode"))
 	require.Empty(t, req.Header.Get("X-UserID"))
 	require.Empty(t, req.Header.Get("X-Email"))
+	require.NotEqual(t, grokUpstreamUserAgent, req.Header.Get("User-Agent"))
 }
 
 func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {

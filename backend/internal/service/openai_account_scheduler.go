@@ -507,6 +507,23 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
+	// Sticky sessions remain subject to Grok's rolling free-quota and
+	// model-specific cooldowns; otherwise a stale binding can bypass the normal
+	// candidate filters indefinitely.
+	if len(s.filterGrokFreeQuotaAccounts(ctx, []Account{*account})) == 0 {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	}
+	upstreamModel := canonicalOpenAIAccountSchedulingModel(account, req.RequestedModel)
+	if s.service != nil && account.IsGrok() {
+		upstreamModel = s.service.canonicalGrokSchedulingModel(ctx, account, req.RequestedModel)
+	}
+	now := time.Now()
+	if isGrokTeamModelRateLimited(account, upstreamModel, now) ||
+		isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	}
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result != nil && result.Acquired {
 		_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
@@ -1314,6 +1331,20 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		if req.RequireCompact && openAICompactSupportTier(account) == 0 {
 			continue
 		}
+		// Weighted sticky is only a preference inside the current priority tier;
+		// it must not reintroduce a Grok account removed by the normal quota gates.
+		if len(s.filterGrokFreeQuotaAccounts(ctx, []Account{*account})) == 0 {
+			continue
+		}
+		upstreamModel := canonicalOpenAIAccountSchedulingModel(account, req.RequestedModel)
+		if s.service != nil && account.IsGrok() {
+			upstreamModel = s.service.canonicalGrokSchedulingModel(ctx, account, req.RequestedModel)
+		}
+		now := time.Now()
+		if isGrokTeamModelRateLimited(account, upstreamModel, now) ||
+			isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
+			continue
+		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 		if acquireErr != nil {
 			return nil, acquireErr
@@ -1401,6 +1432,21 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 	if len(accounts) == 0 {
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary(""))
+	}
+	accounts = s.filterGrokFreeQuotaAccounts(ctx, accounts)
+	if len(accounts) == 0 {
+		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary("grok_free_quota_soft_gate"))
+	}
+	if normalizeOpenAICompatiblePlatform(req.Platform) == PlatformGrok {
+		now := time.Now()
+		filtered := filterGrokTeamModelRateLimitedAccounts(accounts, req.RequestedModel, now)
+		if len(filtered) == 0 {
+			return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary("grok_team_model_rate_limit"))
+		}
+		accounts = filterGrokModelQuotaBlockedAccounts(filtered, req.RequestedModel, now)
+		if len(accounts) == 0 {
+			return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary("grok_model_quota_block"))
+		}
 	}
 
 	// require_privacy_set: 获取分组信息
@@ -1802,8 +1848,14 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	}) {
 		return false, "shadow_parent_unhealthy"
 	}
-	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
-		return false, "model_not_supported"
+	if req.RequestedModel != "" {
+		supported := account.IsModelSupported(req.RequestedModel)
+		if s.service != nil {
+			supported = s.service.isGrokRequestModelSupported(ctx, account, req.RequestedModel)
+		}
+		if !supported {
+			return false, "model_not_supported"
+		}
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&
 		s.service.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&

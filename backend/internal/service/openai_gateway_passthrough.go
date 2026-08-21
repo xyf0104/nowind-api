@@ -1622,7 +1622,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 						// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
 						// antigravity 先例），否则透传命中的 failed 在监控中不可见。
 						s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "http_error", dataBytes, failedMessage)
-						c.Writer.Header().Del(http.CanonicalHeaderKey(openAIWSTurnStateHeader))
+						c.Writer.Header().Del(openAIWSTurnStateHeader)
 						MarkResponseCommitted(c)
 						c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 						c.JSON(status, gin.H{

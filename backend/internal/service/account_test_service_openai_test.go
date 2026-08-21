@@ -63,14 +63,17 @@ func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 
 type openAIAccountTestRepo struct {
 	mockAccountRepoForGemini
-	updatedExtra       map[string]any
-	bulkUpdatedIDs     []int64
-	bulkUpdatedPayload AccountBulkUpdate
-	rateLimitedID      int64
-	rateLimitedAt      *time.Time
-	clearedErrorID     int64
-	setErrorID         int64
-	setErrorMsg        string
+	updatedExtra            map[string]any
+	bulkUpdatedIDs          []int64
+	bulkUpdatedPayload      AccountBulkUpdate
+	rateLimitedID           int64
+	rateLimitedAt           *time.Time
+	clearedErrorID          int64
+	setErrorID              int64
+	setErrorMsg             string
+	tempUnschedulableID     int64
+	tempUnschedulableUntil  time.Time
+	tempUnschedulableReason string
 }
 
 func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -98,6 +101,13 @@ func (r *openAIAccountTestRepo) ClearError(_ context.Context, id int64) error {
 func (r *openAIAccountTestRepo) SetError(_ context.Context, id int64, errorMsg string) error {
 	r.setErrorID = id
 	r.setErrorMsg = errorMsg
+	return nil
+}
+
+func (r *openAIAccountTestRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedulableID = id
+	r.tempUnschedulableUntil = until
+	r.tempUnschedulableReason = reason
 	return nil
 }
 
@@ -397,7 +407,7 @@ func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState
 	require.Nil(t, account.RateLimitResetAt)
 }
 
-func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
+func TestAccountTestService_OpenAI401WithoutRefreshTokenSetsPermanentError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()
 
@@ -422,6 +432,37 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 	require.Zero(t, repo.rateLimitedID)
 	require.Zero(t, repo.clearedErrorID)
 	require.Nil(t, account.RateLimitResetAt)
+}
+
+func TestAccountTestService_OpenAIOAuth401WithRefreshTokenSchedulesRecovery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusUnauthorized, `{"error":"bad token"}`)
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:          81,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":  "rejected-token",
+			"refresh_token": "refresh-token",
+			"expires_at":    time.Now().Add(6 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+	require.Error(t, err)
+	require.Zero(t, repo.setErrorID)
+	require.Equal(t, account.ID, repo.tempUnschedulableID)
+	require.True(t, repo.tempUnschedulableUntil.After(time.Now()))
+	require.True(t, isOAuthRefreshRecoveryReason(repo.tempUnschedulableReason))
+	require.Equal(t, repo.tempUnschedulableReason, account.TempUnschedulableReason)
+	require.NotNil(t, account.TempUnschedulableUntil)
 }
 
 func TestAccountTestService_OpenAIAPIKeyResponsesUsesCodexProbeHeaders(t *testing.T) {

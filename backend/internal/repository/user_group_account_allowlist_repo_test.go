@@ -178,7 +178,8 @@ func TestUserGroupAccountAllowlistRepositoryNotificationInvalidatesOnlyTargetSco
 	t.Cleanup(func() { _ = db.Close() })
 
 	contract := NewUserGroupAccountAllowlistRepository(db)
-	repo := contract.(*userGroupAccountAllowlistRepository)
+	repo, ok := contract.(*userGroupAccountAllowlistRepository)
+	require.True(t, ok)
 	expectUserGroupAccountAllowlistQuery(mock, 4, 8,
 		sqlmock.NewRows([]string{"account_id"}).AddRow(int64(3)))
 	expectUserGroupAccountAllowlistQuery(mock, 5, 8,
@@ -207,7 +208,8 @@ func TestUserGroupAccountAllowlistRepositoryUnrelatedScopeNotificationDoesNotInt
 	t.Cleanup(func() { _ = db.Close() })
 
 	contract := NewUserGroupAccountAllowlistRepository(db)
-	repo := contract.(*userGroupAccountAllowlistRepository)
+	repo, ok := contract.(*userGroupAccountAllowlistRepository)
+	require.True(t, ok)
 	mock.ExpectQuery("SELECT a.account_id").
 		WithArgs(int64(4), int64(8)).
 		WillDelayFor(100 * time.Millisecond).
@@ -241,7 +243,9 @@ func TestUserGroupAccountAllowlistRepositoryTargetScopeInvalidationRejectsStaleC
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	repo := NewUserGroupAccountAllowlistRepository(db).(*userGroupAccountAllowlistRepository)
+	contract := NewUserGroupAccountAllowlistRepository(db)
+	repo, ok := contract.(*userGroupAccountAllowlistRepository)
+	require.True(t, ok)
 	key := userGroupAccountAllowlistScopeKey{userID: 4, groupID: 8}
 	version := repo.cache.version(key)
 	repo.handleInvalidationNotification(&pq.Notification{Extra: "4:8"})
@@ -263,7 +267,9 @@ func TestUserGroupAccountAllowlistRepositorySingleConnectionPoolDisablesListener
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 
-	repo := NewUserGroupAccountAllowlistRepository(db).(*userGroupAccountAllowlistRepository)
+	contract := NewUserGroupAccountAllowlistRepository(db)
+	repo, ok := contract.(*userGroupAccountAllowlistRepository)
+	require.True(t, ok)
 	require.False(t, repo.listenerEnabled)
 	require.False(t, repo.listenerHealthy.Load())
 	require.Equal(t, userGroupAccountAllowlistFallbackCacheTTL, repo.cacheTTL())
@@ -275,7 +281,9 @@ func TestUserGroupAccountAllowlistRepositoryListenerFailureClearsCacheAndFallsBa
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	repo := NewUserGroupAccountAllowlistRepository(db).(*userGroupAccountAllowlistRepository)
+	contract := NewUserGroupAccountAllowlistRepository(db)
+	repo, ok := contract.(*userGroupAccountAllowlistRepository)
+	require.True(t, ok)
 	key := userGroupAccountAllowlistScopeKey{userID: 4, groupID: 8}
 	require.True(t, repo.cache.setIfVersion(
 		key,

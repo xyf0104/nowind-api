@@ -65,6 +65,25 @@ type cachedGatewayForwardingSettings struct {
 	expiresAt                        int64 // unix nano
 }
 
+// GrokRuntimeSettings is the small, request-time subset of administrator
+// settings that affects Grok routing.  Keeping this separate from
+// SystemSettings makes it explicit that these values are runtime policy, not
+// presentation-only fields.
+type GrokRuntimeSettings struct {
+	DefaultTextModel      string
+	CrossClientMapEnabled bool
+	DefaultBaseURLMode    string
+}
+
+type cachedGrokRuntimeSettings struct {
+	settings  GrokRuntimeSettings
+	expiresAt int64
+}
+
+const grokRuntimeSettingsCacheTTL = 60 * time.Second
+const grokRuntimeSettingsErrorTTL = 5 * time.Second
+const grokRuntimeSettingsDBTimeout = 5 * time.Second
+
 var gatewayForwardingCache atomic.Value // *cachedGatewayForwardingSettings
 var gatewayForwardingSF singleflight.Group
 

@@ -73,9 +73,16 @@ type AccountTestService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
+	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
 	agentIdentityTaskMu       sync.Mutex
 	agentIdentityWS           agentIdentityWSConnectionInvalidator
+}
+
+func (s *AccountTestService) SetSettingService(settingService *SettingService) {
+	if s != nil {
+		s.settingService = settingService
+	}
 }
 
 // NewAccountTestService creates a new AccountTestService
@@ -737,10 +744,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 		}
-		// 401 Unauthorized: 标记账号为永久错误
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			s.reconcileOpenAIUnauthorized(ctx, credentialAccount, body)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
@@ -787,7 +792,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported Grok account type: %s", account.Type))
 	}
 
-	apiURL, err := buildGrokResponsesURL(account, s.cfg)
+	apiURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err.Error()))
 	}
@@ -814,7 +819,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+authToken)
-	if account.IsGrokOAuth() {
+	if account.IsGrokOAuth() && isGrokCLIProxyTarget(apiURL) {
 		applyGrokCLIHeaders(req.Header)
 	}
 	// 连通性测试与真实转发保持同一套账号级请求头覆写。
@@ -833,6 +838,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 
 	now := time.Now()
 	snapshot := parseGrokQuotaSnapshot(resp.Header, resp.StatusCode, now)
+	stampGrokQuotaSnapshotForPlan(account, snapshot, testModelID)
 	if snapshot != nil && s.accountRepo != nil {
 		resetAt, limited := grokRateLimitResetAtForAccount(account, snapshot, now)
 		if limited {
@@ -922,13 +928,34 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 		}
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			s.reconcileOpenAIUnauthorized(ctx, account, body)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d: %s", resp.StatusCode, string(body)))
 	}
 
 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
+}
+
+func (s *AccountTestService) reconcileOpenAIUnauthorized(ctx context.Context, account *Account, body []byte) {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return
+	}
+	if account.Platform == PlatformOpenAI &&
+		account.Type == AccountTypeOAuth &&
+		!account.IsOpenAIPersonalAccessToken() &&
+		strings.TrimSpace(account.GetOpenAIRefreshToken()) != "" {
+		const reason = "OAuth 401: access token rejected during administrator connection test"
+		until := time.Now().Add(10 * time.Minute)
+		stateCtx, cancel := openAIAccountStateContext(ctx)
+		defer cancel()
+		_ = s.accountRepo.SetTempUnschedulable(stateCtx, account.ID, until, reason)
+		account.TempUnschedulableUntil = &until
+		account.TempUnschedulableReason = reason
+		return
+	}
+
+	errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
+	_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 }
 
 // testOpenAICompactConnection probes /responses/compact and persists the

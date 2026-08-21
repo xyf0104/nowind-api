@@ -25,6 +25,7 @@ type openAITokenCacheStub struct {
 	releaseLockErr   error
 	getCalled        int32
 	setCalled        int32
+	deleteCalled     int32
 	lockCalled       int32
 	unlockCalled     int32
 	simulateLockRace bool
@@ -59,6 +60,7 @@ func (s *openAITokenCacheStub) SetAccessToken(ctx context.Context, cacheKey stri
 }
 
 func (s *openAITokenCacheStub) DeleteAccessToken(ctx context.Context, cacheKey string) error {
+	atomic.AddInt32(&s.deleteCalled, 1)
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
@@ -66,6 +68,43 @@ func (s *openAITokenCacheStub) DeleteAccessToken(ctx context.Context, cacheKey s
 	defer s.mu.Unlock()
 	delete(s.tokens, cacheKey)
 	return nil
+}
+
+func TestOpenAITokenProvider_OAuth401BypassesRejectedCacheAndRefreshesBeforeExpiry(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	futureExpiry := time.Now().Add(6 * time.Hour).UTC().Format(time.RFC3339)
+	account := &Account{
+		ID:                      149,
+		Platform:                PlatformOpenAI,
+		Type:                    AccountTypeOAuth,
+		Status:                  StatusActive,
+		Schedulable:             true,
+		TempUnschedulableReason: "OAuth 401: access token rejected before local expiry",
+		Credentials: map[string]any{
+			"access_token":  "rejected-access-token",
+			"refresh_token": "refresh-token",
+			"expires_at":    futureExpiry,
+		},
+	}
+	cache.tokens[OpenAITokenCacheKey(account)] = "rejected-access-token"
+	repo := &refreshAPIAccountRepo{account: account}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials: map[string]any{
+			"access_token":  "recovered-access-token",
+			"refresh_token": "rotated-refresh-token",
+			"expires_at":    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	provider := NewOpenAITokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, cache), executor)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "recovered-access-token", token)
+	require.Equal(t, 1, executor.refreshCalls)
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.deleteCalled), "known-bad cached token must be evicted")
+	require.Equal(t, "recovered-access-token", cache.tokens[OpenAITokenCacheKey(account)])
 }
 
 func (s *openAITokenCacheStub) AcquireRefreshLock(ctx context.Context, cacheKey string, ttl time.Duration) (bool, error) {

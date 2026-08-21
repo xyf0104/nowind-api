@@ -486,7 +486,10 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	}
 	if reqModel == "" {
 		reqModel, _, _ = extractOpenAIRequestMetaFromBody(requestBody)
-		reqModel = canonicalOpenAIAccountSchedulingModel(account, reqModel)
+	}
+	reqModel = canonicalOpenAIAccountSchedulingModel(account, reqModel)
+	if account != nil && account.IsGrok() {
+		reqModel = s.canonicalGrokSchedulingModel(ctx, account, reqModel)
 	}
 	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
 	kind := "http_error"

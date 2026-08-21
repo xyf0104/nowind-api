@@ -447,6 +447,63 @@ func TestGrokQuotaServiceProbeUsageStoresHeaders(t *testing.T) {
 	require.NotNil(t, repo.updates[42][grokQuotaSnapshotExtraKey])
 }
 
+func TestGrokQuotaServiceProbeUsageRegionalDefaultOmitsCLIHeaders(t *testing.T) {
+	account := healthyGrokQuotaOAuthAccount(142)
+	repo := &grokQuotaAccountRepo{
+		mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Ratelimit-Limit-Requests": []string{"10"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_probe"}`)),
+	}}
+	svc := NewGrokQuotaService(repo, nil, NewGrokTokenProvider(repo, nil), upstream, nil)
+	svc.SetSettingService(NewSettingService(&grokBaseURLSettingRepoStub{values: map[string]string{
+		SettingKeyGrokDefaultBaseURLMode: GrokDefaultBaseURLModeUSEast1,
+	}}, nil))
+
+	_, err := svc.ProbeUsage(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, xai.DefaultUSEast1BaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Mode"))
+	require.NotEqual(t, grokUpstreamUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+}
+
+func TestGrokObservedModelsSyncRegionalDefaultOmitsCLIIdentityHeaders(t *testing.T) {
+	account := healthyGrokQuotaOAuthAccount(143)
+	account.Credentials["sub"] = "private-user-id"
+	account.Credentials["email"] = "private-user@example.com"
+	repo := &grokQuotaAccountRepo{
+		mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"grok-4.5"}]}`)),
+	}}
+	svc := NewGrokQuotaService(repo, nil, NewGrokTokenProvider(repo, nil), upstream, nil)
+	svc.SetSettingService(NewSettingService(&grokBaseURLSettingRepoStub{values: map[string]string{
+		SettingKeyGrokDefaultBaseURLMode: GrokDefaultBaseURLModeUSWest2,
+	}}, nil))
+
+	err := svc.syncGrokObservedModels(context.Background(), account)
+
+	require.NoError(t, err)
+	require.Equal(t, xai.DefaultUSWest2BaseURL+"/models", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Mode"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-UserID"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Email"))
+	require.NotEqual(t, grokUpstreamUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.NotNil(t, repo.updates[account.ID][grokObservedModelsExtraKey])
+}
+
 func TestGrokQuotaServiceProbeUsageIgnoresAccountGrokMapping(t *testing.T) {
 	t.Parallel()
 
