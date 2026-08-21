@@ -1445,7 +1445,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	// Delay this account-bound header until the first downstream SSE frame.
 	// A pre-output protocol failure may still switch accounts, in which case the
 	// client must never observe state minted by the discarded attempt.
-	c.Writer.Header().Del(http.CanonicalHeaderKey(openAIWSTurnStateHeader))
+	c.Writer.Header().Del(openAIWSTurnStateHeader)
 	stagedTurnState := extractOpenAICodexTurnState(resp.Header)
 	turnStateCommitted := false
 	commitTurnState := func() {
@@ -1454,10 +1454,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 		turnStateCommitted = true
 		if stagedTurnState == "" {
-			c.Writer.Header().Del(http.CanonicalHeaderKey(openAIWSTurnStateHeader))
+			c.Writer.Header().Del(openAIWSTurnStateHeader)
 			return
 		}
-		c.Writer.Header().Set(http.CanonicalHeaderKey(openAIWSTurnStateHeader), stagedTurnState)
+		c.Writer.Header().Set(openAIWSTurnStateHeader, stagedTurnState)
 		s.noteOpenAICodexTurnStateProvenance(c, account)
 	}
 
@@ -1585,7 +1585,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				errorMessage := extractOpenAISSEErrorMessage(dataBytes)
 				if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, errorMessage); matched {
 					s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "http_error", dataBytes, errorMessage)
-					c.Writer.Header().Del(http.CanonicalHeaderKey(openAIWSTurnStateHeader))
+					c.Writer.Header().Del(openAIWSTurnStateHeader)
 					MarkResponseCommitted(c)
 					c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 					c.JSON(status, gin.H{

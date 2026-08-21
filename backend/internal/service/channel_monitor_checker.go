@@ -168,8 +168,11 @@ type providerAdapter struct {
 //
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
 var providerAdapters = map[string]providerAdapter{
-	MonitorProviderOpenAI: providerOpenAIChatAdapter,
-	MonitorProviderGrok:   providerGrokChatAdapter,
+	MonitorProviderOpenAI:   providerOpenAIChatAdapter,
+	MonitorProviderGrok:     providerGrokChatAdapter,
+	MonitorProviderKimi:     newOpenAICompatibleChatAdapter(providerOpenAIPath),
+	MonitorProviderZhipu:    newOpenAICompatibleChatAdapter(providerZhipuPath),
+	MonitorProviderDeepseek: newOpenAICompatibleChatAdapter(providerOpenAIPath),
 	MonitorProviderAnthropic: {
 		buildPath: func(string) string { return providerAnthropicPath },
 		buildBody: func(model, prompt string) ([]byte, error) {
@@ -255,13 +258,6 @@ func providerAdapterFor(provider, apiMode string) (providerAdapter, string, bool
 	}
 	adapter, ok := providerAdapters[provider]
 	return adapter, MonitorAPIModeChatCompletions, ok
-}
-
-// isSupportedProvider 校验 provider 字符串是否在 adapter 表中。
-// 供 validate.go 的 validateProvider 复用，避免两份 switch 漂移。
-func isSupportedProvider(p string) bool {
-	_, ok := providerAdapters[p]
-	return ok
 }
 
 // callProvider 通过 providerAdapters 分发到具体实现。

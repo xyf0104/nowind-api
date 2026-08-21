@@ -66,10 +66,7 @@ func applyOpenAICodexBetaFeatures(c *gin.Context, account *Account, h http.Heade
 	if h == nil {
 		return
 	}
-	nativeCompaction := false
-	if isOpenAINativeCompactionV2(c) {
-		nativeCompaction = true
-	}
+	nativeCompaction := isOpenAINativeCompactionV2(c)
 	for _, candidate := range body {
 		if HasCompactionTriggerInInput(candidate) || gjson.GetBytes(candidate, "compaction_trigger").Exists() {
 			nativeCompaction = true

@@ -381,6 +381,27 @@ func TestProviderProbeCapabilityMatrix(t *testing.T) {
 	}
 }
 
+func TestProviderAdapterFor_CNProvidersUsesExpectedChatPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		wantPath string
+	}{
+		{name: "kimi", provider: MonitorProviderKimi, wantPath: providerOpenAIPath},
+		{name: "zhipu", provider: MonitorProviderZhipu, wantPath: providerZhipuPath},
+		{name: "deepseek", provider: MonitorProviderDeepseek, wantPath: providerOpenAIPath},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter, apiMode, ok := providerAdapterFor(tt.provider, MonitorAPIModeChatCompletions)
+			require.True(t, ok)
+			require.Equal(t, MonitorAPIModeChatCompletions, apiMode)
+			require.Equal(t, tt.wantPath, adapter.buildPath("ignored-model"))
+		})
+	}
+}
+
 // --- 关联账号校验 ---
 
 func TestValidateLinkedAccount_Matrix(t *testing.T) {
