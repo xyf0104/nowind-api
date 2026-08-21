@@ -77,6 +77,18 @@ describe('useTableLoader', () => {
       expect(loading.value).toBe(false)
     })
 
+    it('忽略已失效请求返回的空结果', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(undefined)
+      const { items, loading, load, pagination } = useTableLoader({ fetchFn })
+
+      await expect(load()).resolves.toBeUndefined()
+
+      expect(items.value).toEqual([])
+      expect(pagination.total).toBe(0)
+      expect(pagination.pages).toBe(0)
+      expect(loading.value).toBe(false)
+    })
+
     it('使用默认 pageSize=20', async () => {
       const fetchFn = createMockFetchFn()
       const { load, pagination } = useTableLoader({ fetchFn })

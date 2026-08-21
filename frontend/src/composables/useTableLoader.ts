@@ -56,6 +56,13 @@ export function useTableLoader<T, P extends Record<string, any>>(options: TableL
         { signal: currentController.signal }
       )
 
+      // A transport can resolve after its request was superseded or aborted.
+      // Never let that stale completion overwrite the active table, and tolerate
+      // an empty result during teardown instead of creating an unhandled error.
+      if (!response || currentController.signal.aborted || abortController !== currentController) {
+        return
+      }
+
       items.value = response.items || []
       pagination.total = response.total || 0
       pagination.pages = response.pages || 0
