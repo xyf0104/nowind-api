@@ -302,7 +302,7 @@ export default {
     requestCountUnit: '次请求',
     openBillingBreakdown: '查看用户与模型扣费明细',
     weeklyEstimate: '周额度约',
-    weeklyEstimateHint: '每跨入下一百分点时，以当时累计账号已用作为完整 1% 的终点检查点，再按“实际账号已用 + 剩余额度 × 可信基准以来每 1% 的累计均值”估算；同一百分点内保持上次结果，100% 时显示实际账号已用',
+    weeklyEstimateHint: '以最近完成的连续 1 个百分点内账号已用增量作为每 1% 成本，按“达到当前百分点时的最大累计账号已用 + 剩余百分点 × 最近 1% 成本”估算；中途登录或重新授权且起始计费为 0 时，用首个完整 1% 补算此前已用部分；未完成首个 1% 时显示统计中，100% 时显示实际账号已用',
     weeklyEstimatePending: '统计中',
     oauthBillingDetails: '账号扣费明细',
     currentUsageWindow: '当前 {window} 窗口',
@@ -528,9 +528,9 @@ export default {
   },
 
   pricingAreaTabs: {
-    label: '模型价格与渠道监控',
+    label: '模型价格与渠道状态',
     pricing: '模型价格',
-    monitor: '渠道监控',
+    monitor: '渠道状态',
   },
 
   // Channel Status (user-facing read-only view)

@@ -696,7 +696,7 @@ describe('AccountUsageCell', () => {
     expect(estimate.get('span:last-child').classes()).toContain('dark:text-emerald-400')
   })
 
-  it('OpenAI OAuth 刷新后展示后端按完整额度段计算的周额度', async () => {
+  it('OpenAI OAuth 刷新后展示后端按最近完整 1% 计算的周额度', async () => {
     getUsage
       .mockResolvedValueOnce({
         seven_day: {

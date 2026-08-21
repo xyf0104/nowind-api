@@ -297,7 +297,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'When usage crosses into the next percentage point, the account cost at that boundary becomes the completed 1% checkpoint; the estimate is actual cost plus remaining quota at the cumulative per-percent average, the same percentage keeps the previous result, and 100% shows actual cost',
+    weeklyEstimateHint: 'Uses the account-cost increase from the latest completed 1% interval, then estimates total quota as the maximum cumulative cost at the boundary plus the remaining percentage points at that latest rate. For an account first logged in or reauthorized mid-window with zero starting cost, the first complete 1% also estimates the earlier used portion. Collecting is shown until that first interval completes; 100% shows actual cost.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',
@@ -523,9 +523,9 @@ export default {
   },
 
   pricingAreaTabs: {
-    label: 'Model pricing and channel monitor',
+    label: 'Model pricing and channel status',
     pricing: 'Model Pricing',
-    monitor: 'Channel Monitor',
+    monitor: 'Channel Status',
   },
 
   // Channel Status (user-facing read-only view)

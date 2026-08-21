@@ -893,7 +893,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Each completed two-point interval produces a per-percent cost sample from the account-cost delta divided by the actual percentage-point delta; up to five recent samples are kept, median/MAD filters obvious outliers, and newer samples have slightly more weight. An incomplete interval keeps the prior result; 100% shows actual cost',
+    weeklyEstimateHint: 'Uses the account-cost increase from the latest completed 1% interval, then estimates total quota as the maximum cumulative cost at the boundary plus the remaining percentage points at that latest rate. For an account first logged in or reauthorized mid-window with zero starting cost, the first complete 1% also estimates the earlier used portion. Collecting is shown until that first interval completes; 100% shows actual cost.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

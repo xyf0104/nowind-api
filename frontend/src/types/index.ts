@@ -1431,7 +1431,7 @@ export interface UsageProgress {
   resets_at: string | null
   remaining_seconds: number
   window_stats?: WindowStats | null // 窗口期统计（从窗口开始到当前的使用量）
-	weekly_estimate_usd?: number | null // 完整 2% 区间生成每 1% 样本并经中位数/MAD稳健估算；100% 时等于账号已用
+	weekly_estimate_usd?: number | null // 最近完整 1% 的账号计费增量用于估算；中途登录且起始计费为 0 时补算此前已用额度
   used_requests?: number
   limit_requests?: number
 }
