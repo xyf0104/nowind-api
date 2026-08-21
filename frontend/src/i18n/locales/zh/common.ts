@@ -173,7 +173,7 @@ export default {
     groups: '分组管理',
     channels: '渠道管理',
     modelPricing: '模型价格',
-    availableChannels: '模型价格',
+    availableChannels: '可用渠道',
     subscriptions: '订阅管理',
     accounts: '账号管理',
     tokenConverter: '令牌转换',

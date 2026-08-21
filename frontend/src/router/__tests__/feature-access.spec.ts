@@ -26,9 +26,7 @@ const appStore = vi.hoisted(() => ({
   cachedPublicSettings: null as null | {
     payment_enabled?: boolean
     risk_control_enabled?: boolean
-    channel_monitor_enabled?: boolean
     model_pricing_enabled?: boolean
-    available_channels_enabled?: boolean
     custom_menu_items?: []
   },
   fetchPublicSettings: vi.fn(),
@@ -126,14 +124,15 @@ describe('feature route guard', () => {
     appStore.fetchPublicSettings.mockReset()
   })
 
-  it('marks /pricing as model-pricing gated while retaining the monitor compatibility alias', () => {
+  it('keeps only XIASS model pricing user-facing and redirects retired channel pages', () => {
     const pricing = routerHarness.routes.find((route) => route.path === '/pricing')
     const monitor = routerHarness.routes.find((route) => route.path === '/pricing/monitor')
+    const availableChannels = routerHarness.routes.find((route) => route.path === '/available-channels')
 
     expect(pricing?.meta?.requiresModelPricing).toBe(true)
     expect(monitor?.alias).toBe('/monitor')
-    expect(monitor?.meta?.requiresChannelMonitor).toBe(true)
-    expect(routerHarness.routes.find((route) => route.path === '/available-channels')?.meta?.requiresAvailableChannels).toBe(true)
+    expect(monitor?.redirect).toEqual({ name: 'UserPricing' })
+    expect(availableChannels?.redirect).toEqual({ name: 'UserPricing' })
   })
 
   it('waits for the first public-settings request before deciding payment access', async () => {
@@ -159,9 +158,7 @@ describe('feature route guard', () => {
   it.each([
     ['payment', { requiresPayment: true }, '/purchase'],
     ['risk control', { requiresRiskControl: true }, '/admin/risk-control'],
-    ['channel monitor', { requiresChannelMonitor: true }, '/pricing/monitor'],
     ['model pricing', { requiresModelPricing: true }, '/pricing'],
-    ['available channels', { requiresAvailableChannels: true }, '/available-channels'],
   ])('does not treat a failed %s settings load as explicitly disabled', async (_name, meta, path) => {
     authStore.isAdmin = meta.requiresRiskControl === true
     appStore.fetchPublicSettings.mockResolvedValue(null)
@@ -183,34 +180,10 @@ describe('feature route guard', () => {
       '/admin/settings',
     ],
     [
-      'channel monitor',
-      { requiresChannelMonitor: true },
-      { channel_monitor_enabled: false },
-      '/pricing',
-    ],
-    [
       'model pricing',
       { requiresModelPricing: true },
-      { model_pricing_enabled: false, channel_monitor_enabled: true },
-      '/pricing/monitor',
-    ],
-    [
-      'model pricing when both pricing-area features are disabled',
-      { requiresModelPricing: true },
-      { model_pricing_enabled: false, channel_monitor_enabled: false },
+      { model_pricing_enabled: false },
       '/dashboard',
-    ],
-    [
-      'channel monitor when both pricing-area features are disabled',
-      { requiresChannelMonitor: true },
-      { model_pricing_enabled: false, channel_monitor_enabled: false },
-      '/dashboard',
-    ],
-    [
-      'available channels',
-      { requiresAvailableChannels: true },
-      { available_channels_enabled: false, model_pricing_enabled: true },
-      '/pricing',
     ],
   ])('redirects when loaded settings explicitly disable %s', async (_name, meta, settings, target) => {
     authStore.isAdmin = meta.requiresRiskControl === true

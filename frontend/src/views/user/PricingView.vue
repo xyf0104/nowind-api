@@ -9,8 +9,6 @@
         </p>
       </div>
 
-      <PricingAreaTabs active-tab="pricing" />
-
       <!-- 产品类别 Tab -->
       <div class="custom-scrollbar flex max-w-full items-center gap-3 overflow-x-auto rounded-xl border border-gray-200/60 bg-white/40 p-2 shadow-sm backdrop-blur-sm dark:border-dark-700/60 dark:bg-dark-800/40">
         <button
@@ -299,7 +297,6 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformBrandIcon from '@/components/common/PlatformBrandIcon.vue'
 import PriceCell from '@/components/pricing/PriceCell.vue'
-import PricingAreaTabs from '@/components/user/PricingAreaTabs.vue'
 import userChannelsAPI, {
   type UserAvailableChannel,
   type UserAvailableGroup,

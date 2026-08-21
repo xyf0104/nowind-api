@@ -319,16 +319,8 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/available-channels',
-    name: 'AvailableChannels',
-    component: () => import('@/views/user/AvailableChannelsView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: false,
-      requiresAvailableChannels: true,
-      title: 'Available Channels',
-      titleKey: 'availableChannels.title',
-      descriptionKey: 'availableChannels.description'
-    }
+    // Retain old bookmarks without exposing the unused customer channel catalog.
+    redirect: { name: 'UserPricing' }
   },
   {
     path: '/profile',
@@ -546,15 +538,9 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/pricing/monitor',
     alias: '/monitor',
-    name: 'ChannelStatus',
-    component: () => import('@/views/user/ChannelStatusView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: false,
-      requiresChannelMonitor: true,
-      title: 'Channel Status',
-      titleKey: 'nav.channelStatus'
-    }
+    // Monitoring remains an admin operation. Preserve legacy customer links by
+    // returning them to the XIASS model-pricing page.
+    redirect: { name: 'UserPricing' }
   },
   {
     path: '/admin/subscriptions',
@@ -773,15 +759,6 @@ const routes: RouteRecordRaw[] = [
   }
 ]
 
-function pricingAreaFallback(settings: {
-  model_pricing_enabled?: boolean
-  channel_monitor_enabled?: boolean
-} | null | undefined): string {
-  if (settings?.model_pricing_enabled !== false) return '/pricing'
-  if (settings?.channel_monitor_enabled !== false) return '/pricing/monitor'
-  return '/dashboard'
-}
-
 /**
  * Create router instance
  */
@@ -987,10 +964,10 @@ router.beforeEach(async (to, _from, next) => {
 
 
   // 公共设置可能尚未加载（App.vue 的 onMounted 异步拉取晚于首次导航，且纯静态部署
-  // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control/channel_monitor/model_pricing/available_channels
+  // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control/model_pricing
   // 误判为“未启用”而错误拦截，故这里先确保设置加载完成。
   if (
-    (to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresChannelMonitor || to.meta.requiresModelPricing || to.meta.requiresAvailableChannels) &&
+    (to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresModelPricing) &&
     !appStore.publicSettingsLoaded
   ) {
     try {
@@ -1021,29 +998,11 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (
-    to.meta.requiresChannelMonitor &&
-    appStore.publicSettingsLoaded &&
-    appStore.cachedPublicSettings?.channel_monitor_enabled === false
-  ) {
-    next(pricingAreaFallback(appStore.cachedPublicSettings))
-    return
-  }
-
-  if (
     to.meta.requiresModelPricing &&
     appStore.publicSettingsLoaded &&
     appStore.cachedPublicSettings?.model_pricing_enabled === false
   ) {
-    next(pricingAreaFallback(appStore.cachedPublicSettings))
-    return
-  }
-
-  if (
-    to.meta.requiresAvailableChannels &&
-    appStore.publicSettingsLoaded &&
-    appStore.cachedPublicSettings?.available_channels_enabled === false
-  ) {
-    next(pricingAreaFallback(appStore.cachedPublicSettings))
+    next('/dashboard')
     return
   }
 

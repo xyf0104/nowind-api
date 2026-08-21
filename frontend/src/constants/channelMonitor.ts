@@ -1,10 +1,9 @@
 /**
  * Channel monitor shared constants.
  *
- * Single source of truth for provider/status string values used by both the
- * admin (`views/admin/ChannelMonitorView.vue`) and user-facing
- * (`views/user/ChannelStatusView.vue`) screens, plus the shared composable
- * `useChannelMonitorFormat`.
+ * Single source of truth for provider/status string values used by the admin
+ * channel-monitoring screens and the shared `useChannelMonitorFormat`
+ * composable.
  */
 
 import type { APIMode, CheckMode, Provider, MonitorStatus } from '@/api/admin/channelMonitor'

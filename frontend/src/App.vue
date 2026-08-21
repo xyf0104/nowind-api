@@ -39,7 +39,7 @@ const APP_LAYOUT_ROUTE_NAMES = new Set([
   'PurchaseSubscription', 'OrderList', 'PaymentQRCode', 'CustomPage',
   // AdminOps owns a real fullscreen mode, so it deliberately keeps its
   // existing self-contained layout instead of inheriting this shell.
-  'ChannelStatus', 'AdminDashboard', 'AdminAuditLogs', 'AdminUsers',
+  'AdminDashboard', 'AdminAuditLogs', 'AdminUsers',
   'AdminGroups', 'AdminChannels', 'AdminChannelMonitor', 'AdminSubscriptions',
   'AdminAccounts', 'AdminAnnouncements', 'AdminProxies', 'AdminRedeem',
   'AdminPromoCodes', 'AdminSettings', 'AdminRiskControl', 'AdminPromptAudit', 'AdminUsage',
@@ -218,8 +218,10 @@ onMounted(async () => {
     // If setup endpoint fails, assume normal mode and continue
   }
 
-  // Load public settings into appStore (will be cached for other components)
-  await appStore.fetchPublicSettings()
+  // The injected settings keep the first paint stable. Reconcile once with the
+  // authoritative endpoint so a stale HTML cache cannot leave feature flags or
+  // branding permanently out of sync with the saved settings.
+  await appStore.fetchPublicSettings(true)
 
   // Re-resolve document title now that site settings are available
   updateDocumentTitle()

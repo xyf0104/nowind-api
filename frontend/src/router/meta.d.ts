@@ -56,23 +56,10 @@ declare module 'vue-router' {
     requiresRiskControl?: boolean
 
     /**
-     * Whether this route requires the customer channel monitor to be enabled
-     * @default false
-     */
-    requiresChannelMonitor?: boolean
-
-    /**
      * Whether this route requires customer model pricing to be enabled.
      * @default false
      */
     requiresModelPricing?: boolean
-
-    /**
-     * Whether this route requires the user-facing available-channels feature
-     * to be enabled.
-     * @default false
-     */
-    requiresAvailableChannels?: boolean
 
     /**
      * i18n key for the page title

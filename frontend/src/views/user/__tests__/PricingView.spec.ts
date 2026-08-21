@@ -121,14 +121,11 @@ describe('PricingView', () => {
           PlatformBrandIcon: {
             props: ['platform'],
             template: '<span class="platform-brand-icon-stub" :data-platform="platform" />'
-          },
-          PricingAreaTabs: { template: '<div data-test="pricing-area-tabs" />' }
+          }
         }
       }
     })
     await flushPromises()
-
-    expect(wrapper.find('[data-test="pricing-area-tabs"]').exists()).toBe(true)
 
     for (const platform of ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek']) {
       const tab = wrapper.find(`[data-test="platform-${platform}"]`)
@@ -184,8 +181,7 @@ describe('PricingView', () => {
         stubs: {
           AppLayout: { template: '<main><slot /></main>' },
           Icon: { template: '<span />' },
-          PlatformBrandIcon: { template: '<span />' },
-          PricingAreaTabs: { template: '<div data-test="pricing-area-tabs" />' }
+          PlatformBrandIcon: { template: '<span />' }
         }
       }
     })
