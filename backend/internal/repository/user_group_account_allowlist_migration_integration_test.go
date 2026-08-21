@@ -74,22 +74,34 @@ CREATE TABLE accounts (
 	_, err = conn.ExecContext(ctx, `
 INSERT INTO users (id, deleted_at) VALUES
     ($1, NULL),
-    ($2, NOW());
+    ($2, NOW())
+`, activeUserID, deletedUserID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO groups (id, deleted_at) VALUES
-    ($3, NULL),
-    ($4, NOW());
+    ($1, NULL),
+    ($2, NOW())
+`, activeGroupID, deletedGroupID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO accounts (id, deleted_at) VALUES
-    ($5, NULL),
-    ($6, NOW());
+    ($1, NULL),
+    ($2, NOW())
+`, activeAccountID, deletedAccountID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlist_scopes (user_id, group_id) VALUES
-    ($1, $3),
-    ($2, $3),
-    ($1, $4);
+    ($1, $2),
+    ($3, $2),
+    ($1, $4)
+`, activeUserID, activeGroupID, deletedUserID, deletedGroupID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlists (user_id, group_id, account_id) VALUES
-    ($1, $3, $6),
-    ($2, $3, $5),
-    ($1, $4, $5);
-`, activeUserID, deletedUserID, activeGroupID, deletedGroupID, activeAccountID, deletedAccountID)
+    ($1, $2, $3),
+    ($4, $2, $5),
+    ($1, $6, $5)
+`, activeUserID, activeGroupID, deletedAccountID, deletedUserID, activeAccountID, deletedGroupID)
 	require.NoError(t, err)
 
 	// Simulate an earlier development draft that created the detail table but did
@@ -161,18 +173,30 @@ SELECT EXISTS (
 	)
 
 	_, err = conn.ExecContext(ctx, `
-INSERT INTO users (id, deleted_at) VALUES ($1, NULL), ($2, NULL);
-INSERT INTO groups (id, deleted_at) VALUES ($3, NULL), ($4, NULL);
-INSERT INTO accounts (id, deleted_at) VALUES ($5, NULL), ($6, NULL);
+INSERT INTO users (id, deleted_at) VALUES ($1, NULL), ($2, NULL)
+`, accountUserID, deletedParentUserID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
+INSERT INTO groups (id, deleted_at) VALUES ($1, NULL), ($2, NULL)
+`, accountGroupID, deletedParentGroupID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
+INSERT INTO accounts (id, deleted_at) VALUES ($1, NULL), ($2, NULL)
+`, softDeletedAccountID, remainingAccountID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlist_scopes (user_id, group_id) VALUES
-    ($1, $3),
-    ($2, $3),
-    ($1, $4);
+    ($1, $2),
+    ($3, $2),
+    ($1, $4)
+`, accountUserID, accountGroupID, deletedParentUserID, deletedParentGroupID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO user_group_account_allowlists (user_id, group_id, account_id) VALUES
-    ($1, $3, $5),
-    ($2, $3, $6),
-    ($1, $4, $6);
-`, accountUserID, deletedParentUserID, accountGroupID, deletedParentGroupID, softDeletedAccountID, remainingAccountID)
+    ($1, $2, $3),
+    ($4, $2, $5),
+    ($1, $6, $5)
+`, accountUserID, accountGroupID, softDeletedAccountID, deletedParentUserID, remainingAccountID, deletedParentGroupID)
 	require.NoError(t, err)
 
 	triggerPayloads := map[string]struct{}{
