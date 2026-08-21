@@ -101,6 +101,42 @@ func (s *adminServiceImpl) GetUser(ctx context.Context, id int64) (*User, error)
 	return user, nil
 }
 
+type adminRuntimeUserBatchRepository interface {
+	GetByIDs(ctx context.Context, ids []int64) ([]*User, error)
+}
+
+// GetUsersByIDs is a narrow runtime read used by the group account assignment
+// page. It deliberately skips last-used and group-rate enrichment that the
+// full admin user detail endpoint needs.
+func (s *adminServiceImpl) GetUsersByIDs(ctx context.Context, ids []int64) ([]User, error) {
+	batch, ok := s.userRepo.(adminRuntimeUserBatchRepository)
+	if !ok {
+		users := make([]User, 0, len(ids))
+		for _, id := range ids {
+			user, err := s.userRepo.GetByID(ctx, id)
+			if errors.Is(err, ErrUserNotFound) || user == nil {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			users = append(users, *user)
+		}
+		return users, nil
+	}
+	loaded, err := batch.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	users := make([]User, 0, len(loaded))
+	for _, user := range loaded {
+		if user != nil {
+			users = append(users, *user)
+		}
+	}
+	return users, nil
+}
+
 func (s *adminServiceImpl) GetUserIncludeDeleted(ctx context.Context, id int64) (*User, error) {
 	return s.userRepo.GetByIDIncludeDeleted(ctx, id)
 }

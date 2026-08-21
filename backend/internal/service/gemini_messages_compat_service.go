@@ -55,6 +55,29 @@ type GeminiMessagesCompatService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
+	candidatePolicy           AccountCandidateAccessPolicy
+}
+
+// SetAccountCandidateAccessPolicy attaches the optional user/group account
+// allowlist without changing the upstream-compatible constructor contract.
+func (s *GeminiMessagesCompatService) SetAccountCandidateAccessPolicy(policy AccountCandidateAccessPolicy) {
+	if s != nil {
+		s.candidatePolicy = policy
+	}
+}
+
+func (s *GeminiMessagesCompatService) filterAccountCandidates(ctx context.Context, groupID *int64, accounts []Account) ([]Account, error) {
+	if s == nil {
+		return accounts, nil
+	}
+	return filterAccountCandidatesWithPolicy(ctx, s.candidatePolicy, groupID, accounts)
+}
+
+func (s *GeminiMessagesCompatService) requireAccountCandidate(ctx context.Context, groupID *int64, accountID int64) error {
+	if s == nil {
+		return nil
+	}
+	return requireAccountCandidateWithPolicy(ctx, s.candidatePolicy, groupID, accountID)
 }
 
 func (s *GeminiMessagesCompatService) readUpstreamErrorBody(resp *http.Response) []byte {
@@ -147,7 +170,9 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 	// 5. 设置粘性会话绑定
 	// Set sticky session binding
 	if sessionHash != "" {
-		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
+		if err := s.requireAccountCandidate(ctx, groupID, selected.ID); err == nil {
+			_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
+		}
 	}
 
 	return s.hydrateSelectedAccount(ctx, selected)
@@ -207,6 +232,12 @@ func (s *GeminiMessagesCompatService) tryStickySessionHit(
 	}
 
 	if _, excluded := excludedIDs[accountID]; excluded {
+		return nil
+	}
+	if err := s.requireAccountCandidate(ctx, groupID, accountID); err != nil {
+		if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+			_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
+		}
 		return nil
 	}
 
@@ -446,7 +477,10 @@ func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context
 func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
-		return accounts, err
+		if err != nil {
+			return nil, err
+		}
+		return s.filterAccountCandidates(ctx, groupID, accounts)
 	}
 
 	useMixedScheduling := platform == PlatformGemini && !hasForcePlatform
@@ -455,13 +489,21 @@ func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Co
 		queryPlatforms = []string{platform, PlatformAntigravity}
 	}
 
+	var (
+		accounts []Account
+		err      error
+	)
 	if groupID != nil {
-		return s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, queryPlatforms)
+		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, queryPlatforms)
+	} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+		accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, queryPlatforms)
+	} else {
+		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, queryPlatforms)
 	}
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		return s.accountRepo.ListSchedulableByPlatforms(ctx, queryPlatforms)
+	if err != nil {
+		return nil, err
 	}
-	return s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, queryPlatforms)
+	return s.filterAccountCandidates(ctx, groupID, accounts)
 }
 
 func (s *GeminiMessagesCompatService) validateUpstreamBaseURL(raw string) (string, error) {

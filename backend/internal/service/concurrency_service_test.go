@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ type stubConcurrencyCacheForTest struct {
 	apiKeyConcurrencyErr error
 
 	// 记录调用
+	acquireAccountCalls      atomic.Int64
 	releasedAccountIDs       []int64
 	releasedRequestIDs       []string
 	loadBatchCalls           atomic.Int64
@@ -74,32 +76,146 @@ type groupLeaseCacheForTest struct {
 	groupSnapshotComplete   bool
 	groupSnapshotAt         time.Time
 	groupSnapshotErr        error
+	groupTrackErr           error
+	runtimeMu               sync.Mutex
+	runtimeGroupLeases      map[int64]map[string]int64
+}
+
+type userGroupAccountLeaseIdentityForTest struct {
+	userID    int64
+	accountID int64
+}
+
+type userGroupAccountLeaseCacheForTest struct {
+	groupLeaseCacheForTest
+	trackedUserIDs            []int64
+	trackedUserGroupIDs       []int64
+	trackedUserAccountIDs     []int64
+	trackedUserRequestIDs     []string
+	releasedUserIDs           []int64
+	releasedUserGroupIDs      []int64
+	releasedUserAccountIDs    []int64
+	releasedUserRequestIDs    []string
+	userGroupAccountCounts    map[int64]map[int64]map[int64]int
+	userGroupSnapshotComplete bool
+	userGroupSnapshotAt       time.Time
+	userGroupSnapshotErr      error
+	userGroupTrackErr         error
+	runtimeUserGroupLeases    map[int64]map[string]userGroupAccountLeaseIdentityForTest
 }
 
 func (c *groupLeaseCacheForTest) TrackGroupSlot(_ context.Context, groupID, accountID int64, requestID string) error {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
 	c.trackedGroupIDs = append(c.trackedGroupIDs, groupID)
 	c.trackedGroupAccountIDs = append(c.trackedGroupAccountIDs, accountID)
 	c.trackedGroupRequestIDs = append(c.trackedGroupRequestIDs, requestID)
+	if c.groupTrackErr != nil {
+		return c.groupTrackErr
+	}
+	if c.runtimeGroupLeases != nil {
+		if c.runtimeGroupLeases[groupID] == nil {
+			c.runtimeGroupLeases[groupID] = make(map[string]int64)
+		}
+		c.runtimeGroupLeases[groupID][requestID] = accountID
+	}
 	return nil
 }
 
 func (c *groupLeaseCacheForTest) ReleaseGroupSlot(_ context.Context, groupID, accountID int64, requestID string) error {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
 	c.releasedGroupIDs = append(c.releasedGroupIDs, groupID)
 	c.releasedGroupAccountIDs = append(c.releasedGroupAccountIDs, accountID)
 	c.releasedGroupRequestIDs = append(c.releasedGroupRequestIDs, requestID)
+	if leases := c.runtimeGroupLeases[groupID]; leases != nil {
+		delete(leases, requestID)
+		if len(leases) == 0 {
+			delete(c.runtimeGroupLeases, groupID)
+		}
+	}
 	return nil
 }
 
 func (c *groupLeaseCacheForTest) GetGroupConcurrencyBatch(_ context.Context, groupIDs []int64) (map[int64]int, error) {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
 	out := make(map[int64]int, len(groupIDs))
 	for _, groupID := range groupIDs {
-		out[groupID] = c.groupCounts[groupID]
+		if c.runtimeGroupLeases != nil {
+			out[groupID] = len(c.runtimeGroupLeases[groupID])
+		} else {
+			out[groupID] = c.groupCounts[groupID]
+		}
 	}
 	return out, nil
 }
 
 func (c *groupLeaseCacheForTest) GetGroupAccountConcurrency(_ context.Context, groupID int64) (map[int64]int, bool, time.Time, error) {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	if c.runtimeGroupLeases != nil {
+		counts := make(map[int64]int)
+		for _, accountID := range c.runtimeGroupLeases[groupID] {
+			counts[accountID]++
+		}
+		return counts, c.groupSnapshotComplete, c.groupSnapshotAt, c.groupSnapshotErr
+	}
 	return c.groupAccountCounts[groupID], c.groupSnapshotComplete, c.groupSnapshotAt, c.groupSnapshotErr
+}
+
+func (c *userGroupAccountLeaseCacheForTest) TrackUserGroupAccountSlot(_ context.Context, userID, groupID, accountID int64, requestID string) error {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	c.trackedUserIDs = append(c.trackedUserIDs, userID)
+	c.trackedUserGroupIDs = append(c.trackedUserGroupIDs, groupID)
+	c.trackedUserAccountIDs = append(c.trackedUserAccountIDs, accountID)
+	c.trackedUserRequestIDs = append(c.trackedUserRequestIDs, requestID)
+	if c.userGroupTrackErr != nil {
+		return c.userGroupTrackErr
+	}
+	if c.runtimeUserGroupLeases != nil {
+		if c.runtimeUserGroupLeases[groupID] == nil {
+			c.runtimeUserGroupLeases[groupID] = make(map[string]userGroupAccountLeaseIdentityForTest)
+		}
+		c.runtimeUserGroupLeases[groupID][requestID] = userGroupAccountLeaseIdentityForTest{
+			userID:    userID,
+			accountID: accountID,
+		}
+	}
+	return nil
+}
+
+func (c *userGroupAccountLeaseCacheForTest) ReleaseUserGroupAccountSlot(_ context.Context, userID, groupID, accountID int64, requestID string) error {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	c.releasedUserIDs = append(c.releasedUserIDs, userID)
+	c.releasedUserGroupIDs = append(c.releasedUserGroupIDs, groupID)
+	c.releasedUserAccountIDs = append(c.releasedUserAccountIDs, accountID)
+	c.releasedUserRequestIDs = append(c.releasedUserRequestIDs, requestID)
+	if leases := c.runtimeUserGroupLeases[groupID]; leases != nil {
+		delete(leases, requestID)
+		if len(leases) == 0 {
+			delete(c.runtimeUserGroupLeases, groupID)
+		}
+	}
+	return nil
+}
+
+func (c *userGroupAccountLeaseCacheForTest) GetUserGroupAccountConcurrency(_ context.Context, groupID int64) (map[int64]map[int64]int, bool, time.Time, error) {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	if c.runtimeUserGroupLeases != nil {
+		counts := make(map[int64]map[int64]int)
+		for _, lease := range c.runtimeUserGroupLeases[groupID] {
+			if counts[lease.userID] == nil {
+				counts[lease.userID] = make(map[int64]int)
+			}
+			counts[lease.userID][lease.accountID]++
+		}
+		return counts, c.userGroupSnapshotComplete, c.userGroupSnapshotAt, c.userGroupSnapshotErr
+	}
+	return c.userGroupAccountCounts[groupID], c.userGroupSnapshotComplete, c.userGroupSnapshotAt, c.userGroupSnapshotErr
 }
 
 func (c *ingressLeaseCacheForTest) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {
@@ -129,8 +245,10 @@ func (c *ingressLeaseCacheForTest) ReleaseOpenAIWSIngressLease(ctx context.Conte
 var _ ConcurrencyCache = (*stubConcurrencyCacheForTest)(nil)
 var _ OpenAIWSIngressLeaseCache = (*ingressLeaseCacheForTest)(nil)
 var _ GroupConcurrencyCache = (*groupLeaseCacheForTest)(nil)
+var _ UserGroupAccountConcurrencyCache = (*userGroupAccountLeaseCacheForTest)(nil)
 
 func (c *stubConcurrencyCacheForTest) AcquireAccountSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
+	c.acquireAccountCalls.Add(1)
 	return c.acquireResult, c.acquireErr
 }
 func (c *stubConcurrencyCacheForTest) ReleaseAccountSlot(_ context.Context, accountID int64, requestID string) error {
@@ -264,6 +382,31 @@ func TestAcquireAccountSlot_TracksActualGroupAndAccount(t *testing.T) {
 	require.Equal(t, cache.trackedGroupRequestIDs, cache.releasedGroupRequestIDs)
 }
 
+func TestAcquireAccountSlot_TracksActualUserGroupAndAccount(t *testing.T) {
+	cache := &userGroupAccountLeaseCacheForTest{
+		groupLeaseCacheForTest: groupLeaseCacheForTest{
+			stubConcurrencyCacheForTest: stubConcurrencyCacheForTest{acquireResult: true},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: 42})
+	ctx = context.WithValue(ctx, ctxkey.UserID, int64(18))
+
+	result, err := svc.AcquireAccountSlot(ctx, 99, 5)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.Equal(t, []int64{18}, cache.trackedUserIDs)
+	require.Equal(t, []int64{42}, cache.trackedUserGroupIDs)
+	require.Equal(t, []int64{99}, cache.trackedUserAccountIDs)
+	require.Len(t, cache.trackedUserRequestIDs, 1)
+
+	result.ReleaseFunc()
+	require.Equal(t, []int64{18}, cache.releasedUserIDs)
+	require.Equal(t, []int64{42}, cache.releasedUserGroupIDs)
+	require.Equal(t, []int64{99}, cache.releasedUserAccountIDs)
+	require.Equal(t, cache.trackedUserRequestIDs, cache.releasedUserRequestIDs)
+}
+
 func TestGetGroupAccountConcurrencySnapshot(t *testing.T) {
 	snapshotAt := time.Unix(1_700_000_000, 0).UTC()
 	t.Run("returns complete group scoped counts", func(t *testing.T) {
@@ -294,6 +437,38 @@ func TestGetGroupAccountConcurrencySnapshot(t *testing.T) {
 	})
 }
 
+func TestGetUserGroupAccountConcurrencySnapshot(t *testing.T) {
+	snapshotAt := time.Unix(1_700_000_000, 0).UTC()
+	t.Run("returns complete user scoped counts", func(t *testing.T) {
+		cache := &userGroupAccountLeaseCacheForTest{
+			userGroupAccountCounts: map[int64]map[int64]map[int64]int{
+				42: {
+					18: {7: 2, 8: 1},
+					19: {7: 1},
+				},
+			},
+			userGroupSnapshotComplete: true,
+			userGroupSnapshotAt:       snapshotAt,
+		}
+		snapshot, err := NewConcurrencyService(cache).GetUserGroupAccountConcurrencySnapshot(context.Background(), 42)
+		require.NoError(t, err)
+		require.Equal(t, map[int64]map[int64]int{18: {7: 2, 8: 1}, 19: {7: 1}}, snapshot.Counts)
+		require.Equal(t, snapshotAt, snapshot.SnapshotAt)
+	})
+
+	t.Run("incomplete cache fails closed", func(t *testing.T) {
+		cache := &userGroupAccountLeaseCacheForTest{userGroupSnapshotComplete: false}
+		_, err := NewConcurrencyService(cache).GetUserGroupAccountConcurrencySnapshot(context.Background(), 42)
+		require.ErrorIs(t, err, ErrUserGroupAccountConcurrencySnapshotIncomplete)
+	})
+
+	t.Run("cache errors fail unavailable", func(t *testing.T) {
+		cache := &userGroupAccountLeaseCacheForTest{userGroupSnapshotErr: errors.New("redis down")}
+		_, err := NewConcurrencyService(cache).GetUserGroupAccountConcurrencySnapshot(context.Background(), 42)
+		require.ErrorIs(t, err, ErrUserGroupAccountConcurrencySnapshotUnavailable)
+	})
+}
+
 func TestAcquireAccountSlot_Failure(t *testing.T) {
 	cache := &stubConcurrencyCacheForTest{acquireResult: false}
 	svc := NewConcurrencyService(cache)
@@ -304,14 +479,102 @@ func TestAcquireAccountSlot_Failure(t *testing.T) {
 	require.Nil(t, result.ReleaseFunc)
 }
 
-func TestAcquireAccountSlot_UnlimitedConcurrency(t *testing.T) {
-	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
-
+func TestAcquireAccountSlot_UnlimitedConcurrencyTracksRuntimeWithoutLimiting(t *testing.T) {
 	for _, maxConcurrency := range []int{0, -1} {
-		result, err := svc.AcquireAccountSlot(context.Background(), 1, maxConcurrency)
-		require.NoError(t, err)
-		require.True(t, result.Acquired, "maxConcurrency=%d 应无限制通过", maxConcurrency)
-		require.NotNil(t, result.ReleaseFunc, "ReleaseFunc 应为 no-op 函数")
+		t.Run(strconv.Itoa(maxConcurrency), func(t *testing.T) {
+			cache := &userGroupAccountLeaseCacheForTest{
+				groupLeaseCacheForTest: groupLeaseCacheForTest{
+					stubConcurrencyCacheForTest: stubConcurrencyCacheForTest{
+						acquireErr: errors.New("account limiter must not be called"),
+					},
+					groupSnapshotComplete: true,
+					runtimeGroupLeases:    make(map[int64]map[string]int64),
+				},
+				userGroupSnapshotComplete: true,
+				runtimeUserGroupLeases:    make(map[int64]map[string]userGroupAccountLeaseIdentityForTest),
+			}
+			svc := NewConcurrencyService(cache)
+			ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: 42})
+			ctx = context.WithValue(ctx, ctxkey.UserID, int64(18))
+
+			result, err := svc.AcquireAccountSlot(ctx, 99, maxConcurrency)
+			require.NoError(t, err)
+			require.True(t, result.Acquired)
+			require.NotNil(t, result.ReleaseFunc)
+			require.Zero(t, cache.acquireAccountCalls.Load(), "unlimited accounts must bypass enforcement")
+
+			groupCounts, supported, err := svc.GetGroupConcurrencyBatch(ctx, []int64{42})
+			require.NoError(t, err)
+			require.True(t, supported)
+			require.Equal(t, map[int64]int{42: 1}, groupCounts)
+
+			accountSnapshot, err := svc.GetGroupAccountConcurrencySnapshot(ctx, 42)
+			require.NoError(t, err)
+			require.Equal(t, map[int64]int{99: 1}, accountSnapshot.Counts)
+
+			userSnapshot, err := svc.GetUserGroupAccountConcurrencySnapshot(ctx, 42)
+			require.NoError(t, err)
+			require.Equal(t, map[int64]map[int64]int{18: {99: 1}}, userSnapshot.Counts)
+
+			result.ReleaseFunc()
+			result.ReleaseFunc()
+
+			groupCounts, supported, err = svc.GetGroupConcurrencyBatch(ctx, []int64{42})
+			require.NoError(t, err)
+			require.True(t, supported)
+			require.Equal(t, map[int64]int{42: 0}, groupCounts)
+
+			accountSnapshot, err = svc.GetGroupAccountConcurrencySnapshot(ctx, 42)
+			require.NoError(t, err)
+			require.Empty(t, accountSnapshot.Counts)
+
+			userSnapshot, err = svc.GetUserGroupAccountConcurrencySnapshot(ctx, 42)
+			require.NoError(t, err)
+			require.Empty(t, userSnapshot.Counts)
+			require.Empty(t, cache.runtimeGroupLeases)
+			require.Empty(t, cache.runtimeUserGroupLeases)
+			require.Empty(t, cache.releasedAccountIDs, "display leases must not create an enforced account slot")
+			require.Len(t, cache.releasedGroupRequestIDs, 1)
+			require.Len(t, cache.releasedUserRequestIDs, 1)
+		})
+	}
+}
+
+func TestAcquireAccountSlot_UnlimitedConcurrencyRollsBackPartialTracking(t *testing.T) {
+	tests := []struct {
+		name              string
+		groupTrackErr     error
+		userGroupTrackErr error
+	}{
+		{name: "group lease survives user tracking failure", userGroupTrackErr: errors.New("user tracker unavailable")},
+		{name: "user lease survives group tracking failure", groupTrackErr: errors.New("group tracker unavailable")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := &userGroupAccountLeaseCacheForTest{
+				groupLeaseCacheForTest: groupLeaseCacheForTest{
+					groupSnapshotComplete: true,
+					groupTrackErr:         tt.groupTrackErr,
+					runtimeGroupLeases:    make(map[int64]map[string]int64),
+				},
+				userGroupSnapshotComplete: true,
+				userGroupTrackErr:         tt.userGroupTrackErr,
+				runtimeUserGroupLeases:    make(map[int64]map[string]userGroupAccountLeaseIdentityForTest),
+			}
+			svc := NewConcurrencyService(cache)
+			ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: 42})
+			ctx = context.WithValue(ctx, ctxkey.UserID, int64(18))
+
+			result, err := svc.AcquireAccountSlot(ctx, 99, 0)
+			require.NoError(t, err)
+			require.True(t, result.Acquired)
+			result.ReleaseFunc()
+
+			require.Empty(t, cache.runtimeGroupLeases)
+			require.Empty(t, cache.runtimeUserGroupLeases)
+			require.Empty(t, cache.releasedAccountIDs)
+		})
 	}
 }
 

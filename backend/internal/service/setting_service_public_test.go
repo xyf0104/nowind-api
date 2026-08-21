@@ -67,6 +67,30 @@ func TestSettingService_GetPublicSettings_ExposesRegistrationEmailSuffixWhitelis
 	require.Equal(t, []string{"@example.com", "@foo.bar", "*.edu.cn"}, settings.RegistrationEmailSuffixWhitelist)
 }
 
+func TestSettingService_GetModelPricingRuntimeIsIndependentAndOptOut(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]string
+		wantOn bool
+	}{
+		{name: "missing setting keeps pricing enabled", values: map[string]string{}, wantOn: true},
+		{name: "available channels do not disable pricing", values: map[string]string{
+			SettingKeyAvailableChannelsEnabled: "false",
+		}, wantOn: true},
+		{name: "explicit false disables pricing", values: map[string]string{
+			SettingKeyModelPricingEnabled: "false",
+		}, wantOn: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewSettingService(&settingPublicRepoStub{values: tt.values}, &config.Config{})
+			runtime := svc.GetModelPricingRuntime(context.Background())
+			require.Equal(t, tt.wantOn, runtime.Enabled)
+		})
+	}
+}
+
 func TestSettingService_GetPublicSettings_ExposesTablePreferences(t *testing.T) {
 	repo := &settingPublicRepoStub{
 		values: map[string]string{
@@ -170,7 +194,7 @@ func TestSettingService_GetPublicSettingsForInjection_ExposesModelPricingAndPubl
 	require.True(t, payload.RegistrationEmailDomainQuotaEnabled)
 	require.Equal(t, TencentCaptchaRegionINTL, payload.TencentCaptchaRegion)
 	require.True(t, payload.CompactHomeEnabled)
-	require.Equal(t, ChannelMonitorModeV2, payload.ChannelMonitorMode)
+	require.Equal(t, ChannelMonitorModeV1, payload.ChannelMonitorMode)
 	require.False(t, payload.ChannelMonitorHideThroughput)
 	require.True(t, payload.ChannelMonitorShowQuota)
 	require.True(t, payload.AvailableChannelsEnabled)

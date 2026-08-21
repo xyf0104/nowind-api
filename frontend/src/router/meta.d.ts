@@ -62,6 +62,19 @@ declare module 'vue-router' {
     requiresChannelMonitor?: boolean
 
     /**
+     * Whether this route requires customer model pricing to be enabled.
+     * @default false
+     */
+    requiresModelPricing?: boolean
+
+    /**
+     * Whether this route requires the user-facing available-channels feature
+     * to be enabled.
+     * @default false
+     */
+    requiresAvailableChannels?: boolean
+
+    /**
      * i18n key for the page title
      */
     titleKey?: string

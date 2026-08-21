@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -64,6 +65,63 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		require.InDelta(t, 0.125, job.BillableUnitPrice, 1e-12)
 		require.InDelta(t, 0.15, job.HoldUnitPrice, 1e-12)
 		require.Equal(t, "batch-session-123", batchImageDerefString(job.SessionID))
+	})
+
+	t.Run("restricted empty account allowlist rejects before side effects", func(t *testing.T) {
+		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
+		groupID := int64(7)
+		configureTestBatchImageGroup(svc, groupID)
+		policy := &publicBatchImageAccountPolicy{allowedIDs: map[int64]struct{}{}}
+		svc.AccountPolicy = policy
+
+		_, err := svc.Submit(ctx, BatchImageOwner{UserID: 11, APIKeyID: 22, GroupID: &groupID}, validBatchImageSubmitRequest(), "")
+
+		require.ErrorIs(t, err, ErrBatchImageNoAccountAvailable)
+		require.Len(t, policy.calls, 1)
+		require.Equal(t, int64(11), policy.calls[0].userID)
+		require.Equal(t, groupID, policy.calls[0].groupID)
+		require.Empty(t, repo.jobs)
+		require.Empty(t, queue.enqueued)
+		require.Empty(t, gemini.submits)
+		require.Empty(t, svc.BillingRepo.(*fakeBatchImageBillingRepo).reserves)
+	})
+
+	t.Run("account allowlist selects only checked account using batch owner identity", func(t *testing.T) {
+		svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+		groupID := int64(7)
+		configureTestBatchImageGroup(svc, groupID)
+		policy := &publicBatchImageAccountPolicy{allowedIDs: map[int64]struct{}{101: {}}}
+		svc.AccountPolicy = policy
+		adminGroup := &Group{ID: 99, Platform: PlatformGemini, Status: StatusActive, Hydrated: true}
+		adminCtx := context.WithValue(ctx, ctxkey.UserID, int64(999))
+		adminCtx = context.WithValue(adminCtx, ctxkey.Group, adminGroup)
+
+		got, err := svc.Submit(adminCtx, BatchImageOwner{UserID: 11, APIKeyID: 22, GroupID: &groupID}, validBatchImageSubmitRequest(), "")
+
+		require.NoError(t, err)
+		require.Len(t, policy.calls, 1)
+		require.Equal(t, int64(11), policy.calls[0].userID)
+		require.Equal(t, groupID, policy.calls[0].groupID)
+		require.Zero(t, policy.calls[0].ambientGroupID)
+		require.ElementsMatch(t, []int64{101, 202}, policy.calls[0].candidateIDs)
+		require.NotNil(t, repo.jobs[got.ID].AccountID)
+		require.Equal(t, int64(101), *repo.jobs[got.ID].AccountID)
+	})
+
+	t.Run("account allowlist storage error fails closed before side effects", func(t *testing.T) {
+		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
+		groupID := int64(7)
+		configureTestBatchImageGroup(svc, groupID)
+		policyErr := errors.New("allowlist storage unavailable")
+		svc.AccountPolicy = &publicBatchImageAccountPolicy{err: policyErr}
+
+		_, err := svc.Submit(ctx, BatchImageOwner{UserID: 11, APIKeyID: 22, GroupID: &groupID}, validBatchImageSubmitRequest(), "")
+
+		require.ErrorIs(t, err, policyErr)
+		require.Empty(t, repo.jobs)
+		require.Empty(t, queue.enqueued)
+		require.Empty(t, gemini.submits)
+		require.Empty(t, svc.BillingRepo.(*fakeBatchImageBillingRepo).reserves)
 	})
 
 	t.Run("combines user group image rate account rate discount and hold margin", func(t *testing.T) {
@@ -746,6 +804,22 @@ func testBatchImageOwner() BatchImageOwner {
 	return BatchImageOwner{UserID: 11, APIKeyID: 22}
 }
 
+func configureTestBatchImageGroup(svc *BatchImagePublicService, groupID int64) {
+	svc.GroupRepo = &publicBatchImageGroupRepo{groups: map[int64]*Group{
+		groupID: {
+			ID:                           groupID,
+			Platform:                     PlatformGemini,
+			Status:                       StatusActive,
+			Hydrated:                     true,
+			RateMultiplier:               1,
+			AllowImageGeneration:         true,
+			AllowBatchImageGeneration:    true,
+			BatchImageDiscountMultiplier: 0.5,
+			BatchImageHoldMultiplier:     0.6,
+		},
+	}}
+}
+
 type fakeBatchImageAuthCacheInvalidator struct {
 	keys     []string
 	userIDs  []int64
@@ -821,6 +895,55 @@ func requireBatchImagePublicJSONHasNoInternals(t *testing.T, body string) {
 
 type publicBatchImageAccountRepo struct {
 	accounts []Account
+}
+
+type publicBatchImageAccountPolicyCall struct {
+	userID         int64
+	groupID        int64
+	ambientGroupID int64
+	candidateIDs   []int64
+}
+
+type publicBatchImageAccountPolicy struct {
+	allowedIDs map[int64]struct{}
+	err        error
+	calls      []publicBatchImageAccountPolicyCall
+}
+
+func (p *publicBatchImageAccountPolicy) FilterCandidates(ctx context.Context, groupID *int64, accounts []Account) ([]Account, error) {
+	call := publicBatchImageAccountPolicyCall{}
+	call.userID, _ = ctx.Value(ctxkey.UserID).(int64)
+	if groupID != nil {
+		call.groupID = *groupID
+	}
+	if group, _ := ctx.Value(ctxkey.Group).(*Group); group != nil {
+		call.ambientGroupID = group.ID
+	}
+	call.candidateIDs = make([]int64, 0, len(accounts))
+	for i := range accounts {
+		call.candidateIDs = append(call.candidateIDs, accounts[i].ID)
+	}
+	p.calls = append(p.calls, call)
+	if p.err != nil {
+		return nil, p.err
+	}
+	filtered := make([]Account, 0, len(accounts))
+	for i := range accounts {
+		if _, ok := p.allowedIDs[accounts[i].ID]; ok {
+			filtered = append(filtered, accounts[i])
+		}
+	}
+	return filtered, nil
+}
+
+func (p *publicBatchImageAccountPolicy) RequireCandidate(_ context.Context, _ *int64, accountID int64) error {
+	if p.err != nil {
+		return p.err
+	}
+	if _, ok := p.allowedIDs[accountID]; !ok {
+		return ErrUserGroupAccountNotAllowed
+	}
+	return nil
 }
 
 func (r *publicBatchImageAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {

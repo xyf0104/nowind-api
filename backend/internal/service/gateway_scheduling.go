@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	mathrand "math/rand"
@@ -134,9 +135,22 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		stickyAccountID = prefetch
 		stickySource = "prefetch"
 	} else if sessionHash != "" && s.cache != nil {
-		if accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); err == nil {
+		if accountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
 			stickyAccountID = accountID
 			stickySource = "cache"
+		}
+	}
+	if stickyAccountID > 0 {
+		if err := s.requireAccountCandidate(ctx, groupID, stickyAccountID); err != nil {
+			if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+				if sessionHash != "" && s.cache != nil {
+					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+				}
+				stickyAccountID = 0
+				stickySource = "allowlist_miss"
+			} else {
+				return nil, err
+			}
 		}
 	}
 
@@ -962,6 +976,9 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
+			accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
+		}
+		if err == nil {
 			accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
 			if strings.EqualFold(platform, PlatformGrok) {
 				accounts = s.filterGrokFreeQuotaAccountsForGateway(ctx, accounts)
@@ -1028,6 +1045,10 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 			}
 		}
 		filtered = s.filterAccountsBySchedulingThreshold(ctx, filtered)
+		filtered, err = s.filterAccountCandidates(ctx, groupID, filtered)
+		if err != nil {
+			return nil, useMixed, err
+		}
 		if strings.EqualFold(platform, PlatformGrok) {
 			filtered = s.filterGrokFreeQuotaAccountsForGateway(ctx, filtered)
 		}
@@ -1067,6 +1088,10 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		}
 	}
 	accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
+	accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
+	if err != nil {
+		return nil, useMixed, err
+	}
 	if strings.EqualFold(platform, PlatformGrok) {
 		accounts = s.filterGrokFreeQuotaAccountsForGateway(ctx, accounts)
 	}
@@ -1836,7 +1861,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
 		if sessionHash != "" && s.cache != nil {
-			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+			accountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
@@ -1958,7 +1983,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	// 1. 查询粘性会话
 	if sessionHash != "" && s.cache != nil {
-		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+		accountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
@@ -2100,7 +2125,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
 		if sessionHash != "" && s.cache != nil {
-			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+			accountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
@@ -2224,7 +2249,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	// 1. 查询粘性会话
 	if sessionHash != "" && s.cache != nil {
-		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+		accountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)

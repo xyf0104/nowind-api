@@ -979,6 +979,23 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
 			if err != nil {
+				var failoverErr *UpstreamFailoverError
+				if !errors.As(err, &failoverErr) {
+					return s.newPartialOpenAIStreamingForwardResult(
+						c,
+						resp,
+						streamResult,
+						originalModel,
+						billingModel,
+						upstreamModel,
+						serviceTier,
+						reasoningEffort,
+						imageBillingModel,
+						imageSizeTier,
+						imageInputSize,
+						startTime,
+					), err
+				}
 				return nil, err
 			}
 			usage = streamResult.usage
@@ -1035,6 +1052,85 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		return forwardResult, nil
 	}
+}
+
+// newPartialOpenAIStreamingForwardResult preserves billable upstream work when
+// a native Responses stream fails after usage or generated images were observed.
+// Account-switch errors deliberately remain result-less: the retrying handler
+// owns their accounting and must not charge the discarded attempt.
+func (s *OpenAIGatewayService) newPartialOpenAIStreamingForwardResult(
+	c *gin.Context,
+	resp *http.Response,
+	streamResult *openaiStreamingResult,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	serviceTier *string,
+	reasoningEffort *string,
+	imageBillingModel string,
+	imageSizeTier string,
+	imageInputSize string,
+	startTime time.Time,
+) *OpenAIForwardResult {
+	if !isBillableOpenAIStreamingResult(streamResult) {
+		return nil
+	}
+
+	usage := OpenAIUsage{}
+	if streamResult.usage != nil {
+		usage = *streamResult.usage
+	}
+	requestID := ""
+	var responseHeaders http.Header
+	if resp != nil {
+		requestID = strings.TrimSpace(resp.Header.Get("x-request-id"))
+		responseHeaders = resp.Header.Clone()
+	}
+
+	result := &OpenAIForwardResult{
+		RequestID:                     requestID,
+		ResponseID:                    strings.TrimSpace(streamResult.responseID),
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		ServiceTier:                   serviceTier,
+		ReasoningEffort:               reasoningEffort,
+		Stream:                        true,
+		OpenAIWSMode:                  false,
+		ResponseHeaders:               responseHeaders,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  streamResult.firstTokenMs,
+	}
+	if streamResult.imageCount > 0 {
+		result.ImageCount = streamResult.imageCount
+		result.ImageSize = imageSizeTier
+		result.ImageInputSize = imageInputSize
+		result.ImageOutputSizes = streamResult.imageOutputSizes
+		result.BillingModel = imageBillingModel
+	}
+	return result
+}
+
+func isBillableOpenAIStreamingResult(streamResult *openaiStreamingResult) bool {
+	if streamResult == nil {
+		return false
+	}
+	if streamResult.imageCount > 0 {
+		return true
+	}
+	if streamResult.usage == nil {
+		return false
+	}
+	usage := streamResult.usage
+	return usage.InputTokens != 0 ||
+		usage.ImageInputTokens != 0 ||
+		usage.OutputTokens != 0 ||
+		usage.CacheCreationInputTokens != 0 ||
+		usage.CacheReadInputTokens != 0 ||
+		usage.ImageOutputTokens != 0
 }
 
 func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {

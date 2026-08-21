@@ -611,7 +611,7 @@ func TestSettingService_UpdateSettings_PersistsPublicMonitorAndModelPricingSetti
 	require.Equal(t, "true", repo.updates[SettingKeyRegistrationEmailDomainQuotaEnabled])
 	require.Equal(t, TencentCaptchaRegionINTL, repo.updates[SettingKeyTencentCaptchaRegion])
 	require.Equal(t, "true", repo.updates[SettingKeyCompactHomeEnabled])
-	require.Equal(t, ChannelMonitorModeV2, repo.updates[SettingKeyChannelMonitorMode])
+	require.Equal(t, ChannelMonitorModeV1, repo.updates[SettingKeyChannelMonitorMode])
 	require.Equal(t, "false", repo.updates[SettingKeyChannelMonitorHideThroughput])
 	require.Equal(t, "true", repo.updates[SettingKeyChannelMonitorShowQuota])
 	require.Equal(t, "grok-4.1", repo.updates[SettingKeyGrokDefaultTextModel])

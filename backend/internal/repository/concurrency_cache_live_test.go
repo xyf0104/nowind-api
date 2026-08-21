@@ -121,3 +121,54 @@ func TestGroupSlotReleaseUsesAccountScopedMember(t *testing.T) {
 	require.True(t, complete)
 	require.Equal(t, map[int64]int{202: 1}, counts)
 }
+
+func TestUserGroupAccountConcurrencySnapshotIsScopedAndRejectsMalformedMembers(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 11, 10, 101, "request-a"))
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 11, 10, 101, "request-b"))
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 12, 10, 202, "request-c"))
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 11, 20, 303, "request-d"))
+
+	group10, complete, snapshotAt, err := cache.GetUserGroupAccountConcurrency(ctx, 10)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.False(t, snapshotAt.IsZero())
+	require.Equal(t, map[int64]map[int64]int{11: {101: 2}, 12: {202: 1}}, group10)
+
+	group20, complete, _, err := cache.GetUserGroupAccountConcurrency(ctx, 20)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Equal(t, map[int64]map[int64]int{11: {303: 1}}, group20)
+
+	now := float64(time.Now().Unix())
+	require.NoError(t, client.ZAdd(ctx, userGroupAccountSlotKey(11, 10), redis.Z{Score: now, Member: "legacy-request-id"}).Err())
+	partial, complete, _, err := cache.GetUserGroupAccountConcurrency(ctx, 10)
+	require.NoError(t, err)
+	require.False(t, complete)
+	require.Equal(t, map[int64]map[int64]int{11: {101: 2}, 12: {202: 1}}, partial)
+}
+
+func TestUserGroupAccountSlotReleaseUsesUserGroupAndAccountScopedMember(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 11, 10, 101, "same-request"))
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 11, 10, 202, "same-request"))
+	require.NoError(t, cache.TrackUserGroupAccountSlot(ctx, 12, 10, 101, "same-request"))
+	require.NoError(t, cache.ReleaseUserGroupAccountSlot(ctx, 11, 10, 101, "same-request"))
+
+	counts, complete, _, err := cache.GetUserGroupAccountConcurrency(ctx, 10)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Equal(t, map[int64]map[int64]int{11: {202: 1}, 12: {101: 1}}, counts)
+}

@@ -168,6 +168,38 @@ func (r *userRepository) GetByID(ctx context.Context, id int64) (*service.User, 
 	return out, nil
 }
 
+// GetByIDs returns the existing, non-deleted users in one query. Missing IDs
+// are intentionally omitted so callers can ignore stale runtime references.
+func (r *userRepository) GetByIDs(ctx context.Context, ids []int64) ([]*service.User, error) {
+	if len(ids) == 0 {
+		return []*service.User{}, nil
+	}
+	users, err := r.client.User.Query().
+		Where(dbuser.IDIn(ids...)).
+		Order(dbent.Asc(dbuser.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	userIDs := make([]int64, 0, len(users))
+	for _, user := range users {
+		userIDs = append(userIDs, user.ID)
+	}
+	groups, err := r.loadAllowedGroups(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*service.User, 0, len(users))
+	for _, user := range users {
+		converted := userEntityToService(user)
+		if allowedGroups, ok := groups[user.ID]; ok {
+			converted.AllowedGroups = allowedGroups
+		}
+		result = append(result, converted)
+	}
+	return result, nil
+}
+
 func (r *userRepository) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
 	ctx = mixins.SkipSoftDelete(ctx)
 	m, err := r.client.User.Query().Where(dbuser.IDEQ(id)).Only(ctx)

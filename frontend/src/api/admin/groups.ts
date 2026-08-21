@@ -5,6 +5,8 @@
 
 import { apiClient } from '../client'
 import type {
+  Account,
+  AdminUser,
   AdminGroup,
   GroupPlatform,
   CompositeModelRoute,
@@ -19,6 +21,58 @@ import type {
 export interface LiveCapability {
   supported: boolean
   reason?: string
+}
+
+/**
+ * A user currently holding one or more live leases in a group.  Account IDs
+ * are deliberately supplied by the server: the UI must not infer runtime
+ * assignment from a paginated account list.
+ */
+export interface UserGroupAccountRuntimeUser extends AdminUser {
+  current_concurrency: number
+  active_account_ids: number[]
+}
+
+export interface UserGroupAccountRuntimeAccount {
+  id: number
+  name: string
+  platform: Account['platform']
+  type: Account['type']
+  priority: number
+  concurrency: number
+  current_concurrency: number
+  /** Omitted by older rolling-upgrade peers; only explicit false is unavailable. */
+  available?: boolean
+}
+
+/**
+ * Runtime data used by the per-user account editor. `accounts` is a live
+ * scheduling snapshot, not the authoritative persisted selection.
+ */
+export interface UserGroupAccountRuntime {
+  users: UserGroupAccountRuntimeUser[]
+  accounts: UserGroupAccountRuntimeAccount[]
+}
+
+export interface UserGroupAccountAllowlistCandidate {
+  id: number
+  name: string
+  platform: string
+  type: string
+  priority: number
+  concurrency: number
+  allowed: boolean
+  available: boolean
+  /** Enriched from the runtime snapshot when the account is currently visible there. */
+  current_concurrency?: number
+}
+
+export interface UserGroupAccountAllowlist {
+  /** False alone means original scheduling; a restricted selection may be empty. */
+  restricted: boolean
+  account_ids: number[]
+  allowed_account_ids?: number[]
+  candidates?: UserGroupAccountAllowlistCandidate[]
 }
 
 /**
@@ -473,6 +527,46 @@ export async function getCapacitySummary(): Promise<
   return data
 }
 
+/** Get live users and normal schedulable accounts for one group. */
+export async function getUserAccountRuntime(groupID: number): Promise<UserGroupAccountRuntime> {
+  const { data } = await apiClient.get<UserGroupAccountRuntime>(
+    `/admin/groups/${groupID}/user-account-runtime`
+  )
+  return data
+}
+
+/** Get one user's explicit account restriction in a group. */
+export async function getUserAccountAllowlist(
+  groupID: number,
+  userID: number
+): Promise<UserGroupAccountAllowlist> {
+  const { data } = await apiClient.get<UserGroupAccountAllowlist>(
+    `/admin/groups/${groupID}/users/${userID}/account-allowlist`
+  )
+  return data
+}
+
+/** Replace one user's explicit account restriction in a group. */
+export async function updateUserAccountAllowlist(
+  groupID: number,
+  userID: number,
+  accountIDs: number[]
+): Promise<UserGroupAccountAllowlist> {
+  const { data } = await apiClient.put<UserGroupAccountAllowlist>(
+    `/admin/groups/${groupID}/users/${userID}/account-allowlist`,
+    { account_ids: accountIDs }
+  )
+  return data
+}
+
+/** Remove the explicit restriction and restore the original group scheduler. */
+export async function clearUserAccountAllowlist(
+  groupID: number,
+  userID: number
+): Promise<void> {
+  await apiClient.delete(`/admin/groups/${groupID}/users/${userID}/account-allowlist`)
+}
+
 export const groupsAPI = {
   list,
   getAll,
@@ -501,7 +595,11 @@ export const groupsAPI = {
   batchSetGroupRPMOverrides,
   updateSortOrder,
   getUsageSummary,
-  getCapacitySummary
+  getCapacitySummary,
+  getUserAccountRuntime,
+  getUserAccountAllowlist,
+  updateUserAccountAllowlist,
+  clearUserAccountAllowlist
 }
 
 export default groupsAPI

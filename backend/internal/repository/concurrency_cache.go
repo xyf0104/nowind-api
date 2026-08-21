@@ -35,12 +35,20 @@ const (
 	// Stats-only group leases identify the actual API-key group used by a
 	// request. A short TTL plus service-side refresh prevents stale capacity
 	// badges without changing real account concurrency enforcement.
-	groupSlotKeyPrefix       = "concurrency:group:"
-	groupSlotMemberVersion   = "v1"
-	groupSlotTTLSeconds      = 75
-	liveAccountSlotKeyPrefix = "concurrency:live:account:"
-	liveUserSlotKeyPrefix    = "concurrency:live:user:"
-	liveAPIKeySlotKeyPrefix  = "concurrency:live:api_key:"
+	groupSlotKeyPrefix     = "concurrency:group:"
+	groupSlotMemberVersion = "v1"
+	groupSlotTTLSeconds    = 75
+	// Per-user group account leases drive the administrator's runtime view of
+	// which user is currently using which selected account. They are stats-only
+	// and never participate in the actual account/user concurrency limit.
+	// Request members use the same structured v1 account/request format as the
+	// group lease. A short-lived group index avoids any Redis SCAN for reads.
+	userGroupAccountSlotKeyPrefix        = "concurrency:user-group-account:"
+	userGroupAccountActiveUsersKeyPrefix = "concurrency:user-group-account:group:"
+	userGroupAccountActiveUsersKeySuffix = ":active_users"
+	liveAccountSlotKeyPrefix             = "concurrency:live:account:"
+	liveUserSlotKeyPrefix                = "concurrency:live:user:"
+	liveAPIKeySlotKeyPrefix              = "concurrency:live:api_key:"
 	// API-key-scoped client WebSocket ingress leases use a shorter TTL than
 	// ordinary request slots, because idle ingress sessions do not hold a turn slot.
 	openAIWSIngressLeaseKeyPrefix  = "concurrency:openai_ws_ingress:api_key:"
@@ -413,6 +421,14 @@ func apiKeySlotKey(apiKeyID int64) string {
 
 func groupSlotKey(groupID int64) string {
 	return fmt.Sprintf("%s%d", groupSlotKeyPrefix, groupID)
+}
+
+func userGroupAccountSlotKey(userID, groupID int64) string {
+	return fmt.Sprintf("%s%d:%d", userGroupAccountSlotKeyPrefix, userID, groupID)
+}
+
+func userGroupAccountActiveUsersKey(groupID int64) string {
+	return fmt.Sprintf("%s%d%s", userGroupAccountActiveUsersKeyPrefix, groupID, userGroupAccountActiveUsersKeySuffix)
 }
 
 func groupSlotMember(accountID int64, requestID string) string {
@@ -803,6 +819,41 @@ func (c *concurrencyCache) ReleaseGroupSlot(ctx context.Context, groupID, accoun
 	return c.rdb.ZRem(ctx, groupSlotKey(groupID), groupSlotMember(accountID, requestID)).Err()
 }
 
+func (c *concurrencyCache) TrackUserGroupAccountSlot(ctx context.Context, userID, groupID, accountID int64, requestID string) error {
+	if c == nil || c.rdb == nil || userID <= 0 || groupID <= 0 || accountID <= 0 || requestID == "" {
+		return nil
+	}
+	if _, err := trackSlotScript.Run(
+		ctx,
+		c.rdb,
+		[]string{userGroupAccountSlotKey(userID, groupID)},
+		groupSlotTTLSeconds,
+		groupSlotMember(accountID, requestID),
+	).Result(); err != nil {
+		return err
+	}
+
+	// The index is display-only. Keep the lease itself authoritative even if an
+	// index refresh has a transient failure; the next request refreshes it.
+	indexKey := userGroupAccountActiveUsersKey(groupID)
+	expiresAt := time.Now().Add(time.Duration(groupSlotTTLSeconds) * time.Second).Unix()
+	if err := c.rdb.ZAdd(ctx, indexKey, redis.Z{Score: float64(expiresAt), Member: strconv.FormatInt(userID, 10)}).Err(); err != nil {
+		logger.LegacyPrintf("repository.concurrency", "Warning: failed to index user group account slot for user=%d group=%d: %v", userID, groupID, err)
+		return nil
+	}
+	if err := c.rdb.Expire(ctx, indexKey, time.Duration(groupSlotTTLSeconds)*time.Second).Err(); err != nil {
+		logger.LegacyPrintf("repository.concurrency", "Warning: failed to expire user group account index for group=%d: %v", groupID, err)
+	}
+	return nil
+}
+
+func (c *concurrencyCache) ReleaseUserGroupAccountSlot(ctx context.Context, userID, groupID, accountID int64, requestID string) error {
+	if c == nil || c.rdb == nil || userID <= 0 || groupID <= 0 || accountID <= 0 || requestID == "" {
+		return nil
+	}
+	return c.rdb.ZRem(ctx, userGroupAccountSlotKey(userID, groupID), groupSlotMember(accountID, requestID)).Err()
+}
+
 func (c *concurrencyCache) GetGroupConcurrencyBatch(ctx context.Context, groupIDs []int64) (map[int64]int, error) {
 	result := make(map[int64]int, len(groupIDs))
 	if len(groupIDs) == 0 {
@@ -866,6 +917,65 @@ func (c *concurrencyCache) GetGroupAccountConcurrency(ctx context.Context, group
 		counts[accountID]++
 	}
 	return counts, complete, time.Unix(snapshotUnix, 0).UTC(), nil
+}
+
+func (c *concurrencyCache) GetUserGroupAccountConcurrency(ctx context.Context, groupID int64) (map[int64]map[int64]int, bool, time.Time, error) {
+	if c == nil || c.rdb == nil || groupID <= 0 {
+		return nil, false, time.Time{}, errors.New("user group account concurrency cache unavailable")
+	}
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return nil, false, time.Time{}, fmt.Errorf("redis TIME: %w", err)
+	}
+	nowUnix := now.Unix()
+	indexKey := userGroupAccountActiveUsersKey(groupID)
+	if err := c.rdb.ZRemRangeByScore(ctx, indexKey, "-inf", strconv.FormatInt(nowUnix, 10)).Err(); err != nil {
+		return nil, false, time.Time{}, fmt.Errorf("prune user group account index: %w", err)
+	}
+	userMembers, err := c.rdb.ZRange(ctx, indexKey, 0, -1).Result()
+	if err != nil {
+		return nil, false, time.Time{}, fmt.Errorf("list active user group account users: %w", err)
+	}
+
+	counts := make(map[int64]map[int64]int)
+	complete := true
+	cutoffTime := nowUnix - groupSlotTTLSeconds
+	type userSlotCommands struct {
+		userID  int64
+		members *redis.StringSliceCmd
+	}
+	commands := make([]userSlotCommands, 0, len(userMembers))
+	pipe := c.rdb.Pipeline()
+	for _, userMember := range userMembers {
+		userID, parseErr := strconv.ParseInt(userMember, 10, 64)
+		if parseErr != nil || userID <= 0 {
+			complete = false
+			continue
+		}
+		key := userGroupAccountSlotKey(userID, groupID)
+		pipe.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(cutoffTime, 10))
+		commands = append(commands, userSlotCommands{userID: userID, members: pipe.ZRange(ctx, key, 0, -1)})
+	}
+	if len(commands) > 0 {
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+			return nil, false, time.Time{}, fmt.Errorf("read user group account slots: %w", err)
+		}
+	}
+	for _, command := range commands {
+		accountCounts := make(map[int64]int)
+		for _, member := range command.members.Val() {
+			accountID, ok := parseGroupSlotMember(member)
+			if !ok {
+				complete = false
+				continue
+			}
+			accountCounts[accountID]++
+		}
+		if len(accountCounts) > 0 {
+			counts[command.userID] = accountCounts
+		}
+	}
+	return counts, complete, now.UTC(), nil
 }
 
 func (c *concurrencyCache) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {

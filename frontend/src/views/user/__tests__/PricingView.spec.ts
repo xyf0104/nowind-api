@@ -118,8 +118,10 @@ describe('PricingView', () => {
         stubs: {
           AppLayout: { template: '<main><slot /></main>' },
           Icon: { template: '<span />' },
-          BrandIcon: { template: '<span />' },
-          PlatformIcon: { template: '<span />' },
+          PlatformBrandIcon: {
+            props: ['platform'],
+            template: '<span class="platform-brand-icon-stub" :data-platform="platform" />'
+          },
           PricingAreaTabs: { template: '<div data-test="pricing-area-tabs" />' }
         }
       }
@@ -128,8 +130,10 @@ describe('PricingView', () => {
 
     expect(wrapper.find('[data-test="pricing-area-tabs"]').exists()).toBe(true)
 
-    for (const platform of ['anthropic', 'openai', 'gemini', 'antigravity', 'grok']) {
-      expect(wrapper.find(`[data-test="platform-${platform}"]`).exists()).toBe(true)
+    for (const platform of ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek']) {
+      const tab = wrapper.find(`[data-test="platform-${platform}"]`)
+      expect(tab.exists()).toBe(true)
+      expect(tab.find('.platform-brand-icon-stub').attributes('data-platform')).toBe(platform)
     }
 
     expect(wrapper.text()).toContain('输入价格')
@@ -180,8 +184,7 @@ describe('PricingView', () => {
         stubs: {
           AppLayout: { template: '<main><slot /></main>' },
           Icon: { template: '<span />' },
-          BrandIcon: { template: '<span />' },
-          PlatformIcon: { template: '<span />' },
+          PlatformBrandIcon: { template: '<span />' },
           PricingAreaTabs: { template: '<div data-test="pricing-area-tabs" />' }
         }
       }

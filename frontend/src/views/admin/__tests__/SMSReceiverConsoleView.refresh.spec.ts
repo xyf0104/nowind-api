@@ -160,4 +160,24 @@ describe('SMSReceiverConsoleView refresh status', () => {
     await flushPromises()
     expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
   })
+
+  it('requires an in-app confirmation before changing the current number', async () => {
+    receiverMocks.changeNumber.mockResolvedValue('waiting')
+    const wrapper = mountConsole()
+    await flushPromises()
+
+    const changeButton = wrapper.findAll('button').find((button) => button.text().includes('换号'))
+    expect(changeButton).toBeDefined()
+
+    await changeButton!.trigger('click')
+    await flushPromises()
+
+    expect(receiverMocks.changeNumber).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="sms-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
+    await flushPromises()
+
+    expect(receiverMocks.changeNumber).toHaveBeenCalledTimes(1)
+  })
 })

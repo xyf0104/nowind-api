@@ -392,17 +392,12 @@ func NormalizeTencentCaptchaRegion(raw string) string {
 	return TencentCaptchaRegionCN
 }
 
-// normalizeChannelMonitorMode accepts only v1/v2; empty or invalid values use
-// the v1 default so an old setting row cannot silently disable monitoring.
-func normalizeChannelMonitorMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", ChannelMonitorModeV1:
-		return ChannelMonitorModeV1
-	case ChannelMonitorModeV2:
-		return ChannelMonitorModeV2
-	default:
-		return defaultChannelMonitorMode
-	}
+// normalizeChannelMonitorMode keeps XIASS on the fully wired V1 monitor. The
+// upstream V2 implementation is not part of this release, so a stale/imported
+// v2 value must not retire active probes without a passive service to replace
+// them.
+func normalizeChannelMonitorMode(_ string) string {
+	return defaultChannelMonitorMode
 }
 
 // parseChannelMonitorInterval parses the stored string and clamps to [15, 3600].
@@ -501,6 +496,30 @@ func (s *SettingService) GetAvailableChannelsRuntime(ctx context.Context) Availa
 	}
 	return AvailableChannelsRuntime{
 		Enabled: vals[SettingKeyAvailableChannelsEnabled] == "true",
+	}
+}
+
+// ModelPricingRuntime is the lightweight view of XIASS's model-price feature
+// switch consumed by the user-facing pricing endpoint. Model pricing is
+// opt-out, so a missing setting or a temporarily unavailable settings store
+// must preserve the established price surface.
+type ModelPricingRuntime struct {
+	Enabled bool
+}
+
+// GetModelPricingRuntime reads the model-price feature switch directly from
+// the settings store. It intentionally does not consult the available-channel
+// switch: the two user-facing tabs are independently configurable.
+func (s *SettingService) GetModelPricingRuntime(ctx context.Context) ModelPricingRuntime {
+	if s == nil || s.settingRepo == nil {
+		return ModelPricingRuntime{Enabled: true}
+	}
+	vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyModelPricingEnabled})
+	if err != nil {
+		return ModelPricingRuntime{Enabled: true}
+	}
+	return ModelPricingRuntime{
+		Enabled: !isFalseSettingValue(vals[SettingKeyModelPricingEnabled]),
 	}
 }
 

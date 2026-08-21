@@ -45,10 +45,12 @@ const (
 	monitorChallengeMin = 1
 	monitorChallengeMax = 50
 
-	// providerOpenAIPath OpenAI Chat Completions 路径。
+	// providerOpenAIPath OpenAI Chat Completions 路径（Kimi / DeepSeek 同为 OpenAI 兼容）。
 	providerOpenAIPath = "/v1/chat/completions"
 	// providerGrokPath Grok OpenAI-compatible Chat Completions 路径。
 	providerGrokPath = "/v1/chat/completions"
+	// providerZhipuPath 智谱 OpenAI 兼容 Chat Completions 路径（前缀与官方不同）。
+	providerZhipuPath = "/api/paas/v4/chat/completions"
 	// providerOpenAIResponsesPath OpenAI Responses API 路径。
 	providerOpenAIResponsesPath = "/v1/responses"
 	// providerAnthropicPath Anthropic Messages 路径。
@@ -56,11 +58,36 @@ const (
 	// providerGeminiPathTemplate Gemini generateContent 路径模板（含 model 占位）。
 	providerGeminiPathTemplate = "/v1beta/models/%s:generateContent"
 
-	// MonitorProviderOpenAI / Anthropic / Gemini / Grok provider 字符串常量（也是 ent enum 的实际值）。
-	MonitorProviderOpenAI    = "openai"
-	MonitorProviderAnthropic = "anthropic"
-	MonitorProviderGemini    = "gemini"
-	MonitorProviderGrok      = "grok"
+	// MonitorProviderOpenAI 等 provider 字符串常量（也是 ent enum 的实际值）。
+	// 后 4 个 provider（antigravity/kimi/zhipu/deepseek）为配额模式引入：
+	// antigravity 无探活 adapter（仅配额），其余 3 个复用 OpenAI 兼容探活。
+	MonitorProviderOpenAI      = "openai"
+	MonitorProviderAnthropic   = "anthropic"
+	MonitorProviderGemini      = "gemini"
+	MonitorProviderGrok        = "grok"
+	MonitorProviderAntigravity = "antigravity"
+	MonitorProviderKimi        = "kimi"
+	MonitorProviderZhipu       = "zhipu"
+	MonitorProviderDeepseek    = "deepseek"
+
+	// MonitorCheckMode 检测模式（channel_monitors.check_mode）。
+	//   probe       - LLM 探活（默认，原有行为）
+	//   quota       - 仅查关联账号用量/余额，零 LLM 成本
+	//   quota_probe - 探活 + 配额并存（配额快照挂到主模型历史行）
+	MonitorCheckModeProbe      = "probe"
+	MonitorCheckModeQuota      = "quota"
+	MonitorCheckModeQuotaProbe = "quota_probe"
+
+	// MonitorDefaultQuotaModel keeps a non-empty primary model for quota-only
+	// monitors, whose history rows do not represent an upstream model request.
+	MonitorDefaultQuotaModel = "quota"
+
+	// Multiple monitors can read one upstream quota. Cache both successes and
+	// failures so the minimum monitor interval cannot fan out credentialed calls.
+	monitorQuotaFetchCacheTTL       = 5 * time.Minute
+	monitorQuotaErrorCacheTTL       = 60 * time.Second
+	monitorQuotaFetchTimeout        = 45 * time.Second
+	monitorQuotaDegradedUsedPercent = 90.0
 
 	// MonitorDefaultGrokModel 是新增 Grok 监控未显式指定模型时使用的轻量测活模型。
 	MonitorDefaultGrokModel = "grok-4.5"
@@ -118,7 +145,16 @@ var (
 		"CHANNEL_MONITOR_NOT_FOUND", "channel monitor not found",
 	)
 	ErrChannelMonitorInvalidProvider = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok",
+		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/antigravity/kimi/zhipu/deepseek",
+	)
+	ErrChannelMonitorInvalidCheckMode = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_INVALID_CHECK_MODE", "check_mode must be one of probe/quota/quota_probe; antigravity only supports quota",
+	)
+	ErrChannelMonitorAccountRequired = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_ACCOUNT_REQUIRED", "account_id is required for quota-based check_mode",
+	)
+	ErrChannelMonitorProviderIncompatible = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_PROVIDER_INCOMPATIBLE", "monitor provider must match the linked account platform",
 	)
 	ErrChannelMonitorAccountNotSupportable = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_ACCOUNT_NOT_SUPPORTABLE", "linked account cannot serve as a quota data source (cn coding plan must be kimi/zhipu, cn payg must be kimi/deepseek, openai requires an oauth account, anthropic requires oauth or setup-token)",
@@ -158,5 +194,20 @@ var (
 	)
 	ErrChannelMonitorAPIKeyDecryptFailed = infraerrors.InternalServer(
 		"CHANNEL_MONITOR_KEY_DECRYPT_FAILED", "api key decryption failed; please re-edit the monitor with a fresh key",
+	)
+)
+
+var (
+	ErrChannelMonitorDisabled = infraerrors.Forbidden(
+		"CHANNEL_MONITOR_DISABLED",
+		"channel monitor feature is disabled",
+	)
+	ErrChannelMonitorActiveProbesRetired = infraerrors.Forbidden(
+		"CHANNEL_MONITOR_ACTIVE_PROBES_RETIRED",
+		"channel monitor active probes are retired in v2 mode",
+	)
+	ErrChannelMonitorModeMismatch = infraerrors.Forbidden(
+		"CHANNEL_MONITOR_MODE_MISMATCH",
+		"channel monitor mode does not allow this operation",
 	)
 )

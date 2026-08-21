@@ -7,6 +7,7 @@ const isFeatureFlagEnabled = vi.hoisted(() => vi.fn())
 vi.mock('@/utils/featureFlags', () => ({
   FeatureFlags: {
     channelMonitor: { key: 'channel_monitor_enabled' },
+    modelPricing: { key: 'model_pricing_enabled' },
   },
   isFeatureFlagEnabled,
 }))
@@ -53,11 +54,29 @@ describe('PricingAreaTabs', () => {
   })
 
   it('hides the monitoring tab when the public channel-monitor flag is explicitly disabled', () => {
-    isFeatureFlagEnabled.mockReturnValue(false)
+    isFeatureFlagEnabled.mockImplementation((flag: { key: string }) => flag.key !== 'channel_monitor_enabled')
 
     const wrapper = mountTabs('pricing')
 
     expect(wrapper.find('[data-testid="pricing-area-tab-pricing"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="pricing-area-tab-monitor"]').exists()).toBe(false)
+  })
+
+  it('hides the pricing tab when the public model-pricing flag is explicitly disabled', () => {
+    isFeatureFlagEnabled.mockImplementation((flag: { key: string }) => flag.key !== 'model_pricing_enabled')
+
+    const wrapper = mountTabs('monitor')
+
+    expect(wrapper.find('[data-testid="pricing-area-tab-pricing"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pricing-area-tab-monitor"]').exists()).toBe(true)
+  })
+
+  it('renders no pricing-area tab when both features are disabled', () => {
+    isFeatureFlagEnabled.mockReturnValue(false)
+
+    const wrapper = mountTabs('pricing')
+
+    expect(wrapper.find('[data-testid="pricing-area-tab-pricing"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="pricing-area-tab-monitor"]').exists()).toBe(false)
   })
 })

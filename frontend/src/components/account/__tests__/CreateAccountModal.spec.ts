@@ -299,7 +299,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   it('submits adaptive Kimi protocol endpoints', async () => {
     const wrapper = mountModal()
-    await selectButtonByText(wrapper, 'Kimi')
+    await selectButtonByText(wrapper, 'admin.accounts.platforms.kimi')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi adaptive')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi')
 
@@ -320,7 +320,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   it('uses the edited adaptive Chat endpoint when previewing upstream models', async () => {
     const wrapper = mountModal()
-    await selectButtonByText(wrapper, 'Kimi')
+    await selectButtonByText(wrapper, 'admin.accounts.platforms.kimi')
     await wrapper
       .get('[data-testid="cn-adaptive-base-url-chat_completions"]')
       .setValue('https://relay.example.com/v1')

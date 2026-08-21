@@ -4052,6 +4052,7 @@
           v-model="sortableGroups"
           :animation="200"
           class="space-y-2"
+          data-testid="group-sort-list"
         >
           <div
             v-for="group in sortableGroups"
@@ -4509,18 +4510,184 @@
       @close="showRPMOverridesModal = false"
       @success="loadGroups"
     />
+
+    <BaseDialog
+      :show="showUserAccountRuntimeDialog"
+      :title="t('admin.groups.userAccountAllowlist.runtimeTitle')"
+      width="wide"
+      @close="closeUserAccountRuntimeDialog"
+    >
+      <div class="space-y-4">
+        <div v-if="runtimeGroup" class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-gray-50 px-4 py-3 text-sm dark:bg-dark-700">
+          <span class="font-medium text-gray-900 dark:text-white">{{ runtimeGroup.name }}</span>
+          <span class="text-gray-300 dark:text-dark-500">|</span>
+          <span class="text-gray-600 dark:text-gray-400">
+            {{ t('admin.groups.userAccountAllowlist.runtimeAvailableAccounts', { count: runtimeAvailableAccountCount }) }}
+          </span>
+        </div>
+
+        <div class="relative">
+          <label for="runtime-user-search" class="sr-only">
+            {{ t('admin.groups.userAccountAllowlist.searchPlaceholder') }}
+          </label>
+          <Icon
+            name="search"
+            size="sm"
+            class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
+          />
+          <input
+            id="runtime-user-search"
+            v-model="runtimeUserSearchQuery"
+            type="search"
+            class="input w-full pl-9 pr-10"
+            :placeholder="t('admin.groups.userAccountAllowlist.searchPlaceholder')"
+            autocomplete="off"
+            data-test="runtime-user-search"
+            @input="scheduleRuntimeUserSearch"
+          />
+          <Icon
+            v-if="runtimeUserSearchLoading"
+            name="refresh"
+            size="sm"
+            class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-primary-500"
+            data-test="runtime-user-search-loading"
+          />
+          <button
+            v-else-if="runtimeUserSearchQuery"
+            type="button"
+            class="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center text-gray-400 transition-colors hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:text-gray-500 dark:hover:text-gray-200"
+            :title="t('common.clear')"
+            data-test="runtime-user-search-clear"
+            @click="clearRuntimeUserSearch"
+          >
+            <Icon name="xCircle" size="sm" />
+          </button>
+        </div>
+
+        <div v-if="runtimeLoading" class="flex justify-center py-12">
+          <Icon name="refresh" size="lg" class="animate-spin text-primary-500" />
+        </div>
+
+        <div v-else-if="visibleRuntimeUsers.length === 0" class="py-12 text-center text-sm text-gray-400 dark:text-gray-500">
+          {{ runtimeUserSearchQuery.trim()
+            ? t('admin.groups.userAccountAllowlist.noSearchResults')
+            : runtimeAccountFilterID !== null
+              ? t('admin.groups.userAccountAllowlist.noUsersForAccount')
+              : t('admin.groups.userAccountAllowlist.noRuntimeUsers') }}
+        </div>
+
+        <div v-else class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600">
+          <div class="max-h-[440px] overflow-auto">
+            <table class="w-full min-w-[620px] text-sm">
+              <thead class="sticky top-0 z-[1] bg-gray-50 dark:bg-dark-700">
+                <tr class="border-b border-gray-200 dark:border-dark-600">
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {{ t('admin.groups.userAccountAllowlist.user') }}
+                  </th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {{ t('admin.groups.userAccountAllowlist.currentAccounts') }}
+                  </th>
+                  <th class="w-28 px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {{ t('admin.groups.userAccountAllowlist.currentConcurrency') }}
+                  </th>
+                  <th class="w-32 px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {{ t('admin.groups.columns.actions') }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100 dark:divide-dark-600">
+                <tr
+                  v-for="user in visibleRuntimeUsers"
+                  :key="user.id"
+                  class="hover:bg-gray-50 dark:hover:bg-dark-700/50"
+                  :data-test="`runtime-user-row-${user.id}`"
+                >
+                  <td class="min-w-0 px-4 py-3">
+                    <div class="truncate font-medium text-gray-900 dark:text-white">{{ user.username || user.email }}</div>
+                    <div class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">{{ user.email }}</div>
+                  </td>
+                  <td class="px-4 py-3">
+                    <div v-if="activeAccountsForUser(user).length > 0" class="flex flex-wrap gap-1.5">
+                      <span
+                        v-for="account in activeAccountsForUser(user)"
+                        :key="account.id"
+                        class="inline-flex max-w-[180px] items-center gap-1 rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                        :title="account.name"
+                      >
+                        <Icon name="bolt" size="xs" />
+                        <span class="truncate">{{ account.name }}</span>
+                      </span>
+                    </div>
+                    <span v-else class="text-xs text-gray-400 dark:text-gray-500">
+                      {{ t('admin.groups.userAccountAllowlist.noActiveAccounts') }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      class="inline-flex items-center justify-center rounded-md px-2 py-1 font-mono text-sm text-primary-600 transition-colors hover:bg-primary-50 hover:text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:text-primary-400 dark:hover:bg-primary-900/20 dark:hover:text-primary-300"
+                      :title="t('admin.groups.userAccountAllowlist.configure')"
+                      :data-test="`runtime-user-concurrency-${user.id}`"
+                      @click="openUserAccountAllowlist(user)"
+                    >
+                      {{ user.current_concurrency ?? user.active_account_ids.length }}
+                    </button>
+                  </td>
+                  <td class="px-4 py-3 text-right">
+                    <button type="button" class="btn btn-secondary px-2 py-1 text-xs" @click="openUserAccountAllowlist(user)">
+                      <Icon name="edit" size="xs" class="mr-1" />
+                      {{ t('admin.groups.userAccountAllowlist.configure') }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            data-test="runtime-user-dialog-close"
+            @click="closeUserAccountRuntimeDialog"
+          >
+            {{ t('common.close') }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <UserAccountAllowlistDialog
+      v-if="showUserAccountAllowlistDialog"
+      :show="showUserAccountAllowlistDialog"
+      :group="runtimeGroup"
+      :user="allowlistUser"
+      :candidates="allowlistCandidates"
+      :active-account-ids="allowlistUser?.active_account_ids ?? []"
+      :restricted="allowlistRestricted"
+      :allowed-account-ids="allowlistAccountIDs"
+      :loading="allowlistLoading"
+      :saving="allowlistSaving"
+      @close="closeUserAccountAllowlistDialog"
+      @save="saveUserAccountAllowlist"
+      @restore="restoreUserAccountAllowlist"
+    />
   </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import { useAppStore } from "@/stores/app";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { adminAPI } from "@/api/admin";
 import type {
   AdminGroup,
+  AdminUser,
   CompositeModelRoute,
   CompositeModelRouteInput,
   CompositeRouteDecision,
@@ -4529,6 +4696,11 @@ import type {
   GroupPlatform,
   SubscriptionType,
 } from "@/types";
+import type {
+  UserGroupAccountAllowlistCandidate,
+  UserGroupAccountRuntimeAccount,
+  UserGroupAccountRuntimeUser,
+} from "@/api/admin/groups";
 import {
   CONCRETE_PLATFORM_OPTIONS,
   GROUP_PLATFORM_OPTIONS,
@@ -4546,6 +4718,7 @@ import PlatformIcon from "@/components/common/PlatformIcon.vue";
 import Icon from "@/components/icons/Icon.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
+import UserAccountAllowlistDialog from "@/components/admin/group/UserAccountAllowlistDialog.vue";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
 import ReasoningEffortPolicyFields from "@/components/admin/group/ReasoningEffortPolicyFields.vue";
 import PricingEntryCard from "@/components/admin/channel/PricingEntryCard.vue";
@@ -4674,7 +4847,7 @@ const groupPricingToAPI = (
     });
 
 const { t } = useI18n();
-const router = useRouter();
+const route = useRoute();
 const appStore = useAppStore();
 const onboardingStore = useOnboardingStore();
 
@@ -4691,10 +4864,7 @@ const VERSION_NEW_HIDDEN_COLUMNS: Record<number, string[]> = {
 const CAPACITY_REFRESH_INTERVAL_MS = 10_000;
 
 const openActiveConcurrencyAccounts = (groupID: number) => {
-  void router.push({
-    name: "AdminAccounts",
-    query: { active_concurrency_group: String(groupID) },
-  });
+  void openUserAccountRuntime(groupID);
 };
 
 const allColumns = computed<Column[]>(() => [
@@ -5045,6 +5215,277 @@ const capacityMap = ref<
     }
   >
 >(new Map());
+const showUserAccountRuntimeDialog = ref(false);
+const runtimeGroup = ref<AdminGroup | null>(null);
+const runtimeUsers = ref<UserGroupAccountRuntimeUser[]>([]);
+const runtimeAccounts = ref<UserGroupAccountRuntimeAccount[]>([]);
+const runtimeLoading = ref(false);
+const runtimeAccountFilterID = ref<number | null>(null);
+const runtimeUserSearchQuery = ref("");
+const runtimeUserSearchResults = ref<UserGroupAccountRuntimeUser[]>([]);
+const runtimeUserSearchLoading = ref(false);
+const showUserAccountAllowlistDialog = ref(false);
+const allowlistUser = ref<UserGroupAccountRuntimeUser | null>(null);
+const allowlistRestricted = ref(false);
+const allowlistAccountIDs = ref<number[]>([]);
+const allowlistCandidates = ref<UserGroupAccountAllowlistCandidate[]>([]);
+const allowlistLoading = ref(false);
+const allowlistSaving = ref(false);
+const RUNTIME_USER_SEARCH_DEBOUNCE_MS = 300;
+const RUNTIME_USER_SEARCH_PAGE_SIZE = 50;
+let runtimeUserSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let runtimeUserSearchController: AbortController | null = null;
+let runtimeUserSearchRevision = 0;
+
+const visibleRuntimeUsers = computed(() => {
+  const activeUsers = runtimeAccountFilterID.value === null
+    ? runtimeUsers.value
+    : runtimeUsers.value.filter((user) =>
+        user.active_account_ids.includes(runtimeAccountFilterID.value!),
+      );
+  if (!runtimeUserSearchQuery.value.trim()) return activeUsers;
+
+  const liveUsersByID = new Map(runtimeUsers.value.map((user) => [user.id, user]));
+  const mergedUsers = new Map(activeUsers.map((user) => [user.id, user]));
+  for (const user of runtimeUserSearchResults.value) {
+    if (!mergedUsers.has(user.id)) {
+      mergedUsers.set(user.id, liveUsersByID.get(user.id) ?? user);
+    }
+  }
+  return Array.from(mergedUsers.values());
+});
+
+const runtimeAvailableAccountCount = computed(() =>
+  runtimeAccounts.value.filter((account) => account.available !== false).length,
+);
+
+const activeAccountsForUser = (user: UserGroupAccountRuntimeUser) => {
+  const activeAccountIDs = new Set(user.active_account_ids);
+  return runtimeAccounts.value.filter((account) => activeAccountIDs.has(account.id));
+};
+
+const cancelRuntimeUserSearchRequest = () => {
+  if (runtimeUserSearchTimer !== null) {
+    clearTimeout(runtimeUserSearchTimer);
+    runtimeUserSearchTimer = null;
+  }
+  runtimeUserSearchController?.abort();
+  runtimeUserSearchController = null;
+  runtimeUserSearchRevision += 1;
+  runtimeUserSearchLoading.value = false;
+};
+
+const clearRuntimeUserSearch = () => {
+  cancelRuntimeUserSearchRequest();
+  runtimeUserSearchQuery.value = "";
+  runtimeUserSearchResults.value = [];
+};
+
+const normalizeRuntimeSearchUser = (user: AdminUser): UserGroupAccountRuntimeUser => ({
+  ...user,
+  current_concurrency: 0,
+  active_account_ids: [],
+});
+
+const loadRuntimeUserSearch = async (
+  groupID: number,
+  query: string,
+  revision: number,
+) => {
+  const controller = new AbortController();
+  runtimeUserSearchController = controller;
+  runtimeUserSearchLoading.value = true;
+  try {
+    const response = await adminAPI.users.list(
+      1,
+      RUNTIME_USER_SEARCH_PAGE_SIZE,
+      {
+        status: "active",
+        search: query,
+        api_key_group_id: groupID,
+      },
+      { signal: controller.signal },
+    );
+    if (
+      controller.signal.aborted ||
+      revision !== runtimeUserSearchRevision ||
+      !showUserAccountRuntimeDialog.value ||
+      runtimeGroup.value?.id !== groupID ||
+      runtimeUserSearchQuery.value.trim() !== query
+    ) {
+      return;
+    }
+    runtimeUserSearchResults.value = (response.items || []).map(normalizeRuntimeSearchUser);
+  } catch (error: unknown) {
+    if (controller.signal.aborted || revision !== runtimeUserSearchRevision) return;
+    runtimeUserSearchResults.value = [];
+    appStore.showError(
+      extractApiErrorMessage(error, t("admin.groups.userAccountAllowlist.loadFailed")),
+    );
+  } finally {
+    if (
+      revision === runtimeUserSearchRevision &&
+      runtimeUserSearchController === controller
+    ) {
+      runtimeUserSearchController = null;
+      runtimeUserSearchLoading.value = false;
+    }
+  }
+};
+
+const scheduleRuntimeUserSearch = () => {
+  cancelRuntimeUserSearchRequest();
+  runtimeUserSearchResults.value = [];
+
+  const groupID = runtimeGroup.value?.id;
+  const query = runtimeUserSearchQuery.value.trim();
+  if (!showUserAccountRuntimeDialog.value || !groupID || !query) return;
+
+  const revision = runtimeUserSearchRevision;
+  runtimeUserSearchTimer = setTimeout(() => {
+    runtimeUserSearchTimer = null;
+    void loadRuntimeUserSearch(groupID, query, revision);
+  }, RUNTIME_USER_SEARCH_DEBOUNCE_MS);
+};
+
+const closeUserAccountRuntimeDialog = () => {
+  clearRuntimeUserSearch();
+  showUserAccountRuntimeDialog.value = false;
+  runtimeAccountFilterID.value = null;
+};
+
+const closeUserAccountAllowlistDialog = () => {
+  showUserAccountAllowlistDialog.value = false;
+  allowlistUser.value = null;
+  allowlistRestricted.value = false;
+  allowlistAccountIDs.value = [];
+  allowlistCandidates.value = [];
+  allowlistLoading.value = false;
+};
+
+const openUserAccountRuntime = async (
+  groupID: number,
+  accountID: number | null = null,
+) => {
+  let listedGroup = groups.value.find((group) => group.id === groupID);
+  if (!listedGroup) {
+    try {
+      listedGroup = await adminAPI.groups.getById(groupID);
+    } catch (error: unknown) {
+      appStore.showError(extractApiErrorMessage(error, t("admin.groups.failedToLoad")));
+      return;
+    }
+  }
+
+  runtimeGroup.value = listedGroup;
+  clearRuntimeUserSearch();
+  runtimeUsers.value = [];
+  runtimeAccounts.value = [];
+  runtimeAccountFilterID.value = accountID;
+  showUserAccountRuntimeDialog.value = true;
+  runtimeLoading.value = true;
+  try {
+    const runtime = await adminAPI.groups.getUserAccountRuntime(groupID);
+    if (runtimeGroup.value?.id !== groupID) return;
+    runtimeUsers.value = runtime.users || [];
+    runtimeAccounts.value = runtime.accounts || [];
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.groups.userAccountAllowlist.loadFailed")));
+    closeUserAccountRuntimeDialog();
+  } finally {
+    if (runtimeGroup.value?.id === groupID) runtimeLoading.value = false;
+  }
+};
+
+const openUserAccountAllowlist = async (user: UserGroupAccountRuntimeUser) => {
+  const group = runtimeGroup.value;
+  if (!group) return;
+
+  allowlistUser.value = user;
+  allowlistRestricted.value = false;
+  allowlistAccountIDs.value = [];
+  allowlistCandidates.value = [];
+  allowlistLoading.value = true;
+  showUserAccountAllowlistDialog.value = true;
+  try {
+    const allowlist = await adminAPI.groups.getUserAccountAllowlist(group.id, user.id);
+    if (allowlistUser.value?.id !== user.id || runtimeGroup.value?.id !== group.id) return;
+    const allowedIDs = allowlist.account_ids || allowlist.allowed_account_ids || [];
+    const allowed = new Set(allowedIDs);
+    const runtimeByID = new Map(runtimeAccounts.value.map((account) => [account.id, account]));
+    allowlistRestricted.value = allowlist.restricted === true;
+    allowlistAccountIDs.value = allowedIDs;
+    allowlistCandidates.value = (allowlist.candidates || runtimeAccounts.value.map((account) => ({
+      id: account.id,
+      name: account.name,
+      platform: account.platform,
+      type: account.type,
+      priority: account.priority,
+      concurrency: account.concurrency,
+      allowed: allowed.has(account.id),
+      available: account.available !== false,
+    }))).map((candidate) => ({
+      ...candidate,
+      current_concurrency:
+        runtimeByID.get(candidate.id)?.current_concurrency
+        ?? 0,
+    }));
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.groups.userAccountAllowlist.loadFailed")));
+    closeUserAccountAllowlistDialog();
+  } finally {
+    if (allowlistUser.value?.id === user.id) allowlistLoading.value = false;
+  }
+};
+
+const saveUserAccountAllowlist = async (accountIDs: number[]) => {
+  const group = runtimeGroup.value;
+  const user = allowlistUser.value;
+  if (!group || !user) return;
+
+  allowlistSaving.value = true;
+  try {
+    const saved = await adminAPI.groups.updateUserAccountAllowlist(group.id, user.id, accountIDs);
+    allowlistRestricted.value = saved.restricted;
+    allowlistAccountIDs.value = saved.account_ids || accountIDs;
+    appStore.showSuccess(t("admin.groups.userAccountAllowlist.saved"));
+    closeUserAccountAllowlistDialog();
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.groups.userAccountAllowlist.saveFailed")));
+  } finally {
+    allowlistSaving.value = false;
+  }
+};
+
+const restoreUserAccountAllowlist = async () => {
+  const group = runtimeGroup.value;
+  const user = allowlistUser.value;
+  if (!group || !user) return;
+
+  allowlistSaving.value = true;
+  try {
+    await adminAPI.groups.clearUserAccountAllowlist(group.id, user.id);
+    allowlistRestricted.value = false;
+    allowlistAccountIDs.value = [];
+    appStore.showSuccess(t("admin.groups.userAccountAllowlist.restored"));
+    closeUserAccountAllowlistDialog();
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.groups.userAccountAllowlist.restoreFailed")));
+  } finally {
+    allowlistSaving.value = false;
+  }
+};
+
+const openRequestedAccountAllowlist = () => {
+  const query = route?.query ?? {};
+  const groupID = Number(query.user_account_allowlist_group);
+  const accountID = Number(query.user_account_allowlist_account);
+  if (!Number.isSafeInteger(groupID) || groupID <= 0) return;
+  void openUserAccountRuntime(
+    groupID,
+    Number.isSafeInteger(accountID) && accountID > 0 ? accountID : null,
+  );
+};
 const searchQuery = ref("");
 const filters = reactive({
   platform: "",
@@ -6972,7 +7413,7 @@ const saveSortOrder = async () => {
 };
 
 onMounted(() => {
-  loadGroups();
+  void loadGroups().then(openRequestedAccountAllowlist);
   void loadLiveCapability();
   loadModelsListCandidates("create", 0, createForm.platform);
   startCapacityRefresh();
@@ -6980,6 +7421,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  clearRuntimeUserSearch();
   stopCapacityRefresh();
   document.removeEventListener("click", handleClickOutside);
   accountSearchRunner.clearAll();

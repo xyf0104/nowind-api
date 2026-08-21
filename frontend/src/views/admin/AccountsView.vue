@@ -481,7 +481,40 @@
       @close="closeOAuthBillingDetails"
     />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @manage-user-allowlist="openAccountUserAllowlist" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <BaseDialog
+      :show="showAccountAllowlistGroupPicker"
+      :title="t('admin.groups.userAccountAllowlist.title')"
+      width="normal"
+      @close="showAccountAllowlistGroupPicker = false"
+    >
+      <div class="space-y-3">
+        <div class="rounded-lg bg-gray-50 px-4 py-3 text-sm dark:bg-dark-700">
+          <div class="font-medium text-gray-900 dark:text-white">{{ accountAllowlistAccount?.name }}</div>
+          <div class="mt-1 text-gray-500 dark:text-gray-400">{{ t('admin.groups.userAccountAllowlist.chooseGroup') }}</div>
+        </div>
+        <div class="space-y-2">
+          <button
+            v-for="group in accountAllowlistGroups"
+            :key="group.id"
+            type="button"
+            class="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 px-4 py-3 text-left transition-colors hover:border-primary-300 hover:bg-primary-50 dark:border-dark-600 dark:hover:border-primary-700 dark:hover:bg-primary-900/20"
+            @click="openGroupUserAllowlist(group)"
+          >
+            <span class="min-w-0">
+              <span class="block truncate font-medium text-gray-900 dark:text-white">{{ group.name }}</span>
+              <span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{{ group.platform }}</span>
+            </span>
+            <Icon name="chevronRight" size="sm" class="shrink-0 text-gray-400" />
+          </button>
+        </div>
+      </div>
+      <template #footer>
+        <div class="flex justify-end">
+          <button type="button" class="btn btn-secondary" @click="showAccountAllowlistGroupPicker = false">{{ t('common.cancel') }}</button>
+        </div>
+      </template>
+    </BaseDialog>
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -526,6 +559,7 @@ import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -634,6 +668,8 @@ const bulkEditTarget = ref<AccountBulkEditTarget | null>(null)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
 const showCreateShadowDialog = ref(false)
+const showAccountAllowlistGroupPicker = ref(false)
+const accountAllowlistAccount = ref<Account | null>(null)
 const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
@@ -1521,6 +1557,40 @@ const cols = computed(() =>
 )
 
 const handleEdit = (a: Account) => { edAcc.value = a; showEdit.value = true }
+const accountAllowlistGroups = computed<AdminGroup[]>(() => {
+  const account = accountAllowlistAccount.value
+  if (!account) return []
+  const groupIDs = account.group_ids ?? account.groups?.map((group) => group.id) ?? []
+  const groupIDSet = new Set(groupIDs)
+  return groups.value.filter((group) => groupIDSet.has(group.id))
+})
+
+const openGroupUserAllowlist = async (group: AdminGroup) => {
+  const account = accountAllowlistAccount.value
+  if (!account || !router) return
+  showAccountAllowlistGroupPicker.value = false
+  await router.push({
+    name: 'AdminGroups',
+    query: {
+      user_account_allowlist_group: String(group.id),
+      user_account_allowlist_account: String(account.id)
+    }
+  })
+}
+
+const openAccountUserAllowlist = (account: Account) => {
+  accountAllowlistAccount.value = account
+  if (accountAllowlistGroups.value.length === 1) {
+    void openGroupUserAllowlist(accountAllowlistGroups.value[0])
+    return
+  }
+  if (accountAllowlistGroups.value.length === 0) {
+    appStore.showError(t('admin.groups.userAccountAllowlist.noAccountGroups'))
+    return
+  }
+  showAccountAllowlistGroupPicker.value = true
+}
+
 const openMenu = (a: Account, e: MouseEvent) => {
   menu.acc = a
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,6 +47,45 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_Hit(t *testing.T
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_AllowlistRejectKeepsBinding(t *testing.T) {
+	groupID := int64(23)
+	ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(41))
+	account := Account{
+		ID:          2,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 2,
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}
+	cache := &stubGatewayCache{}
+	store := NewOpenAIWSStateStore(cache)
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              cache,
+		cfg:                newOpenAIWSV2TestConfig(),
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		openaiWSStateStore: store,
+		candidatePolicy: NewUserGroupAccountAllowlistPolicy(&userGroupAccountAllowlistRepositoryStub{
+			accountIDs: []int64{3}, restricted: true,
+		}),
+	}
+
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_restricted", account.ID, time.Hour))
+
+	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_prev_restricted", "gpt-5.1", nil, false)
+	require.ErrorIs(t, err, ErrOpenAIPreviousResponseAffinityUnavailable)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection, "a previous_response_id chain must not fall back to another allowlisted account")
+
+	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_prev_restricted")
+	require.NoError(t, getErr)
+	require.Equal(t, account.ID, boundAccountID, "the non-migratable binding remains intact")
 }
 
 func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_QuotaAutoPausedMiss(t *testing.T) {
@@ -202,11 +242,17 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_Excluded(t *test
 		openaiWSStateStore: store,
 	}
 
-	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_2", account.ID, time.Hour))
+	responseID := "resp_prev_2"
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, responseID, account.ID, time.Hour))
 
-	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_prev_2", "gpt-5.1", map[int64]struct{}{account.ID: {}}, false)
-	require.NoError(t, err)
+	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, responseID, "gpt-5.1", map[int64]struct{}{account.ID: {}}, false)
+	require.ErrorIs(t, err, ErrOpenAIPreviousResponseAffinityUnavailable)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.Nil(t, selection)
+
+	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, responseID)
+	require.NoError(t, getErr)
+	require.Equal(t, account.ID, boundAccountID, "excludedIDs must not erase a non-migratable response binding")
 }
 
 func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ForceHTTPIgnored(t *testing.T) {
@@ -347,11 +393,75 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_CapabilityMismat
 		OpenAIEndpointCapabilityEmbeddings,
 		false,
 	)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrOpenAIPreviousResponseAffinityUnavailable)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.Nil(t, selection)
 	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_prev_capability")
 	require.NoError(t, getErr)
 	require.Equal(t, account.ID, boundAccountID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseModelMismatchDoesNotFallThrough(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(26)
+	bound := Account{
+		ID:          32,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"},
+		},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}
+	fallback := Account{
+		ID:          33,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.2": "gpt-5.2"},
+		},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}
+	cache := &stubGatewayCache{}
+	store := NewOpenAIWSStateStore(cache)
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{bound, fallback}},
+		cache:              cache,
+		cfg:                newOpenAIWSV2TestConfig(),
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		openaiWSStateStore: store,
+	}
+
+	const responseID = "resp_prev_model_mismatch"
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, responseID, bound.ID, time.Hour))
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		responseID,
+		"",
+		"gpt-5.2",
+		nil,
+		OpenAIUpstreamTransportResponsesWebsocketV2,
+		false,
+	)
+	require.ErrorIs(t, err, ErrOpenAIPreviousResponseAffinityUnavailable)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection, "a non-migratable response chain must not select the compatible fallback account")
+
+	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, responseID)
+	require.NoError(t, getErr)
+	require.Equal(t, bound.ID, boundAccountID, "the response binding remains intact for the original account")
 }
 
 func newOpenAIWSV2TestConfig() *config.Config {

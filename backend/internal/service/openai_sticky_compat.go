@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -131,7 +132,7 @@ func (s *OpenAIGatewayService) getStickySessionAccountID(ctx context.Context, gr
 
 	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), primaryKey)
 	if err == nil && accountID > 0 {
-		return accountID, nil
+		return s.validateOpenAIStickyCandidate(ctx, groupID, sessionHash, accountID)
 	}
 	if !s.openAISessionHashReadOldFallbackEnabled() {
 		return accountID, err
@@ -146,14 +147,33 @@ func (s *OpenAIGatewayService) getStickySessionAccountID(ctx context.Context, gr
 	legacyAccountID, legacyErr := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), legacyKey)
 	if legacyErr == nil && legacyAccountID > 0 {
 		openAIStickyLegacyReadFallbackHit.Add(1)
-		return legacyAccountID, nil
+		return s.validateOpenAIStickyCandidate(ctx, groupID, sessionHash, legacyAccountID)
 	}
 	return accountID, err
+}
+
+// validateOpenAIStickyCandidate treats an account removed from a user's
+// allowlist as a movable ordinary-session miss. It clears both current and
+// compatibility cache keys, then lets the hard-priority scheduler choose a
+// fresh candidate. Repository failures intentionally propagate so they cannot
+// turn into an unrestricted sticky hit.
+func (s *OpenAIGatewayService) validateOpenAIStickyCandidate(ctx context.Context, groupID *int64, sessionHash string, accountID int64) (int64, error) {
+	if err := s.requireAccountCandidate(ctx, groupID, accountID); err != nil {
+		if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+			_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+			return 0, ErrStickySessionNotFound
+		}
+		return 0, err
+	}
+	return accountID, nil
 }
 
 func (s *OpenAIGatewayService) setStickySessionAccountID(ctx context.Context, groupID *int64, sessionHash string, accountID int64, ttl time.Duration) error {
 	if s == nil || s.cache == nil || accountID <= 0 {
 		return nil
+	}
+	if err := s.requireAccountCandidate(ctx, groupID, accountID); err != nil {
+		return err
 	}
 	primaryKey := s.openAISessionCacheKey(sessionHash)
 	if primaryKey == "" {

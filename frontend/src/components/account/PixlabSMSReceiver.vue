@@ -124,8 +124,8 @@
       <button
         type="button"
         class="btn btn-secondary !px-2.5 !py-1.5 text-xs"
-        :disabled="!canChangeNumber"
-        @click="changeNumber"
+        :disabled="!canChangeNumber || confirmationAction !== null"
+        @click="requestChangeConfirmation"
       >
         <svg v-if="isChangingNumber" class="mr-1 h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -198,17 +198,21 @@
 
   <SMSReceiverActionDialog
     :show="confirmationAction !== null"
-    :title="confirmationAction === 'cancel' ? '取消当前号码' : '领取授权手机号'"
+    :title="confirmationAction === 'cancel' ? '取消当前号码' : confirmationAction === 'change' ? '更换当前号码' : '领取授权手机号'"
     :message="confirmationAction === 'cancel'
       ? '确认取消当前手机号并结束本次 OAuth 授权接码会话吗？'
-      : '确认领取一个用于当前 OAuth 授权的手机号吗？'"
+      : confirmationAction === 'change'
+        ? '确认释放当前手机号并领取一个新的 OAuth 授权手机号吗？'
+        : '确认领取一个用于当前 OAuth 授权的手机号吗？'"
     :detail="confirmationAction === 'cancel'
       ? '尚未收到验证码时会释放当前号码和卡密；已经收到验证码时仍按实际结果处理。'
-      : '领取成功后会立即开始监听验证码，可随时刷新、换号或在未收到验证码时取消。'"
-    :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : '确认领取号码'"
-    :pending-label="confirmationAction === 'cancel' ? '正在取消…' : '正在领取…'"
+      : confirmationAction === 'change'
+        ? '当前号码会先释放，再领取新的号码；已经收到的验证码按现有规则处理。'
+        : '领取成功后会立即开始监听验证码，可随时刷新、换号或在未收到验证码时取消。'"
+    :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : confirmationAction === 'change' ? '确认换号' : '确认领取号码'"
+    :pending-label="confirmationAction === 'cancel' ? '正在取消…' : confirmationAction === 'change' ? '正在换号…' : '正在领取…'"
     :pending="confirmationPending"
-    :danger="confirmationAction === 'cancel'"
+    :danger="confirmationAction === 'cancel' || confirmationAction === 'change'"
     @cancel="closeConfirmation"
     @confirm="confirmReceiverAction"
   />
@@ -260,9 +264,13 @@ const isSavingKeys = ref(false)
 const isClearingKeys = ref(false)
 const hasManuallyStarted = ref(false)
 const isStartingPhone = ref(false)
-const confirmationAction = ref<'claim' | 'cancel' | null>(null)
+const confirmationAction = ref<'claim' | 'cancel' | 'change' | null>(null)
 const needsManualStart = computed(() => !hasManuallyStarted.value)
-const confirmationPending = computed(() => confirmationAction.value === 'claim' ? isStartingPhone.value : isCancelling.value)
+const confirmationPending = computed(() => {
+  if (confirmationAction.value === 'claim') return isStartingPhone.value
+  if (confirmationAction.value === 'change') return isChangingNumber.value
+  return isCancelling.value
+})
 
 function showError(error: unknown): void {
   appStore.showError(error instanceof Error ? error.message : '接码服务暂时不可用，请稍后重试。')
@@ -310,6 +318,11 @@ async function changeNumber(): Promise<void> {
   }
 }
 
+function requestChangeConfirmation(): void {
+  if (!canChangeNumber.value || isChangingNumber.value) return
+  confirmationAction.value = 'change'
+}
+
 async function cancel(): Promise<void> {
   try {
     const outcome = await receiver.cancel()
@@ -339,6 +352,7 @@ async function confirmReceiverAction(): Promise<void> {
   if (!action || confirmationPending.value) return
   try {
     if (action === 'claim') await requestPhone()
+    else if (action === 'change') await changeNumber()
     else await cancel()
   } finally {
     if (confirmationAction.value === action) confirmationAction.value = null

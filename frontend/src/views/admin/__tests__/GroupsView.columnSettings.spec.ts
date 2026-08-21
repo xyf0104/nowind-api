@@ -455,7 +455,7 @@ describe('admin GroupsView column settings', () => {
     await wrapper.get('button[title="Sort Order"]').trigger('click')
     await flushPromises()
 
-    const dialogText = wrapper.text()
+    const dialogText = wrapper.get('[data-testid="group-sort-list"]').text()
     expect(dialogText.indexOf('OpenAI 0.1')).toBeLessThan(dialogText.indexOf('OpenAI 0.2'))
     expect(dialogText.indexOf('OpenAI 0.2')).toBeLessThan(dialogText.indexOf('Claude'))
     expect(dialogText.indexOf('Claude')).toBeLessThan(dialogText.indexOf('Exclusive OpenAI'))

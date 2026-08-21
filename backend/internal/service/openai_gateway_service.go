@@ -428,6 +428,7 @@ type OpenAIGatewayService struct {
 	balanceNotifyService  *BalanceNotifyService
 	settingService        *SettingService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	candidatePolicy       AccountCandidateAccessPolicy
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
@@ -463,6 +464,29 @@ type OpenAIGatewayService struct {
 	openaiCompatAnthropicDigestSessions sync.Map
 	openaiCodexTurnStateOrigins         sync.Map
 	openaiCodexTurnStateWrites          atomic.Int64
+}
+
+// SetAccountCandidateAccessPolicy attaches the optional per-user group
+// allowlist after regular OpenAI gateway construction. Keeping the constructor
+// stable avoids perturbing the upstream service graph.
+func (s *OpenAIGatewayService) SetAccountCandidateAccessPolicy(policy AccountCandidateAccessPolicy) {
+	if s != nil {
+		s.candidatePolicy = policy
+	}
+}
+
+func (s *OpenAIGatewayService) filterAccountCandidates(ctx context.Context, groupID *int64, accounts []Account) ([]Account, error) {
+	if s == nil {
+		return accounts, nil
+	}
+	return filterAccountCandidatesWithPolicy(ctx, s.candidatePolicy, groupID, accounts)
+}
+
+func (s *OpenAIGatewayService) requireAccountCandidate(ctx context.Context, groupID *int64, accountID int64) error {
+	if s == nil {
+		return nil
+	}
+	return requireAccountCandidateWithPolicy(ctx, s.candidatePolicy, groupID, accountID)
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -1197,7 +1221,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			}
 			return apiKey, "apikey", nil
 		}
-		apiKey := account.GetOpenAIApiKey()
+		apiKey := strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
 		if apiKey == "" {
 			return "", "", errors.New("api_key not found in credentials")
 		}

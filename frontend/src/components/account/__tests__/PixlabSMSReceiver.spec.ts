@@ -13,7 +13,7 @@ const SMSReceiverActionDialogStub = {
   `,
 }
 
-const { receiverMocks, copyToClipboardMock } = vi.hoisted(() => ({
+const { receiverMocks, receiverState, copyToClipboardMock } = vi.hoisted(() => ({
   receiverMocks: {
     start: vi.fn(),
     stop: vi.fn(),
@@ -23,6 +23,9 @@ const { receiverMocks, copyToClipboardMock } = vi.hoisted(() => ({
     refreshQueueStatus: vi.fn(),
     appendCardKeys: vi.fn(),
     clearQueuedCardKeys: vi.fn()
+  },
+  receiverState: {
+    canChangeNumber: false,
   },
   copyToClipboardMock: vi.fn().mockResolvedValue(true)
 }))
@@ -45,7 +48,7 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
       sessionExpiresAt: ref('2026-08-14T00:15:00.000Z'),
       sessionExpiryText: ref('12:34'),
       canRefresh: ref(true),
-      canChangeNumber: ref(false),
+      canChangeNumber: ref(receiverState.canChangeNumber),
       canCancel: ref(true),
       isRefreshing: ref(false),
       isChangingNumber: ref(false),
@@ -70,6 +73,7 @@ vi.mock('@/composables/useClipboard', () => ({
 describe('PixlabSMSReceiver', () => {
   beforeEach(() => {
     Object.values(receiverMocks).forEach((mock) => mock.mockReset())
+    receiverState.canChangeNumber = false
     copyToClipboardMock.mockClear()
     receiverMocks.start.mockResolvedValue('waiting')
   })
@@ -158,6 +162,27 @@ describe('PixlabSMSReceiver', () => {
 
     expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
     expect(wrapper.find('[data-testid="request-sms-phone"]').exists()).toBe(false)
+  })
+
+  it('requires an in-app confirmation before changing the current number', async () => {
+    receiverState.canChangeNumber = true
+    receiverMocks.changeNumber.mockResolvedValue('waiting')
+    const wrapper = mountReceiver()
+    await claimNumber(wrapper)
+
+    const changeButton = wrapper.findAll('button').find((button) => button.text().includes('换号'))
+    expect(changeButton).toBeDefined()
+
+    await changeButton!.trigger('click')
+    await flushPromises()
+
+    expect(receiverMocks.changeNumber).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="sms-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
+    await flushPromises()
+
+    expect(receiverMocks.changeNumber).toHaveBeenCalledTimes(1)
   })
 
 })

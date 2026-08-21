@@ -173,4 +173,31 @@ describe('AccountActionMenu — spark shadow 按钮可见性', () => {
 
     wrapper.unmount()
   })
+
+  it('仅为已关联分组的账号展示用户可调用账号入口，并交出账号给页面处理', async () => {
+    const account = makeAccount({ group_ids: [9] })
+    const wrapper = mount(AccountActionMenu, {
+      props: { show: true, account, position },
+      attachTo: document.body,
+    })
+
+    const allowlistButton = getBodyButtons().find(b => b.textContent?.includes('admin.groups.userAccountAllowlist.title'))
+    expect(allowlistButton).toBeDefined()
+
+    allowlistButton!.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('manage-user-allowlist')?.[0][0]).toMatchObject({ id: account.id })
+    wrapper.unmount()
+  })
+
+  it('未关联分组的账号不展示用户可调用账号入口', () => {
+    const account = makeAccount({ group_ids: [] })
+    const wrapper = mount(AccountActionMenu, {
+      props: { show: true, account, position },
+      attachTo: document.body,
+    })
+
+    expect(getBodyText()).not.toContain('admin.groups.userAccountAllowlist.title')
+    wrapper.unmount()
+  })
 })

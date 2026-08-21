@@ -159,8 +159,8 @@
               type="button"
               class="sms-action"
               title="释放当前号码并领取新的号码"
-              :disabled="!canChangeNumber && !isLocalPreview"
-                @click="changeNumber"
+              :disabled="(!canChangeNumber && !isLocalPreview) || confirmationAction !== null"
+                @click="requestChangeConfirmation"
               >
                 <Icon name="swap" size="md" :class="{ 'animate-spin': isChangingNumber }" />
                 <span>换号</span>
@@ -391,10 +391,10 @@
       :title="confirmationTitle"
       :message="confirmationMessage"
       :detail="confirmationDetail"
-      :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : '确认领取号码'"
-      :pending-label="confirmationAction === 'cancel' ? '正在取消…' : '正在领取…'"
+      :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : confirmationAction === 'change' ? '确认换号' : '确认领取号码'"
+      :pending-label="confirmationAction === 'cancel' ? '正在取消…' : confirmationAction === 'change' ? '正在换号…' : '正在领取…'"
       :pending="confirmationPending"
-      :danger="confirmationAction === 'cancel'"
+      :danger="confirmationAction === 'cancel' || confirmationAction === 'change'"
       @cancel="closeConfirmation"
       @confirm="confirmReceiverAction"
     />
@@ -461,18 +461,29 @@ const phoneCopied = ref(false)
 const codeCopied = ref(false)
 const memberFeeInput = ref('')
 const rechargeDialogOpen = ref(false)
-const confirmationAction = ref<'claim' | 'cancel' | null>(null)
+const confirmationAction = ref<'claim' | 'cancel' | 'change' | null>(null)
 let clearConfirmationTimer: number | undefined
 let previewNumberIndex = 0
 
 const hasCode = computed(() => Boolean(code.value && code.value !== '--'))
 const memberBalance = computed(() => balance.value ?? authStore.user?.balance ?? null)
 const currentFeeAmount = computed(() => feeAmount.value > 0 ? feeAmount.value : 2)
-const confirmationPending = computed(() => confirmationAction.value === 'claim' ? isStarting.value : isCancelling.value)
-const confirmationTitle = computed(() => confirmationAction.value === 'cancel' ? '取消当前号码' : '领取接码号码')
+const confirmationPending = computed(() => {
+  if (confirmationAction.value === 'claim') return isStarting.value
+  if (confirmationAction.value === 'change') return isChangingNumber.value
+  return isCancelling.value
+})
+const confirmationTitle = computed(() => {
+  if (confirmationAction.value === 'cancel') return '取消当前号码'
+  if (confirmationAction.value === 'change') return '更换当前号码'
+  return '领取接码号码'
+})
 const confirmationMessage = computed(() => {
   if (confirmationAction.value === 'cancel') {
     return '确认取消当前号码并结束本次接码会话吗？'
+  }
+  if (confirmationAction.value === 'change') {
+    return '确认释放当前号码并领取一个新的接码号码吗？'
   }
   if (isAdmin.value) return '确认从待用卡密队列领取一个号码并开始监听验证码吗？'
   return `确认领取一个接码号码吗？本次将按 ${formatMoney(currentFeeAmount.value)} 预扣费用。`
@@ -482,6 +493,11 @@ const confirmationDetail = computed(() => {
     return isAdmin.value
       ? '尚未收到验证码时，卡密会释放回待用队列；已经收到验证码的会话仍按实际结果处理。'
       : '尚未收到验证码时会按规则释放号码并退回预扣；已经收到验证码的会话不会撤销结算。'
+  }
+  if (confirmationAction.value === 'change') {
+    return isAdmin.value
+      ? '当前号码会先释放，再从待用卡密队列领取新号码；已收到的验证码按现有规则处理。'
+      : '换号会结束当前号码会话；若尚未收到验证码，将按现有规则释放并处理预扣费用。'
   }
   return isAdmin.value
     ? '领取成功后会立即占用一个待用卡密，直到收到验证码、取消、换号或超时。'
@@ -709,6 +725,11 @@ function requestCancelConfirmation(): void {
   confirmationAction.value = 'cancel'
 }
 
+function requestChangeConfirmation(): void {
+  if ((!canChangeNumber.value && !isLocalPreview.value) || isChangingNumber.value) return
+  confirmationAction.value = 'change'
+}
+
 function closeConfirmation(): void {
   if (!confirmationPending.value) confirmationAction.value = null
 }
@@ -718,6 +739,7 @@ async function confirmReceiverAction(): Promise<void> {
   if (!action || confirmationPending.value) return
   try {
     if (action === 'claim') await begin()
+    else if (action === 'change') await changeNumber()
     else await cancelSession()
   } finally {
     if (confirmationAction.value === action) confirmationAction.value = null

@@ -46,6 +46,15 @@ func (h *AvailableChannelHandler) featureEnabled(c *gin.Context) bool {
 	return h.settingService.GetAvailableChannelsRuntime(c.Request.Context()).Enabled
 }
 
+// modelPricingEnabled 返回 XIASS 模型价格开关。该开关默认开启，且与
+// available-channels 开关完全独立。
+func (h *AvailableChannelHandler) modelPricingEnabled(c *gin.Context) bool {
+	if h.settingService == nil {
+		return true
+	}
+	return h.settingService.GetModelPricingRuntime(c.Request.Context()).Enabled
+}
+
 // userAvailableGroup 用户可见的分组概要（白名单字段）。
 //
 // 前端据此区分专属 vs 公开分组（IsExclusive）、订阅 vs 标准分组（SubscriptionType，
@@ -130,6 +139,18 @@ type userAvailableChannel struct {
 // List 列出当前用户可见的「可用渠道」。
 // GET /api/v1/channels/available
 func (h *AvailableChannelHandler) List(c *gin.Context) {
+	h.list(c, h.featureEnabled)
+}
+
+// Pricing 列出当前用户可见的模型价格数据。
+// GET /api/v1/channels/pricing
+//
+// 查询和过滤逻辑与可用渠道接口完全共用，仅使用独立的模型价格开关。
+func (h *AvailableChannelHandler) Pricing(c *gin.Context) {
+	h.list(c, h.modelPricingEnabled)
+}
+
+func (h *AvailableChannelHandler) list(c *gin.Context, featureEnabled func(*gin.Context) bool) {
 	subject, ok := middleware.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
@@ -138,7 +159,7 @@ func (h *AvailableChannelHandler) List(c *gin.Context) {
 
 	// Feature 未启用时返回空数组（不暴露渠道信息）。检查放在认证之后，
 	// 保持与未开关前的 401 行为一致：未登录先 401，登录后再按开关决定。
-	if !h.featureEnabled(c) {
+	if !featureEnabled(c) {
 		response.Success(c, []userAvailableChannel{})
 		return
 	}

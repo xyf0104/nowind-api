@@ -93,6 +93,7 @@ func RegisterUserRoutes(
 		channels := authenticated.Group("/channels")
 		{
 			channels.GET("/available", h.AvailableChannel.List)
+			channels.GET("/pricing", h.AvailableChannel.Pricing)
 		}
 
 		// Paid OAuth SMS receiver. Members can operate only their own opaque

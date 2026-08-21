@@ -110,7 +110,7 @@
 
             <!-- Empty state -->
             <div v-if="filteredOptions.length === 0" class="select-empty">
-              {{ emptyTextDisplay }}
+              {{ props.loading ? t('common.loading') : emptyTextDisplay }}
             </div>
           </div>
         </div>
@@ -153,11 +153,19 @@ interface Props {
   id?: string
   ariaLabel?: string
   ariaDescribedby?: string
+  /**
+   * Remote search keeps the input visible regardless of the current option
+   * count and delegates filtering to the parent through the search event.
+   */
+  remote?: boolean
+  /** Loading state used by remote option providers. */
+  loading?: boolean
 }
 
 interface Emits {
   (e: 'update:modelValue', value: string | number | boolean | null): void
   (e: 'change', value: string | number | boolean | null, option: SelectOption | null): void
+  (e: 'search', query: string): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -168,7 +176,9 @@ const props = withDefaults(defineProps<Props>(), {
   creatablePrefix: '',
   clearable: false,
   valueKey: 'value',
-  labelKey: 'label'
+  labelKey: 'label',
+  remote: false,
+  loading: false
 })
 
 const emit = defineEmits<Emits>()
@@ -211,7 +221,11 @@ const placeholderText = computed(() => props.placeholder ?? t('common.selectOpti
 const searchPlaceholderText = computed(() => props.searchPlaceholder ?? t('common.searchPlaceholder'))
 const emptyTextDisplay = computed(() => props.emptyText ?? t('common.noOptionsFound'))
 
+const REMOTE_SEARCH_DEBOUNCE_MS = 300
+let remoteSearchTimer: ReturnType<typeof setTimeout> | null = null
+
 const isSearchable = computed(() => {
+  if (props.remote) return true
   if (props.searchable === 'auto') return props.options.length > 5
   return props.searchable
 })
@@ -309,7 +323,10 @@ const hasValue = computed(
 
 const filteredOptions = computed(() => {
   let opts = props.options as any[]
-  if (isSearchable.value && searchQuery.value) {
+  // A remote result set is already filtered by the server. Filtering it a
+  // second time locally can hide a pinned selected option and breaks labels
+  // while a later result page is loading.
+  if (isSearchable.value && searchQuery.value && !props.remote) {
     const query = searchQuery.value.toLowerCase()
     opts = opts.filter((opt) => {
       // Match label
@@ -430,11 +447,26 @@ watch(isOpen, (open) => {
     focusedIndex.value = -1
     dropdownAvailableHeight.value = null
     dropdownMeasuredHeight.value = 0
+    if (remoteSearchTimer) {
+      clearTimeout(remoteSearchTimer)
+      remoteSearchTimer = null
+    }
     window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
     window.visualViewport?.removeEventListener('resize', calculateDropdownPosition)
     window.visualViewport?.removeEventListener('scroll', calculateDropdownPosition)
   }
+})
+
+watch(searchQuery, (query) => {
+  // Closing the dropdown resets searchQuery. Suppress that reset so it does
+  // not trigger a trailing empty server request after the user has left.
+  if (!props.remote || !isOpen.value) return
+  if (remoteSearchTimer) clearTimeout(remoteSearchTimer)
+  remoteSearchTimer = setTimeout(() => {
+    remoteSearchTimer = null
+    emit('search', query.trim())
+  }, REMOTE_SEARCH_DEBOUNCE_MS)
 })
 
 watch(filteredOptions, () => {
@@ -533,6 +565,10 @@ onUnmounted(() => {
   window.removeEventListener('resize', calculateDropdownPosition)
   window.visualViewport?.removeEventListener('resize', calculateDropdownPosition)
   window.visualViewport?.removeEventListener('scroll', calculateDropdownPosition)
+  if (remoteSearchTimer) {
+    clearTimeout(remoteSearchTimer)
+    remoteSearchTimer = null
+  }
 })
 </script>
 

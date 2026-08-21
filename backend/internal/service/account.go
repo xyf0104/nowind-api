@@ -1645,6 +1645,23 @@ func (a *Account) GetOpenAIApiKey() string {
 	return a.GetCredential("api_key")
 }
 
+// GetOpenAIProtocolAPIKey returns an API key for the OpenAI protocol family.
+// It covers native OpenAI accounts and the CN OpenAI-compatible providers,
+// while preserving IsOpenAIApiKey for paths that intentionally require the
+// native OpenAI platform.
+func (a *Account) GetOpenAIProtocolAPIKey() string {
+	if a == nil {
+		return ""
+	}
+	if a.IsCNProvider() {
+		if a.Type != AccountTypeAPIKey {
+			return ""
+		}
+		return a.GetCredential("api_key")
+	}
+	return a.GetOpenAIApiKey()
+}
+
 func (a *Account) GetOpenAIUserAgent() string {
 	if !a.IsOpenAI() {
 		return ""

@@ -247,8 +247,7 @@ import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import {
   PROVIDER_ANTHROPIC,
   PROVIDER_OPENAI,
-  PROVIDER_GEMINI,
-  PROVIDER_GROK,
+  PROVIDERS,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
 } from '@/constants/channelMonitor'
@@ -264,12 +263,12 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const { providerPickerClass } = useChannelMonitorFormat()
 
-const providerTabs = computed<{ value: Provider; label: string }[]>(() => [
-  { value: PROVIDER_ANTHROPIC, label: t('monitorCommon.providers.anthropic') },
-  { value: PROVIDER_OPENAI, label: t('monitorCommon.providers.openai') },
-  { value: PROVIDER_GEMINI, label: t('monitorCommon.providers.gemini') },
-  { value: PROVIDER_GROK, label: t('monitorCommon.providers.grok') },
-])
+const providerTabs = computed<{ value: Provider; label: string }[]>(() =>
+  PROVIDERS.map((value) => ({
+    value,
+    label: t(`monitorCommon.providers.${value}`),
+  })),
+)
 
 const activeProvider = ref<Provider>(PROVIDER_ANTHROPIC)
 const templates = ref<ChannelMonitorTemplate[]>([])
@@ -280,12 +279,7 @@ const templatesForActiveProvider = computed(() =>
 )
 
 const countByProvider = computed<Record<Provider, number>>(() => {
-  const out: Record<Provider, number> = {
-    anthropic: 0,
-    openai: 0,
-    gemini: 0,
-    grok: 0,
-  }
+  const out = Object.fromEntries(PROVIDERS.map((provider) => [provider, 0])) as Record<Provider, number>
   for (const t of templates.value) out[t.provider]++
   return out
 })

@@ -25,8 +25,7 @@
               : 'text-gray-600 border-gray-200/80 bg-gray-50/40 hover:bg-gray-100 hover:border-gray-300 hover:shadow dark:text-gray-400 dark:border-dark-700/80 dark:bg-dark-800/30 dark:hover:bg-dark-700/50 dark:hover:border-dark-600'
           ]"
         >
-          <BrandIcon v-if="cat.icon" :name="cat.icon" class="h-5 w-5" />
-          <PlatformIcon v-else :platform="cat.platform" size="lg" />
+          <PlatformBrandIcon :platform="cat.platform" />
           {{ cat.label }}
         </button>
       </div>
@@ -298,8 +297,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
-import BrandIcon from '@/components/icons/BrandIcon.vue'
-import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import PlatformBrandIcon from '@/components/common/PlatformBrandIcon.vue'
 import PriceCell from '@/components/pricing/PriceCell.vue'
 import PricingAreaTabs from '@/components/user/PricingAreaTabs.vue'
 import userChannelsAPI, {
@@ -363,12 +361,15 @@ interface DisplayPriceItem {
 // ==================== 产品类别定义 ====================
 
 /** 产品 Tab 配置：按平台分类 */
-const productCategories: { platform: GroupPlatform; label: string; icon?: string }[] = [
-  { platform: 'anthropic', label: 'Claude Code', icon: 'claude' },
-  { platform: 'openai', label: 'Codex', icon: 'openai' },
-  { platform: 'gemini', label: 'Gemini', icon: 'gemini' },
-  { platform: 'antigravity', label: 'Antigravity', icon: 'antigravity' },
-  { platform: 'grok', label: 'Grok' }
+const productCategories: { platform: GroupPlatform; label: string }[] = [
+  { platform: 'anthropic', label: 'Claude Code' },
+  { platform: 'openai', label: 'Codex' },
+  { platform: 'gemini', label: 'Gemini' },
+  { platform: 'antigravity', label: 'Antigravity' },
+  { platform: 'grok', label: 'Grok' },
+  { platform: 'kimi', label: 'Kimi' },
+  { platform: 'zhipu', label: 'Zhipu GLM' },
+  { platform: 'deepseek', label: 'DeepSeek' }
 ]
 
 // ==================== 计算属性 ====================

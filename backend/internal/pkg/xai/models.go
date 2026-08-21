@@ -1,5 +1,7 @@
 package xai
 
+import "strings"
+
 // Model describes an xAI model in OpenAI-compatible /models shape.
 type Model struct {
 	ID          string `json:"id"`
@@ -8,6 +10,10 @@ type Model struct {
 	OwnedBy     string `json:"owned_by"`
 	DisplayName string `json:"display_name,omitempty"`
 }
+
+// DefaultTextModel is the built-in fallback for empty model fields and Grok
+// text aliases (for example, "grok" and "grok-latest").
+const DefaultTextModel = "grok-4.5"
 
 var defaultModels = []Model{
 	{ID: "grok-4.5", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.5"},
@@ -23,6 +29,35 @@ var defaultModels = []Model{
 	{ID: "grok-imagine-edit", Object: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Edit"},
 	{ID: "grok-imagine-video", Object: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Video"},
 	{ID: "grok-imagine-video-1.5", Object: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Video 1.5"},
+}
+
+// grokTextResponsesModelAliases contains Grok text aliases accepted by the
+// Responses path. Keep this separate from DefaultModelMapping so XIASS's
+// existing catalog and administrator-managed mappings remain unchanged.
+var grokTextResponsesModelAliases = map[string]string{
+	"grok":                         DefaultTextModel,
+	"grok-latest":                  DefaultTextModel,
+	"grok-4.6":                     "grok-4.6",
+	"grok-4.6-latest":              "grok-4.6",
+	"grok-4.5":                     DefaultTextModel,
+	"grok-4.5-latest":              DefaultTextModel,
+	"grok-4.3":                     "grok-4.3",
+	"grok-4.3-latest":              "grok-4.3",
+	"grok-3-mini":                  "grok-3-mini",
+	"grok-3-mini-fast":             "grok-3-mini-fast",
+	"grok-build":                   "grok-build-0.1",
+	"grok-build-latest":            DefaultTextModel,
+	"grok-build-0.1":               "grok-build-0.1",
+	"grok-composer-2.5-fast":       "grok-composer-2.5-fast",
+	"grok-composer":                "grok-composer-2.5-fast",
+	"composer-2.5":                 "grok-composer-2.5-fast",
+	"grok-4.20-reasoning":          "grok-4.20-0309-reasoning",
+	"grok-4.20-0309-reasoning":     "grok-4.20-0309-reasoning",
+	"grok-4.20-non-reasoning":      "grok-4.20-0309-non-reasoning",
+	"grok-4.20-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
+	"grok-4.20-multi-agent":        "grok-4.20-multi-agent-0309",
+	"grok-4.20-multi-agent-latest": "grok-4.20-multi-agent-0309",
+	"grok-4.20-multi-agent-0309":   "grok-4.20-multi-agent-0309",
 }
 
 func DefaultModels() []Model {
@@ -55,4 +90,39 @@ func DefaultModelMapping() map[string]string {
 	mapping["grok-4.20-reasoning"] = "grok-4.20-0309-reasoning"
 	mapping["grok-4.20-non-reasoning"] = "grok-4.20-0309-non-reasoning"
 	return mapping
+}
+
+// StripGrokProviderPrefix removes common provider prefixes accepted for
+// xAI/Grok models, returning the native model ID.
+func StripGrokProviderPrefix(model string) string {
+	trimmed := strings.TrimSpace(model)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{"xai/", "x-ai/", "grok/"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return trimmed
+}
+
+// ResolveGrokTextResponsesModelID canonicalizes a Grok text alias before it is
+// sent upstream. Empty values and aliases that resolve to DefaultTextModel use
+// the optional caller-provided default when present.
+func ResolveGrokTextResponsesModelID(model string, defaultText ...string) string {
+	fallback := DefaultTextModel
+	if len(defaultText) > 0 && strings.TrimSpace(defaultText[0]) != "" {
+		fallback = strings.TrimSpace(defaultText[0])
+	}
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return fallback
+	}
+	normalized := strings.ToLower(StripGrokProviderPrefix(trimmed))
+	if canonical, ok := grokTextResponsesModelAliases[normalized]; ok {
+		if canonical == DefaultTextModel {
+			return fallback
+		}
+		return canonical
+	}
+	return StripGrokProviderPrefix(trimmed)
 }

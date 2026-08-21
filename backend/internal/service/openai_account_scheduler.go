@@ -391,7 +391,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			req.RequireCompact,
 		)
 		if err != nil {
-			return nil, decision, err
+			if !req.PreviousResponseCanMove || !errors.Is(err, ErrOpenAIPreviousResponseAffinityUnavailable) {
+				return nil, decision, err
+			}
 		}
 		if selection != nil && selection.Account != nil {
 			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
@@ -470,6 +472,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 	}
 	if accountID <= 0 {
+		return nil, nil
+	}
+	if err := s.service.requireAccountCandidate(ctx, req.GroupID, accountID); err != nil {
+		if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		}
 		return nil, nil
 	}
 	if req.ExcludedIDs != nil {
@@ -2158,6 +2166,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
+		return selection, decision, err
+	}
+	if errors.Is(err, ErrOpenAIPreviousResponseAffinityUnavailable) {
 		return selection, decision, err
 	}
 	if !errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrNoAvailableCompactAccounts) {

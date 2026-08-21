@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -187,13 +188,22 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "", false)
 }
 
-// noAvailableOpenAISelectionError builds the standard "no account available" error
-// while preserving the compact-specific error when applicable.
-func normalizeOpenAICompatiblePlatform(platform string) string {
-	if platform == PlatformGrok {
-		return PlatformGrok
+// NormalizeOpenAICompatiblePlatform keeps Grok and the first-class domestic
+// OpenAI-compatible providers separate from the native OpenAI pool. Unknown
+// values retain the historical fallback to OpenAI.
+func NormalizeOpenAICompatiblePlatform(platform string) string {
+	switch platform {
+	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		return platform
+	default:
+		return PlatformOpenAI
 	}
-	return PlatformOpenAI
+}
+
+// Keep the internal call sites compact while retaining the exported helper for
+// handler and scheduling tests that validate the platform contract.
+func normalizeOpenAICompatiblePlatform(platform string) string {
+	return NormalizeOpenAICompatiblePlatform(platform)
 }
 
 // details carries an optional machine-parseable exclusion summary (e.g.
@@ -669,6 +679,12 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 			return nil
 		}
 	}
+	if err := s.requireAccountCandidate(ctx, groupID, accountID); err != nil {
+		if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+			_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		}
+		return nil
+	}
 
 	if _, excluded := excludedIDs[accountID]; excluded {
 		return nil
@@ -894,13 +910,22 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	// The cache entry exists only during the rolling one-minute window. A valid
 	// sticky account keeps the conversation coherent regardless of its priority.
 	if sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
+		if err := s.requireAccountCandidate(ctx, groupID, stickyAccountID); err != nil {
+			if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+			}
+			stickyAccountID = 0
+		}
+	}
+	if sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
 		account, err := s.getSchedulableAccount(ctx, stickyAccountID)
 		if err == nil {
 			clearSticky := shouldClearStickySession(account, requestedModel)
-			if !clearSticky && isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, requestedModel, false, requiredCapability) {
+			eligible := !clearSticky && isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, requestedModel, false, requiredCapability)
+			if eligible {
 				account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, groupID, platform, requestedModel, requireCompact, requiredCapability)
 			}
-			if account == nil || clearSticky || !s.openAIAccountMatchesSchedulingGroup(account, groupID) ||
+			if account == nil || clearSticky || !eligible || !s.openAIAccountMatchesSchedulingGroup(account, groupID) ||
 				s.isOpenAIAccountRequestRuntimeBlocked(account, requestedModel) ||
 				(needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact)) ||
 				!parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -1177,7 +1202,14 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
-		return accounts, err
+		if err != nil {
+			return nil, err
+		}
+		accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
+		if err != nil {
+			return nil, err
+		}
+		return accounts, nil
 	}
 	var accounts []Account
 	var err error
@@ -1190,6 +1222,10 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
+	}
+	accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
+	if err != nil {
+		return nil, err
 	}
 	return accounts, nil
 }

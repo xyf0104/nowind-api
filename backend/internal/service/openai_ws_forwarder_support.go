@@ -461,8 +461,17 @@ func (s *OpenAIGatewayService) ResolveAccountIDByPreviousResponseIDForScheduler(
 	return accountID
 }
 
+// ErrOpenAIPreviousResponseAffinityUnavailable marks a response chain whose bound account cannot serve the current request.
+var ErrOpenAIPreviousResponseAffinityUnavailable = errors.New("previous_response_id affinity unavailable")
+
 func openAIPreviousResponseAffinityBlocked(accountID int64, reason string) error {
-	return fmt.Errorf("%w: previous_response_id bound account %d is temporarily unavailable (%s)", ErrNoAvailableAccounts, accountID, reason)
+	return fmt.Errorf(
+		"%w: %w: previous_response_id bound account %d is temporarily unavailable (%s)",
+		ErrNoAvailableAccounts,
+		ErrOpenAIPreviousResponseAffinityUnavailable,
+		accountID,
+		reason,
+	)
 }
 
 func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
@@ -490,9 +499,20 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if err != nil || accountID <= 0 {
 		return 0, nil, "", nil, nil
 	}
+	if policyErr := s.requireAccountCandidate(ctx, groupID, accountID); policyErr != nil {
+		// previous_response_id is an intentionally non-migratable chain. Unlike a
+		// normal session_hash miss, a newly restricted account must leave this
+		// binding intact and fail the request instead of moving a continuation to
+		// another account.
+		return 0, nil, "", store, fmt.Errorf(
+			"%w: account policy rejected: %v",
+			openAIPreviousResponseAffinityBlocked(accountID, "not allowed"),
+			policyErr,
+		)
+	}
 	if excludedIDs != nil {
 		if _, excluded := excludedIDs[accountID]; excluded {
-			return 0, nil, "", nil, nil
+			return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "excluded")
 		}
 	}
 
@@ -514,11 +534,15 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil, nil
 	}
+	// A previous_response_id continuation is intentionally non-migratable. A
+	// bound account that cannot serve this request's model or endpoint must keep
+	// the binding and fail the request rather than falling through to a different
+	// account via normal scheduling.
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
-		return 0, nil, "", nil, nil
+		return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "model_not_supported")
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
-		return 0, nil, "", nil, nil
+		return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "endpoint_capability_unsupported")
 	}
 	// Quota auto-pause must also gate the previous_response_id sticky path; otherwise an
 	// account over its 5h/7d threshold keeps serving the same response chain even though
@@ -548,10 +572,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 			return 0, nil, "", nil, nil
 		}
 		if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
-			return 0, nil, "", nil, nil
+			return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "model_not_supported")
 		}
 		if !latest.SupportsOpenAIEndpointCapability(requiredCapability) {
-			return 0, nil, "", nil, nil
+			return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "endpoint_capability_unsupported")
 		}
 		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, latest); paused {
 			return 0, nil, "", store, openAIPreviousResponseAffinityBlocked(accountID, "quota_auto_pause")

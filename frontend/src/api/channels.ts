@@ -89,6 +89,19 @@ export async function getAvailable(options?: { signal?: AbortSignal }): Promise<
   return data
 }
 
-export const userChannelsAPI = { getAvailable }
+/**
+ * 列出当前用户可见的模型价格数据。
+ *
+ * 模型价格是 XIASS 的独立功能开关，不能跟上游的「可用渠道」开关共用一个
+ * endpoint；否则关闭渠道列表会意外让既有价格页变成空白。
+ */
+export async function getPricing(options?: { signal?: AbortSignal }): Promise<UserAvailableChannel[]> {
+  const { data } = await apiClient.get<UserAvailableChannel[]>('/channels/pricing', {
+    signal: options?.signal
+  })
+  return data
+}
+
+export const userChannelsAPI = { getAvailable, getPricing }
 
 export default userChannelsAPI

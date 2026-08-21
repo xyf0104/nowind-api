@@ -19,6 +19,7 @@ import (
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
@@ -773,6 +774,43 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	candidatePolicy       AccountCandidateAccessPolicy
+}
+
+// SetAccountCandidateAccessPolicy attaches the optional user/group account
+// allowlist policy after the regular service graph has been constructed. It is
+// intentionally a setter so existing constructor consumers keep their stable
+// signature.
+func (s *GatewayService) SetAccountCandidateAccessPolicy(policy AccountCandidateAccessPolicy) {
+	if s != nil {
+		s.candidatePolicy = policy
+	}
+}
+
+func (s *GatewayService) filterAccountCandidates(ctx context.Context, groupID *int64, accounts []Account) ([]Account, error) {
+	if s == nil {
+		return accounts, nil
+	}
+	return filterAccountCandidatesWithPolicy(ctx, s.candidatePolicy, groupID, accounts)
+}
+
+func (s *GatewayService) requireAccountCandidate(ctx context.Context, groupID *int64, accountID int64) error {
+	if s == nil {
+		return nil
+	}
+	return requireAccountCandidateWithPolicy(ctx, s.candidatePolicy, groupID, accountID)
+}
+
+// accountCandidatePolicyUsesUserScope reports when a public model response
+// must not use the group-wide cache. The cache key intentionally predates
+// per-user account limits, so sharing it would let one user's restricted
+// candidate set alter another user's model catalog.
+func (s *GatewayService) accountCandidatePolicyUsesUserScope(ctx context.Context) bool {
+	if s == nil || s.candidatePolicy == nil || ctx == nil {
+		return false
+	}
+	userID, _ := ctx.Value(ctxkey.UserID).(int64)
+	return userID > 0
 }
 
 // NewGatewayService creates a new GatewayService
@@ -930,7 +968,34 @@ func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, 
 	if sessionHash == "" || accountID <= 0 || s.cache == nil {
 		return nil
 	}
+	if err := s.requireAccountCandidate(ctx, groupID, accountID); err != nil {
+		return err
+	}
 	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
+}
+
+// getAllowedGatewayStickySessionAccountID reads a normal session_hash binding
+// and applies the optional user/group allowlist before it can influence
+// scheduling. An explicitly removed account is a regular sticky miss: clear
+// that movable binding and let the original priority scheduler select again.
+// A store failure remains fail-closed and is never converted into an
+// unrestricted sticky hit.
+func (s *GatewayService) getAllowedGatewayStickySessionAccountID(ctx context.Context, groupID *int64, sessionHash string) (int64, error) {
+	if s == nil || s.cache == nil || sessionHash == "" {
+		return 0, nil
+	}
+	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+	if err != nil || accountID <= 0 {
+		return accountID, err
+	}
+	if err := s.requireAccountCandidate(ctx, groupID, accountID); err != nil {
+		if errors.Is(err, ErrUserGroupAccountNotAllowed) {
+			_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+			return 0, ErrStickySessionNotFound
+		}
+		return 0, err
+	}
+	return accountID, nil
 }
 
 // bindGatewayStickySessionDuringSelection preserves the normal eager sticky
@@ -957,7 +1022,7 @@ func (s *GatewayService) BindStickySessionAfterProfitAdmission(ctx context.Conte
 	if !gatewayProfitControlGateActive(ctx) {
 		return s.BindStickySession(ctx, groupID, sessionHash, accountID)
 	}
-	existingAccountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+	existingAccountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash)
 	if err != nil && !errors.Is(err, ErrStickySessionNotFound) {
 		// 读失败时无法判断既有绑定，保守跳过而不是冒着覆盖健康绑定的风险写入。
 		slog.Warn("profit_control_sticky_binding_read_failed", "group_id", derefGroupID(groupID), "account_id", accountID, "error", err)
@@ -975,7 +1040,7 @@ func (s *GatewayService) GetCachedSessionAccountID(ctx context.Context, groupID 
 	if sessionHash == "" || s.cache == nil {
 		return 0, nil
 	}
-	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+	accountID, err := s.getAllowedGatewayStickySessionAccountID(ctx, groupID, sessionHash)
 	if err != nil {
 		return 0, err
 	}
@@ -1269,7 +1334,8 @@ func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (s
 // It aggregates model_mapping keys from all schedulable accounts in the group
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
 	cacheKey := modelsListCacheKey(groupID, platform)
-	if s.modelsListCache != nil {
+	userScoped := s.accountCandidatePolicyUsesUserScope(ctx)
+	if !userScoped && s.modelsListCache != nil {
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
 			if models, ok := cached.([]string); ok {
 				modelsListCacheHitTotal.Add(1)
@@ -1288,6 +1354,10 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		accounts, err = s.accountRepo.ListSchedulable(ctx)
 	}
 
+	if err != nil || len(accounts) == 0 {
+		return nil
+	}
+	accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
 	if err != nil || len(accounts) == 0 {
 		return nil
 	}
@@ -1312,7 +1382,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		// mapping on any eligible passthrough account therefore cannot define the
 		// public whitelist; return nil so the handler uses its default model set.
 		if platform == PlatformOpenAI && acc.IsOpenAIPassthroughEnabled() {
-			if s.modelsListCache != nil {
+			if !userScoped && s.modelsListCache != nil {
 				s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 				modelsListCacheStoreTotal.Add(1)
 			}
@@ -1337,7 +1407,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 	// If no account has model_mapping, return nil (use default)
 	if !hasAnyMapping {
-		if s.modelsListCache != nil {
+		if !userScoped && s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
 		}
@@ -1351,7 +1421,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	}
 	sort.Strings(models)
 
-	if s.modelsListCache != nil {
+	if !userScoped && s.modelsListCache != nil {
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
 		modelsListCacheStoreTotal.Add(1)
 	}
@@ -1373,6 +1443,10 @@ func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *i
 	} else {
 		accounts, err = s.accountRepo.ListSchedulable(ctx)
 	}
+	if err != nil {
+		return platforms
+	}
+	accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
 	if err != nil {
 		return platforms
 	}

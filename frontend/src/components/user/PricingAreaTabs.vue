@@ -42,15 +42,18 @@ const { activeTab } = defineProps<{
 }>()
 
 const monitorEnabled = computed(() => isFeatureFlagEnabled(FeatureFlags.channelMonitor))
+const pricingEnabled = computed(() => isFeatureFlagEnabled(FeatureFlags.modelPricing))
 
 const tabs = computed(() => {
-  const result: PricingAreaTabItem[] = [
-    {
+  const result: PricingAreaTabItem[] = []
+
+  if (pricingEnabled.value) {
+    result.push({
       id: 'pricing',
       to: '/pricing',
       label: t('pricingAreaTabs.pricing'),
-    },
-  ]
+    })
+  }
 
   if (monitorEnabled.value) {
     result.push({

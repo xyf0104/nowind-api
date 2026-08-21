@@ -59,6 +59,13 @@ type Group struct {
 	// nil 表示使用默认价 defaultWebSearchPricePerCall（官方 $10/1000 次）。
 	WebSearchPricePerCall *float64
 
+	// ModelPricing overrides channel and built-in prices for matching models.
+	// Token intervals are selected only when LongContextPricingEnabled is true.
+	// The database default is true so existing groups retain their long-context
+	// billing behavior after the additive migration.
+	LongContextPricingEnabled bool
+	ModelPricing              []ChannelModelPricing
+
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool
 	FallbackGroupID *int64

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"go.uber.org/zap"
@@ -84,6 +85,7 @@ type BatchImageOwner struct {
 type BatchImagePublicService struct {
 	Repo              BatchImageRepository
 	AccountRepo       BatchImageAccountSelectionRepository
+	AccountPolicy     AccountCandidateAccessPolicy
 	GroupRepo         BatchImageGroupPricingRepository
 	UserGroupRateRepo BatchImageUserGroupRateRepository
 	Queue             BatchImageQueue
@@ -182,10 +184,11 @@ type BatchImageItemsQuery struct {
 	Cursor string
 }
 
-func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config) *BatchImagePublicService {
+func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, accountPolicy AccountCandidateAccessPolicy, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config) *BatchImagePublicService {
 	return &BatchImagePublicService{
 		Repo:              repo,
 		AccountRepo:       accountRepo,
+		AccountPolicy:     accountPolicy,
 		GroupRepo:         groupRepo,
 		UserGroupRateRepo: userGroupRateRepo,
 		Queue:             queue,
@@ -624,6 +627,7 @@ func (s *BatchImagePublicService) ListModels(ctx context.Context, owner BatchIma
 	if err := s.ensureGroupAllowsBatchImage(ctx, owner.GroupID); err != nil {
 		return nil, err
 	}
+	selectionCtx := batchImageAccountSelectionContext(ctx, owner)
 
 	modelsByProvider := make(map[string]map[string]struct{})
 	for _, providerName := range batchImageProviderSelectionOrder("") {
@@ -631,7 +635,7 @@ func (s *BatchImagePublicService) ListModels(ctx context.Context, owner BatchIma
 		if !ok || provider == nil {
 			continue
 		}
-		accounts, err := s.listCandidateAccounts(ctx, owner.GroupID, batchImageProviderPlatform(providerName))
+		accounts, err := s.listCandidateAccounts(selectionCtx, owner.GroupID, batchImageProviderPlatform(providerName))
 		if err != nil {
 			return nil, err
 		}
@@ -934,13 +938,15 @@ func maxBatchImageReferenceImagesForModel(model string) int {
 }
 
 func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, owner BatchImageOwner, requestedProvider, model string) (BatchImageProvider, *Account, error) {
+	selectionCtx := batchImageAccountSelectionContext(ctx, owner)
+
 	providers := batchImageProviderSelectionOrder(requestedProvider)
 	for _, providerName := range providers {
 		provider, ok := s.ProviderRegistry.Get(providerName)
 		if !ok || provider == nil {
 			continue
 		}
-		accounts, err := s.listCandidateAccounts(ctx, owner.GroupID, batchImageProviderPlatform(providerName))
+		accounts, err := s.listCandidateAccounts(selectionCtx, owner.GroupID, batchImageProviderPlatform(providerName))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -966,14 +972,34 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 	return nil, nil, ErrBatchImageNoAccountAvailable
 }
 
+func batchImageAccountSelectionContext(ctx context.Context, owner BatchImageOwner) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The authenticated batch owner is authoritative. The group ID is passed
+	// explicitly to the policy; clear any unrelated ambient admin/request group
+	// so it can never become a fallback identity.
+	ctx = context.WithValue(ctx, ctxkey.UserID, owner.UserID)
+	return context.WithValue(ctx, ctxkey.Group, (*Group)(nil))
+}
+
 func (s *BatchImagePublicService) listCandidateAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
 	if s.AccountRepo == nil {
 		return nil, ErrBatchImageNoAccountAvailable
 	}
+	var (
+		accounts []Account
+		err      error
+	)
 	if groupID != nil && *groupID > 0 {
-		return s.AccountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		accounts, err = s.AccountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+	} else {
+		accounts, err = s.AccountRepo.ListSchedulableByPlatform(ctx, platform)
 	}
-	return s.AccountRepo.ListSchedulableByPlatform(ctx, platform)
+	if err != nil {
+		return nil, err
+	}
+	return filterAccountCandidatesWithPolicy(ctx, s.AccountPolicy, groupID, accounts)
 }
 
 func (s *BatchImagePublicService) ensureGroupAllowsBatchImage(ctx context.Context, groupID *int64) error {

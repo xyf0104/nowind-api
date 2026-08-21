@@ -13,7 +13,20 @@ const groupsViewSource = readFileSync(
 describe("groups models list layout", () => {
   it("keeps the toolbar outside of the scrolling list content", () => {
     expect(groupsViewSource).toContain("overflow-hidden rounded-lg border");
-    expect(groupsViewSource).toContain("max-h-64 space-y-2 overflow-y-auto p-2");
-    expect(groupsViewSource).not.toContain("sticky top-0");
+    expect(
+      groupsViewSource.match(/class="max-h-64 space-y-2 overflow-y-auto p-2"/g),
+    ).toHaveLength(2);
+
+    // A separate user/account allowlist table intentionally has a sticky
+    // header. Guard the two models-list scrollers themselves instead of
+    // rejecting unrelated sticky UI anywhere in this large view.
+    const modelListScrollers = [
+      groupsViewSource.indexOf('v-if="createModelsListLoading"'),
+      groupsViewSource.indexOf('v-if="editModelsListLoading"'),
+    ];
+    for (const scroller of modelListScrollers) {
+      expect(scroller).toBeGreaterThan(0);
+      expect(groupsViewSource.slice(scroller - 160, scroller)).not.toContain("sticky top-0");
+    }
   });
 });

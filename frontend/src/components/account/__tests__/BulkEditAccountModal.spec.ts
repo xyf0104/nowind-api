@@ -230,7 +230,8 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       credentials: {
-        base_url: 'https://relay.example.com/v1'
+        base_url: 'https://relay.example.com/v1',
+        grok_custom_base_url_enabled: true
       }
     })
   })
@@ -249,7 +250,8 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       credentials: {
-        base_url: 'https://api.x.ai/v1'
+        base_url: 'https://api.x.ai/v1',
+        grok_custom_base_url_enabled: true
       }
     })
   })
