@@ -1,8 +1,6 @@
 <template>
   <AppLayout>
     <div class="space-y-6">
-      <PricingAreaTabs active-tab="monitor" />
-
       <MonitorHero
         :overall-status="overallStatus"
         :interval-seconds="DEFAULT_INTERVAL_SECONDS"
@@ -44,7 +42,6 @@ import {
   type UserMonitorDetail,
 } from '@/api/channelMonitor'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import PricingAreaTabs from '@/components/user/PricingAreaTabs.vue'
 import MonitorHero, {
   type MonitorWindow,
   type OverallStatus,

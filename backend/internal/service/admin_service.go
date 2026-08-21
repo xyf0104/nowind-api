@@ -398,23 +398,24 @@ type ShadowOptions struct {
 }
 
 type UpdateAccountInput struct {
-	Name                      string
-	Notes                     *string
-	Type                      string // Account type: oauth, setup-token, apikey
-	Credentials               map[string]any
-	Extra                     map[string]any
-	ProxyID                   *int64
-	Concurrency               *int     // 使用指针区分"未提供"和"设置为0"
-	Priority                  *int     // 使用指针区分"未提供"和"设置为0"
-	RateMultiplier            *float64 // 账号计费倍率（>=0，允许 0）
-	LoadFactor                *int
-	Status                    string
-	GroupIDs                  *[]int64
-	ExpiresAt                 *int64
-	AutoPauseOnExpired        *bool
-	ProbeEnabled              *bool
-	RateSyncEnabled           *bool
-	ResetOpenAIWeeklyEstimate bool // 交互式重新授权/导入后重建 OpenAI 周额度基准；普通 Token 刷新不得设置
+	Name               string
+	Notes              *string
+	Type               string // Account type: oauth, setup-token, apikey
+	Credentials        map[string]any
+	Extra              map[string]any
+	ProxyID            *int64
+	Concurrency        *int     // 使用指针区分"未提供"和"设置为0"
+	Priority           *int     // 使用指针区分"未提供"和"设置为0"
+	RateMultiplier     *float64 // 账号计费倍率（>=0，允许 0）
+	LoadFactor         *int
+	Status             string
+	GroupIDs           *[]int64
+	ExpiresAt          *int64
+	AutoPauseOnExpired *bool
+	ProbeEnabled       *bool
+	RateSyncEnabled    *bool
+	// 交互式重新授权/导入后核对 OpenAI 身份；同一账号保留周额度基线，身份变化才重建。
+	ResetOpenAIWeeklyEstimate bool
 	SkipMixedChannelCheck     bool // 跳过混合渠道检查（用户已确认风险）
 }
 

@@ -27,6 +27,7 @@ const appStore = vi.hoisted(() => ({
     payment_enabled?: boolean
     risk_control_enabled?: boolean
     model_pricing_enabled?: boolean
+    channel_monitor_enabled?: boolean
     custom_menu_items?: []
   },
   fetchPublicSettings: vi.fn(),
@@ -124,14 +125,16 @@ describe('feature route guard', () => {
     appStore.fetchPublicSettings.mockReset()
   })
 
-  it('keeps only XIASS model pricing user-facing and redirects retired channel pages', () => {
+  it('keeps XIASS model pricing and channel status as separate user-facing pages', () => {
     const pricing = routerHarness.routes.find((route) => route.path === '/pricing')
-    const monitor = routerHarness.routes.find((route) => route.path === '/pricing/monitor')
+    const monitor = routerHarness.routes.find((route) => route.path === '/monitor')
     const availableChannels = routerHarness.routes.find((route) => route.path === '/available-channels')
 
     expect(pricing?.meta?.requiresModelPricing).toBe(true)
-    expect(monitor?.alias).toBe('/monitor')
-    expect(monitor?.redirect).toEqual({ name: 'UserPricing' })
+    expect(monitor?.name).toBe('ChannelStatus')
+    expect(monitor?.alias).toBe('/pricing/monitor')
+    expect(monitor?.meta?.requiresChannelMonitor).toBe(true)
+    expect(monitor?.redirect).toBeUndefined()
     expect(availableChannels?.redirect).toEqual({ name: 'UserPricing' })
   })
 

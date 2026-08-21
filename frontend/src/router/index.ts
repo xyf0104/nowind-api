@@ -536,11 +536,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/pricing/monitor',
-    alias: '/monitor',
-    // Monitoring remains an admin operation. Preserve legacy customer links by
-    // returning them to the XIASS model-pricing page.
-    redirect: { name: 'UserPricing' }
+    path: '/monitor',
+    // Preserve the brief pricing-area URL without treating channel status as
+    // part of the XIASS model-pricing surface.
+    alias: '/pricing/monitor',
+    name: 'ChannelStatus',
+    component: () => import('@/views/user/ChannelStatusView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      requiresChannelMonitor: true,
+      title: 'Channel Status',
+      titleKey: 'nav.channelStatus'
+    }
   },
   {
     path: '/admin/subscriptions',
@@ -967,7 +975,7 @@ router.beforeEach(async (to, _from, next) => {
   // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control/model_pricing
   // 误判为“未启用”而错误拦截，故这里先确保设置加载完成。
   if (
-    (to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresModelPricing) &&
+    (to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresModelPricing || to.meta.requiresChannelMonitor) &&
     !appStore.publicSettingsLoaded
   ) {
     try {
@@ -1001,6 +1009,15 @@ router.beforeEach(async (to, _from, next) => {
     to.meta.requiresModelPricing &&
     appStore.publicSettingsLoaded &&
     appStore.cachedPublicSettings?.model_pricing_enabled === false
+  ) {
+    next('/dashboard')
+    return
+  }
+
+  if (
+    to.meta.requiresChannelMonitor &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.channel_monitor_enabled === false
   ) {
     next('/dashboard')
     return

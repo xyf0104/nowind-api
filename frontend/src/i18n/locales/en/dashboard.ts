@@ -297,7 +297,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Uses the account-cost increase from the latest completed 1% interval, then estimates total quota as the maximum cumulative cost at the boundary plus the remaining percentage points at that latest rate. For an account first logged in or reauthorized mid-window with zero starting cost, the first complete 1% also estimates the earlier used portion. Collecting is shown until that first interval completes; 100% shows actual cost.',
+    weeklyEstimateHint: 'Starts from the first readable usage-percent and account-cost pair in this 7-day window. Whenever usage advances by at least one percentage point from the last calculation, it divides the cumulative account-cost increase by the cumulative percentage increase, then multiplies by 100. The value stays fixed inside the current percentage point; reauthorization of the same account keeps its baseline, a non-zero percentage with zero account cost waits for a readable cost, and 100% shows the actual account cost.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

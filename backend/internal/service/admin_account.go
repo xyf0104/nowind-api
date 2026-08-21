@@ -634,8 +634,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
-	resetOpenAIWeeklyEstimate := input.ResetOpenAIWeeklyEstimate &&
+	previousOpenAIWeeklyEstimateIdentity := ""
+	trackOpenAIWeeklyEstimateIdentity := input.ResetOpenAIWeeklyEstimate &&
 		account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
+	if trackOpenAIWeeklyEstimateIdentity {
+		previousOpenAIWeeklyEstimateIdentity = account.GetCredential("chatgpt_account_id")
+	}
 	// 安全/身份不变量(影子账号):通用更新路径被 edit/re-auth/refresh/batch 共用,
 	// 必须在此守住,否则仅在创建时的保证可被这些路径绕过。
 	if account.IsCredentialShadow() {
@@ -807,7 +811,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			delete(account.Extra, OllamaCloudUsageAutoRefreshExtraKey)
 			delete(account.Extra, OllamaCloudUsageSnapshotExtraKey)
 		}
-		if resetOpenAIWeeklyEstimate {
+		if trackOpenAIWeeklyEstimateIdentity &&
+			previousOpenAIWeeklyEstimateIdentity != account.GetCredential("chatgpt_account_id") {
 			clearOpenAIWeeklyEstimateBaseline(account.Extra)
 		}
 	}

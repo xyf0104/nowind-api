@@ -56,6 +56,12 @@ declare module 'vue-router' {
     requiresRiskControl?: boolean
 
     /**
+     * Whether this route requires user-facing channel status to be enabled.
+     * @default false
+     */
+    requiresChannelMonitor?: boolean
+
+    /**
      * Whether this route requires customer model pricing to be enabled.
      * @default false
      */
