@@ -236,7 +236,7 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 		path    string
 		payload string
 	}{
-		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"+14155550123"}`},
+		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"+57 315 1855041"}`},
 		{path: "/workflows/abcdefghijklmnoP/code", payload: `{"code":"123456"}`},
 		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"https://auth.openai.com/authorize?state=fresh"}`},
 	} {
@@ -249,7 +249,7 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 
 	require.Len(t, requests, 3)
 	require.Equal(t, "/workflows/abcdefghijklmnoP/phone", requests[0].path)
-	require.Equal(t, "+14155550123", requests[0].body["phone"])
+	require.Equal(t, "+573151855041", requests[0].body["phone"])
 	require.Equal(t, "/workflows/abcdefghijklmnoP/code", requests[1].path)
 	require.Equal(t, "123456", requests[1].body["code"])
 	require.Equal(t, "/workflows/abcdefghijklmnoP/restart-oauth", requests[2].path)
@@ -287,5 +287,25 @@ func TestValidateTeamChildWorkflowAuthURL(t *testing.T) {
 		"not a URL",
 	} {
 		require.Error(t, validateTeamChildWorkflowAuthURL(raw))
+	}
+}
+
+func TestNormalizeTeamChildWorkflowPhoneRequiresFullInternationalNumber(t *testing.T) {
+	for _, test := range []struct {
+		input    string
+		expected string
+	}{
+		{input: "+57 315 1855041", expected: "+573151855041"},
+		{input: "+57-315-1855041", expected: "+573151855041"},
+		{input: "+573151855041", expected: "+573151855041"},
+	} {
+		actual, err := normalizeTeamChildWorkflowPhone(test.input)
+		require.NoError(t, err)
+		require.Equal(t, test.expected, actual)
+	}
+
+	for _, input := range []string{"3151855041", "+", "+00 3151855041", "+57 ext 3151855041"} {
+		_, err := normalizeTeamChildWorkflowPhone(input)
+		require.Error(t, err, input)
 	}
 }

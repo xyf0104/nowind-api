@@ -42,7 +42,16 @@
       </button>
     </div>
 
-    <div v-else class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,0.8fr)]">
+    <div v-if="replacementRequired" class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+      <div class="flex items-start justify-between gap-3">
+        <span class="leading-5">当前号码已被授权页拒绝。确认换号后会自动覆盖内嵌浏览器中的完整国际号码并继续当前步骤。</span>
+        <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap !px-2.5 !py-1.5 text-xs" :disabled="!canChangeNumber || confirmationAction !== null" @click="requestRequiredReplacement">
+          <Icon name="swap" size="xs" class="mr-1" />换号
+        </button>
+      </div>
+    </div>
+
+    <div v-if="!needsManualStart" class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,0.8fr)]">
       <div class="min-w-0 rounded-md border border-blue-200 bg-white/85 px-3 py-2.5 dark:border-blue-900/80 dark:bg-gray-900/70">
         <span class="block text-[11px] font-medium text-blue-700 dark:text-blue-300">手机号</span>
         <div class="mt-1 flex min-w-0 items-center gap-2">
@@ -229,8 +238,10 @@ import SMSReceiverActionDialog from '@/components/sms/SMSReceiverActionDialog.vu
 
 const props = withDefaults(defineProps<{
   active?: boolean
+  replacementRequired?: boolean
 }>(), {
-  active: false
+  active: false,
+  replacementRequired: false
 })
 
 const emit = defineEmits<{
@@ -255,6 +266,7 @@ const {
   statusClass,
   sessionExpiresAt,
   sessionExpiryText,
+  hasActiveSession,
   canRefresh,
   canChangeNumber,
   canCancel,
@@ -272,7 +284,9 @@ const hasManuallyStarted = ref(false)
 const isStartingPhone = ref(false)
 const confirmationAction = ref<'claim' | 'cancel' | 'change' | null>(null)
 const lastEmittedCode = ref('')
-const needsManualStart = computed(() => !hasManuallyStarted.value)
+const replacementPromptHandled = ref(false)
+const needsManualStart = computed(() => !hasManuallyStarted.value && !hasActiveSession.value)
+const replacementRequired = computed(() => props.replacementRequired && hasActiveSession.value && !replacementPromptHandled.value)
 const confirmationPending = computed(() => {
   if (confirmationAction.value === 'claim') return isStartingPhone.value
   if (confirmationAction.value === 'change') return isChangingNumber.value
@@ -305,6 +319,13 @@ async function requestPhone(): Promise<void> {
   isStartingPhone.value = false
 }
 
+function requestRequiredReplacement(): void {
+  if (!props.active || isChangingNumber.value || isStartingPhone.value) return
+  // The external page explicitly rejected this number. The same in-app
+  // confirmation used for an ordinary replacement remains mandatory.
+  confirmationAction.value = 'change'
+}
+
 function requestPhoneConfirmation(): void {
   if (!props.active || isStartingPhone.value) return
   confirmationAction.value = 'claim'
@@ -324,8 +345,10 @@ async function changeNumber(): Promise<void> {
     // the server response so an old code cannot be mistaken for the new one.
     lastEmittedCode.value = ''
     const outcome = await receiver.changeNumber()
+    replacementPromptHandled.value = outcome === 'waiting' && Boolean(receiver.phoneForCopy.value)
     if (outcome === 'waiting' && receiver.phoneForCopy.value) emit('phone-ready', receiver.phoneForCopy.value)
   } catch (error) {
+    replacementPromptHandled.value = false
     showError(error)
   }
 }
@@ -438,6 +461,18 @@ watch(
     receiver.stop()
   },
   { immediate: true }
+)
+
+watch(replacementRequired, (required) => {
+  if (!required || confirmationAction.value || isChangingNumber.value) return
+  requestRequiredReplacement()
+}, { immediate: true })
+
+watch(
+  () => props.replacementRequired,
+  (required) => {
+    if (!required) replacementPromptHandled.value = false
+  },
 )
 
 watch(code, (value) => {

@@ -105,6 +105,8 @@ export interface TeamChildWorkflow {
   status: TeamChildWorkflowStatus
   expires_at: string
   manual_required: boolean
+  /** The active OAuth page rejected the current phone; confirm a replacement in XIASS SMS. */
+  phone_rejected?: boolean
   callback_url?: string
   error?: string
   steps: TeamChildWorkflowStep[]

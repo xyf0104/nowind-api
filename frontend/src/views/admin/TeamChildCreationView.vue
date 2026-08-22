@@ -76,6 +76,7 @@
                 <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">邮箱验证码</label>
                 <input :value="mailboxCode || ''" readonly class="input h-9 w-full font-mono text-sm tracking-[0.16em]" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" />
               </div>
+              <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" title="立即检查邮箱" aria-label="立即检查邮箱" :disabled="!mailbox || mailboxCodeLoading || Boolean(mailboxCode)" @click="pollMailbox"><Icon name="refresh" size="sm" :class="mailboxCodeLoading ? 'animate-spin' : ''" :stroke-width="2" /></button>
               <button v-if="mailboxCode" type="button" class="btn btn-secondary flex h-9 items-center gap-2 whitespace-nowrap" @click="copyText(mailboxCode)"><Icon name="copy" size="sm" :stroke-width="2" /><span>复制</span></button>
             </div>
             <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ mailboxCodeHint }}</p>
@@ -96,6 +97,7 @@
             <div class="border-t border-gray-200 p-4 dark:border-dark-700">
               <PixlabSMSReceiver
                 :active="true"
+                :replacement-required="teamWorkflow?.phone_rejected === true"
                 @phone-ready="submitWorkflowPhone"
                 @code-received="submitWorkflowCode"
                 @session-cancelled="restartWorkflowOAuth"
@@ -222,6 +224,7 @@ const mailboxConfigFileInput = ref<HTMLInputElement | null>(null)
 const mailbox = ref<TeamChildMailbox | null>(null)
 const mailboxCode = ref('')
 const mailboxCodeLoading = ref(false)
+const mailboxCodeError = ref('')
 const authUrl = ref('')
 const oauthState = ref('')
 const oauthSessionID = ref('')
@@ -256,7 +259,12 @@ const statusTone = computed(() => {
   if (busy.value) return { text: 'text-primary-600 dark:text-primary-400', icon: 'refresh' as const }
   return { text: 'text-gray-500 dark:text-gray-400', icon: 'clock' as const }
 })
-const mailboxCodeHint = computed(() => mailboxCode.value ? '验证码已从服务器端邮箱正文中提取。' : mailboxCodeLoading.value ? '每 4 秒检查一次新邮件。' : '完成 OpenAI 页面邮箱验证后，这里会自动显示验证码。')
+const mailboxCodeHint = computed(() => {
+  if (mailboxCode.value) return '验证码已从服务器端邮箱正文中提取。'
+  if (mailboxCodeError.value) return `${mailboxCodeError.value} 系统会继续重试。`
+  if (mailboxCodeLoading.value) return '正在检查邮箱，收到新邮件后会自动显示。'
+  return '邮箱已进入持续监听；完成 OpenAI 页面邮箱验证后，这里会自动显示验证码。'
+})
 const parsedCallback = computed(() => {
   if (!callbackURL.value.trim()) return null
   try {
@@ -655,11 +663,13 @@ async function pollWorkflow() {
 }
 async function startFlow() {
   if (busy.value || !mailboxConfigured.value) return
+  if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
-  errorMessage.value = ''; createdAccount.value = null; teamWorkflow.value = null; authUrl.value = ''; oauthState.value = ''; oauthSessionID.value = ''; callbackURL.value = ''; mailboxCode.value = ''; status.value = 'creating'
+  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; teamWorkflow.value = null; authUrl.value = ''; oauthState.value = ''; oauthSessionID.value = ''; callbackURL.value = ''; mailboxCode.value = ''; status.value = 'creating'
   try {
     mailbox.value = await teamChildAPI.createMailbox()
     accountName.value = mailbox.value.email
+    schedulePoll(250)
     const auth = await teamChildAPI.generateOpenAIAuthUrl()
     authUrl.value = auth.auth_url
     oauthSessionID.value = auth.session_id
@@ -675,6 +685,8 @@ async function restoreActiveMailbox() {
     if (!restored) return
     mailbox.value = restored
     accountName.value = restored.email
+    mailboxCodeError.value = ''
+    schedulePoll(250)
     const auth = await teamChildAPI.generateOpenAIAuthUrl()
     authUrl.value = auth.auth_url
     oauthSessionID.value = auth.session_id
@@ -685,17 +697,39 @@ async function restoreActiveMailbox() {
     // A missing or expired mailbox is normal after its short server-side TTL.
   }
 }
-function schedulePoll() {
+function schedulePoll(delay = 4000) {
   if (pollTimer) clearTimeout(pollTimer)
-  pollTimer = setTimeout(pollMailbox, 4000)
+  if (!mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value)) return
+  pollTimer = setTimeout(() => void pollMailbox(), Math.max(0, delay))
 }
 async function pollMailbox() {
-  if (!mailbox.value || mailboxCode.value || status.value === 'completed' || status.value === 'callback') return
-  mailboxCodeLoading.value = true; status.value = 'polling'
+  if (!mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value) || mailboxCodeLoading.value) return
+  mailboxCodeLoading.value = true
+  if (status.value === 'ready' || status.value === 'waiting' || status.value === 'error') status.value = 'polling'
   try {
     const result = await teamChildAPI.pollMailboxCode(mailbox.value.session_id)
-    if (result.status === 'received' && result.code) { mailboxCode.value = result.code; status.value = 'received' } else { status.value = 'waiting'; schedulePoll() }
-  } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '邮箱检查失败') } finally { mailboxCodeLoading.value = false }
+    mailboxCodeError.value = ''
+    if (result.status === 'received' && result.code) {
+      mailboxCode.value = result.code
+      status.value = 'received'
+      if (pollTimer) clearTimeout(pollTimer)
+    } else {
+      if (status.value === 'polling') status.value = 'waiting'
+      schedulePoll()
+    }
+  } catch (error) {
+    const statusCode = Number((error as { status?: unknown; response?: { status?: unknown } })?.status ?? (error as { response?: { status?: unknown } })?.response?.status)
+    const retryable = !Number.isFinite(statusCode) || statusCode === 408 || statusCode === 429 || statusCode >= 500
+    mailboxCodeError.value = retryable ? '邮箱服务暂时没有响应。' : extractApiErrorMessage(error, '邮箱检查失败')
+    if (retryable) {
+      if (status.value === 'polling') status.value = 'waiting'
+      schedulePoll()
+    } else {
+      status.value = 'error'
+      if (pollTimer) clearTimeout(pollTimer)
+      errorMessage.value = mailboxCodeError.value
+    }
+  } finally { mailboxCodeLoading.value = false }
 }
 async function importAccount() {
   if (!mailbox.value || !oauthSessionID.value || !parsedCallback.value || parsedCallbackError.value || importing.value) return
@@ -712,7 +746,7 @@ async function resetFlow() {
   clearWorkflowPoll()
   if (teamWorkflow.value && ['manual_required', 'failed'].includes(teamWorkflow.value.status)) await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id).catch(() => undefined)
   if (mailbox.value) await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
-  mailbox.value = null; mailboxCode.value = ''; teamWorkflow.value = null; authUrl.value = ''; oauthState.value = ''; oauthSessionID.value = ''; callbackURL.value = ''; accountName.value = ''; selectedGroupIDs.value = []; createdAccount.value = null; errorMessage.value = ''; status.value = 'idle'
+  mailbox.value = null; mailboxCode.value = ''; mailboxCodeError.value = ''; teamWorkflow.value = null; authUrl.value = ''; oauthState.value = ''; oauthSessionID.value = ''; callbackURL.value = ''; accountName.value = ''; selectedGroupIDs.value = []; createdAccount.value = null; errorMessage.value = ''; status.value = 'idle'
 }
 
 onMounted(async () => {

@@ -15,6 +15,7 @@ const browserConnectRetryDelay = boundedDuration(process.env.BROWSER_CONNECT_RET
 const workflowTTL = boundedDuration(process.env.WORKFLOW_TTL_MS, 45 * 60 * 1000, 5 * 60 * 1000, 2 * 60 * 60 * 1000)
 const memberRefreshAttempts = 3
 const inviteAttempts = 3
+const workflowPhonePattern = /^\+[1-9][0-9]{7,14}$/
 const protectedMemberEmails = new Set(
   String(process.env.TEAM_CHILD_PROTECTED_MEMBER_EMAILS || '')
     .split(/[\s,;]+/)
@@ -126,7 +127,7 @@ async function reloadMemberPage(active, targetURL, forceRefresh) {
   }
 }
 
-async function membersPage({ forceRefresh = false, targetURL = membersURL } = {}) {
+async function membersPage({ forceRefresh = false, targetURL = membersURL, pending = false } = {}) {
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
@@ -151,13 +152,19 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL } = {}
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   }
   try {
-    await waitForMemberPageReady(active)
+    if (pending) await waitForPendingInvitesPageReady(active)
+    else await waitForMemberPageReady(active)
     return active
   } finally {
     // Keep cache disabled through the SPA's first render/API requests, then
     // restore the browser's normal caching for the operator's manual session.
     await releaseCacheSession(cdpSession)
   }
+}
+
+async function pendingInvitesPage({ forceRefresh = true } = {}) {
+  const current = await membersPage({ forceRefresh, targetURL: pendingInvitesURL(), pending: true })
+  return current
 }
 
 async function rowsFor(current) {
@@ -285,31 +292,16 @@ function pendingInvitesURL() {
   return target.toString()
 }
 
-async function pendingInviteEmails({ forceRefresh = true } = {}) {
-  let current = await membersPage({ forceRefresh, targetURL: membersURL })
-  const pendingPattern = /pending invitations?|pending invites?|待处理邀请|待接受邀请/i
-  let openedPendingTab = false
-  for (const role of ['tab', 'button', 'link']) {
-    const control = current.getByRole(role, { name: pendingPattern }).first()
-    if (!(await control.count())) continue
-    try {
-      if (!(await control.isVisible())) continue
-      await control.click()
-      openedPendingTab = true
-      break
-    } catch {
-      // Try the next semantic control, then use the legacy query-string route.
-    }
-  }
-  if (!openedPendingTab) current = await membersPage({ forceRefresh, targetURL: pendingInvitesURL() })
-
-  const pendingRows = current.locator('table tbody tr, [role="row"]')
+async function pendingInviteSnapshot({ forceRefresh = true } = {}) {
+  const current = await pendingInvitesPage({ forceRefresh })
+  const pendingRows = current.locator('table tbody tr, [role="row"], [data-testid*="invite" i], [data-testid*="pending" i], article, li')
   try {
-    await pendingRows.first().waitFor({ state: 'visible', timeout: 3500 })
+    await pendingRows.first().waitFor({ state: 'visible', timeout: 2500 })
   } catch {
     // An empty pending-invites page is a valid result.
   }
-  const rows = await rowsFor(current)
+
+  const rows = pendingRows
   const count = await rows.count()
   const emails = new Set()
   for (let index = 0; index < count; index += 1) {
@@ -321,14 +313,19 @@ async function pendingInviteEmails({ forceRefresh = true } = {}) {
   // already present is safe to treat as idempotent, while sending a duplicate
   // invitation can create a second pending invite for the same seat.
   const body = await current.locator('body').innerText()
-  for (const match of body.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
-    emails.add(normalizeEmail(match[0]))
+  // Once the pending table/cards expose at least one email, trust only those
+  // records. The page shell can also contain the owner/admin email, which must
+  // never count as a pending invitation. Fall back to body text only for
+  // builds that render an entirely unstructured invitation list.
+  if (emails.size === 0) {
+    for (const match of body.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
+      emails.add(normalizeEmail(match[0]))
+    }
   }
-  return emails
-}
-
-async function hasPendingInvite(email) {
-  return (await pendingInviteEmails()).has(normalizeEmail(email))
+  return {
+    emails,
+    pendingInvites: parsePendingInvites(body) ?? emails.size
+  }
 }
 
 // The ChatGPT members page is a client-rendered application. DOMContentLoaded
@@ -355,6 +352,37 @@ async function waitForMemberPageReady(current) {
     // A pending-invites page may expose neither signal when it is empty. The
     // caller will return an empty result and can safely report that state.
   }
+}
+
+async function waitForPendingInvitesPageReady(current) {
+  const pendingPattern = /pending invitations?|pending invites?|待处理邀请|待接受邀请/i
+  const emptyPattern = /no pending|no invitations|暂无.*邀请|没有.*邀请|还没有.*邀请/i
+  const deadline = Date.now() + Math.min(operationTimeout, 12000)
+
+  while (Date.now() < deadline) {
+    const body = await current.locator('body').innerText().catch(() => '')
+    const url = current.url()
+    let tab = ''
+    try {
+      tab = new URL(url).searchParams.get('tab') || ''
+    } catch {
+      // The visible selected tab below is enough when the SPA removes the query.
+    }
+    const selectedControls = current.locator('[role="tab"][aria-selected="true"], [aria-current="page"], [aria-pressed="true"]')
+    const selectedText = (await selectedControls.allTextContents().catch(() => [])).join(' ')
+    const pendingSelected = tab === 'invites' || pendingPattern.test(selectedText)
+    const pendingContent = pendingPattern.test(body) || emptyPattern.test(body)
+    if (pendingSelected && pendingContent) {
+      // Give the SPA one short render tick after the route/tab selection. This
+      // prevents a previous Members table from being mistaken for Pending
+      // invites when the page reuses its shell.
+      await sleep(250)
+      return
+    }
+    await sleep(250)
+  }
+
+  throw new Error('待处理邀请页面未完成加载，请刷新 ChatGPT 成员页面后重试')
 }
 
 async function clickText(current, pattern, options = {}) {
@@ -489,22 +517,29 @@ async function inviteMember(email) {
       // A previous click may have succeeded while the SPA response was slow.
       // Check the live member and pending-invite views before submitting again.
       const existing = await listMembers({ forceRefresh: true })
-      if (existing.members.some((member) => normalizeEmail(member.email) === normalized) || await hasPendingInvite(normalized)) {
-        const confirmed = await listMembers({ forceRefresh: true })
-        return { ...confirmed, operation: { type: 'invite', email: normalized, confirmed: true } }
+      const pendingBefore = await pendingInviteSnapshot({ forceRefresh: true })
+      if (existing.members.some((member) => normalizeEmail(member.email) === normalized) || pendingBefore.emails.has(normalized)) {
+        return {
+          ...existing,
+          pending_invites: pendingBefore.pendingInvites,
+          operation: { type: 'invite', email: normalized, confirmed: true }
+        }
       }
 
       const current = await membersPage({ forceRefresh: true })
       const scope = await openInviteDialog(current)
       await submitInviteDialog(scope, normalized)
 
-      await waitUntil('邀请操作已提交但成员列表中未出现该邮箱', async () => {
-        const refreshed = await listMembers({ forceRefresh: true })
-        if (refreshed.members.some((member) => normalizeEmail(member.email) === normalized)) return true
-        return hasPendingInvite(normalized)
+      let confirmedPending
+      await waitUntil('邀请操作已提交但待处理邀请中未出现该邮箱', async () => {
+        confirmedPending = await pendingInviteSnapshot({ forceRefresh: true })
+        return confirmedPending.emails.has(normalized)
       })
-      const result = await listMembers({ forceRefresh: true })
-      return { ...result, operation: { type: 'invite', email: normalized, confirmed: true } }
+      return {
+        ...existing,
+        pending_invites: confirmedPending?.pendingInvites || 1,
+        operation: { type: 'invite', email: normalized, confirmed: true }
+      }
     } catch (error) {
       lastError = error
       if (attempt >= inviteAttempts) break
@@ -635,6 +670,9 @@ function createWorkflow(seatEmail, inviteEmail, authURL, seatAlreadyRemoved) {
     resumeRequested: false,
     resumeNextStepIndex: -1,
     seatObserved: false,
+    inviteConfirmed: false,
+    inviteConfirmedAt: 0,
+    phoneRejected: false,
     oauthPage: undefined,
     callbackURL: '',
     steps: [
@@ -654,6 +692,7 @@ function workflowSummary(workflow) {
     expires_at: new Date(workflow.expiresAt).toISOString(),
     manual_required: workflow.status === 'manual_required',
     seat_already_removed: Boolean(workflow.seatAlreadyRemoved),
+    phone_rejected: Boolean(workflow.phoneRejected),
     steps: workflow.steps.map(({ key, number, label, status, message }) => ({ key, number, label, status, ...(message ? { message } : {}) }))
   }
   if (workflow.error) summary.error = workflow.error
@@ -676,7 +715,13 @@ function workflowStepState(workflow, key) {
 }
 
 function isWorkflowStepCompleted(workflow, key) {
-  return workflowStepState(workflow, key)?.status === 'completed'
+  return workflowStepState(workflow, key)?.status === 'completed' || (key === 'invite' && workflow.inviteConfirmed === true)
+}
+
+function completeInviteStep(workflow, message) {
+  workflow.inviteConfirmed = true
+  workflow.inviteConfirmedAt = Date.now()
+  setWorkflowStep(workflow, 'invite', 'completed', message)
 }
 
 function completeFailedStepForManualContinuation(workflow) {
@@ -685,6 +730,10 @@ function completeFailedStepForManualContinuation(workflow) {
   const failed = workflow.steps[failedIndex]
   failed.status = 'completed'
   failed.message = '该步骤已由人工处理，自动化将直接执行下一步'
+  if (failed.key === 'invite') {
+    workflow.inviteConfirmed = true
+    workflow.inviteConfirmedAt = Date.now()
+  }
   workflow.resumeNextStepIndex = failedIndex + 1
 }
 
@@ -737,6 +786,30 @@ async function isVisible(locator) {
   }
 }
 
+async function phoneRejectedOnPage(oauthPage) {
+  if (!oauthPage || oauthPage.isClosed()) return false
+  const pattern = /(phone\s*(?:number)?|手机号|电话号码|telephone).{0,100}(?:unavailable|not available|already used|used too many|too many times|already been used|cannot be used|use another|不可用|已使用|次数过多|被使用|请使用其他)|(unavailable|not available|already used|used too many|too many times|already been used|cannot be used|use another|不可用|已使用|次数过多|被使用|请使用其他).{0,100}(phone\s*(?:number)?|手机号|电话号码|telephone)/i
+  const candidates = [
+    oauthPage.getByRole('alert'),
+    oauthPage.locator('[aria-live="assertive"], [aria-live="polite"]'),
+    oauthPage.getByText(pattern)
+  ]
+  for (const candidate of candidates) {
+    const count = await candidate.count().catch(() => 0)
+    for (let index = 0; index < count; index += 1) {
+      const item = candidate.nth(index)
+      if (!(await item.isVisible().catch(() => false))) continue
+      const text = (await item.innerText().catch(() => '')).replace(/\s+/g, ' ')
+      if (pattern.test(text)) return true
+    }
+  }
+  // Some hosted builds put the validation message in a plain, visible form
+  // section without an alert role. Reading visible body text here is limited
+  // to detection and is never copied into workflow state or logs.
+  const body = (await oauthPage.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  return pattern.test(body)
+}
+
 // Only inspect semantic controls that are already visible to the person using
 // the browser. We intentionally do not extract page text, form values, email
 // codes, phone numbers, or credentials into workflow state or logs.
@@ -745,11 +818,8 @@ async function describeOAuthNextStep(oauthPage) {
   if (await isVisible(oauthPage.getByRole('button', { name: /use another account|使用其他账号/i }))) {
     return '已打开登录页，请在服务器浏览器中选择“使用其他账号”。'
   }
-  const phoneRejected = oauthPage.getByText(
-    /(phone|手机号).*(unavailable|not available|already used|used too many|too many times|不可用|已使用|次数过多)|(unavailable|not available|already used|used too many|too many times|不可用|已使用|次数过多).*(phone|手机号)/i
-  )
-  if (await isVisible(phoneRejected)) {
-    return '当前手机号未通过验证；请在现有接码模块确认领取新号码，回到此页重新填写后再继续。'
+  if (await phoneRejectedOnPage(oauthPage)) {
+    return '当前手机号已被使用；请在接码模块确认换号，系统会把新完整国际号码填入授权页后继续。'
   }
   if (await isVisible(oauthPage.locator('input[autocomplete="one-time-code"], input[name*="code" i], input[id*="code" i]'))) {
     return '正在等待验证码输入；邮箱和短信验证码仍由现有确认式接码流程提供。'
@@ -783,6 +853,7 @@ async function waitForWorkflowCallback(workflow, message) {
   if (isOAuthCallbackURL(currentURL)) {
     workflow.callbackURL = currentURL
     workflow.status = 'callback_ready'
+    workflow.phoneRejected = false
     setWorkflowStep(workflow, 'verify', 'completed', '已识别授权回调地址')
     if (activeWorkflowID === workflow.id) activeWorkflowID = ''
     return
@@ -791,9 +862,23 @@ async function waitForWorkflowCallback(workflow, message) {
   workflow.status = 'manual_required'
 }
 
-function validateWorkflowPhone(value) {
-  const phone = String(value || '').trim()
-  if (!/^\+[1-9][0-9]{7,14}$/.test(phone)) throw new Error('手机号格式无效')
+function normalizeWorkflowPhone(value) {
+  const raw = String(value || '').trim()
+  if (!raw) throw new Error('手机号格式无效')
+  let phone = ''
+  for (const character of raw) {
+    if (/[0-9]/.test(character)) {
+      phone += character
+      continue
+    }
+    if (character === '+' && phone.length === 0) {
+      phone += character
+      continue
+    }
+    if (/[-().\s]/.test(character)) continue
+    throw new Error('手机号格式无效')
+  }
+  if (!workflowPhonePattern.test(phone)) throw new Error('手机号格式无效')
   return phone
 }
 
@@ -844,6 +929,38 @@ async function firstVisibleOAuthInput(page, selectors) {
   return null
 }
 
+async function firstVisibleOAuthPhoneInput(page) {
+  const candidates = page.locator('input')
+  const count = await candidates.count()
+  let selected
+  let selectedScore = -Infinity
+  for (let index = 0; index < count; index += 1) {
+    const candidate = candidates.nth(index)
+    if (!(await candidate.isVisible().catch(() => false))) continue
+    const type = (await candidate.getAttribute('type') || 'text').toLowerCase()
+    if (['hidden', 'email', 'password', 'search', 'submit', 'button', 'checkbox', 'radio', 'file'].includes(type)) continue
+    const autocomplete = (await candidate.getAttribute('autocomplete') || '').toLowerCase()
+    const metadata = [
+      autocomplete,
+      await candidate.getAttribute('name'),
+      await candidate.getAttribute('id'),
+      await candidate.getAttribute('aria-label'),
+      await candidate.getAttribute('placeholder')
+    ].filter(Boolean).join(' ').toLowerCase()
+    let score = 0
+    if (autocomplete === 'tel' || autocomplete === 'tel-national' || autocomplete === 'tel-local') score += 8
+    if (/tel|phone|telephone|mobile|number/.test(metadata)) score += 5
+    if (/country|dial|calling|region|prefix|verification|one-time|otp|code/.test(metadata)) score -= 10
+    if (type === 'tel') score += 4
+    if (score <= 0) continue
+    if (score > selectedScore) {
+      selected = candidate
+      selectedScore = score
+    }
+  }
+  return selected || null
+}
+
 async function firstVisibleOAuthContinue(page) {
   const patterns = [
     /^(continue|next|继续|下一步)$/i,
@@ -884,12 +1001,15 @@ async function updateWorkflowAfterOAuthAction(workflow, message) {
   if (isOAuthCallbackURL(currentURL)) {
     workflow.callbackURL = currentURL
     workflow.status = 'callback_ready'
+    workflow.phoneRejected = false
     setWorkflowStep(workflow, 'verify', 'completed', '已识别授权回调地址')
     if (activeWorkflowID === workflow.id) activeWorkflowID = ''
     return
   }
   workflow.status = 'manual_required'
   workflow.error = ''
+  workflow.phoneRejected = await phoneRejectedOnPage(workflow.oauthPage)
+  if (workflow.phoneRejected) message = '当前手机号已被使用；请在接码模块确认换号，系统会把新完整国际号码填入授权页后继续。'
   setWorkflowStep(workflow, 'verify', 'waiting', message)
   activeWorkflowID = workflow.id
 }
@@ -905,16 +1025,24 @@ function markWorkflowActionFailed(workflow, error) {
 
 async function submitWorkflowPhone(id, value) {
   const workflow = interactiveOAuthWorkflow(id)
-  const phone = validateWorkflowPhone(value)
+  const phone = normalizeWorkflowPhone(value)
   workflow.status = 'running'
   workflow.error = ''
+  workflow.phoneRejected = false
   try {
-    await submitOAuthField(workflow, phone, [
-      'input[type="tel"]',
-      'input[autocomplete="tel"]',
-      'input[name*="phone" i]',
-      'input[id*="phone" i]'
-    ], '手机号')
+    const input = await firstVisibleOAuthPhoneInput(workflow.oauthPage)
+    if (!input) throw new Error('授权页中找不到可见的手机号输入框')
+    // Keep the full international number intact. The hosted OpenAI page selects
+    // its country/region from the leading `+` code after the single fill.
+    await input.click()
+    await input.fill(phone)
+    // Blur once so masked/controlled inputs commit the parsed country before
+    // the page's Continue handler reads the field.
+    await input.press('Tab').catch(() => undefined)
+    const continueButton = await firstVisibleOAuthContinue(workflow.oauthPage)
+    if (!continueButton) throw new Error('授权页中找不到可用的手机号继续按钮')
+    await continueButton.click()
+    await sleep(800)
     await updateWorkflowAfterOAuthAction(workflow, '手机号已更新，请继续完成当前授权步骤；收到验证码后将自动填写。')
     return workflowSummary(workflow)
   } catch (error) {
@@ -948,6 +1076,7 @@ function resetOAuthWorkflowSteps(workflow) {
   setWorkflowStep(workflow, 'verify', 'pending', '')
   workflow.callbackURL = ''
   workflow.error = ''
+  workflow.phoneRejected = false
 }
 
 async function restartOAuthWorkflow(id, value) {
@@ -1001,7 +1130,7 @@ async function resumeWorkflowFromNextStep(workflow) {
     if (step.key === 'invite') {
       setWorkflowStep(workflow, 'invite', 'running', '正在邀请临时邮箱')
       await inviteMember(workflow.inviteEmail)
-      setWorkflowStep(workflow, 'invite', 'completed', '邀请已发送并出现在待处理邀请中')
+      completeInviteStep(workflow, '邀请已发送并出现在待处理邀请中')
       continue
     }
     if (step.key === 'oauth') {
@@ -1064,16 +1193,16 @@ async function executeWorkflow(workflow) {
     const currentMembers = await listMembers({ forceRefresh: true })
     const invitationAccepted = currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)
     if (invitationAccepted) {
-      setWorkflowStep(workflow, 'invite', 'completed', '临时邮箱已出现在成员列表中')
+      completeInviteStep(workflow, '临时邮箱已出现在成员列表中')
     } else {
-      const pendingEmails = await pendingInviteEmails()
-      if (pendingEmails.has(normalizeEmail(workflow.inviteEmail))) {
-        setWorkflowStep(workflow, 'invite', 'completed', '临时邮箱已出现在待处理邀请中')
-      } else if (workflow.seatAlreadyRemoved && pendingEmails.size > 0) {
+      const pendingSnapshot = await pendingInviteSnapshot({ forceRefresh: true })
+      if (pendingSnapshot.emails.has(normalizeEmail(workflow.inviteEmail))) {
+        completeInviteStep(workflow, '临时邮箱已出现在待处理邀请中')
+      } else if (workflow.seatAlreadyRemoved && pendingSnapshot.emails.size > 0) {
         throw new Error('当前工作区已有其他待处理邀请。为避免占用已腾出的唯一席位，请恢复对应临时邮箱或先在浏览器中取消旧邀请后重试')
       } else {
         await inviteMember(workflow.inviteEmail)
-        setWorkflowStep(workflow, 'invite', 'completed', '邀请已发送并出现在待处理邀请中')
+        completeInviteStep(workflow, '邀请已发送并出现在待处理邀请中')
       }
     }
 
@@ -1139,12 +1268,15 @@ async function workflowStatus(id) {
     if (isOAuthCallbackURL(currentURL)) {
       workflow.callbackURL = currentURL
       workflow.status = 'callback_ready'
+      workflow.phoneRejected = false
       setWorkflowStep(workflow, 'verify', 'completed', '已识别授权回调地址')
       if (activeWorkflowID === workflow.id) activeWorkflowID = ''
     } else {
+      workflow.phoneRejected = await phoneRejectedOnPage(workflow.oauthPage)
       setWorkflowStep(workflow, 'verify', 'waiting', await describeOAuthNextStep(workflow.oauthPage))
     }
   } else if (workflow.status === 'manual_required') {
+    workflow.phoneRejected = false
     setWorkflowStep(workflow, 'verify', 'waiting', await describeOAuthNextStep(workflow.oauthPage))
   }
   return workflowSummary(workflow)

@@ -195,6 +195,56 @@ func TestTeamChildMailboxCodeIgnoresStyleNoise(t *testing.T) {
 	require.Empty(t, extractTeamMailboxVerificationCode(teamMailboxReadableText(message)))
 }
 
+func TestTeamChildMailboxPollSupportsNestedMessagesAndRecipientAliases(t *testing.T) {
+	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/new_address":
+			_, _ = w.Write([]byte(`{"address":"nested@example.test","jwt":"mailbox-jwt-secret"}`))
+		case "/api/mails":
+			_, _ = w.Write([]byte(`{"data":{"items":[{"id":"nested-1","recipient_email":"nested@example.test","body":{"html":"<p>Your security code is <strong>4 182 04</strong></p>"}}]}}`))
+		default:
+			t.Fatalf("unexpected request to %s", r.URL.Path)
+		}
+	})
+
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/mailboxes", nil))
+	var createResponse struct {
+		Data openAITeamMailboxCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createResponse))
+
+	pollRec := httptest.NewRecorder()
+	router.ServeHTTP(pollRec, httptest.NewRequest(http.MethodGet, "/mailboxes/"+createResponse.Data.SessionID+"/code", nil))
+	require.Equal(t, http.StatusOK, pollRec.Code)
+	var pollResponse struct {
+		Data openAITeamMailboxCodeResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(pollRec.Body.Bytes(), &pollResponse))
+	require.Equal(t, "received", pollResponse.Data.Status)
+	require.Equal(t, "418204", pollResponse.Data.Code)
+}
+
+func TestTeamMailboxMessageAddressMatchingRejectsDifferentExplicitRecipient(t *testing.T) {
+	require.True(t, teamMailboxMessageMatchesAddress(
+		map[string]any{"to_email": "target@example.test"},
+		"target@example.test",
+	))
+	require.False(t, teamMailboxMessageMatchesAddress(
+		map[string]any{"to_email": "other@example.test"},
+		"target@example.test",
+	))
+	require.True(t, teamMailboxMessageMatchesAddress(
+		map[string]any{"subject": "OpenAI verification code: 123456"},
+		"target@example.test",
+	))
+}
+
+func TestTeamMailboxCodeExtractionNormalizesSeparatedDigits(t *testing.T) {
+	require.Equal(t, "123456", extractTeamMailboxVerificationCode("Your verification code is 12-34 56"))
+	require.Equal(t, "654321", extractTeamMailboxVerificationCode("验证码：654321"))
+}
+
 func TestTeamChildMailboxExpiredSessionIsRejectedAndCanBeDeleted(t *testing.T) {
 	handler := &OpenAIOAuthHandler{teamMailboxStore: newOpenAITeamMailboxStore()}
 	now := time.Now()

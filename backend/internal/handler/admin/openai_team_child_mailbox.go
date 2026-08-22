@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
@@ -98,8 +99,9 @@ type openAITeamMailboxCodeResponse struct {
 
 var (
 	teamMailboxAddressRE      = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
-	teamMailboxSemanticCodeRE = regexp.MustCompile(`(?is)(?:verification|verify|confirmation|one[\s-]*time|验证码|验证(?:码)?)[^0-9]{0,80}([0-9]{4,8})`)
-	teamMailboxReverseCodeRE  = regexp.MustCompile(`(?is)\b([0-9]{4,8})\b[^\n]{0,80}(?:verification|verify|confirmation|验证码|验证(?:码)?)`)
+	teamMailboxSemanticCodeRE = regexp.MustCompile(`(?is)(?:verification|verify|confirmation|one[\s-]*time|security\s+code|login\s+code|验证码|验证(?:码)?)[^0-9]{0,80}([0-9](?:[\s-]?[0-9]){3,7})`)
+	teamMailboxCodeLabelRE    = regexp.MustCompile(`(?is)(?:\bcode\b|验证码|验证(?:码)?)[^0-9]{0,32}([0-9](?:[\s-]?[0-9]){3,7})`)
+	teamMailboxReverseCodeRE  = regexp.MustCompile(`(?is)\b([0-9](?:[\s-]?[0-9]){3,7})\b[^\n]{0,80}(?:verification|verify|confirmation|security|login|验证码|验证(?:码)?)`)
 	teamMailboxHTMLNoiseRE    = regexp.MustCompile(`(?is)<(?:style|script)\b[^>]*>.*?</(?:style|script)>|<!--.*?-->|<[^>]+>`)
 )
 
@@ -851,6 +853,7 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 	if err != nil {
 		return "", err
 	}
+	request.Header.Set("Accept", "application/json")
 	applyTeamMailboxReadAuth(request, session)
 	body, status, err := h.doTeamMailboxRequest(request)
 	if err != nil {
@@ -904,6 +907,7 @@ func (h *OpenAIOAuthHandler) fetchTeamMailboxMessage(ctx context.Context, sessio
 			lastErr = err
 			continue
 		}
+		request.Header.Set("Accept", "application/json")
 		applyTeamMailboxReadAuth(request, session)
 		body, status, err := h.doTeamMailboxRequest(request)
 		if err != nil {
@@ -981,11 +985,20 @@ func applyTeamMailboxReadAuth(request *http.Request, session openAITeamMailboxSe
 func decodeTeamMailboxObject(body []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	var data map[string]any
-	if err := decoder.Decode(&data); err != nil || data == nil {
+	var value any
+	if err := decoder.Decode(&value); err != nil || value == nil {
 		return nil, fmt.Errorf("mailbox provider returned invalid JSON")
 	}
-	return data, nil
+	if data, ok := value.(map[string]any); ok {
+		return data, nil
+	}
+	if messages, ok := value.([]any); ok {
+		// A few mailbox workers return the message list directly instead of
+		// wrapping it in {data|messages|results: [...]}. Normalize that shape so
+		// the rest of the parser follows one path.
+		return map[string]any{"data": messages}, nil
+	}
+	return nil, fmt.Errorf("mailbox provider returned invalid JSON")
 }
 
 func nestedTeamMailboxData(data map[string]any) map[string]any {
@@ -996,12 +1009,13 @@ func nestedTeamMailboxData(data map[string]any) map[string]any {
 }
 
 func teamMailboxMessageList(data map[string]any) []map[string]any {
-	for _, value := range []any{data["results"], data["messages"], data["hydra:member"], data["data"]} {
+	for _, key := range []string{"results", "messages", "mails", "emails", "items", "inbox", "hydra:member", "data"} {
+		value := data[key]
 		if messages := teamMailboxObjectSlice(value); len(messages) > 0 {
 			return messages
 		}
 		if nested, ok := value.(map[string]any); ok {
-			if messages := teamMailboxObjectSlice(nested["messages"]); len(messages) > 0 {
+			if messages := teamMailboxMessageList(nested); len(messages) > 0 {
 				return messages
 			}
 		}
@@ -1010,17 +1024,20 @@ func teamMailboxMessageList(data map[string]any) []map[string]any {
 }
 
 func teamMailboxObjectSlice(value any) []map[string]any {
-	list, ok := value.([]any)
-	if !ok {
+	switch list := value.(type) {
+	case []any:
+		messages := make([]map[string]any, 0, len(list))
+		for _, item := range list {
+			if message, ok := item.(map[string]any); ok {
+				messages = append(messages, message)
+			}
+		}
+		return messages
+	case []map[string]any:
+		return list
+	default:
 		return nil
 	}
-	messages := make([]map[string]any, 0, len(list))
-	for _, item := range list {
-		if message, ok := item.(map[string]any); ok {
-			messages = append(messages, message)
-		}
-	}
-	return messages
 }
 
 func teamMailboxMessageMatchesAddress(message map[string]any, email string) bool {
@@ -1028,18 +1045,49 @@ func teamMailboxMessageMatchesAddress(message map[string]any, email string) bool
 	if target == "" {
 		return false
 	}
-	for _, candidate := range teamMailboxAddresses(message["to"]) {
-		if candidate == target {
-			return true
+	recipientMetadata := false
+	for _, key := range []string{
+		"to", "recipient", "recipients", "recipient_email", "to_email", "delivered_to", "envelope_to", "mail_to", "destination", "address",
+	} {
+		value, present := message[key]
+		if !present || value == nil {
+			continue
+		}
+		if len(teamMailboxAddresses(value)) > 0 || teamMailboxHasValue(value) {
+			recipientMetadata = true
+		}
+		for _, candidate := range teamMailboxAddresses(value) {
+			if candidate == target {
+				return true
+			}
 		}
 	}
-	if value := strings.ToLower(strings.TrimSpace(teamMailboxString(message["address"]))); value != "" {
-		return value == target
+	// Some providers put the envelope recipient under a headers/envelope
+	// object. Only inspect recipient-shaped keys there; sender fields must not
+	// make an unrelated message look like a verification email for this inbox.
+	for _, containerKey := range []string{"headers", "envelope", "meta"} {
+		container, ok := message[containerKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"to", "recipient", "recipients", "delivered-to", "delivered_to", "envelope-to", "envelope_to"} {
+			value, present := container[key]
+			if !present || value == nil {
+				continue
+			}
+			recipientMetadata = true
+			for _, candidate := range teamMailboxAddresses(value) {
+				if candidate == target {
+					return true
+				}
+			}
+		}
 	}
 	// Some Worker list endpoints omit recipients. The mailbox JWT scopes the
-	// list to this session, so accepting the entry is safer than discarding a
-	// legitimate verification message solely because its recipient is absent.
-	return message["to"] == nil && message["address"] == nil
+	// list to this session, so accepting an entry with no recipient metadata is
+	// safer than discarding a legitimate verification message. If recipient
+	// metadata is present and does not match, reject it explicitly.
+	return !recipientMetadata
 }
 
 func teamMailboxAddresses(value any) []string {
@@ -1050,8 +1098,9 @@ func teamMailboxAddresses(value any) []string {
 		case string:
 			values = append(values, teamMailboxAddressRE.FindAllString(strings.ToLower(typed), -1)...)
 		case map[string]any:
-			collect(typed["address"])
-			collect(typed["email"])
+			for _, key := range []string{"address", "email", "value", "mail", "recipient", "to", "delivered-to", "delivered_to"} {
+				collect(typed[key])
+			}
 		case []any:
 			for _, child := range typed {
 				collect(child)
@@ -1062,26 +1111,74 @@ func teamMailboxAddresses(value any) []string {
 	return values
 }
 
-func teamMailboxReadableText(message map[string]any) string {
-	parts := make([]string, 0, 8)
-	for _, key := range []string{"subject", "text", "content", "intro", "body", "snippet"} {
-		if value := strings.TrimSpace(teamMailboxString(message[key])); value != "" {
-			// Some providers put HTML in generic body fields. Normalizing every
-			// readable field keeps style/script-only code fragments out of matches.
-			parts = append(parts, teamMailboxTextFromHTML(value))
-		}
-	}
-	switch html := message["html"].(type) {
+func teamMailboxHasValue(value any) bool {
+	switch typed := value.(type) {
 	case string:
-		parts = append(parts, teamMailboxTextFromHTML(html))
+		return strings.TrimSpace(typed) != ""
+	case json.Number:
+		return typed.String() != ""
 	case []any:
-		for _, item := range html {
-			if value := teamMailboxString(item); value != "" {
-				parts = append(parts, teamMailboxTextFromHTML(value))
+		for _, item := range typed {
+			if teamMailboxHasValue(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if teamMailboxHasValue(item) {
+				return true
 			}
 		}
 	}
+	return false
+}
+
+func teamMailboxReadableText(message map[string]any) string {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{
+		"subject", "text", "content", "intro", "body", "snippet", "html", "plain", "plain_text", "body_text", "message", "preview",
+	} {
+		appendTeamMailboxReadableValue(&parts, message[key], 0)
+	}
 	return strings.Join(parts, "\n")
+}
+
+func appendTeamMailboxReadableValue(parts *[]string, value any, depth int) {
+	if depth > 6 || value == nil {
+		return
+	}
+	switch typed := value.(type) {
+	case string:
+		cleaned := strings.TrimSpace(teamMailboxTextFromHTML(stdhtml.UnescapeString(typed)))
+		if cleaned != "" {
+			*parts = append(*parts, cleaned)
+		}
+	case json.Number:
+		if typed.String() != "" {
+			*parts = append(*parts, typed.String())
+		}
+	case []any:
+		for _, item := range typed {
+			appendTeamMailboxReadableValue(parts, item, depth+1)
+		}
+	case map[string]any:
+		// Nested bodies commonly use {text|html|content: ...}. Prefer those
+		// fields, but fall back to all scalar values for provider-specific shapes.
+		usedKnownField := false
+		for _, key := range []string{
+			"subject", "text", "content", "intro", "body", "snippet", "html", "plain", "plain_text", "body_text", "message", "preview",
+		} {
+			if nested, ok := typed[key]; ok {
+				usedKnownField = true
+				appendTeamMailboxReadableValue(parts, nested, depth+1)
+			}
+		}
+		if !usedKnownField {
+			for _, nested := range typed {
+				appendTeamMailboxReadableValue(parts, nested, depth+1)
+			}
+		}
+	}
 }
 
 func teamMailboxTextFromHTML(raw string) string {
@@ -1089,11 +1186,18 @@ func teamMailboxTextFromHTML(raw string) string {
 }
 
 func extractTeamMailboxVerificationCode(text string) string {
-	if match := teamMailboxSemanticCodeRE.FindStringSubmatch(text); len(match) == 2 {
-		return match[1]
-	}
-	if match := teamMailboxReverseCodeRE.FindStringSubmatch(text); len(match) == 2 {
-		return match[1]
+	for _, pattern := range []*regexp.Regexp{teamMailboxSemanticCodeRE, teamMailboxCodeLabelRE, teamMailboxReverseCodeRE} {
+		if match := pattern.FindStringSubmatch(text); len(match) == 2 {
+			code := strings.Map(func(r rune) rune {
+				if r >= '0' && r <= '9' {
+					return r
+				}
+				return -1
+			}, match[1])
+			if len(code) >= 4 && len(code) <= 8 {
+				return code
+			}
+		}
 	}
 	return ""
 }

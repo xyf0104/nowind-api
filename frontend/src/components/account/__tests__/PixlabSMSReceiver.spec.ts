@@ -26,6 +26,7 @@ const { receiverMocks, receiverState, copyToClipboardMock } = vi.hoisted(() => (
   },
   receiverState: {
     canChangeNumber: false,
+    hasActiveSession: false,
   },
   copyToClipboardMock: vi.fn().mockResolvedValue(true)
 }))
@@ -47,6 +48,7 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
       statusClass: ref('text-cyan-600'),
       sessionExpiresAt: ref('2026-08-14T00:15:00.000Z'),
       sessionExpiryText: ref('12:34'),
+      hasActiveSession: ref(receiverState.hasActiveSession),
       canRefresh: ref(true),
       canChangeNumber: ref(receiverState.canChangeNumber),
       canCancel: ref(true),
@@ -74,6 +76,7 @@ describe('PixlabSMSReceiver', () => {
   beforeEach(() => {
     Object.values(receiverMocks).forEach((mock) => mock.mockReset())
     receiverState.canChangeNumber = false
+    receiverState.hasActiveSession = false
     copyToClipboardMock.mockClear()
     receiverMocks.start.mockResolvedValue('waiting')
   })
@@ -186,6 +189,30 @@ describe('PixlabSMSReceiver', () => {
 
     expect(receiverMocks.changeNumber).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060'], ['+27749433060']])
+  })
+
+  it('opens the in-app replacement confirmation when the OAuth page rejects the active number', async () => {
+    receiverState.canChangeNumber = true
+    receiverState.hasActiveSession = true
+    receiverMocks.changeNumber.mockResolvedValue('waiting')
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: true, replacementRequired: true },
+      global: {
+        stubs: {
+          BaseDialog: true,
+          Icon: true,
+          SMSReceiverActionDialog: SMSReceiverActionDialogStub,
+        },
+      },
+    })
+
+    await flushPromises()
+    expect(wrapper.get('[data-testid="sms-confirm-dialog"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
+    await flushPromises()
+
+    expect(receiverMocks.changeNumber).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060']])
   })
 
   it('emits cancellation only after a confirmed cancellation completes', async () => {

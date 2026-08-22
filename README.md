@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.33-0ea5e9" alt="当前版本 v1.1.33" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.34-0ea5e9" alt="当前版本 v1.1.34" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.33
+> 当前版本：v1.1.34
+
+v1.1.34 修复 Team 子号 OAuth 电话验证被拒绝后的恢复链路：识别“电话号码已被使用/不可用”等页面状态后，在 XIASS 接码模块保留站内确认换号，新号码以完整国际格式规范化并填入嵌入式 OAuth 电话输入框，再点击页面自身的 Continue 继续当前步骤，不重复成员移除或邀请。成员邀请结果改为强制刷新并核对 Pending invites 中的目标邮箱；邮箱验证码轮询兼容嵌套响应、HTML 正文和常见收件人字段，并在临时服务错误时持续重试。现有管理员保护、人工接管和取消/换号确认契约继续保留。
 
 v1.1.33 完善 Team 子号自动化：邀请改为使用内嵌浏览器的可见邮箱输入框和继续操作，并在实时成员/待处理邀请状态下重试；支持人工完成失败步骤后从下一步继续，已移除普通席位时可直接邀请；所有者、管理员和受保护邮箱全链路只读保护。接码模块在完成站内确认后联动当前 OAuth 工作流，换号会覆盖旧号码并清理旧验证码，取消号码后只重走授权步骤；邮箱会话和浏览器资料继续由服务器端持久化管理。
 

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/gin-gonic/gin"
@@ -40,6 +41,35 @@ var (
 	teamChildWorkflowPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
 	teamChildWorkflowCodePattern  = regexp.MustCompile(`^[0-9]{4,8}$`)
 )
+
+func normalizeTeamChildWorkflowPhone(value string) (string, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", fmt.Errorf("手机号格式无效")
+	}
+
+	var normalized strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= '0' && r <= '9':
+			normalized.WriteRune(r)
+		case r == '+' && normalized.Len() == 0:
+			normalized.WriteRune(r)
+		case unicode.IsSpace(r) || strings.ContainsRune("-().", r):
+			// The SMS panel may display a readable international number such as
+			// "+57 315 1855041". Separators are presentation only; the
+			// embedded OAuth page receives the canonical E.164 value below.
+		default:
+			return "", fmt.Errorf("手机号格式无效")
+		}
+	}
+
+	result := normalized.String()
+	if !teamChildWorkflowPhonePattern.MatchString(result) {
+		return "", fmt.Errorf("手机号格式无效")
+	}
+	return result, nil
+}
 
 // StartTeamChildWorkflow confirms the chosen replacement seat, sends the
 // temporary-email invitation through the internal Playwright service, and opens
@@ -126,11 +156,12 @@ func (h *OpenAIOAuthHandler) SubmitTeamChildWorkflowPhone(c *gin.Context) {
 		response.BadRequest(c, "手机号格式无效")
 		return
 	}
-	req.Phone = strings.TrimSpace(req.Phone)
-	if !teamChildWorkflowPhonePattern.MatchString(req.Phone) {
-		response.BadRequest(c, "手机号格式无效")
+	phone, err := normalizeTeamChildWorkflowPhone(req.Phone)
+	if err != nil {
+		response.BadRequest(c, err.Error())
 		return
 	}
+	req.Phone = phone
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/phone", req)
 }
 
