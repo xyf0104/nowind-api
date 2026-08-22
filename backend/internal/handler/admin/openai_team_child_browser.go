@@ -161,6 +161,7 @@ func (h *OpenAIOAuthHandler) CreateTeamChildBrowserSession(c *gin.Context) {
 // cookie and proxies exclusively to the configured internal Chromium service.
 // GET /api/v1/team-child-browser/*path
 func (h *OpenAIOAuthHandler) ServeTeamChildBrowser(c *gin.Context) {
+	allowTeamChildBrowserEmbedding(c)
 	if h == nil || h.teamBrowserStore == nil {
 		http.Error(c.Writer, "Browser workspace is unavailable", http.StatusServiceUnavailable)
 		return
@@ -220,6 +221,20 @@ func (h *OpenAIOAuthHandler) ServeTeamChildBrowser(c *gin.Context) {
 
 	c.Header("Referrer-Policy", "no-referrer")
 	newTeamChildBrowserReverseProxy(session.upstreamURL, c).ServeHTTP(c.Writer, c.Request)
+}
+
+// allowTeamChildBrowserEmbedding narrows the global anti-framing policy for
+// the authenticated, same-origin browser workspace only. The proxy's own
+// session cookie still prevents any cross-user access, while SAMEORIGIN keeps
+// third-party sites from embedding the workspace.
+func allowTeamChildBrowserEmbedding(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	headers := c.Writer.Header()
+	headers.Set("X-Frame-Options", "SAMEORIGIN")
+	headers.Del("Content-Security-Policy")
+	headers.Set("Content-Security-Policy", "frame-ancestors 'self'")
 }
 
 func (h *OpenAIOAuthHandler) canUseTeamChildBrowserSession(ctx context.Context, session openAITeamBrowserSession) (bool, error) {

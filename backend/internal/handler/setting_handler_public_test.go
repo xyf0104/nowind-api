@@ -82,6 +82,53 @@ func TestSettingHandler_GetPublicSettings_ExposesForceEmailOnThirdPartySignup(t 
 	require.True(t, resp.Data.ForceEmailOnThirdPartySignup)
 }
 
+func TestSettingHandler_GetPublicSettings_ExposesModelPricingFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tt := range []struct {
+		name   string
+		values map[string]string
+		want   bool
+	}{
+		{
+			name:   "missing setting preserves XIASS model pricing default",
+			values: map[string]string{},
+			want:   true,
+		},
+		{
+			name: "explicit false is exposed",
+			values: map[string]string{
+				service.SettingKeyModelPricingEnabled: "false",
+			},
+			want: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewSettingHandler(service.NewSettingService(&settingHandlerPublicRepoStub{
+				values: tt.values,
+			}, &config.Config{}), "test-version")
+
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/settings/public", nil)
+
+			h.GetPublicSettings(c)
+
+			require.Equal(t, http.StatusOK, recorder.Code)
+
+			var resp struct {
+				Code int `json:"code"`
+				Data struct {
+					ModelPricingEnabled bool `json:"model_pricing_enabled"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+			require.Equal(t, 0, resp.Code)
+			require.Equal(t, tt.want, resp.Data.ModelPricingEnabled)
+		})
+	}
+}
+
 func TestSettingHandler_GetPublicSettings_ExposesTencentCaptchaConfiguration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

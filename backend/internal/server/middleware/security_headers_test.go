@@ -324,6 +324,14 @@ func TestEnhanceCSPPolicy(t *testing.T) {
 		assert.Contains(t, config.DefaultCSPPolicy, "style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com")
 	})
 
+	t.Run("keeps_same_origin_frames_available", func(t *testing.T) {
+		policy := "default-src 'self'; frame-src https://checkout.example.test"
+		enhanced := enhanceCSPPolicy(policy)
+
+		assert.True(t, directiveHasValue(enhanced, "frame-src", "'self'"))
+		assert.True(t, directiveHasValue(enhanced, "frame-src", "https://checkout.example.test"))
+	})
+
 	t.Run("handles_policy_without_script_src", func(t *testing.T) {
 		policy := "default-src 'self'"
 		enhanced := enhanceCSPPolicy(policy)

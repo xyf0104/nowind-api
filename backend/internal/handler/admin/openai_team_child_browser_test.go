@@ -7,9 +7,11 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -17,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupTeamChildBrowserTestRouter(t *testing.T, upstream http.HandlerFunc) (*OpenAIOAuthHandler, *gin.Engine) {
+func setupTeamChildBrowserTestRouter(t *testing.T, upstream http.HandlerFunc, middlewares ...gin.HandlerFunc) (*OpenAIOAuthHandler, *gin.Engine) {
 	t.Helper()
 	upstreamServer := httptest.NewServer(upstream)
 	t.Cleanup(upstreamServer.Close)
@@ -28,6 +30,7 @@ func setupTeamChildBrowserTestRouter(t *testing.T, upstream http.HandlerFunc) (*
 	gin.SetMode(gin.TestMode)
 	handler := &OpenAIOAuthHandler{teamBrowserStore: newOpenAITeamBrowserStore()}
 	router := gin.New()
+	router.Use(middlewares...)
 	router.POST("/sessions", func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
 		c.Next()
@@ -100,7 +103,10 @@ func TestTeamChildBrowserProxyRemovesPanelCredentialsAndFrameRestrictions(t *tes
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; img-src data:")
 		_, _ = w.Write([]byte("remote Chromium"))
-	})
+	}, middleware.SecurityHeaders(config.CSPConfig{
+		Enabled: true,
+		Policy:  "default-src 'self'; frame-src https://checkout.example.test; frame-ancestors 'none'",
+	}, nil))
 
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
@@ -142,8 +148,11 @@ func TestTeamChildBrowserProxyRemovesPanelCredentialsAndFrameRestrictions(t *tes
 	require.Empty(t, receivedAuthorization)
 	require.Empty(t, receivedAPIKey)
 	require.Empty(t, receivedCookie)
-	require.Empty(t, proxyResponse.Header.Get("X-Frame-Options"))
-	require.Equal(t, "default-src 'self'; img-src data:", proxyResponse.Header.Get("Content-Security-Policy"))
+	require.Equal(t, "SAMEORIGIN", proxyResponse.Header.Get("X-Frame-Options"))
+	csp := strings.Join(proxyResponse.Header.Values("Content-Security-Policy"), "; ")
+	require.Contains(t, csp, "frame-ancestors 'self'")
+	require.NotContains(t, csp, "frame-ancestors 'none'")
+	require.Contains(t, csp, "default-src 'self'; img-src data:")
 	require.Contains(t, proxyResponse.Header.Get("Cache-Control"), "no-store")
 	proxyBody, err := io.ReadAll(proxyResponse.Body)
 	require.NoError(t, err)

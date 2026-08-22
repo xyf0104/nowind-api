@@ -38,6 +38,9 @@ var requiredCSPDirectiveValues = []struct {
 	directive string
 	value     string
 }{
+	// XIASS embeds a same-origin, authenticated Team browser workspace. Keep
+	// same-origin frames available even when operators provide a custom policy.
+	{"frame-src", "'self'"},
 	{"script-src", CloudflareInsightsDomain},
 	{"script-src", TencentCaptchaDomain},
 	{"frame-src", TencentCaptchaDomain},

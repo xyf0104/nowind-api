@@ -104,6 +104,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
+		ModelPricingEnabled:      settings.ModelPricingEnabled,
 
 		AffiliateEnabled: settings.AffiliateEnabled,
 

@@ -5,8 +5,8 @@
   >
     <div class="flex items-center justify-between gap-3">
       <div class="flex min-w-0 items-center gap-3">
-        <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
-          3
+        <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300" aria-hidden="true">
+          <Icon name="chat" size="sm" :stroke-width="2" />
         </span>
         <div class="min-w-0">
           <h5 class="text-base font-medium text-blue-900 dark:text-blue-200">获取手机号</h5>
