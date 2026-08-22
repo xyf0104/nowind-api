@@ -77,4 +77,24 @@ describe('TeamChildMembersWorkspace', () => {
     expect(wrapper.find('[aria-label="编辑 owner@example.test"]').exists()).toBe(false)
     expect(wrapper.find('[aria-label="编辑 unknown@example.test"]').exists()).toBe(false)
   })
+
+  it('defaults invitations to the active temporary mailbox and exposes a replaceable selection', async () => {
+    const wrapper = mount(TeamChildMembersWorkspace, {
+      props: {
+        members: [member, { ...member, email: 'owner@example.test', id: 'owner@example.test', role: 'owner' }],
+        ready: true,
+        invitationEmail: 'temporary@example.test',
+        selectedEmail: 'member@example.test'
+      },
+      global
+    })
+
+    expect(wrapper.get('[aria-label="选择 member@example.test"]').element).toHaveProperty('checked', true)
+    expect(wrapper.find('[aria-label="选择 owner@example.test"]').exists()).toBe(false)
+
+    const inviteButton = wrapper.findAll('button').find((button) => button.text().includes('邀请成员'))
+    expect(inviteButton).toBeDefined()
+    await inviteButton!.trigger('click')
+    expect((wrapper.get('[data-dialog="邀请成员"] input').element as HTMLInputElement).value).toBe('temporary@example.test')
+  })
 })

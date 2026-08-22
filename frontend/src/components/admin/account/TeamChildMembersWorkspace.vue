@@ -6,49 +6,55 @@
           <Icon name="users" size="md" :stroke-width="2" />
         </span>
         <div class="min-w-0">
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">成员管理</h2>
-          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">已连接持久化服务器浏览器，可直接操作 ChatGPT 工作区。</p>
+          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">成员自动化</h2>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">默认直接读取已登录工作区的成员信息，不会打开远程浏览器画面。</p>
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <span class="inline-flex items-center gap-1.5 text-xs font-medium text-green-600 dark:text-green-400"><span class="h-1.5 w-1.5 rounded-full bg-green-500"></span>已登录</span>
+        <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="ready ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'"><span class="h-1.5 w-1.5 rounded-full" :class="ready ? 'bg-green-500' : 'bg-amber-500'"></span>{{ ready ? '已登录' : '等待识别' }}</span>
         <button type="button" class="btn btn-secondary flex items-center gap-2" :disabled="loading" @click="emit('inspect')"><Icon name="mail" size="sm" :stroke-width="2" /><span>识别席位邮箱</span></button>
         <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" :disabled="loading" title="刷新成员信息" aria-label="刷新成员信息" @click="emit('refresh')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
         </button>
-        <button type="button" class="btn btn-secondary flex items-center gap-2" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>浏览器工作区</span></button>
+        <button type="button" class="btn btn-secondary flex items-center gap-2" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>手动接管浏览器</span></button>
       </div>
     </header>
 
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3 dark:border-dark-700 dark:bg-dark-900/35">
       <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><Icon name="users" size="sm" :stroke-width="2" /><span>{{ members.length }} 位成员<span v-if="pendingInvites">，{{ pendingInvites }} 个待处理邀请</span></span></div>
-      <button type="button" class="btn btn-primary flex items-center gap-2" @click="inviteOpen = true"><Icon name="userPlus" size="sm" :stroke-width="2" /><span>邀请成员</span></button>
+      <button type="button" class="btn btn-primary flex items-center gap-2" :disabled="!ready" @click="openInvite"><Icon name="userPlus" size="sm" :stroke-width="2" /><span>邀请成员</span></button>
     </div>
 
-    <div v-if="seatEmail || workspaceName" class="flex flex-wrap gap-x-6 gap-y-1 border-b border-gray-200 px-4 py-3 text-xs text-gray-500 dark:border-dark-700 dark:text-gray-400">
-      <span v-if="seatEmail"><span class="font-medium">当前席位：</span><code class="break-all text-gray-800 dark:text-gray-200">{{ seatEmail }}</code></span>
+    <div v-if="seatEmail || workspaceName || invitationEmail" class="grid gap-3 border-b border-gray-200 px-4 py-3 text-xs dark:border-dark-700 sm:grid-cols-2">
+      <div v-if="invitationEmail" class="min-w-0"><span class="font-medium text-gray-500 dark:text-gray-400">本次临时邮箱</span><code class="mt-1 block truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{{ invitationEmail }}</code></div>
+      <div v-if="seatEmail" class="min-w-0"><span class="font-medium text-gray-500 dark:text-gray-400">默认待替换席位</span><code class="mt-1 block truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{{ seatEmail }}</code></div>
       <span v-if="workspaceName"><span class="font-medium">工作区：</span>{{ workspaceName }}</span>
     </div>
 
     <div v-if="error" class="m-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300"><Icon name="exclamationTriangle" size="sm" class="mt-0.5 flex-shrink-0" :stroke-width="2" /><span>{{ error }}</span></div>
 
     <div v-if="members.length" class="divide-y divide-gray-100 dark:divide-dark-700">
-      <div v-for="member in members" :key="member.email || member.id" class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div v-for="member in members" :key="member.email || member.id" class="flex flex-col gap-3 px-4 py-4 transition-colors sm:flex-row sm:items-center sm:justify-between" :class="selectedEmail === member.email ? 'bg-primary-50/70 dark:bg-primary-950/15' : ''">
         <div class="flex min-w-0 items-center gap-3">
+          <input v-if="canManageMember(member)" :id="`team-member-${member.id}`" type="radio" name="team-child-member" class="h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600" :checked="selectedEmail === member.email" :aria-label="`选择 ${member.email}`" @change="emit('select', member.email)" />
           <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-gray-100 text-sm font-semibold text-gray-600 dark:bg-dark-700 dark:text-gray-300">{{ initials(member.name || member.email) }}</span>
-          <div class="min-w-0"><p class="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{{ member.name || '未提供姓名' }}</p><p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ member.email }}</p></div>
+          <label class="min-w-0" :for="canManageMember(member) ? `team-member-${member.id}` : undefined"><p class="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{{ member.name || '未提供姓名' }}</p><p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ member.email }}</p></label>
         </div>
         <div class="flex items-center gap-2 self-end sm:self-auto">
+          <span v-if="member.seat_type" class="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-500 dark:border-dark-600 dark:text-gray-400">{{ member.seat_type }}</span>
           <span class="rounded-md bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300">{{ roleLabel(member.role) }}</span>
           <button v-if="canManageMember(member)" type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" title="编辑成员角色" :aria-label="`编辑 ${member.email}`" @click="openEdit(member)"><Icon name="edit" size="sm" :stroke-width="2" /></button>
           <button v-if="canManageMember(member)" type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0 text-red-600 hover:text-red-700 dark:text-red-400" title="移除成员" :aria-label="`移除 ${member.email}`" @click="openRemove(member)"><Icon name="trash" size="sm" :stroke-width="2" /></button>
         </div>
       </div>
     </div>
-    <div v-else class="px-4 py-12 text-center text-sm text-gray-500 dark:text-gray-400">当前没有可显示的成员。点击刷新重新读取成员页面。</div>
+    <div v-else class="px-4 py-12 text-center text-sm text-gray-500 dark:text-gray-400">
+      <p>{{ ready ? '当前没有可显示的成员。点击刷新重新读取成员页面。' : '尚未读取到已登录工作区。先识别成员；需要人工处理登录页面时再手动接管浏览器。' }}</p>
+      <button v-if="!ready" type="button" class="btn btn-secondary mt-4 inline-flex items-center gap-2" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>打开手动浏览器</span></button>
+    </div>
 
     <BaseDialog :show="inviteOpen" title="邀请成员" width="normal" @close="inviteOpen = false">
-      <div class="space-y-4"><p class="text-sm text-gray-500 dark:text-gray-400">邀请会在已登录的 ChatGPT 工作区中发送。</p><label class="block text-sm font-medium text-gray-700 dark:text-gray-200">成员邮箱</label><input v-model="inviteEmail" type="email" class="input w-full" placeholder="name@example.com" @keyup.enter="submitInvite" /></div>
+      <div class="space-y-4"><p class="text-sm text-gray-500 dark:text-gray-400">邀请会在已登录的 ChatGPT 工作区中发送。</p><label class="block text-sm font-medium text-gray-700 dark:text-gray-200">成员邮箱</label><input v-model="inviteEmail" type="email" class="input w-full" placeholder="name@example.com" @keyup.enter="submitInvite" /><p v-if="invitationEmail" class="text-xs text-gray-500 dark:text-gray-400">已预填当前临时邮箱，可按需调整。</p></div>
       <template #footer><div class="flex justify-end gap-3"><button type="button" class="btn btn-secondary" @click="inviteOpen = false">取消</button><button type="button" class="btn btn-primary flex items-center gap-2" :disabled="loading || !inviteEmail.trim()" @click="submitInvite"><Icon v-if="loading" name="refresh" size="sm" class="animate-spin" :stroke-width="2" /><span>发送邀请</span></button></div></template>
     </BaseDialog>
 
@@ -68,8 +74,8 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { TeamChildMember } from '@/api/admin/teamChild'
 
-withDefaults(defineProps<{ members: TeamChildMember[]; pendingInvites?: number; loading?: boolean; error?: string; seatEmail?: string; workspaceName?: string }>(), { pendingInvites: 0, loading: false, error: '', seatEmail: '', workspaceName: '' })
-const emit = defineEmits<{ refresh: []; inspect: []; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': [] }>()
+const props = withDefaults(defineProps<{ members: TeamChildMember[]; pendingInvites?: number; loading?: boolean; error?: string; ready?: boolean; seatEmail?: string; workspaceName?: string; invitationEmail?: string; selectedEmail?: string }>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '' })
+const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': [] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)
 const removeOpen = ref(false)
@@ -99,6 +105,7 @@ function openRemove(member: TeamChildMember) {
   removingMember.value = member
   removeOpen.value = true
 }
+function openInvite() { inviteEmail.value = props.invitationEmail; inviteOpen.value = true }
 function submitInvite() { const email = inviteEmail.value.trim(); if (!email) return; emit('invite', email); inviteOpen.value = false; inviteEmail.value = '' }
 function submitEdit() { if (!editingMember.value) return; emit('edit', editingMember.value.email, editRole.value); editOpen.value = false }
 function submitRemove() { if (!removingMember.value) return; emit('remove', removingMember.value.email); removeOpen.value = false }

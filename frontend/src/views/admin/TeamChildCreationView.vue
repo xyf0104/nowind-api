@@ -169,19 +169,23 @@
       </div>
 
       <TeamChildMembersWorkspace
-        v-if="membersReady && !browserVisible"
+        v-if="!browserVisible"
         :members="members"
         :pending-invites="pendingInvites"
         :loading="membersLoading"
         :error="membersError"
+        :ready="membersReady"
         :seat-email="seatEmail"
         :workspace-name="workspaceName"
+        :invitation-email="mailbox?.email || ''"
+        :selected-email="selectedMemberEmail"
         @refresh="refreshMembers"
         @inspect="inspectSeat"
+        @select="selectedMemberEmail = $event"
         @invite="inviteMember"
         @edit="editMember"
         @remove="removeMember"
-        @open-browser="browserVisible = true"
+        @open-browser="openBrowserWorkspace"
       />
       <TeamChildBrowserWorkspace
         v-else
@@ -191,7 +195,7 @@
         :error="browserError"
         :mailbox-email="mailbox?.email || ''"
         :members-ready="membersReady"
-        @reload="reloadAll"
+        @reload="reloadBrowserWorkspace"
         @copy-mailbox="copyMailboxEmail"
         @open-modular="browserVisible = false"
       />
@@ -229,6 +233,7 @@ const membersError = ref('')
 const members = ref<TeamChildMember[]>([])
 const pendingInvites = ref(0)
 const seatEmail = ref('')
+const selectedMemberEmail = ref('')
 const workspaceName = ref('')
 const configImporting = ref(false)
 const mailboxConfigFileInput = ref<HTMLInputElement | null>(null)
@@ -336,18 +341,29 @@ async function reloadBrowserWorkspace() {
     browserLoading.value = false
   }
 }
+async function openBrowserWorkspace() {
+  browserVisible.value = true
+  await reloadBrowserWorkspace()
+}
+function applyMembersResult(result: { members?: TeamChildMember[]; pending_invites?: number; seat_email?: string; workspace_name?: string; ready?: boolean }) {
+  const nextMembers = result.members || []
+  members.value = nextMembers
+  pendingInvites.value = result.pending_invites || 0
+  seatEmail.value = result.seat_email || ''
+  workspaceName.value = result.workspace_name || ''
+  membersReady.value = Boolean(result.ready)
+
+  const replaceable = nextMembers.find((member) => /^(admin|administrator|管理员|member|成员)$/i.test(member.role.trim()))
+  const selectedStillAvailable = nextMembers.some((member) => member.email === selectedMemberEmail.value && /^(admin|administrator|管理员|member|成员)$/i.test(member.role.trim()))
+  if (!selectedStillAvailable) selectedMemberEmail.value = seatEmail.value || replaceable?.email || ''
+}
 async function refreshMembers(notify = true, force = false) {
   if (membersLoading.value && !force) return
   membersLoading.value = true
   membersError.value = ''
   try {
     const result = await teamChildAPI.refreshTeamChildMembers()
-    members.value = result.members || []
-    pendingInvites.value = result.pending_invites || 0
-    seatEmail.value = result.seat_email || ''
-    workspaceName.value = result.workspace_name || ''
-    membersReady.value = Boolean(result.ready)
-    if (membersReady.value) browserVisible.value = false
+    applyMembersResult(result)
     if (notify && membersReady.value) appStore.showSuccess(`成员信息已刷新（${members.value.length} 位成员）`)
   } catch (error) {
     membersReady.value = false
@@ -362,11 +378,7 @@ async function inspectSeat() {
   membersError.value = ''
   try {
     const result = await teamChildAPI.inspectTeamChildSeat()
-    members.value = result.members || []
-    pendingInvites.value = result.pending_invites || 0
-    seatEmail.value = result.seat_email || ''
-    workspaceName.value = result.workspace_name || ''
-    membersReady.value = Boolean(result.ready)
+    applyMembersResult(result)
     appStore.showSuccess(seatEmail.value ? `已识别席位邮箱：${seatEmail.value}` : '已读取成员页，但页面未提供明确的席位邮箱')
   } catch (error) {
     membersReady.value = false
@@ -415,10 +427,6 @@ async function removeMember(email: string) {
     pendingInvites.value = result.pending_invites || 0
     appStore.showSuccess('成员已从工作空间移除')
   } catch (error) { appStore.showError(extractApiErrorMessage(error, '移除成员失败')) } finally { membersLoading.value = false }
-}
-async function reloadAll() {
-  await reloadBrowserWorkspace()
-  await refreshMembers()
 }
 async function startFlow() {
   if (busy.value || !mailboxConfigured.value) return
@@ -470,10 +478,7 @@ onMounted(async () => {
   mailboxConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.configured)
   browserConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.browser_configured)
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
-  if (browserConfigured.value) {
-    await reloadBrowserWorkspace()
-    await refreshMembers(false)
-  }
+  if (browserConfigured.value) await refreshMembers(false)
 })
 onBeforeUnmount(() => { if (pollTimer) clearTimeout(pollTimer) })
 </script>

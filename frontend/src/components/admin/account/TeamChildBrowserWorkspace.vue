@@ -7,7 +7,7 @@
         </span>
         <div class="min-w-0">
           <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">服务器浏览器</h2>
-          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">保留服务器 Chromium 的登录状态，在此完成外部页面操作。</p>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">仅在需要人工处理登录或未知页面时打开，平时请使用成员自动化工作区。</p>
         </div>
       </div>
       <div class="flex items-center gap-2 self-start sm:self-auto">
@@ -23,7 +23,7 @@
           @click="$emit('open-modular')"
         >
           <Icon name="grid" size="sm" :stroke-width="2" />
-          <span>成员模块</span>
+          <span>返回自动化工作区</span>
         </button>
         <button
           type="button"
@@ -98,7 +98,7 @@
 
     <footer class="flex items-start gap-2 border-t border-gray-200 px-4 py-3 text-xs leading-5 text-gray-500 dark:border-dark-700 dark:text-gray-400">
       <Icon name="shield" size="sm" class="mt-0.5 flex-shrink-0" :stroke-width="2" />
-      <p>首次在此手动登录后，浏览器配置目录会保留登录状态。验证码、短信、身份验证及工作区确认仍由你在页面中完成。</p>
+      <p>首次在此手动登录后，浏览器配置目录会保留登录状态。为减少多设备同时打开图形浏览器造成的中断，平时请返回自动化工作区；验证码、短信、身份验证及工作区确认仍由你在页面中完成。</p>
     </footer>
   </section>
 </template>

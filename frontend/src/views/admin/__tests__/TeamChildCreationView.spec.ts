@@ -37,11 +37,11 @@ const PixlabSMSReceiverStub = {
 }
 
 const BrowserWorkspaceStub = {
-  template: '<div data-testid="team-browser-workspace" />'
+  template: '<button type="button" data-testid="team-browser-workspace" @click="$emit(\'open-modular\')" />'
 }
 
 const MembersWorkspaceStub = {
-  template: '<div data-testid="team-members-workspace" />'
+  template: '<button type="button" data-testid="team-members-workspace" @click="$emit(\'open-browser\')" />'
 }
 
 const GroupSelectorStub = {
@@ -94,6 +94,41 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.createMailbox).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(1)
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
+
+    wrapper.unmount()
+  })
+
+  it('loads the member automation workspace without minting a graphical browser session', async () => {
+    teamChildAPI.getMailboxStatus.mockResolvedValue({ configured: true, browser_configured: true })
+    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+      ready: true,
+      members: [{ id: 'member@example.test', email: 'member@example.test', role: 'member' }],
+      seat_email: 'member@example.test'
+    })
+    teamChildAPI.createBrowserSession.mockResolvedValue({ embed_url: '/browser?ticket=test', expires_at: '2026-08-22T12:30:00.000Z' })
+
+    const wrapper = mount(TeamChildCreationView, {
+      global: {
+        stubs: {
+          Icon: true,
+          PixlabSMSReceiver: PixlabSMSReceiverStub,
+          TeamChildBrowserWorkspace: BrowserWorkspaceStub,
+          TeamChildMembersWorkspace: MembersWorkspaceStub,
+          GroupSelector: GroupSelectorStub,
+          RouterLink: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(teamChildAPI.refreshTeamChildMembers).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.createBrowserSession).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="team-members-workspace"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="team-members-workspace"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.createBrowserSession).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="team-browser-workspace"]').exists()).toBe(true)
 
     wrapper.unmount()
   })
