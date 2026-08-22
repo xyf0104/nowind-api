@@ -33,6 +33,7 @@ UPDATE_SUCCEEDED=false
 LOCK_HELD=false
 CREATED_UPDATE_REMOTE=false
 RUNTIME_START_SCRIPT=""
+TEAM_CHILD_BROWSER_PROFILE_SOURCE=""
 
 log() { printf '[XIASS] %s\n' "$*"; }
 die() { printf '[XIASS] 错误：%s\n' "$*" >&2; exit 1; }
@@ -96,6 +97,72 @@ ensure_team_child_runtime_config() {
 
 container_exists() {
     docker container inspect "$1" >/dev/null 2>&1
+}
+
+directory_has_entries() {
+    local directory="$1"
+    [ -d "$directory" ] || return 1
+    [ -n "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+}
+
+capture_team_child_browser_profile() {
+    local container="" candidate mount type source
+    for candidate in \
+        xiass-api-team-child-browser \
+        nowind-api-team-child-browser \
+        sub2api-team-child-browser; do
+        if container_exists "$candidate"; then
+            container="$candidate"
+            break
+        fi
+    done
+    [ -n "$container" ] || return 0
+
+    mount=$(docker inspect --type container \
+        --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Type}}|{{.Source}}{{end}}{{end}}' \
+        "$container" 2>/dev/null || true)
+    [ -n "$mount" ] || {
+        log "未识别到 Team 浏览器配置挂载，跳过浏览器登录资料迁移。"
+        return 0
+    }
+    IFS='|' read -r type source <<< "$mount"
+    case "$type" in
+        bind|volume) ;;
+        *)
+            log "Team 浏览器配置挂载类型 ${type:-未知} 不支持自动迁移，保留原挂载不变。"
+            return 0
+            ;;
+    esac
+    if [ -z "$source" ] || [ ! -d "$source" ]; then
+        log "Team 浏览器配置源目录不可读，跳过登录资料迁移。"
+        return 0
+    fi
+
+    TEAM_CHILD_BROWSER_PROFILE_SOURCE="$source"
+    log "已记录现有 Team 浏览器配置，用于升级后的无覆盖迁移。"
+}
+
+migrate_team_child_browser_profile() {
+    local target
+    [ -n "$TEAM_CHILD_BROWSER_PROFILE_SOURCE" ] || return 0
+
+    target="$DEPLOY_DIR/team_child_browser_data"
+    if [ "$TEAM_CHILD_BROWSER_PROFILE_SOURCE" = "$target" ]; then
+        return 0
+    fi
+    if ! directory_has_entries "$TEAM_CHILD_BROWSER_PROFILE_SOURCE"; then
+        log "现有 Team 浏览器配置为空，跳过登录资料迁移。"
+        return 0
+    fi
+    if directory_has_entries "$target"; then
+        log "新的 Team 浏览器配置目录已有内容，保留现有内容并跳过旧资料迁移。"
+        return 0
+    fi
+
+    mkdir -p "$target"
+    cp -a "$TEAM_CHILD_BROWSER_PROFILE_SOURCE"/. "$target"/ \
+        || die "无法迁移 Team 浏览器登录资料；已停止更新以便自动回滚。"
+    log "已将现有 Team 浏览器登录资料迁移到 XIASS 持久化目录。"
 }
 
 is_canonical_origin() {
@@ -523,6 +590,7 @@ main() {
 
     log "同步已验证的 XIASS API 部署文件..."
     capture_previous_image
+    capture_team_child_browser_profile
 
     log "停止旧栈以切换到新版本（不会删除卷或数据）..."
     UPDATE_STARTED=true
@@ -533,6 +601,7 @@ main() {
 
     git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"
     ensure_team_child_runtime_config
+    migrate_team_child_browser_profile
     COMPOSE_FILES=()
     ACTUAL_COMPOSE_FILES=()
     select_compose_file true

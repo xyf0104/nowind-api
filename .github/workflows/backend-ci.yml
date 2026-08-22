@@ -27,6 +27,7 @@ jobs:
           bash -n deploy/install.sh
           bash -n deploy/docker-deploy.sh
           tools/test_xiass_update_origin.sh
+          tools/test_xiass_update_browser_profile_migration.sh
           /bin/sh deploy/tests/docker-compose-security-test.sh
           /bin/sh deploy/tests/docker-runtime-resources-test.sh
           /bin/sh deploy/test-caddyfile-cache.sh

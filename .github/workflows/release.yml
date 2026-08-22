@@ -159,9 +159,12 @@ jobs:
         run: |
           bash -n deploy/install.sh
           bash -n deploy/docker-deploy.sh
+          bash -n deploy/xiass-update.sh
           bash -n deploy/tests/install-github-token-test.sh
           bash -n deploy/test-install-download-integrity.sh
           bash -n deploy/test-docker-deploy-existing-install.sh
+          bash -n tools/test_xiass_update_origin.sh
+          bash -n tools/test_xiass_update_browser_profile_migration.sh
 
       - name: Test install download integrity
         run: bash deploy/test-install-download-integrity.sh
@@ -171,6 +174,11 @@ jobs:
 
       - name: Test existing deployment protection
         run: bash deploy/test-docker-deploy-existing-install.sh
+
+      - name: Test XIASS update browser-profile migration
+        run: |
+          bash tools/test_xiass_update_origin.sh
+          bash tools/test_xiass_update_browser_profile_migration.sh
 
   build-runtime-support-images:
     runs-on: ubuntu-latest
