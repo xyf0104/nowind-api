@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -28,23 +29,27 @@ const (
 	teamChildBrowserCookieName  = "xiass_team_child_browser"
 	teamChildBrowserDefaultTTL  = 12 * time.Hour
 	teamChildBrowserTicketTTL   = 3 * time.Minute
+	teamChildBrowserControlTTL  = 2 * time.Minute
 
 	teamChildBrowserSessionRedisPrefix = "xiass:team-child:browser:session:"
 	teamChildBrowserTicketRedisPrefix  = "xiass:team-child:browser:ticket:"
+	teamChildBrowserControlRedisKey    = "xiass:team-child:browser:controller"
 )
 
 type openAITeamBrowserStore struct {
 	mu       sync.Mutex
 	sessions map[string]openAITeamBrowserSession
 	tickets  map[string]openAITeamBrowserTicket
+	control  *openAITeamBrowserControllerLease
 	redis    *redis.Client
 	now      func() time.Time
 }
 
 type openAITeamBrowserSession struct {
-	adminUserID int64
-	upstreamURL *url.URL
-	expiresAt   time.Time
+	adminUserID  int64
+	upstreamURL  *url.URL
+	expiresAt    time.Time
+	controllerID string
 }
 
 type openAITeamBrowserTicket struct {
@@ -53,22 +58,53 @@ type openAITeamBrowserTicket struct {
 }
 
 type persistedOpenAITeamBrowserSession struct {
-	AdminUserID int64     `json:"admin_user_id"`
-	UpstreamURL string    `json:"upstream_url"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	AdminUserID  int64     `json:"admin_user_id"`
+	UpstreamURL  string    `json:"upstream_url"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	ControllerID string    `json:"controller_id,omitempty"`
+}
+
+// openAITeamBrowserControllerLease identifies the administrator browser tab
+// currently allowed to attach a graphical viewer to the shared Chromium
+// profile. The ID is an opaque, random client capability, never an account
+// identifier or reusable credential.
+type openAITeamBrowserControllerLease struct {
+	adminUserID  int64
+	controllerID string
+	expiresAt    time.Time
 }
 
 type teamChildBrowserConfig struct {
 	upstreamURL *url.URL
 	ttl         time.Duration
 	ticketTTL   time.Duration
+	controlTTL  time.Duration
 }
 
 type teamChildBrowserSessionResponse struct {
-	EmbedURL        string `json:"embed_url"`
-	ExpiresAt       string `json:"expires_at"`
-	TicketExpiresAt string `json:"ticket_expires_at"`
+	EmbedURL         string `json:"embed_url"`
+	ExpiresAt        string `json:"expires_at"`
+	TicketExpiresAt  string `json:"ticket_expires_at"`
+	ControllerID     string `json:"controller_id"`
+	ControlExpiresAt string `json:"control_expires_at"`
 }
+
+type teamChildBrowserSessionRequest struct {
+	ControllerID string `json:"controller_id"`
+	TakeOver     bool   `json:"take_over"`
+}
+
+type teamChildBrowserControlRequest struct {
+	ControllerID string `json:"controller_id"`
+}
+
+type teamChildBrowserControlResponse struct {
+	ControllerID     string `json:"controller_id"`
+	ControlExpiresAt string `json:"control_expires_at"`
+	Released         bool   `json:"released,omitempty"`
+}
+
+var errTeamChildBrowserControlHeld = errors.New("browser workspace is controlled by another administrator")
 
 func newOpenAITeamBrowserStore() *openAITeamBrowserStore {
 	return &openAITeamBrowserStore{
@@ -124,6 +160,33 @@ func (h *OpenAIOAuthHandler) CreateTeamChildBrowserSession(c *gin.Context) {
 		response.Unauthorized(c, "administrator session is required")
 		return
 	}
+	var request teamChildBrowserSessionRequest
+	if err := c.ShouldBindJSON(&request); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "browser workspace request is invalid")
+		return
+	}
+	controllerID := strings.TrimSpace(request.ControllerID)
+	if controllerID == "" {
+		var tokenErr error
+		controllerID, tokenErr = newTeamChildBrowserToken()
+		if tokenErr != nil {
+			response.InternalError(c, "browser workspace control could not be created")
+			return
+		}
+	}
+	if !validTeamChildBrowserControllerID(controllerID) {
+		response.BadRequest(c, "browser workspace controller is invalid")
+		return
+	}
+	control, err := h.teamBrowserStore.acquireControl(c.Request.Context(), subject.UserID, controllerID, config.controlTTL, request.TakeOver)
+	if errors.Is(err, errTeamChildBrowserControlHeld) {
+		response.ErrorWithDetails(c, http.StatusConflict, "Browser workspace is being controlled by another administrator", "TEAM_CHILD_BROWSER_CONTROLLED", nil)
+		return
+	}
+	if err != nil {
+		response.InternalError(c, "browser workspace control is temporarily unavailable")
+		return
+	}
 
 	cookieToken, err := newTeamChildBrowserToken()
 	if err != nil {
@@ -139,20 +202,96 @@ func (h *OpenAIOAuthHandler) CreateTeamChildBrowserSession(c *gin.Context) {
 	expiresAt := now.Add(config.ttl)
 	ticketExpiresAt := now.Add(config.ticketTTL)
 	session := openAITeamBrowserSession{
-		adminUserID: subject.UserID,
-		upstreamURL: config.upstreamURL,
-		expiresAt:   expiresAt,
+		adminUserID:  subject.UserID,
+		upstreamURL:  config.upstreamURL,
+		expiresAt:    expiresAt,
+		controllerID: controllerID,
 	}
 	if err := h.teamBrowserStore.create(c.Request.Context(), cookieToken, ticket, session, config.ticketTTL); err != nil {
+		_, _ = h.teamBrowserStore.releaseControl(c.Request.Context(), subject.UserID, controllerID)
 		response.InternalError(c, "browser workspace session could not be stored")
 		return
 	}
 
 	response.Success(c, teamChildBrowserSessionResponse{
-		EmbedURL:        teamChildBrowserProxyPrefix + "/?ticket=" + url.QueryEscape(ticket),
-		ExpiresAt:       expiresAt.UTC().Format(time.RFC3339),
-		TicketExpiresAt: ticketExpiresAt.UTC().Format(time.RFC3339),
+		EmbedURL:         teamChildBrowserProxyPrefix + "/?ticket=" + url.QueryEscape(ticket),
+		ExpiresAt:        expiresAt.UTC().Format(time.RFC3339),
+		TicketExpiresAt:  ticketExpiresAt.UTC().Format(time.RFC3339),
+		ControllerID:     controllerID,
+		ControlExpiresAt: control.expiresAt.UTC().Format(time.RFC3339),
 	})
+}
+
+// HeartbeatTeamChildBrowserControl extends the short-lived lease held by a
+// manually opened browser workspace. Routes may mount this beneath the normal
+// administrator middleware once the frontend begins explicit browser takeover.
+func (h *OpenAIOAuthHandler) HeartbeatTeamChildBrowserControl(c *gin.Context) {
+	if h == nil || h.teamBrowserStore == nil {
+		response.InternalError(c, "team child browser service is unavailable")
+		return
+	}
+	config, err := loadTeamChildBrowserConfig()
+	if err != nil {
+		response.BadRequest(c, "Team child browser is not configured")
+		return
+	}
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "administrator session is required")
+		return
+	}
+	request, ok := bindTeamChildBrowserControlRequest(c)
+	if !ok {
+		return
+	}
+	control, renewed, err := h.teamBrowserStore.heartbeatControl(c.Request.Context(), subject.UserID, request.ControllerID, config.controlTTL)
+	if err != nil {
+		response.InternalError(c, "browser workspace control is temporarily unavailable")
+		return
+	}
+	if !renewed {
+		response.ErrorWithDetails(c, http.StatusConflict, "Browser workspace control has expired or moved", "TEAM_CHILD_BROWSER_CONTROL_LOST", nil)
+		return
+	}
+	response.Success(c, teamChildBrowserControlResponse{
+		ControllerID:     control.controllerID,
+		ControlExpiresAt: control.expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// ReleaseTeamChildBrowserControl releases a manually held browser lease. It is
+// intentionally idempotent: a tab closing after expiry or after a takeover
+// cannot delete the new controller's lease.
+func (h *OpenAIOAuthHandler) ReleaseTeamChildBrowserControl(c *gin.Context) {
+	if h == nil || h.teamBrowserStore == nil {
+		response.InternalError(c, "team child browser service is unavailable")
+		return
+	}
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "administrator session is required")
+		return
+	}
+	request, ok := bindTeamChildBrowserControlRequest(c)
+	if !ok {
+		return
+	}
+	released, err := h.teamBrowserStore.releaseControl(c.Request.Context(), subject.UserID, request.ControllerID)
+	if err != nil {
+		response.InternalError(c, "browser workspace control is temporarily unavailable")
+		return
+	}
+	response.Success(c, teamChildBrowserControlResponse{ControllerID: request.ControllerID, Released: released})
+}
+
+func bindTeamChildBrowserControlRequest(c *gin.Context) (teamChildBrowserControlRequest, bool) {
+	var request teamChildBrowserControlRequest
+	if err := c.ShouldBindJSON(&request); err != nil || !validTeamChildBrowserControllerID(strings.TrimSpace(request.ControllerID)) {
+		response.BadRequest(c, "browser workspace controller is invalid")
+		return teamChildBrowserControlRequest{}, false
+	}
+	request.ControllerID = strings.TrimSpace(request.ControllerID)
+	return request, true
 }
 
 // ServeTeamChildBrowser is intentionally outside the normal admin group: a
@@ -186,6 +325,16 @@ func (h *OpenAIOAuthHandler) ServeTeamChildBrowser(c *gin.Context) {
 			http.Error(c.Writer, "Browser workspace authorization has expired", http.StatusUnauthorized)
 			return
 		}
+		if current, controlErr := h.teamBrowserStore.hasCurrentControl(c.Request.Context(), session); controlErr != nil {
+			_ = h.teamBrowserStore.delete(c.Request.Context(), sessionToken)
+			http.Error(c.Writer, "Browser workspace is temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		} else if !current {
+			_ = h.teamBrowserStore.delete(c.Request.Context(), sessionToken)
+			clearTeamChildBrowserCookie(c)
+			http.Error(c.Writer, "Browser workspace control has expired or moved", http.StatusConflict)
+			return
+		}
 		setTeamChildBrowserCookie(c, sessionToken, session.expiresAt)
 		c.Header("Cache-Control", "private, no-store, max-age=0")
 		c.Header("Pragma", "no-cache")
@@ -216,6 +365,15 @@ func (h *OpenAIOAuthHandler) ServeTeamChildBrowser(c *gin.Context) {
 		_ = h.teamBrowserStore.delete(c.Request.Context(), sessionToken)
 		clearTeamChildBrowserCookie(c)
 		http.Error(c.Writer, "Browser workspace authorization has expired", http.StatusUnauthorized)
+		return
+	}
+	if current, controlErr := h.teamBrowserStore.hasCurrentControl(c.Request.Context(), session); controlErr != nil {
+		http.Error(c.Writer, "Browser workspace is temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	} else if !current {
+		_ = h.teamBrowserStore.delete(c.Request.Context(), sessionToken)
+		clearTeamChildBrowserCookie(c)
+		http.Error(c.Writer, "Browser workspace control has expired or moved", http.StatusConflict)
 		return
 	}
 
@@ -291,7 +449,15 @@ func loadTeamChildBrowserConfig() (teamChildBrowserConfig, error) {
 		}
 		ticketTTL = time.Duration(seconds) * time.Second
 	}
-	return teamChildBrowserConfig{upstreamURL: upstreamURL, ttl: ttl, ticketTTL: ticketTTL}, nil
+	controlTTL := teamChildBrowserControlTTL
+	if rawControlTTL := strings.TrimSpace(os.Getenv("TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS")); rawControlTTL != "" {
+		seconds, parseErr := strconv.Atoi(rawControlTTL)
+		if parseErr != nil || seconds < 30 || seconds > 600 {
+			return teamChildBrowserConfig{}, fmt.Errorf("TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS must be between 30 and 600")
+		}
+		controlTTL = time.Duration(seconds) * time.Second
+	}
+	return teamChildBrowserConfig{upstreamURL: upstreamURL, ttl: ttl, ticketTTL: ticketTTL, controlTTL: controlTTL}, nil
 }
 
 func newTeamChildBrowserToken() (string, error) {
@@ -300,6 +466,19 @@ func newTeamChildBrowserToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func validTeamChildBrowserControllerID(controllerID string) bool {
+	if len(controllerID) < 16 || len(controllerID) > 128 {
+		return false
+	}
+	for _, char := range controllerID {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *openAITeamBrowserStore) pruneLocked(now time.Time) {
@@ -317,7 +496,164 @@ func (s *openAITeamBrowserStore) pruneLocked(now time.Time) {
 			delete(s.tickets, ticket)
 		}
 	}
+	if s.control != nil && !s.control.expiresAt.After(now) {
+		s.control = nil
+	}
 }
+
+func (s *openAITeamBrowserStore) acquireControl(ctx context.Context, adminUserID int64, controllerID string, ttl time.Duration, takeOver bool) (openAITeamBrowserControllerLease, error) {
+	if s == nil || adminUserID <= 0 || !validTeamChildBrowserControllerID(controllerID) || ttl <= 0 {
+		return openAITeamBrowserControllerLease{}, errors.New("browser workspace control is invalid")
+	}
+	now := s.now()
+	lease := openAITeamBrowserControllerLease{
+		adminUserID:  adminUserID,
+		controllerID: controllerID,
+		expiresAt:    now.Add(ttl),
+	}
+	if redisClient := s.redisClient(); redisClient != nil {
+		result, err := redisTeamChildBrowserAcquireControl.Run(ctx, redisClient, []string{teamChildBrowserControlRedisKey}, teamChildBrowserControlValue(lease), ttl.Milliseconds(), boolToRedisInteger(takeOver)).Int()
+		if err != nil {
+			return openAITeamBrowserControllerLease{}, err
+		}
+		if result == 0 {
+			return openAITeamBrowserControllerLease{}, errTeamChildBrowserControlHeld
+		}
+		return lease, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now = s.now()
+	s.pruneLocked(now)
+	lease.expiresAt = now.Add(ttl)
+	if s.control != nil && (s.control.adminUserID != adminUserID || s.control.controllerID != controllerID) && !takeOver {
+		return openAITeamBrowserControllerLease{}, errTeamChildBrowserControlHeld
+	}
+	s.control = &lease
+	return lease, nil
+}
+
+func (s *openAITeamBrowserStore) heartbeatControl(ctx context.Context, adminUserID int64, controllerID string, ttl time.Duration) (openAITeamBrowserControllerLease, bool, error) {
+	if s == nil || adminUserID <= 0 || !validTeamChildBrowserControllerID(controllerID) || ttl <= 0 {
+		return openAITeamBrowserControllerLease{}, false, nil
+	}
+	now := s.now()
+	lease := openAITeamBrowserControllerLease{
+		adminUserID:  adminUserID,
+		controllerID: controllerID,
+		expiresAt:    now.Add(ttl),
+	}
+	if redisClient := s.redisClient(); redisClient != nil {
+		result, err := redisTeamChildBrowserHeartbeatControl.Run(ctx, redisClient, []string{teamChildBrowserControlRedisKey}, teamChildBrowserControlValue(lease), ttl.Milliseconds()).Int()
+		if err != nil {
+			return openAITeamBrowserControllerLease{}, false, err
+		}
+		return lease, result == 1, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now = s.now()
+	s.pruneLocked(now)
+	if s.control == nil || s.control.adminUserID != adminUserID || s.control.controllerID != controllerID {
+		return openAITeamBrowserControllerLease{}, false, nil
+	}
+	s.control.expiresAt = now.Add(ttl)
+	return *s.control, true, nil
+}
+
+func (s *openAITeamBrowserStore) releaseControl(ctx context.Context, adminUserID int64, controllerID string) (bool, error) {
+	if s == nil || adminUserID <= 0 || !validTeamChildBrowserControllerID(controllerID) {
+		return false, nil
+	}
+	lease := openAITeamBrowserControllerLease{adminUserID: adminUserID, controllerID: controllerID}
+	if redisClient := s.redisClient(); redisClient != nil {
+		result, err := redisTeamChildBrowserReleaseControl.Run(ctx, redisClient, []string{teamChildBrowserControlRedisKey}, teamChildBrowserControlValue(lease)).Int()
+		return result == 1, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(s.now())
+	if s.control == nil || s.control.adminUserID != adminUserID || s.control.controllerID != controllerID {
+		return false, nil
+	}
+	s.control = nil
+	return true, nil
+}
+
+// hasCurrentControl leaves old sessions without a controller ID valid. This
+// is deliberate compatibility for iframe tickets minted before coordinated
+// manual takeover was introduced. Every newly minted session is bound to the
+// current lease and becomes unusable after expiry or an explicit takeover.
+func (s *openAITeamBrowserStore) hasCurrentControl(ctx context.Context, session openAITeamBrowserSession) (bool, error) {
+	if strings.TrimSpace(session.controllerID) == "" {
+		return true, nil
+	}
+	if s == nil || session.adminUserID <= 0 || !validTeamChildBrowserControllerID(session.controllerID) {
+		return false, nil
+	}
+	lease := openAITeamBrowserControllerLease{adminUserID: session.adminUserID, controllerID: session.controllerID}
+	if redisClient := s.redisClient(); redisClient != nil {
+		value, err := redisClient.Get(ctx, teamChildBrowserControlRedisKey).Result()
+		if errors.Is(err, redis.Nil) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return value == teamChildBrowserControlValue(lease), nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(s.now())
+	return s.control != nil && s.control.adminUserID == session.adminUserID && s.control.controllerID == session.controllerID, nil
+}
+
+func teamChildBrowserControlValue(lease openAITeamBrowserControllerLease) string {
+	return strconv.FormatInt(lease.adminUserID, 10) + ":" + lease.controllerID
+}
+
+func boolToRedisInteger(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+var redisTeamChildBrowserAcquireControl = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if not current then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  return 1
+end
+if current == ARGV[1] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return 1
+end
+if ARGV[3] == '1' then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  return 2
+end
+return 0
+`)
+
+var redisTeamChildBrowserHeartbeatControl = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`)
+
+var redisTeamChildBrowserReleaseControl = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`)
 
 func (s *openAITeamBrowserStore) create(ctx context.Context, sessionToken, ticket string, session openAITeamBrowserSession, ticketTTL time.Duration) error {
 	if s == nil || strings.TrimSpace(sessionToken) == "" || strings.TrimSpace(ticket) == "" || session.upstreamURL == nil || session.expiresAt.IsZero() || ticketTTL <= 0 {
@@ -455,9 +791,10 @@ func encodePersistedOpenAITeamBrowserSession(session openAITeamBrowserSession) (
 		return nil, errors.New("browser workspace session is invalid")
 	}
 	return json.Marshal(persistedOpenAITeamBrowserSession{
-		AdminUserID: session.adminUserID,
-		UpstreamURL: session.upstreamURL.String(),
-		ExpiresAt:   session.expiresAt.UTC(),
+		AdminUserID:  session.adminUserID,
+		UpstreamURL:  session.upstreamURL.String(),
+		ExpiresAt:    session.expiresAt.UTC(),
+		ControllerID: session.controllerID,
 	})
 }
 
@@ -471,9 +808,10 @@ func decodePersistedOpenAITeamBrowserSession(payload []byte) (openAITeamBrowserS
 		return openAITeamBrowserSession{}, errors.New("browser workspace session is invalid")
 	}
 	return openAITeamBrowserSession{
-		adminUserID: persisted.AdminUserID,
-		upstreamURL: upstreamURL,
-		expiresAt:   persisted.ExpiresAt,
+		adminUserID:  persisted.AdminUserID,
+		upstreamURL:  upstreamURL,
+		expiresAt:    persisted.ExpiresAt,
+		controllerID: persisted.ControllerID,
 	}, nil
 }
 

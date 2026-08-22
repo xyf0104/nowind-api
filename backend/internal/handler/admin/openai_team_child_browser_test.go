@@ -209,3 +209,154 @@ func TestTeamChildBrowserRedisStorePersistsAndConsumesTicketAcrossHandlers(t *te
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+func TestTeamChildBrowserControllerLeaseCoordinatesInMemorySessions(t *testing.T) {
+	store := newOpenAITeamBrowserStore()
+	now := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	firstController := strings.Repeat("a", 32)
+	secondController := strings.Repeat("b", 32)
+
+	first, err := store.acquireControl(t.Context(), 42, firstController, time.Minute, false)
+	require.NoError(t, err)
+	require.Equal(t, now.Add(time.Minute), first.expiresAt)
+
+	_, err = store.acquireControl(t.Context(), 42, secondController, time.Minute, false)
+	require.ErrorIs(t, err, errTeamChildBrowserControlHeld)
+	_, err = store.acquireControl(t.Context(), 99, secondController, time.Minute, false)
+	require.ErrorIs(t, err, errTeamChildBrowserControlHeld)
+
+	now = now.Add(20 * time.Second)
+	renewed, ok, err := store.heartbeatControl(t.Context(), 42, firstController, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, now.Add(time.Minute), renewed.expiresAt)
+
+	released, err := store.releaseControl(t.Context(), 99, firstController)
+	require.NoError(t, err)
+	require.False(t, released)
+
+	oldSession := openAITeamBrowserSession{adminUserID: 42, controllerID: firstController}
+	current, err := store.hasCurrentControl(t.Context(), oldSession)
+	require.NoError(t, err)
+	require.True(t, current)
+
+	_, err = store.acquireControl(t.Context(), 99, secondController, time.Minute, true)
+	require.NoError(t, err)
+	current, err = store.hasCurrentControl(t.Context(), oldSession)
+	require.NoError(t, err)
+	require.False(t, current)
+	current, err = store.hasCurrentControl(t.Context(), openAITeamBrowserSession{adminUserID: 99, controllerID: secondController})
+	require.NoError(t, err)
+	require.True(t, current)
+
+	released, err = store.releaseControl(t.Context(), 42, firstController)
+	require.NoError(t, err)
+	require.False(t, released)
+	released, err = store.releaseControl(t.Context(), 99, secondController)
+	require.NoError(t, err)
+	require.True(t, released)
+}
+
+func TestTeamChildBrowserControllerLeaseUsesRedisAcrossHandlers(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	first := newOpenAITeamBrowserStore()
+	first.configureRedis(client)
+	second := newOpenAITeamBrowserStore()
+	second.configureRedis(client)
+	firstController := strings.Repeat("a", 32)
+	secondController := strings.Repeat("b", 32)
+
+	_, err := first.acquireControl(t.Context(), 42, firstController, time.Minute, false)
+	require.NoError(t, err)
+	_, err = second.acquireControl(t.Context(), 99, secondController, time.Minute, false)
+	require.ErrorIs(t, err, errTeamChildBrowserControlHeld)
+
+	_, renewed, err := second.heartbeatControl(t.Context(), 42, firstController, time.Minute)
+	require.NoError(t, err)
+	require.True(t, renewed)
+
+	oldSession := openAITeamBrowserSession{adminUserID: 42, controllerID: firstController}
+	current, err := second.hasCurrentControl(t.Context(), oldSession)
+	require.NoError(t, err)
+	require.True(t, current)
+
+	_, err = second.acquireControl(t.Context(), 99, secondController, time.Minute, true)
+	require.NoError(t, err)
+	current, err = first.hasCurrentControl(t.Context(), oldSession)
+	require.NoError(t, err)
+	require.False(t, current)
+
+	released, err := first.releaseControl(t.Context(), 42, firstController)
+	require.NoError(t, err)
+	require.False(t, released)
+	released, err = second.releaseControl(t.Context(), 99, secondController)
+	require.NoError(t, err)
+	require.True(t, released)
+}
+
+func TestTeamChildBrowserSessionRejectsCompetingControllerUntilExplicitTakeover(t *testing.T) {
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	t.Setenv("TEAM_CHILD_BROWSER_ENABLED", "true")
+	t.Setenv("TEAM_CHILD_BROWSER_UPSTREAM_URL", upstream.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{teamBrowserStore: newOpenAITeamBrowserStore()}
+	router := gin.New()
+	router.POST("/sessions", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
+		c.Next()
+	}, handler.CreateTeamChildBrowserSession)
+	router.GET(teamChildBrowserProxyPrefix+"/*path", handler.ServeTeamChildBrowser)
+
+	firstController := strings.Repeat("a", 32)
+	first := createTeamChildBrowserSessionForControl(t, router, firstController, false)
+	secondRequest := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(`{"controller_id":"`+strings.Repeat("b", 32)+`"}`))
+	secondRequest.Header.Set("Content-Type", "application/json")
+	secondRecorder := httptest.NewRecorder()
+	router.ServeHTTP(secondRecorder, secondRequest)
+	require.Equal(t, http.StatusConflict, secondRecorder.Code)
+
+	bootstrapURL, err := url.Parse(first.EmbedURL)
+	require.NoError(t, err)
+	bootstrapRecorder := httptest.NewRecorder()
+	router.ServeHTTP(bootstrapRecorder, httptest.NewRequest(http.MethodGet, bootstrapURL.String(), nil))
+	require.Equal(t, http.StatusFound, bootstrapRecorder.Code)
+
+	takeover := createTeamChildBrowserSessionForControl(t, router, strings.Repeat("b", 32), true)
+	require.NotEmpty(t, takeover.ControllerID)
+	staleProxyRequest := httptest.NewRequest(http.MethodGet, teamChildBrowserProxyPrefix+"/", nil)
+	staleProxyRequest.AddCookie(bootstrapRecorder.Result().Cookies()[0])
+	staleProxyRecorder := httptest.NewRecorder()
+	router.ServeHTTP(staleProxyRecorder, staleProxyRequest)
+	require.Equal(t, http.StatusConflict, staleProxyRecorder.Code)
+	require.Equal(t, 0, upstreamCalls)
+}
+
+func createTeamChildBrowserSessionForControl(t *testing.T, router *gin.Engine, controllerID string, takeOver bool) teamChildBrowserSessionResponse {
+	t.Helper()
+	body := `{"controller_id":"` + controllerID + `"}`
+	if takeOver {
+		body = `{"controller_id":"` + controllerID + `","take_over":true}`
+	}
+	request := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var result struct {
+		Data teamChildBrowserSessionResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &result))
+	require.Equal(t, controllerID, result.Data.ControllerID)
+	require.NotEmpty(t, result.Data.ControlExpiresAt)
+	return result.Data
+}
