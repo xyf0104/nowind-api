@@ -78,6 +78,46 @@ describe('TeamChildMembersWorkspace', () => {
     expect(wrapper.find('[aria-label="编辑 unknown@example.test"]').exists()).toBe(false)
   })
 
+  it('renders protected administrators as read-only gray rows', () => {
+    const wrapper = mount(TeamChildMembersWorkspace, {
+      props: {
+        members: [
+          { ...member, email: 'admin@example.test', id: 'admin@example.test', role: 'admin' },
+          { ...member, email: 'protected@example.test', id: 'protected@example.test', protected: true }
+        ]
+      },
+      global
+    })
+
+    expect(wrapper.text()).toContain('管理员（受保护）')
+    expect(wrapper.find('[aria-label="选择 admin@example.test"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="编辑 admin@example.test"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="移除 admin@example.test"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="选择 protected@example.test"]').exists()).toBe(false)
+  })
+
+  it('exposes a continuation action only for an interrupted workflow', async () => {
+    const wrapper = mount(TeamChildMembersWorkspace, {
+      props: {
+        members: [member],
+        workflow: {
+          id: 'workflow-token-abcdefghijklmnop',
+          status: 'failed',
+          expires_at: '2026-08-22T12:30:00.000Z',
+          manual_required: false,
+          error: '邀请状态需要复核',
+          steps: [{ key: 'invite', number: 3, label: '邀请临时邮箱', status: 'failed' }]
+        }
+      },
+      global
+    })
+
+    const continueButton = wrapper.findAll('button').find((button) => button.text().includes('继续自动化'))
+    expect(continueButton).toBeDefined()
+    await continueButton!.trigger('click')
+    expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
+  })
+
   it('defaults invitations to the active temporary mailbox and exposes a replaceable selection', async () => {
     const wrapper = mount(TeamChildMembersWorkspace, {
       props: {

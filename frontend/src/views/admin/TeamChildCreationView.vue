@@ -17,7 +17,7 @@
           <span>{{ statusLabel }}</span>
         </div>
         <input ref="mailboxConfigFileInput" type="file" class="hidden" accept=".json,.env,.txt,application/json,text/plain" @change="handleMailboxConfigFileChange" />
-        <button type="button" class="btn btn-secondary flex items-center gap-2" :disabled="configImporting" @click="mailboxConfigFileInput?.click()">
+        <button type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" :disabled="configImporting" @click="mailboxConfigFileInput?.click()">
           <Icon v-if="configImporting" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
           <Icon v-else name="upload" size="sm" :stroke-width="2" />
           <span>{{ configImporting ? '正在导入...' : '导入邮箱配置' }}</span>
@@ -30,7 +30,7 @@
       <span>{{ errorMessage }}</span>
     </div>
 
-    <div class="grid gap-6 xl:grid-cols-[minmax(340px,0.74fr)_minmax(0,1.26fr)]">
+    <div class="grid gap-6 xl:grid-cols-[minmax(280px,0.42fr)_minmax(0,1.58fr)]">
       <div class="space-y-5">
         <section class="space-y-5">
         <div class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
@@ -39,7 +39,7 @@
               <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">流程状态</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">先获取临时邮箱，再选择一个可替换席位并启动已确认的授权工作流。</p>
             </div>
-            <button v-if="isStarted" type="button" class="btn btn-secondary flex items-center gap-2" :disabled="busy" @click="resetFlow">
+            <button v-if="isStarted" type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" :disabled="busy" @click="resetFlow">
               <Icon name="refresh" size="sm" :stroke-width="2" />
               <span>重新开始</span>
             </button>
@@ -61,67 +61,36 @@
             </li>
           </ol>
 
-          <div class="mt-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-900/40">
+          <div class="mt-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="flex items-center justify-between gap-3">
               <span class="text-xs font-medium text-gray-500 dark:text-gray-400">当前邮箱</span>
               <span v-if="mailbox?.expires_at" class="text-xs text-gray-400 dark:text-gray-500">有效期至 {{ formatTime(mailbox.expires_at) }}</span>
             </div>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
+            <div class="mt-1 flex flex-wrap items-center gap-2">
               <code v-if="mailbox?.email" class="break-all text-sm font-semibold text-gray-900 dark:text-gray-100">{{ mailbox.email }}</code>
               <span v-else class="text-sm text-gray-400 dark:text-gray-500">点击“获取临时邮箱”后生成</span>
               <button v-if="mailbox?.email" type="button" class="btn btn-secondary p-2" title="复制邮箱" @click="copyText(mailbox.email)"><Icon name="copy" size="sm" :stroke-width="2" /></button>
             </div>
-            <div class="mt-4 flex items-end gap-3">
+            <div class="mt-3 flex items-end gap-2">
               <div class="min-w-0 flex-1">
                 <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">邮箱验证码</label>
-                <input :value="mailboxCode || ''" readonly class="input w-full font-mono tracking-[0.2em]" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" />
+                <input :value="mailboxCode || ''" readonly class="input h-9 w-full font-mono text-sm tracking-[0.16em]" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" />
               </div>
-              <button v-if="mailboxCode" type="button" class="btn btn-secondary flex items-center gap-2" @click="copyText(mailboxCode)"><Icon name="copy" size="sm" :stroke-width="2" /><span>复制</span></button>
+              <button v-if="mailboxCode" type="button" class="btn btn-secondary flex h-9 items-center gap-2 whitespace-nowrap" @click="copyText(mailboxCode)"><Icon name="copy" size="sm" :stroke-width="2" /><span>复制</span></button>
             </div>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ mailboxCodeHint }}</p>
+            <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ mailboxCodeHint }}</p>
           </div>
 
-          <button v-if="!isStarted" type="button" class="btn btn-primary mt-5 flex w-full items-center justify-center gap-2" :disabled="busy || !mailboxConfigured" @click="startFlow">
+          <button v-if="!isStarted" type="button" class="btn btn-primary mt-5 flex w-full items-center justify-center gap-2 whitespace-nowrap" :disabled="busy || !mailboxConfigured" @click="startFlow">
             <Icon v-if="busy" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
             <Icon v-else name="play" size="sm" :stroke-width="2" />
             <span>{{ mailboxConfigured ? '获取临时邮箱' : '邮箱服务未配置' }}</span>
           </button>
         </div>
 
-        <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-          <div class="flex gap-3">
-            <Icon name="shield" size="sm" class="mt-0.5 flex-shrink-0" :stroke-width="2" />
-            <div>
-              <div class="font-semibold">需要你在 OpenAI 页面完成验证</div>
-              <p class="mt-1 text-xs leading-5">XIASS 会在确认后替换成员并打开授权页。验证码、短信、CAPTCHA、身份验证和工作区选择仍由你通过现有站内确认和手动接管完成。</p>
-            </div>
-          </div>
-        </div>
       </section>
 
         <section v-if="teamWorkflow || callbackURL || createdAccount" class="space-y-5">
-          <div v-if="teamWorkflow" class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
-            <div class="mb-4 flex items-start justify-between gap-3">
-              <div>
-                <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">授权工作区</h2>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">仅显示可执行步骤和当前进度；外部验证需要时再接管浏览器。</p>
-              </div>
-              <button v-if="teamWorkflow.status === 'manual_required'" type="button" class="btn btn-secondary flex items-center gap-2" @click="cancelWorkflow"><Icon name="x" size="sm" :stroke-width="2" /><span>停止检查</span></button>
-            </div>
-            <ol class="space-y-3">
-              <li v-for="item in teamWorkflow.steps" :key="item.key" class="flex gap-3">
-                <span class="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border text-xs font-semibold" :class="workflowStepClass(item.status)">
-                  <Icon v-if="item.status === 'completed'" name="check" size="sm" :stroke-width="2.5" />
-                  <Icon v-else-if="item.status === 'running'" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
-                  <Icon v-else-if="item.status === 'failed'" name="exclamationTriangle" size="sm" :stroke-width="2" />
-                  <span v-else>{{ item.number }}</span>
-                </span>
-                <div class="min-w-0 pt-0.5"><p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ item.label }}</p><p v-if="item.message" class="mt-0.5 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ item.message }}</p></div>
-              </li>
-            </ol>
-            <div v-if="teamWorkflow.error" class="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300">{{ teamWorkflow.error }}</div>
-          </div>
-
           <details v-if="teamWorkflow?.manual_required" class="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <summary class="flex cursor-pointer items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">接码服务 <Icon name="arrowRight" size="sm" class="text-gray-400" :stroke-width="2" /></summary>
             <div class="border-t border-gray-200 p-4 dark:border-dark-700"><PixlabSMSReceiver :active="true" /></div>
@@ -136,7 +105,7 @@
             <div class="mt-4"><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">账号名称</label><input v-model="accountName" class="input w-full" :placeholder="mailbox?.email || 'OpenAI OAuth Account'" /></div>
             <div class="mt-4"><GroupSelector v-model="selectedGroupIDs" :groups="groups" platform="openai" /></div>
             <div class="mt-4 grid gap-4 sm:grid-cols-2"><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">并发数</label><input value="10" readonly class="input w-full bg-gray-50 dark:bg-dark-900" /></div><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">优先级</label><input value="1" readonly class="input w-full bg-gray-50 dark:bg-dark-900" /></div></div>
-            <button v-if="!createdAccount" type="button" class="btn btn-primary mt-5 flex w-full items-center justify-center gap-2" :disabled="!canImport || importing" @click="importAccount"><Icon v-if="importing" name="refresh" size="sm" class="animate-spin" :stroke-width="2" /><Icon v-else name="upload" size="sm" :stroke-width="2" /><span>{{ importing ? '正在导入...' : '校验并导入' }}</span></button>
+            <button v-if="!createdAccount" type="button" class="btn btn-primary mt-5 flex w-full items-center justify-center gap-2 whitespace-nowrap" :disabled="!canImport || importing" @click="importAccount"><Icon v-if="importing" name="refresh" size="sm" class="animate-spin" :stroke-width="2" /><Icon v-else name="upload" size="sm" :stroke-width="2" /><span>{{ importing ? '正在导入...' : '校验并导入' }}</span></button>
             <div v-else class="mt-5 flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-4 dark:border-green-900/60 dark:bg-green-950/20"><Icon name="check" size="md" class="mt-0.5 text-green-600 dark:text-green-400" :stroke-width="2.5" /><div class="min-w-0"><div class="font-semibold text-green-800 dark:text-green-200">已导入 XIASS</div><div class="mt-1 break-all text-sm text-green-700 dark:text-green-300">{{ createdAccount.name || mailbox?.email }}</div><router-link to="/admin/accounts" class="mt-3 inline-flex items-center gap-1 text-sm font-medium text-green-700 hover:underline dark:text-green-300">前往账号管理 <Icon name="arrowRight" size="sm" :stroke-width="2" /></router-link></div></div>
           </div>
         </section>
@@ -155,6 +124,8 @@
         :selected-email="selectedMemberEmail"
         :workflow-ready="workflowReady"
         :workflow-busy="workflowBusy"
+        :workflow="teamWorkflow"
+        :workflow-continuing="workflowContinuing"
         @refresh="refreshMembers"
         @inspect="inspectSeat"
         @select="selectedMemberEmail = $event"
@@ -163,6 +134,7 @@
         @remove="removeMember"
         @open-browser="openBrowserWorkspace"
         @start-workflow="openWorkflowConfirmation"
+        @continue-workflow="continueWorkflow"
       />
       <TeamChildBrowserWorkspace
         v-else
@@ -211,7 +183,7 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorCode, extractApiErrorMessage } from '@/utils/apiError'
-import { teamChildAPI, type TeamChildMailbox, type TeamChildMember, type TeamChildWorkflow, type TeamChildWorkflowStep } from '@/api/admin/teamChild'
+import { teamChildAPI, type TeamChildMailbox, type TeamChildMember, type TeamChildWorkflow } from '@/api/admin/teamChild'
 import { groupsAPI } from '@/api/admin/groups'
 import type { AdminGroup } from '@/types'
 
@@ -254,6 +226,7 @@ const createdAccount = ref<{ id?: number; name?: string; [key: string]: unknown 
 const teamWorkflow = ref<TeamChildWorkflow | null>(null)
 const workflowConfirmOpen = ref(false)
 const workflowStarting = ref(false)
+const workflowContinuing = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let workflowPollTimer: ReturnType<typeof setTimeout> | null = null
 let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
@@ -265,7 +238,7 @@ const steps: Array<{ key: StepKey; label: string; description: string }> = [
   { key: 'import', label: '导入 XIASS', description: '使用固定并发数 10、优先级 1 创建一个 OpenAI OAuth 账号。' }
 ]
 
-const busy = computed(() => ['creating', 'polling', 'workflow', 'importing'].includes(status.value) || workflowStarting.value)
+const busy = computed(() => ['creating', 'polling', 'workflow', 'importing'].includes(status.value) || workflowStarting.value || workflowContinuing.value)
 const isStarted = computed(() => Boolean(mailbox.value))
 const importing = computed(() => status.value === 'importing')
 const statusLabel = computed(() => ({ idle: '未开始', creating: '创建中', ready: '等待授权', workflow: '正在替换成员', waiting: '等待外部验证', polling: '检查邮箱', received: '已收到验证码', callback: '已获取回调', importing: '正在导入', completed: '已完成', error: '需要处理' })[status.value])
@@ -294,8 +267,12 @@ const parsedCallbackError = computed(() => {
   if (oauthState.value && parsedCallback.value.state !== oauthState.value) return '回调 state 与本次授权不匹配，请重新粘贴当前会话的回调地址。'
   return ''
 })
-const workflowBusy = computed(() => workflowStarting.value || teamWorkflow.value?.status === 'running')
-const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && Boolean(selectedMemberEmail.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready'].includes(teamWorkflow.value?.status || ''))
+function isReplaceableMember(member: TeamChildMember | undefined) {
+  return Boolean(member) && /^(member|成员)$/i.test(member!.role.trim()) && !member!.protected
+}
+const selectedReplaceableMember = computed(() => members.value.find((member) => member.email === selectedMemberEmail.value))
+const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || teamWorkflow.value?.status === 'running')
+const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && isReplaceableMember(selectedReplaceableMember.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value?.status || ''))
 const workflowConfirmationMessage = computed(() => {
   if (!mailbox.value?.email || !selectedMemberEmail.value) return '当前缺少临时邮箱或待替换成员。'
   return `将从 ChatGPT 工作区移除 ${selectedMemberEmail.value}，随后向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。已完成的外部操作不会自动回滚。`
@@ -336,13 +313,6 @@ async function handleMailboxConfigFileChange(event: Event) {
   }
 }
 function copyMailboxEmail() { if (mailbox.value?.email) void copyText(mailbox.value.email) }
-function workflowStepClass(stepStatus: TeamChildWorkflowStep['status']) {
-  if (stepStatus === 'completed') return 'border-green-500 bg-green-500 text-white'
-  if (stepStatus === 'failed') return 'border-red-500 bg-red-500 text-white'
-  if (stepStatus === 'running') return 'border-primary-500 bg-primary-50 text-primary-600 dark:bg-primary-950/30 dark:text-primary-400'
-  if (stepStatus === 'waiting') return 'border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-  return 'border-gray-300 text-gray-400 dark:border-dark-600 dark:text-gray-500'
-}
 function clearBrowserHeartbeat() {
   if (browserHeartbeatTimer) clearTimeout(browserHeartbeatTimer)
   browserHeartbeatTimer = null
@@ -417,8 +387,8 @@ function applyMembersResult(result: { members?: TeamChildMember[]; pending_invit
   workspaceName.value = result.workspace_name || ''
   membersReady.value = Boolean(result.ready)
 
-  const replaceable = nextMembers.find((member) => /^(admin|administrator|管理员|member|成员)$/i.test(member.role.trim()))
-  const selectedStillAvailable = nextMembers.some((member) => member.email === selectedMemberEmail.value && /^(admin|administrator|管理员|member|成员)$/i.test(member.role.trim()))
+  const replaceable = nextMembers.find((member) => isReplaceableMember(member))
+  const selectedStillAvailable = nextMembers.some((member) => member.email === selectedMemberEmail.value && isReplaceableMember(member))
   if (!selectedStillAvailable) selectedMemberEmail.value = seatEmail.value || replaceable?.email || ''
 }
 async function refreshMembers(notify = true, force = false) {
@@ -510,7 +480,7 @@ function scheduleWorkflowPoll(delay = 1200) {
   workflowPollTimer = setTimeout(() => void pollWorkflow(), delay)
 }
 async function startConfirmedWorkflow() {
-  if (!mailbox.value?.email || !selectedMemberEmail.value || !authUrl.value || workflowStarting.value) return
+  if (!mailbox.value?.email || !selectedMemberEmail.value || !authUrl.value || workflowStarting.value || !isReplaceableMember(selectedReplaceableMember.value)) return
   workflowConfirmOpen.value = false
   workflowStarting.value = true
   errorMessage.value = ''
@@ -528,6 +498,21 @@ async function startConfirmedWorkflow() {
     errorMessage.value = extractApiErrorMessage(error, '无法启动成员替换和授权工作流')
   } finally {
     workflowStarting.value = false
+  }
+}
+async function continueWorkflow() {
+  if (!teamWorkflow.value || teamWorkflow.value.status !== 'failed' || workflowContinuing.value) return
+  workflowContinuing.value = true
+  errorMessage.value = ''
+  try {
+    teamWorkflow.value = await teamChildAPI.continueTeamChildWorkflow(teamWorkflow.value.id)
+    status.value = 'workflow'
+    scheduleWorkflowPoll(500)
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '无法继续自动化工作流')
+  } finally {
+    workflowContinuing.value = false
   }
 }
 async function pollWorkflow() {
@@ -557,17 +542,6 @@ async function pollWorkflow() {
     status.value = 'error'
     errorMessage.value = extractApiErrorMessage(error, '无法读取授权工作流状态')
     clearWorkflowPoll()
-  }
-}
-async function cancelWorkflow() {
-  if (!teamWorkflow.value || teamWorkflow.value.status !== 'manual_required') return
-  try {
-    teamWorkflow.value = await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id)
-    clearWorkflowPoll()
-    status.value = 'ready'
-    appStore.showInfo('已停止自动检查，已完成的成员操作保持不变')
-  } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, '停止工作流检查失败'))
   }
 }
 async function startFlow() {
@@ -609,7 +583,7 @@ async function importAccount() {
 async function resetFlow() {
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
-  if (teamWorkflow.value?.status === 'manual_required') await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id).catch(() => undefined)
+  if (teamWorkflow.value && ['manual_required', 'failed'].includes(teamWorkflow.value.status)) await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id).catch(() => undefined)
   if (mailbox.value) await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
   mailbox.value = null; mailboxCode.value = ''; teamWorkflow.value = null; authUrl.value = ''; oauthState.value = ''; oauthSessionID.value = ''; callbackURL.value = ''; accountName.value = ''; selectedGroupIDs.value = []; createdAccount.value = null; errorMessage.value = ''; status.value = 'idle'
 }

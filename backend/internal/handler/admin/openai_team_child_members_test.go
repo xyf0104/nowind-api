@@ -115,3 +115,37 @@ func TestTeamChildMemberAutomationInspectRouteIsForwarded(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "/members/inspect", receivedPath)
 }
+
+func TestTeamChildProtectedMemberCannotBeChangedOrRemoved(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	t.Setenv("TEAM_CHILD_PROTECTED_MEMBER_EMAILS", "protected-admin@example.test")
+	called := false
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.PATCH("/members", handler.UpdateTeamChildMember)
+	router.DELETE("/members", handler.RemoveTeamChildMember)
+
+	for _, testCase := range []struct {
+		method string
+		body   string
+	}{
+		{method: http.MethodPatch, body: "{\"email\":\"protected-admin@example.test\",\"role\":\"member\"}"},
+		{method: http.MethodDelete, body: "{\"email\":\"protected-admin@example.test\"}"},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(testCase.method, "/members", strings.NewReader(testCase.body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusForbidden, recorder.Code)
+	}
+	require.False(t, called)
+}

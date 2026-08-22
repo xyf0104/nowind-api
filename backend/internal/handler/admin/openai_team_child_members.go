@@ -50,6 +50,28 @@ type teamChildMemberRemoveRequest struct {
 	Email string `json:"email" binding:"required,email"`
 }
 
+// teamChildProtectedMemberEmails is an instance-local deny list for the Team
+// workspace owner/admin identity. The browser automation independently treats
+// every upstream owner/admin row as protected; this value also protects a
+// specific account if the upstream page temporarily labels it incorrectly.
+func teamChildProtectedMemberEmails() map[string]struct{} {
+	protected := make(map[string]struct{})
+	for _, raw := range strings.FieldsFunc(os.Getenv("TEAM_CHILD_PROTECTED_MEMBER_EMAILS"), func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	}) {
+		email := strings.ToLower(strings.TrimSpace(raw))
+		if email != "" {
+			protected[email] = struct{}{}
+		}
+	}
+	return protected
+}
+
+func isTeamChildProtectedMemberEmail(email string) bool {
+	_, protected := teamChildProtectedMemberEmails()[strings.ToLower(strings.TrimSpace(email))]
+	return protected
+}
+
 func (h *OpenAIOAuthHandler) teamChildMemberAutomationRequest(c *gin.Context, method, path string, payload any) {
 	if !requireTeamChildAdminSession(c) {
 		return
@@ -151,6 +173,9 @@ func (h *OpenAIOAuthHandler) InviteTeamChildMember(c *gin.Context) {
 }
 
 func (h *OpenAIOAuthHandler) UpdateTeamChildMember(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
 	var req teamChildMemberRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Role) == "" {
 		response.BadRequest(c, "请输入有效的成员邮箱和角色")
@@ -162,16 +187,27 @@ func (h *OpenAIOAuthHandler) UpdateTeamChildMember(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	if isTeamChildProtectedMemberEmail(req.Email) {
+		response.Forbidden(c, "受保护的管理员账号不可编辑")
+		return
+	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPatch, "/members", req)
 }
 
 func (h *OpenAIOAuthHandler) RemoveTeamChildMember(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
 	var req teamChildMemberRemoveRequest
 	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Email) == "" {
 		response.BadRequest(c, "请输入有效的成员邮箱")
 		return
 	}
 	req.Email = strings.TrimSpace(req.Email)
+	if isTeamChildProtectedMemberEmail(req.Email) {
+		response.Forbidden(c, "受保护的管理员账号不可移除")
+		return
+	}
 	h.teamChildMemberAutomationRequest(c, http.MethodDelete, "/members", req)
 }
 

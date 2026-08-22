@@ -113,6 +113,7 @@ services:
       - TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS=${TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS:-120}
       - TEAM_CHILD_AUTOMATION_URL=${TEAM_CHILD_AUTOMATION_URL:-http://team-child-browser:8090}
       - TEAM_CHILD_AUTOMATION_TOKEN=${TEAM_CHILD_AUTOMATION_TOKEN:-}
+      - TEAM_CHILD_PROTECTED_MEMBER_EMAILS=${TEAM_CHILD_PROTECTED_MEMBER_EMAILS:-}
 
       # =======================================================================
       # Database Configuration (PostgreSQL)
@@ -288,6 +289,7 @@ services:
       - BROWSER_CDP_URL=http://127.0.0.1:9222
       - MEMBERS_URL=${TEAM_CHILD_BROWSER_START_URL:-https://chatgpt.com/admin/members}
       - TEAM_CHILD_AUTOMATION_TOKEN=${TEAM_CHILD_AUTOMATION_TOKEN:-}
+      - TEAM_CHILD_PROTECTED_MEMBER_EMAILS=${TEAM_CHILD_PROTECTED_MEMBER_EMAILS:-}
       - TZ=${TZ:-Asia/Shanghai}
     depends_on:
       team-child-browser:

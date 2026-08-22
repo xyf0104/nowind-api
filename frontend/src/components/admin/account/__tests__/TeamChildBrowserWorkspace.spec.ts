@@ -45,4 +45,24 @@ describe('TeamChildBrowserWorkspace', () => {
     expect(wrapper.find('iframe').exists()).toBe(false)
     expect(wrapper.text()).toContain('服务器浏览器尚未启用')
   })
+
+  it('keeps text actions on one line', () => {
+    const wrapper = mount(TeamChildBrowserWorkspace, {
+      props: {
+        configured: true,
+        embedUrl: '',
+        membersReady: true,
+        controlConflict: true
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    for (const button of wrapper.findAll('button').filter((item) => item.text().trim())) {
+      expect(button.classes()).toContain('whitespace-nowrap')
+    }
+  })
 })

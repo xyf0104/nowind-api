@@ -70,6 +70,8 @@ export interface TeamChildMember {
   seat_type?: string
   added_at?: string
   status?: string
+  /** Owner/admin rows and instance-configured protected identities are read-only. */
+  protected?: boolean
 }
 
 export interface TeamChildMembersResult {
@@ -199,6 +201,11 @@ export async function getTeamChildWorkflow(workflowID: string): Promise<TeamChil
   return data
 }
 
+export async function continueTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/continue`)
+  return data
+}
+
 export async function cancelTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.delete<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}`)
   return data
@@ -238,6 +245,7 @@ export const teamChildAPI = {
   removeTeamChildMember,
   startTeamChildWorkflow,
   getTeamChildWorkflow,
+  continueTeamChildWorkflow,
   cancelTeamChildWorkflow,
   createMailbox,
   importMailboxConfig,

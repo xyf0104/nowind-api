@@ -13,6 +13,13 @@ const serviceToken = String(process.env.TEAM_CHILD_AUTOMATION_TOKEN || '').trim(
 const browserConnectTimeout = boundedDuration(process.env.BROWSER_CONNECT_TIMEOUT_MS, 30000, 1000, 120000)
 const browserConnectRetryDelay = boundedDuration(process.env.BROWSER_CONNECT_RETRY_DELAY_MS, 750, 100, 5000)
 const workflowTTL = boundedDuration(process.env.WORKFLOW_TTL_MS, 45 * 60 * 1000, 5 * 60 * 1000, 2 * 60 * 60 * 1000)
+const memberRefreshAttempts = 3
+const protectedMemberEmails = new Set(
+  String(process.env.TEAM_CHILD_PROTECTED_MEMBER_EMAILS || '')
+    .split(/[\s,;]+/)
+    .map((value) => normalizeEmail(value))
+    .filter(Boolean)
+)
 
 let browserPromise
 let operation = Promise.resolve()
@@ -88,7 +95,37 @@ async function browser() {
   return connected
 }
 
-async function membersPage() {
+async function releaseCacheSession(cdpSession) {
+  if (!cdpSession) return
+  await cdpSession.send('Network.setCacheDisabled', { cacheDisabled: false }).catch(() => undefined)
+  await cdpSession.detach().catch(() => undefined)
+}
+
+async function reloadMemberPage(active, targetURL, forceRefresh) {
+  let cdpSession
+  if (forceRefresh) {
+    try {
+      cdpSession = await active.context().newCDPSession(active)
+      await cdpSession.send('Network.enable')
+      await cdpSession.send('Network.setCacheDisabled', { cacheDisabled: true })
+    } catch {
+      await releaseCacheSession(cdpSession)
+      cdpSession = undefined
+      // Navigation still invalidates the SPA route when a CDP cache toggle is
+      // unavailable. Do not fail a member operation just because Chromium has
+      // temporarily lost its DevTools session.
+    }
+  }
+  try {
+    await active.goto(targetURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
+    return cdpSession
+  } catch (error) {
+    await releaseCacheSession(cdpSession)
+    throw error
+  }
+}
+
+async function membersPage({ forceRefresh = false, targetURL = membersURL } = {}) {
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
@@ -100,8 +137,9 @@ async function membersPage() {
     active = await context.newPage()
     managedMembersPage = active
   }
+  let cdpSession
   try {
-    await active.goto(membersURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
+    cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   } catch (error) {
     // A Chromium restart invalidates Playwright page objects without always
     // marking them closed. Recreate the dedicated tab once; never fall back to
@@ -109,10 +147,16 @@ async function membersPage() {
     if (!active.isClosed()) throw error
     active = await context.newPage()
     managedMembersPage = active
-    await active.goto(membersURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
+    cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   }
-  await waitForMemberPageReady(active)
-  return active
+  try {
+    await waitForMemberPageReady(active)
+    return active
+  } finally {
+    // Keep cache disabled through the SPA's first render/API requests, then
+    // restore the browser's normal caching for the operator's manual session.
+    await releaseCacheSession(cdpSession)
+  }
 }
 
 async function rowsFor(current) {
@@ -156,9 +200,9 @@ function normalizedRole(role) {
   throw new Error('成员角色无效')
 }
 
-function isCurrentSeatRow(text) {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
-  return /(?:^|[\s([{:：])(?:you|your account|current account|current seat|当前账号|当前账户|当前席位|你)(?=$|[\s)\]},，。：:])/i.test(normalized)
+function isProtectedTeamMember(member) {
+  const role = displayRole(member?.role)
+  return role === 'owner' || role === 'admin' || protectedMemberEmails.has(normalizeEmail(member?.email))
 }
 
 function parsePendingInvites(text) {
@@ -184,14 +228,13 @@ async function readMembers(current) {
   const rows = await rowsFor(current)
   const count = await rows.count()
   const members = []
-  const rowRecords = []
   for (let index = 0; index < count; index += 1) {
     const text = (await rows.nth(index).innerText()).trim()
     const email = extractEmail(text)
     if (!email) continue
     const lines = text.split(/[\n\t]+/).map((line) => line.trim()).filter(Boolean)
     const role = roleFromLines(lines)
-    members.push({
+    const member = {
       // Email is the stable identity. A row index is unsafe after sorting or
       // pagination changes and must never be used for a destructive action.
       id: normalizeEmail(email),
@@ -200,8 +243,9 @@ async function readMembers(current) {
       role,
       seat_type: seatTypeFromLines(lines),
       status: 'active'
-    })
-    rowRecords.push({ text, email })
+    }
+    member.protected = isProtectedTeamMember(member)
+    members.push(member)
   }
 
   const pageTitle = (await current.locator('h1,h2').allTextContents()).join(' ').trim()
@@ -209,8 +253,8 @@ async function readMembers(current) {
   // The Team owner is the current logged-in account in the upstream UI. For
   // this workflow the useful "seat" is the first non-owner account that can
   // actually be replaced, not the owner row marked "You".
-  const replaceable = members.find((member) => ['member', 'admin'].includes(String(member.role || '').toLowerCase()))
-  const seatEmail = replaceable?.email || rowRecords.find((row) => isCurrentSeatRow(row.text))?.email || ''
+  const replaceable = members.find((member) => member.role === 'member' && !member.protected)
+  const seatEmail = replaceable?.email || ''
   return {
     ready: true,
     url: current.url(),
@@ -221,9 +265,69 @@ async function readMembers(current) {
   }
 }
 
-async function listMembers() {
-  const current = await membersPage()
-  return readMembers(current)
+async function listMembers({ forceRefresh = false, requireEmails = false } = {}) {
+  let result
+  const attempts = forceRefresh && requireEmails ? memberRefreshAttempts : 1
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = await membersPage({ forceRefresh })
+    result = await readMembers(current)
+    if (!requireEmails || result.members.some((member) => Boolean(normalizeEmail(member.email)))) return result
+    if (attempt + 1 < attempts) await sleep(750)
+  }
+  if (requireEmails) throw new Error('未能刷新到成员邮箱列表，请在服务器浏览器确认成员页面后点击继续')
+  return result
+}
+
+function pendingInvitesURL() {
+  const target = new URL(membersURL)
+  target.searchParams.set('tab', 'invites')
+  return target.toString()
+}
+
+async function pendingInviteEmails({ forceRefresh = true } = {}) {
+  let current = await membersPage({ forceRefresh, targetURL: membersURL })
+  const pendingPattern = /pending invitations?|pending invites?|待处理邀请|待接受邀请/i
+  let openedPendingTab = false
+  for (const role of ['tab', 'button', 'link']) {
+    const control = current.getByRole(role, { name: pendingPattern }).first()
+    if (!(await control.count())) continue
+    try {
+      if (!(await control.isVisible())) continue
+      await control.click()
+      openedPendingTab = true
+      break
+    } catch {
+      // Try the next semantic control, then use the legacy query-string route.
+    }
+  }
+  if (!openedPendingTab) current = await membersPage({ forceRefresh, targetURL: pendingInvitesURL() })
+
+  const pendingRows = current.locator('table tbody tr, [role="row"]')
+  try {
+    await pendingRows.first().waitFor({ state: 'visible', timeout: 3500 })
+  } catch {
+    // An empty pending-invites page is a valid result.
+  }
+  const rows = await rowsFor(current)
+  const count = await rows.count()
+  const emails = new Set()
+  for (let index = 0; index < count; index += 1) {
+    const email = normalizeEmail(extractEmail(await rows.nth(index).innerText()))
+    if (email) emails.add(email)
+  }
+  // Some ChatGPT builds render invitation cards without table/row semantics;
+  // merge the visible page emails as a conservative fallback. Seeing an email
+  // already present is safe to treat as idempotent, while sending a duplicate
+  // invitation can create a second pending invite for the same seat.
+  const body = await current.locator('body').innerText()
+  for (const match of body.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
+    emails.add(normalizeEmail(match[0]))
+  }
+  return emails
+}
+
+async function hasPendingInvite(email) {
+  return (await pendingInviteEmails()).has(normalizeEmail(email))
 }
 
 // The ChatGPT members page is a client-rendered application. DOMContentLoaded
@@ -233,18 +337,22 @@ async function listMembers() {
 // still returns normally once the toolbar is visible.
 async function waitForMemberPageReady(current) {
   const inviteButton = current.getByRole('button', { name: /invite member|邀请成员/i }).first()
+  const rows = current.locator('table tbody tr, [role="row"]')
+  try {
+    // The pending-invites tab does not always render an "Invite member" button.
+    // Waiting for the table first prevents a fresh invite from being mistaken
+    // for a missing invite while the SPA is still rendering its rows.
+    await rows.first().waitFor({ state: 'visible', timeout: 3500 })
+    return
+  } catch {
+    // An empty workspace can have no rows; the toolbar is the readiness signal
+    // for the regular members route in that case.
+  }
   try {
     await inviteButton.waitFor({ state: 'visible', timeout: Math.min(operationTimeout, 12000) })
   } catch {
-    return
-  }
-
-  const rows = current.locator('table tbody tr')
-  try {
-    await rows.first().waitFor({ state: 'visible', timeout: 3500 })
-  } catch {
-    // A workspace may genuinely have no member rows. The visible toolbar above
-    // is the readiness signal in that case.
+    // A pending-invites page may expose neither signal when it is empty. The
+    // caller will return an empty result and can safely report that state.
   }
 }
 
@@ -259,21 +367,35 @@ async function clickText(current, pattern, options = {}) {
   await textLocator.click(options)
 }
 
-async function memberRow(current, email, required = true) {
+async function memberRecord(current, email, required = true) {
   const wanted = normalizeEmail(email)
   const rows = await rowsFor(current)
   const count = await rows.count()
   for (let index = 0; index < count; index += 1) {
     const row = rows.nth(index)
     const actual = normalizeEmail(extractEmail(await row.innerText()))
-    if (actual === wanted) return row
+    if (actual !== wanted) continue
+    const lines = (await row.innerText()).split(/[\n\t]+/).map((line) => line.trim()).filter(Boolean)
+    const member = {
+      id: actual,
+      email: extractEmail(await row.innerText()),
+      role: roleFromLines(lines)
+    }
+    member.protected = isProtectedTeamMember(member)
+    return { row, member }
   }
   if (required) throw new Error('成员列表中找不到该邮箱，请先刷新后重试')
   return null
 }
 
-async function hasVisibleDialog(current) {
-  return (await current.locator('[role="dialog"]:visible').count()) > 0
+async function memberRow(current, email, required = true) {
+  const record = await memberRecord(current, email, required)
+  return record?.row || null
+}
+
+function assertRemovableMember(member) {
+  if (isProtectedTeamMember(member)) throw new Error('受保护的管理员账号不可移除或替换')
+  if (displayRole(member.role) !== 'member') throw new Error('只能替换普通成员席位')
 }
 
 async function waitUntil(description, predicate) {
@@ -305,8 +427,7 @@ async function inviteMember(email) {
   if (!normalized || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) {
     throw new Error('成员邮箱格式无效')
   }
-  const current = await membersPage()
-  const bodyBefore = await current.locator('body').innerText()
+  const current = await membersPage({ forceRefresh: true })
   await clickText(current, /invite member|邀请成员/i)
   const dialog = current.getByRole('dialog').last()
   const scope = (await dialog.count()) ? dialog : current
@@ -314,19 +435,16 @@ async function inviteMember(email) {
   await input.fill(normalized)
   await clickText(scope, /invite|邀请/i)
 
-  await waitUntil('邀请操作已提交但页面没有成功反馈', async () => {
-    if (await hasVisibleDialog(current)) return false
-    const body = await current.locator('body').innerText()
-    const feedback = /invited|invitation sent|invitation pending|邀请已发送|邀请成功|已邀请/i.test(body)
-    return feedback || (!normalizeEmail(bodyBefore).includes(normalized) && normalizeEmail(body).includes(normalized))
-  })
-  const result = await readMembers(current)
+  await waitUntil('邀请操作已提交但待处理邀请中未出现该邮箱', async () => hasPendingInvite(normalized))
+  const result = await listMembers({ forceRefresh: true })
   return { ...result, operation: { type: 'invite', email: normalized, confirmed: true } }
 }
 
 async function removeMember(email) {
   const normalized = normalizeEmail(email)
-  const current = await membersPage()
+  const current = await membersPage({ forceRefresh: true })
+  const record = await memberRecord(current, normalized)
+  assertRemovableMember(record.member)
   await clickMemberMenu(current, normalized)
   await clickText(current, /remove member|移除成员/i)
   await clickText(current, /remove from workspace|从工作空间移除|remove/i)
@@ -340,7 +458,9 @@ async function updateMember(email, role) {
   const normalized = normalizeEmail(email)
   const normalizedTargetRole = normalizedRole(role)
   if (!['admin', 'member'].includes(normalizedTargetRole)) throw new Error('成员角色无效')
-  const current = await membersPage()
+  const current = await membersPage({ forceRefresh: true })
+  const record = await memberRecord(current, normalized)
+  assertRemovableMember(record.member)
   await clickMemberMenu(current, normalized)
   await clickText(current, /edit|编辑/i)
   const dialog = current.getByRole('dialog').last()
@@ -432,6 +552,8 @@ function createWorkflow(seatEmail, inviteEmail, authURL) {
     expiresAt: now + workflowTTL,
     status: 'running',
     error: '',
+    resumeRequested: false,
+    seatObserved: false,
     oauthPage: undefined,
     callbackURL: '',
     steps: [
@@ -467,6 +589,22 @@ function setWorkflowStep(workflow, key, status, message = '') {
   step.message = message
 }
 
+function workflowStepState(workflow, key) {
+  return workflow.steps.find((step) => step.key === key)
+}
+
+function isWorkflowStepCompleted(workflow, key) {
+  return workflowStepState(workflow, key)?.status === 'completed'
+}
+
+function resumeFailedWorkflowSteps(workflow) {
+  for (const step of workflow.steps) {
+    if (step.status !== 'failed') continue
+    step.status = 'pending'
+    step.message = '已请求继续，正在复核当前页面状态'
+  }
+}
+
 function redactWorkflowError(error) {
   const raw = error instanceof Error ? error.message : String(error || 'unknown error')
   return raw
@@ -490,7 +628,7 @@ function activeWorkflow() {
   pruneWorkflows()
   if (!activeWorkflowID) return undefined
   const workflow = workflows.get(activeWorkflowID)
-  if (!workflow || !['running', 'manual_required'].includes(workflow.status)) {
+  if (!workflow || !['running', 'manual_required', 'failed'].includes(workflow.status)) {
     activeWorkflowID = ''
     return undefined
   }
@@ -548,25 +686,51 @@ async function describeOAuthNextStep(oauthPage) {
 async function executeWorkflow(workflow) {
   try {
     setWorkflowStep(workflow, 'members', 'running', '正在读取成员管理页')
-    const initial = await listMembers()
+    // A workflow never trusts an earlier UI snapshot. The first browser action
+    // disables cache and retries the members route until member email data is
+    // present, so a stale tab cannot select or remove the wrong account.
+    const initial = await listMembers({ forceRefresh: true, requireEmails: true })
     const selected = initial.members.find((member) => normalizeEmail(member.email) === workflow.seatEmail)
-    if (!selected) throw new Error('已选成员已不在当前工作区，请刷新后重新选择')
-    if (!['member', 'admin'].includes(String(selected.role || '').toLowerCase())) {
-      throw new Error('只能替换普通成员或管理员席位，不能替换所有者')
+
+    if (selected) {
+      assertRemovableMember(selected)
+      workflow.seatObserved = true
+      setWorkflowStep(workflow, 'members', 'completed', '已刷新并确认可替换的普通成员席位')
+      if (isWorkflowStepCompleted(workflow, 'remove')) {
+        throw new Error('已完成的移除步骤刷新后仍显示该成员，请重新确认成员状态后开始新的工作流')
+      }
+      setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
+      await removeMember(workflow.seatEmail)
+      setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
+    } else if (isWorkflowStepCompleted(workflow, 'remove')) {
+      setWorkflowStep(workflow, 'members', 'completed', '已刷新成员页，原成员仍保持已移除状态')
+    } else if (workflow.resumeRequested && workflow.seatObserved) {
+      // The person may have removed the selected member in the manual browser
+      // after a recoverable automation error. Treat the live absence as the
+      // confirmation and continue at the first unfinished external action.
+      setWorkflowStep(workflow, 'members', 'completed', '已刷新成员页，之前确认的席位已不再出现')
+      setWorkflowStep(workflow, 'remove', 'completed', '成员已由人工在工作区移除')
+    } else {
+      throw new Error('已选成员不在实时成员列表中，请刷新成员页确认后点击继续')
     }
-    setWorkflowStep(workflow, 'members', 'completed', '已确认可替换成员席位')
 
-    setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
-    await removeMember(workflow.seatEmail)
-    setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
+    setWorkflowStep(workflow, 'invite', 'running', '正在确认临时邮箱邀请状态')
+    const currentMembers = await listMembers({ forceRefresh: true })
+    const invitationAccepted = currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)
+    if (invitationAccepted) {
+      setWorkflowStep(workflow, 'invite', 'completed', '临时邮箱已出现在成员列表中')
+    } else if (await hasPendingInvite(workflow.inviteEmail)) {
+      setWorkflowStep(workflow, 'invite', 'completed', '临时邮箱已出现在待处理邀请中')
+    } else {
+      await inviteMember(workflow.inviteEmail)
+      setWorkflowStep(workflow, 'invite', 'completed', '邀请已发送并出现在待处理邀请中')
+    }
 
-    setWorkflowStep(workflow, 'invite', 'running', '正在发送临时邮箱邀请')
-    await inviteMember(workflow.inviteEmail)
-    setWorkflowStep(workflow, 'invite', 'completed', '邀请已发送')
-
-    setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
-    workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在服务器浏览器的新标签中打开')
+    if (!isWorkflowStepCompleted(workflow, 'oauth') || !workflow.oauthPage || workflow.oauthPage.isClosed()) {
+      setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
+      workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
+      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在服务器浏览器的新标签中打开')
+    }
     setWorkflowStep(workflow, 'verify', 'waiting', '请在需要时接管浏览器，完成外部验证；系统会自动识别回调地址')
     workflow.status = 'manual_required'
   } catch (error) {
@@ -575,7 +739,6 @@ async function executeWorkflow(workflow) {
     workflow.error = message
     const active = workflow.steps.find((step) => step.status === 'running')
     if (active) setWorkflowStep(workflow, active.key, 'failed', message)
-    if (activeWorkflowID === workflow.id) activeWorkflowID = ''
   }
 }
 
@@ -592,6 +755,23 @@ async function startWorkflow(payload) {
   activeWorkflowID = workflow.id
   // Return immediately so the UI can show the operation timeline while the
   // shared Chromium service serially performs the destructive actions.
+  void runExclusive(() => executeWorkflow(workflow))
+  return workflowSummary(workflow)
+}
+
+async function continueWorkflow(id) {
+  pruneWorkflows()
+  const workflow = workflows.get(String(id || '').trim())
+  if (!workflow) throw new Error('工作流不存在或已过期')
+  if (workflow.status !== 'failed') throw new Error('当前工作流无需继续或仍在执行中')
+  const current = activeWorkflow()
+  if (current && current.id !== workflow.id) throw new Error('已有其他 Team 子号工作流正在进行')
+
+  workflow.status = 'running'
+  workflow.error = ''
+  workflow.resumeRequested = true
+  resumeFailedWorkflowSteps(workflow)
+  activeWorkflowID = workflow.id
   void runExclusive(() => executeWorkflow(workflow))
   return workflowSummary(workflow)
 }
@@ -621,9 +801,14 @@ function cancelWorkflow(id) {
   const workflow = workflows.get(String(id || '').trim())
   if (!workflow) throw new Error('工作流不存在或已过期')
   if (workflow.status === 'running') throw new Error('当前步骤正在执行，暂不能取消')
-  if (workflow.status === 'manual_required') {
+  if (workflow.status === 'manual_required' || workflow.status === 'failed') {
     workflow.status = 'cancelled'
-    setWorkflowStep(workflow, 'verify', 'cancelled', '已停止自动检查，成员移除和邀请操作不会自动回滚')
+    const active = workflow.steps.find((step) => step.status === 'running' || step.status === 'failed')
+    if (active) {
+      setWorkflowStep(workflow, active.key, 'cancelled', '已停止自动化；已完成的成员操作不会自动回滚')
+    } else {
+      setWorkflowStep(workflow, 'verify', 'cancelled', '已停止自动检查，成员移除和邀请操作不会自动回滚')
+    }
   }
   if (activeWorkflowID === workflow.id) activeWorkflowID = ''
   return workflowSummary(workflow)
@@ -679,9 +864,9 @@ async function handle(req, res) {
   try {
     const result = await runExclusive(async () => {
       if (req.method === 'GET' && path === '/members') return listMembers()
-      if (req.method === 'POST' && path === '/members/refresh') return listMembers()
+      if (req.method === 'POST' && path === '/members/refresh') return listMembers({ forceRefresh: true })
       if (req.method === 'POST' && path === '/members/inspect') {
-        const result = await listMembers()
+        const result = await listMembers({ forceRefresh: true })
         return { ...result, operation: { type: 'inspect', confirmed: true } }
       }
       if (req.method === 'POST' && path === '/members/invite') {
@@ -700,6 +885,8 @@ async function handle(req, res) {
         const body = await readBody(req)
         return startWorkflow(body)
       }
+      const continueWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/continue$/)
+      if (continueWorkflowMatch && req.method === 'POST') return continueWorkflow(continueWorkflowMatch[1])
       if (workflowMatch && req.method === 'DELETE') return cancelWorkflow(workflowMatch[1])
       return null
     })

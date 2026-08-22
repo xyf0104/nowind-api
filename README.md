@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.31-0ea5e9" alt="当前版本 v1.1.31" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.32-0ea5e9" alt="当前版本 v1.1.32" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.31
+> 当前版本：v1.1.32
+
+v1.1.32 加固 Team 子号成员自动化：新增失败工作流继续按钮，继续前重新读取实时成员邮箱并避免重复移除或邀请；所有者、管理员和额外配置的受保护邮箱全链路只读保护；成员页刷新期间保持缓存禁用直到首次渲染完成，并兼容不同待处理邀请页面结构。优化成员自动化工作区、外部浏览器接管、进度展示和移动端按钮排版。
 
 v1.1.31 修复历史 Team 浏览器使用 Docker 命名卷时的在线更新兼容性：官方更新会先识别原有登录资料，且仅在新的 XIASS 持久化目录为空时迁移，绝不覆盖已有目录或清理旧卷。Team 子号创建保持成员自动化工作区、独立 OAuth 标签和多设备浏览器控制权租约；外部邮箱、短信、CAPTCHA、身份与工作区验证仍保留人工确认和接管。
 

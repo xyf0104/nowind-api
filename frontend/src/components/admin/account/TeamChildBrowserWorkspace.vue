@@ -18,7 +18,7 @@
         <button
           v-if="membersReady"
           type="button"
-          class="btn btn-secondary flex items-center gap-2"
+          class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
           title="返回成员模块"
           @click="$emit('open-modular')"
         >
@@ -89,11 +89,11 @@
         </span>
         <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">浏览器工作区不可用</p>
         <p class="mt-1 max-w-sm text-xs leading-5 text-gray-500 dark:text-gray-400">{{ error }}</p>
-        <button type="button" class="btn btn-secondary mt-4 flex items-center gap-2" :disabled="loading" @click="$emit('reload')">
+        <button type="button" class="btn btn-secondary mt-4 flex items-center gap-2 whitespace-nowrap" :disabled="loading" @click="$emit('reload')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
           <span>重新连接</span>
         </button>
-        <button v-if="controlConflict" type="button" class="btn btn-primary mt-3 flex items-center gap-2" :disabled="loading" @click="$emit('force-take-over')">
+        <button v-if="controlConflict" type="button" class="btn btn-primary mt-3 flex items-center gap-2 whitespace-nowrap" :disabled="loading" @click="$emit('force-take-over')">
           <Icon name="arrowRight" size="sm" :stroke-width="2" />
           <span>接管浏览器</span>
         </button>

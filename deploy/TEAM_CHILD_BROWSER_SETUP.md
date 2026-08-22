@@ -68,6 +68,9 @@ TEAM_CHILD_BROWSER_PGID=1000
 TEAM_CHILD_AUTOMATION_URL=http://team-child-browser:8090
 # 使用 `openssl rand -hex 32` 生成；同一个值必须同时配置给 XIASS 和自动化容器。
 TEAM_CHILD_AUTOMATION_TOKEN=<生成的随机服务令牌>
+# 可选：额外保护的成员邮箱，逗号分隔。管理员和所有者默认不可编辑、移除或替换；
+# 若上游页面偶尔把管理员显示为普通成员，可在此固定保护该邮箱。
+TEAM_CHILD_PROTECTED_MEMBER_EMAILS=
 ```
 
 `TEAM_CHILD_AUTOMATION_TOKEN` 只用于 XIASS 与成员自动化服务之间的内网请求认证。留空时成员模块会被拒绝调用；不要把真实值提交到仓库、截图或网页。

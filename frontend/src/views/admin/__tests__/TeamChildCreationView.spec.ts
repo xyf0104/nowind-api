@@ -19,6 +19,7 @@ const { teamChildAPI, groupsAPI, appStore } = vi.hoisted(() => ({
     removeTeamChildMember: vi.fn(),
     startTeamChildWorkflow: vi.fn(),
     getTeamChildWorkflow: vi.fn(),
+    continueTeamChildWorkflow: vi.fn(),
     cancelTeamChildWorkflow: vi.fn(),
     createOpenAIAccountFromOAuth: vi.fn()
   },
@@ -146,6 +147,7 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.createBrowserSession).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="team-members-workspace"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="team-sms-receiver"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('需要你在 OpenAI 页面完成验证')
 
     await wrapper.get('[data-testid="team-members-workspace"]').trigger('click')
     await flushPromises()
@@ -154,6 +156,17 @@ describe('TeamChildCreationView', () => {
 
     wrapper.unmount()
     expect(teamChildAPI.releaseTeamChildBrowserControl).toHaveBeenCalledWith('controller-token-abcdefghijklmnop')
+  })
+
+  it('keeps the mailbox configuration action on one line', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const configButton = wrapper.findAll('button').find((button) => button.text().includes('导入邮箱配置'))
+    expect(configButton).toBeDefined()
+    expect(configButton!.classes()).toContain('whitespace-nowrap')
+
+    wrapper.unmount()
   })
 
   it('requires the in-page confirmation before starting replace-seat authorization', async () => {

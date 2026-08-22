@@ -27,6 +27,9 @@ type teamChildWorkflowStartRequest struct {
 // manual external verification and exposes no credentials to XIASS.
 // POST /api/v1/admin/openai/team-child/workflows
 func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
 	var req teamChildWorkflowStartRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请输入待替换成员、临时邮箱和授权链接")
@@ -41,6 +44,10 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 	}
 	if strings.EqualFold(req.SeatEmail, req.InviteEmail) {
 		response.BadRequest(c, "临时邮箱不能与待替换成员相同")
+		return
+	}
+	if isTeamChildProtectedMemberEmail(req.SeatEmail) {
+		response.Forbidden(c, "受保护的管理员账号不可替换")
 		return
 	}
 	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
@@ -61,6 +68,19 @@ func (h *OpenAIOAuthHandler) GetTeamChildWorkflow(c *gin.Context) {
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodGet, "/workflows/"+url.PathEscape(workflowID), nil)
+}
+
+// ContinueTeamChildWorkflow rechecks the live Team page after an operator has
+// handled an external interruption. The automation service resumes only the
+// unfinished stages and never replays completed operations blindly.
+// POST /api/v1/admin/openai/team-child/workflows/:workflow_id/continue
+func (h *OpenAIOAuthHandler) ContinueTeamChildWorkflow(c *gin.Context) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/continue", nil)
 }
 
 // CancelTeamChildWorkflow stops only the pending callback observation. It never
