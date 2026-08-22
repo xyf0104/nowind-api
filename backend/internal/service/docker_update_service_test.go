@@ -2,7 +2,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -61,4 +71,87 @@ func TestNewWatchtowerUpdateRequest(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "Bearer "+legacyWatchtowerToken, req.Header.Get("Authorization"))
 	})
+}
+
+func TestValidUpdaterMountPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		valid bool
+	}{
+		{name: "absolute install directory", path: "/opt/xiass-api", valid: true},
+		{name: "root is rejected", path: "/", valid: false},
+		{name: "relative path is rejected", path: "opt/xiass-api", valid: false},
+		{name: "empty path is rejected", path: "", valid: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.valid, validUpdaterMountPath(tt.path))
+		})
+	}
+}
+
+func TestLaunchHostUpdaterCreatesScopedUpdaterContainer(t *testing.T) {
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("xiass-docker-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	payloadCh := make(chan dockerUpdateContainerCreateRequest, 1)
+	decodeErrCh := make(chan error, 1)
+	unexpectedCh := make(chan string, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/xiass-api/json"):
+			_, _ = io.WriteString(w, `{"Config":{"Labels":{"com.docker.compose.project.working_dir":"/opt/xiass-api/deploy"}},"State":{"Running":true}}`)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/containers/"):
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/images/create"):
+			_, _ = io.WriteString(w, "{}")
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			var payload dockerUpdateContainerCreateRequest
+			decodeErrCh <- json.NewDecoder(r.Body).Decode(&payload)
+			payloadCh <- payload
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"Id":"updater-id"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/updater-id/start"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			unexpectedCh <- r.Method + " " + r.URL.RequestURI()
+			http.NotFound(w, r)
+		}
+	}))
+	oldListener := server.Listener
+	require.NoError(t, oldListener.Close())
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	t.Setenv(updaterImageEnv, "ghcr.io/test/xiass-updater:latest")
+	client := newDockerUpdateClientWithSocket(socketPath)
+	started, err := (&DockerUpdateService{}).launchHostUpdaterWithClient(context.Background(), client)
+	require.NoError(t, err)
+	require.True(t, started)
+	select {
+	case unexpected := <-unexpectedCh:
+		t.Fatalf("unexpected Docker API request: %s", unexpected)
+	default:
+	}
+	select {
+	case decodeErr := <-decodeErrCh:
+		require.NoError(t, decodeErr)
+	case <-time.After(time.Second):
+		t.Fatal("updater create request was not received")
+	}
+	select {
+	case payload := <-payloadCh:
+		require.Equal(t, "ghcr.io/test/xiass-updater:latest", payload.Image)
+		require.Equal(t, []string{"/usr/local/bin/xiass-updater"}, payload.Cmd)
+		require.Equal(t, "/opt/xiass-api", payload.WorkingDir)
+		require.Contains(t, payload.HostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock")
+		require.Contains(t, payload.HostConfig.Binds, "/opt/xiass-api:/opt/xiass-api")
+		require.Contains(t, payload.HostConfig.Binds, "/root/xiass-backups:/root/xiass-backups")
+	case <-time.After(time.Second):
+		t.Fatal("updater create payload was not captured")
+	}
 }

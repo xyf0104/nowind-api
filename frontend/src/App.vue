@@ -41,7 +41,7 @@ const APP_LAYOUT_ROUTE_NAMES = new Set([
   // existing self-contained layout instead of inheriting this shell.
   'AdminDashboard', 'AdminAuditLogs', 'AdminUsers',
   'AdminGroups', 'AdminChannels', 'AdminChannelMonitor', 'AdminSubscriptions',
-  'AdminAccounts', 'AdminAnnouncements', 'AdminProxies', 'AdminRedeem',
+  'AdminAccounts', 'AdminTeamChildCreation', 'AdminAnnouncements', 'AdminProxies', 'AdminRedeem',
   'AdminPromoCodes', 'AdminSettings', 'AdminRiskControl', 'AdminPromptAudit', 'AdminUsage',
   'AdminAffiliateInvites', 'AdminAffiliateRebates', 'AdminAffiliateTransfers',
   'AdminPaymentDashboard', 'AdminOrders', 'AdminPaymentPlans',

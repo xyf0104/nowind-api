@@ -1,11 +1,18 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -16,6 +23,12 @@ const (
 	watchtowerTokenEnv         = "XIASS_WATCHTOWER_TOKEN"
 	previousWatchtowerTokenEnv = "NOWIND_WATCHTOWER_TOKEN"
 	legacyWatchtowerToken      = "sub2api-update-token"
+	dockerUpdateSocketPath     = "/var/run/docker.sock"
+	dockerUpdateAPIVersion     = "v1.40"
+	updaterImageEnv            = "XIASS_UPDATER_IMAGE"
+	defaultUpdaterImage        = "ghcr.io/xyf0104/xiass-updater:latest"
+	updaterContainerName       = "xiass-api-updater"
+	updaterBackupDir           = "/root/xiass-backups"
 )
 
 // IsRunningInContainer selects the updater without changing existing Docker
@@ -63,6 +76,22 @@ func (s *DockerUpdateService) PerformUpdate(ctx context.Context) error {
 		return ErrNoUpdateAvailable
 	}
 
+	// New installations use a host-side orchestrator so Compose files, the
+	// browser profile, and the automation image are updated together. The
+	// fallback keeps older installations that do not yet have the updater image
+	// on the original Watchtower path.
+	if started, launchErr := s.launchHostUpdater(ctx); started {
+		return nil
+	} else if launchErr != nil {
+		// Continue to the compatibility path below. The detailed error is not
+		// returned because Watchtower may still be able to update the app.
+		_ = launchErr
+	}
+
+	return s.performWatchtowerUpdate(ctx)
+}
+
+func (s *DockerUpdateService) performWatchtowerUpdate(ctx context.Context) error {
 	// Call Watchtower HTTP API through its stable Compose service DNS.
 	req, err := newWatchtowerUpdateRequest(ctx)
 	if err != nil {
@@ -81,6 +110,202 @@ func (s *DockerUpdateService) PerformUpdate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+type dockerUpdateClient struct {
+	client *http.Client
+}
+
+type dockerUpdateContainerInfo struct {
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
+	State struct {
+		Running bool `json:"Running"`
+	} `json:"State"`
+}
+
+type dockerUpdateContainerCreateRequest struct {
+	Image      string            `json:"Image"`
+	Cmd        []string          `json:"Cmd"`
+	Env        []string          `json:"Env"`
+	WorkingDir string            `json:"WorkingDir"`
+	Labels     map[string]string `json:"Labels"`
+	HostConfig struct {
+		Binds       []string `json:"Binds"`
+		NetworkMode string   `json:"NetworkMode"`
+	} `json:"HostConfig"`
+}
+
+func newDockerUpdateClient() *dockerUpdateClient {
+	return newDockerUpdateClientWithSocket(dockerUpdateSocketPath)
+}
+
+func newDockerUpdateClientWithSocket(socketPath string) *dockerUpdateClient {
+	return &dockerUpdateClient{client: &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
+	}, Timeout: 0}}
+}
+
+func (c *dockerUpdateClient) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://docker/"+dockerUpdateAPIVersion+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return c.client.Do(req)
+}
+
+func (c *dockerUpdateClient) requestOK(ctx context.Context, method, path string, body any, accepted ...int) ([]byte, error) {
+	resp, err := c.request(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if readErr != nil {
+		return nil, readErr
+	}
+	for _, status := range accepted {
+		if resp.StatusCode == status {
+			return payload, nil
+		}
+	}
+	if len(accepted) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return payload, nil
+	}
+	return nil, fmt.Errorf("docker request %s %s returned status %d", method, path, resp.StatusCode)
+}
+
+func (c *dockerUpdateClient) inspect(ctx context.Context, name string) (*dockerUpdateContainerInfo, error) {
+	payload, err := c.requestOK(ctx, http.MethodGet, "/containers/"+url.PathEscape(name)+"/json", nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var info dockerUpdateContainerInfo
+	if err := json.Unmarshal(payload, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func (c *dockerUpdateClient) discoverInstallDir(ctx context.Context) (string, error) {
+	candidates := []string{}
+	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		candidates = append(candidates, hostname)
+	}
+	candidates = append(candidates, "xiass-api", "nowind-api", "sub2api")
+	for _, candidate := range candidates {
+		info, err := c.inspect(ctx, candidate)
+		if err != nil {
+			continue
+		}
+		workingDir := strings.TrimSpace(info.Config.Labels["com.docker.compose.project.working_dir"])
+		if workingDir == "" {
+			continue
+		}
+		if filepath.Base(filepath.Clean(workingDir)) == "deploy" {
+			workingDir = filepath.Dir(filepath.Clean(workingDir))
+		}
+		if !validUpdaterMountPath(workingDir) {
+			return "", fmt.Errorf("invalid Compose working directory")
+		}
+		return workingDir, nil
+	}
+	return "", fmt.Errorf("could not discover Compose working directory")
+}
+
+func validUpdaterMountPath(path string) bool {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	return filepath.IsAbs(clean) && clean != "/" && clean != "." && !strings.Contains(clean, "\x00")
+}
+
+func updaterImage() string {
+	image := strings.TrimSpace(os.Getenv(updaterImageEnv))
+	if image == "" {
+		return defaultUpdaterImage
+	}
+	return image
+}
+
+func (s *DockerUpdateService) launchHostUpdater(ctx context.Context) (bool, error) {
+	return s.launchHostUpdaterWithClient(ctx, newDockerUpdateClient())
+}
+
+func (s *DockerUpdateService) launchHostUpdaterWithClient(ctx context.Context, client *dockerUpdateClient) (bool, error) {
+	installDir, err := client.discoverInstallDir(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	if existing, inspectErr := client.inspect(ctx, updaterContainerName); inspectErr == nil {
+		if existing.State.Running {
+			return true, nil
+		}
+		_, _ = client.requestOK(ctx, http.MethodDelete, "/containers/"+url.PathEscape(updaterContainerName)+"?force=1", nil, http.StatusNoContent, http.StatusNotFound)
+	}
+
+	image := updaterImage()
+	imageName, imageTag := image, "latest"
+	if at := strings.LastIndex(image, ":"); at > strings.LastIndex(image, "/") {
+		imageName, imageTag = image[:at], image[at+1:]
+	}
+	pullPath := "/images/create?fromImage=" + url.QueryEscape(imageName) + "&tag=" + url.QueryEscape(imageTag)
+	pullCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	pullResp, err := client.request(pullCtx, http.MethodPost, pullPath, nil)
+	if err != nil {
+		return false, err
+	}
+	_, _ = io.Copy(io.Discard, pullResp.Body)
+	_ = pullResp.Body.Close()
+	if pullResp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("updater image pull returned status %d", pullResp.StatusCode)
+	}
+
+	create := dockerUpdateContainerCreateRequest{
+		Image:      image,
+		Cmd:        []string{"/usr/local/bin/xiass-updater"},
+		Env:        []string{"INSTALL_DIR=" + installDir, "BACKUP_DIR=" + updaterBackupDir},
+		WorkingDir: installDir,
+		Labels: map[string]string{
+			"com.xiass.role": "update-orchestrator",
+		},
+	}
+	create.HostConfig.Binds = []string{
+		dockerUpdateSocketPath + ":" + dockerUpdateSocketPath,
+		installDir + ":" + installDir,
+		updaterBackupDir + ":" + updaterBackupDir,
+	}
+	create.HostConfig.NetworkMode = "default"
+
+	createPayload, err := client.requestOK(ctx, http.MethodPost, "/containers/create?name="+url.QueryEscape(updaterContainerName), &create, http.StatusCreated)
+	if err != nil {
+		return false, err
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(createPayload, &created); err != nil || strings.TrimSpace(created.ID) == "" {
+		return false, fmt.Errorf("updater container creation returned no id")
+	}
+	if _, err := client.requestOK(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/start", nil, http.StatusNoContent, http.StatusNotModified); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func newWatchtowerUpdateRequest(ctx context.Context) (*http.Request, error) {

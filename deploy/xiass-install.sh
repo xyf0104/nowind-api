@@ -23,6 +23,8 @@ BACKUP_DIR="${BACKUP_DIR:-/root/xiass-backups}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@xiass.local}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 BUILD_MODE="${BUILD_MODE:-image}"
+TEAM_CHILD_BROWSER_ENABLED="${TEAM_CHILD_BROWSER_ENABLED:-true}"
+TEAM_CHILD_BROWSER_START_DELAY_SECONDS="${TEAM_CHILD_BROWSER_START_DELAY_SECONDS:-5}"
 EXISTING_INSTALL=false
 ADMIN_PASSWORD_GENERATED=false
 ARCH=""
@@ -367,6 +369,12 @@ validate_configuration() {
         [ "${#ADMIN_PASSWORD}" -ge 12 ] || die "管理员密码至少需要 12 个字符。"
         [[ "$ADMIN_PASSWORD" =~ ^[A-Za-z0-9._~!@%+=:,/-]+$ ]] || die "管理员密码只能包含字母、数字和 ._~!@%+=:,/-。"
     fi
+    case "$TEAM_CHILD_BROWSER_ENABLED" in
+        true|false) ;;
+        *) die "TEAM_CHILD_BROWSER_ENABLED 只能是 true 或 false。" ;;
+    esac
+    [[ "$TEAM_CHILD_BROWSER_START_DELAY_SECONDS" =~ ^[0-9]+$ ]] || die "TEAM_CHILD_BROWSER_START_DELAY_SECONDS 必须是非负整数。"
+    [ "$TEAM_CHILD_BROWSER_START_DELAY_SECONDS" -le 120 ] || die "TEAM_CHILD_BROWSER_START_DELAY_SECONDS 不能超过 120 秒。"
 }
 
 port_in_use() {
@@ -486,12 +494,13 @@ generate_env() {
         return
     fi
 
-    local pg_password redis_password jwt_secret totp_key watchtower_token
+    local pg_password redis_password jwt_secret totp_key watchtower_token team_child_automation_token
     pg_password=$(gen_secret)
     redis_password=$(gen_secret)
     jwt_secret=$(gen_secret)
     totp_key=$(gen_secret)
     watchtower_token=$(gen_secret)
+    team_child_automation_token="${TEAM_CHILD_AUTOMATION_TOKEN:-$(gen_secret)}"
 
     umask 077
     cat > "$env_file" <<ENVEOF
@@ -519,6 +528,12 @@ REDIS_PASSWORD=${redis_password}
 JWT_SECRET=${jwt_secret}
 JWT_EXPIRE_HOUR=168
 TOTP_ENCRYPTION_KEY=${totp_key}
+
+TEAM_CHILD_BROWSER_ENABLED=${TEAM_CHILD_BROWSER_ENABLED}
+TEAM_CHILD_BROWSER_START_DELAY_SECONDS=${TEAM_CHILD_BROWSER_START_DELAY_SECONDS}
+TEAM_CHILD_AUTOMATION_IMAGE=${TEAM_CHILD_AUTOMATION_IMAGE:-ghcr.io/xyf0104/xiass-team-child-automation:latest}
+TEAM_CHILD_AUTOMATION_TOKEN=${team_child_automation_token}
+XIASS_UPDATER_IMAGE=${XIASS_UPDATER_IMAGE:-ghcr.io/xyf0104/xiass-updater:latest}
 
 ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
@@ -589,18 +604,16 @@ remove_legacy_runtime_containers() {
 }
 
 start_services() {
-    if [ "$BUILD_MODE" = "source" ]; then
-        log "正在从源码构建并启动，首次通常需要 3-10 分钟..."
-        compose build xiass-api
-        remove_legacy_runtime_containers
-        compose up -d
-    else
-        log "正在拉取 XIASS 正式镜像..."
-        compose pull
-        remove_legacy_runtime_containers
-        compose up -d
-    fi
-    ok "容器已启动"
+    log "先启动 XIASS 主服务；主服务健康后再处理 Chromium 和 Team 自动化组件..."
+    INSTALL_DIR="$INSTALL_DIR" \
+    DEPLOY_DIR="$INSTALL_DIR/deploy" \
+    COMPOSE_FILE="$COMPOSE_FILE" \
+    PERSISTENCE_MODE="$PERSISTENCE_MODE" \
+    BUILD_MODE="$BUILD_MODE" \
+    TEAM_CHILD_BROWSER_ENABLED="$TEAM_CHILD_BROWSER_ENABLED" \
+    TEAM_CHILD_BROWSER_START_DELAY_SECONDS="$TEAM_CHILD_BROWSER_START_DELAY_SECONDS" \
+    bash "$INSTALL_DIR/deploy/xiass-runtime-start.sh"
+    ok "主服务和已启用的附属组件启动流程已完成"
 }
 
 backup_existing_runtime() {

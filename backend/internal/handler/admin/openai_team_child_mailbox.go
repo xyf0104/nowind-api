@@ -1,0 +1,957 @@
+package admin
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+)
+
+// The team-child mailbox helpers deliberately keep provider credentials and the
+// short-lived mailbox JWT on the server. The browser only receives the mailbox
+// address and a one-time local session identifier.
+const (
+	teamMailboxSessionTTL      = 20 * time.Minute
+	teamMailboxBodyLimit       = 512 * 1024
+	teamMailboxConfigBodyLimit = 256 * 1024
+	teamMailboxRedisKeyPrefix  = "xiass:team-child:mailbox:"
+)
+
+type openAITeamMailboxStore struct {
+	mu       sync.Mutex
+	sessions map[string]openAITeamMailboxSession
+	client   *http.Client
+	redis    *redis.Client
+	now      func() time.Time
+}
+
+type openAITeamMailboxSession struct {
+	adminUserID int64
+	email       string
+	token       string
+	config      teamMailboxProviderConfig
+	expiresAt   time.Time
+}
+
+type persistedTeamMailboxConfig struct {
+	BaseURL      string `json:"base_url"`
+	CreatePath   string `json:"create_path"`
+	MessagesPath string `json:"messages_path"`
+	Domain       string `json:"domain"`
+	APIKey       string `json:"api_key"`
+	AuthMode     string `json:"auth_mode"`
+	CustomAuth   string `json:"custom_auth"`
+}
+
+type persistedTeamMailboxSession struct {
+	AdminUserID int64                      `json:"admin_user_id"`
+	Email       string                     `json:"email"`
+	Token       string                     `json:"token"`
+	Config      persistedTeamMailboxConfig `json:"config"`
+	ExpiresAt   time.Time                  `json:"expires_at"`
+}
+
+type teamMailboxProviderConfig struct {
+	baseURL      *url.URL
+	createPath   string
+	messagesPath string
+	domain       string
+	apiKey       string
+	authMode     string
+	customAuth   string
+}
+
+type openAITeamMailboxCreateResponse struct {
+	SessionID string `json:"session_id"`
+	Email     string `json:"email"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+type openAITeamMailboxCodeResponse struct {
+	Status    string `json:"status"`
+	Code      string `json:"code,omitempty"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+var (
+	teamMailboxAddressRE      = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	teamMailboxSemanticCodeRE = regexp.MustCompile(`(?is)(?:verification|verify|confirmation|one[\s-]*time|验证码|验证(?:码)?)[^0-9]{0,80}([0-9]{4,8})`)
+	teamMailboxReverseCodeRE  = regexp.MustCompile(`(?is)\b([0-9]{4,8})\b[^\n]{0,80}(?:verification|verify|confirmation|验证码|验证(?:码)?)`)
+	teamMailboxHTMLNoiseRE    = regexp.MustCompile(`(?is)<(?:style|script)\b[^>]*>.*?</(?:style|script)>|<!--.*?-->|<[^>]+>`)
+)
+
+func newOpenAITeamMailboxStore() *openAITeamMailboxStore {
+	return &openAITeamMailboxStore{
+		sessions: make(map[string]openAITeamMailboxSession),
+		client:   &http.Client{Timeout: 12 * time.Second},
+		now:      time.Now,
+	}
+}
+
+func (s *openAITeamMailboxStore) configureRedis(redisClient *redis.Client) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.redis = redisClient
+	s.mu.Unlock()
+}
+
+// TeamChildMailboxStatus reports whether the server-side mailbox provider has
+// been configured. It intentionally never returns a provider URL or credential.
+// GET /api/v1/admin/openai/team-child/mailbox-status
+func (h *OpenAIOAuthHandler) TeamChildMailboxStatus(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	_, mailboxErr := loadTeamMailboxProviderConfig(c)
+	_, browserErr := loadTeamChildBrowserConfig()
+	response.Success(c, gin.H{
+		"configured":         mailboxErr == nil,
+		"browser_configured": browserErr == nil,
+	})
+}
+
+// ImportTeamChildMailboxConfig accepts one legacy registration config.json or
+// a XIASS TEAM_CHILD_MAIL_*.env fragment. The normalized fragment is stored in
+// the persistent data directory and read on every mailbox request; secrets
+// are never included in the response.
+// POST /api/v1/admin/openai/team-child/mailbox-config
+func (h *OpenAIOAuthHandler) ImportTeamChildMailboxConfig(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, teamMailboxConfigBodyLimit)
+	file, header, err := c.Request.FormFile("file")
+	if err != nil || file == nil {
+		response.BadRequest(c, "请上传 Cloudflare config.json 或 XIASS 邮箱配置文件")
+		return
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, teamMailboxConfigBodyLimit+1))
+	if err != nil || len(body) > teamMailboxConfigBodyLimit {
+		response.BadRequest(c, "配置文件过大，最大支持 256 KB")
+		return
+	}
+	values, err := parseTeamMailboxConfigImport(body, header.Filename)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	config, err := validateTeamMailboxProviderConfig(values)
+	if err != nil {
+		response.BadRequest(c, "邮箱配置无效："+err.Error())
+		return
+	}
+	if err := writeTeamMailboxConfigFile(values); err != nil {
+		response.InternalError(c, "无法保存邮箱配置，请检查服务器数据目录权限")
+		return
+	}
+	response.Success(c, gin.H{
+		"configured":       true,
+		"auth_mode":        config.authMode,
+		"domain":           config.domain,
+		"restart_required": false,
+	})
+}
+
+// CreateTeamChildMailbox provisions one address for the current, explicitly
+// started Team child-account flow.
+// POST /api/v1/admin/openai/team-child/mailboxes
+func (h *OpenAIOAuthHandler) CreateTeamChildMailbox(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.teamMailboxStore == nil {
+		response.InternalError(c, "team child mailbox service is unavailable")
+		return
+	}
+	provider, err := loadTeamMailboxProviderConfig(c)
+	if err != nil {
+		response.BadRequest(c, "Team child mailbox is not configured")
+		return
+	}
+
+	email, token, err := h.createTeamChildMailbox(c.Request.Context(), provider)
+	if err != nil {
+		response.InternalError(c, "temporary mailbox could not be created")
+		return
+	}
+
+	sessionID, err := newTeamMailboxSessionID()
+	if err != nil {
+		response.InternalError(c, "temporary mailbox session could not be created")
+		return
+	}
+	now := h.teamMailboxStore.now()
+	expiresAt := now.Add(teamMailboxSessionTTL)
+	session := openAITeamMailboxSession{
+		email: email, token: token, config: provider, expiresAt: expiresAt,
+	}
+	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
+		session.adminUserID = subject.UserID
+	}
+	if err := h.teamMailboxStore.create(c.Request.Context(), sessionID, session); err != nil {
+		response.InternalError(c, "temporary mailbox session could not be stored")
+		return
+	}
+
+	response.Success(c, openAITeamMailboxCreateResponse{
+		SessionID: sessionID,
+		Email:     email,
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// PollTeamChildMailboxCode checks the provider once. The browser performs the
+// polling, which keeps the server request bounded and lets the UI expose a
+// truthful "waiting / received" state.
+// GET /api/v1/admin/openai/team-child/mailboxes/:session_id/code
+func (h *OpenAIOAuthHandler) PollTeamChildMailboxCode(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.teamMailboxStore == nil {
+		response.InternalError(c, "team child mailbox service is unavailable")
+		return
+	}
+	ownerID := teamChildRequestOwnerID(c)
+	session, ok, err := h.lookupTeamMailboxSessionContext(c.Request.Context(), c.Param("session_id"), ownerID)
+	if err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "temporary mailbox service is temporarily unavailable")
+		return
+	}
+	if !ok {
+		response.BadRequest(c, "temporary mailbox session has expired")
+		return
+	}
+
+	code, err := h.findTeamChildVerificationCode(c.Request.Context(), session)
+	if err != nil {
+		response.InternalError(c, "temporary mailbox could not be checked")
+		return
+	}
+	result := openAITeamMailboxCodeResponse{
+		Status:    "waiting",
+		ExpiresAt: session.expiresAt.UTC().Format(time.RFC3339),
+	}
+	if code != "" {
+		result.Status = "received"
+		result.Code = code
+	}
+	response.Success(c, result)
+}
+
+// DeleteTeamChildMailboxSession only deletes XIASS's in-memory handle. It does
+// not call an arbitrary remote delete endpoint and never exposes the mailbox JWT.
+// DELETE /api/v1/admin/openai/team-child/mailboxes/:session_id
+func (h *OpenAIOAuthHandler) DeleteTeamChildMailboxSession(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.teamMailboxStore == nil {
+		response.Success(c, gin.H{"deleted": true})
+		return
+	}
+	ownerID := teamChildRequestOwnerID(c)
+	if err := h.teamMailboxStore.delete(c.Request.Context(), c.Param("session_id"), ownerID); err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "temporary mailbox service is temporarily unavailable")
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
+func teamChildRequestOwnerID(c *gin.Context) int64 {
+	if c == nil {
+		return 0
+	}
+	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
+		return subject.UserID
+	}
+	return 0
+}
+
+func requireTeamChildAdminSession(c *gin.Context) bool {
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "administrator session is required")
+		return false
+	}
+	role, ok := middleware.GetUserRoleFromContext(c)
+	if !ok || strings.TrimSpace(strings.ToLower(role)) != "admin" {
+		response.Forbidden(c, "administrator access is required")
+		return false
+	}
+	return true
+}
+
+type teamMailboxConfigValues struct {
+	baseURL      string
+	authMode     string
+	apiKey       string
+	customAuth   string
+	domain       string
+	createPath   string
+	messagesPath string
+}
+
+func loadTeamMailboxProviderConfig(_ *gin.Context) (teamMailboxProviderConfig, error) {
+	// Environment variables remain the baseline for existing deployments. A
+	// normalized file written by the admin upload endpoint overrides them and is
+	// stored under the persistent application data directory.
+	values := teamMailboxConfigValues{
+		baseURL:      os.Getenv("TEAM_CHILD_MAIL_API_BASE"),
+		authMode:     os.Getenv("TEAM_CHILD_MAIL_AUTH_MODE"),
+		apiKey:       os.Getenv("TEAM_CHILD_MAIL_API_KEY"),
+		customAuth:   os.Getenv("TEAM_CHILD_MAIL_CUSTOM_AUTH"),
+		domain:       os.Getenv("TEAM_CHILD_MAIL_DOMAIN"),
+		createPath:   os.Getenv("TEAM_CHILD_MAIL_CREATE_PATH"),
+		messagesPath: os.Getenv("TEAM_CHILD_MAIL_MESSAGES_PATH"),
+	}
+	if persisted, err := readTeamMailboxConfigFile(); err == nil {
+		// The persisted fragment is normalized and contains every supported
+		// field, including intentional empty values that must clear an older
+		// environment setting.
+		values = persisted
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return teamMailboxProviderConfig{}, err
+	}
+	return validateTeamMailboxProviderConfig(values)
+}
+
+func validateTeamMailboxProviderConfig(values teamMailboxConfigValues) (teamMailboxProviderConfig, error) {
+	baseRaw := strings.TrimSpace(values.baseURL)
+	if baseRaw == "" {
+		return teamMailboxProviderConfig{}, fmt.Errorf("TEAM_CHILD_MAIL_API_BASE is required")
+	}
+	baseURL, err := url.Parse(baseRaw)
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" ||
+		(baseURL.Scheme != "https" && baseURL.Scheme != "http") ||
+		baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return teamMailboxProviderConfig{}, fmt.Errorf("TEAM_CHILD_MAIL_API_BASE is invalid")
+	}
+
+	authMode := strings.ToLower(strings.TrimSpace(values.authMode))
+	if authMode == "" {
+		authMode = "none"
+	}
+	switch authMode {
+	case "none", "x-api-key", "x-admin-auth", "bearer", "query-key":
+	default:
+		return teamMailboxProviderConfig{}, fmt.Errorf("TEAM_CHILD_MAIL_AUTH_MODE is invalid")
+	}
+	apiKey := strings.TrimSpace(values.apiKey)
+	if authMode != "none" && apiKey == "" {
+		return teamMailboxProviderConfig{}, fmt.Errorf("TEAM_CHILD_MAIL_API_KEY is required")
+	}
+
+	createPath, err := teamMailboxEndpointPath(values.createPath, "/api/new_address")
+	if err != nil {
+		return teamMailboxProviderConfig{}, err
+	}
+	messagesPath, err := teamMailboxEndpointPath(values.messagesPath, "/api/mails")
+	if err != nil {
+		return teamMailboxProviderConfig{}, err
+	}
+	return teamMailboxProviderConfig{
+		baseURL:      baseURL,
+		createPath:   createPath,
+		messagesPath: messagesPath,
+		domain:       strings.TrimSpace(values.domain),
+		apiKey:       apiKey,
+		authMode:     authMode,
+		customAuth:   strings.TrimSpace(values.customAuth),
+	}, nil
+}
+
+func teamMailboxConfigFilePath() string {
+	if configured := strings.TrimSpace(os.Getenv("TEAM_CHILD_MAIL_CONFIG_FILE")); configured != "" {
+		return configured
+	}
+	return "/app/data/team-child-mail.env"
+}
+
+func readTeamMailboxConfigFile() (teamMailboxConfigValues, error) {
+	filePath := teamMailboxConfigFilePath()
+	body, err := os.ReadFile(filePath)
+	if err != nil {
+		return teamMailboxConfigValues{}, err
+	}
+	return parseTeamMailboxConfigImport(body, filepath.Base(filePath))
+}
+
+func writeTeamMailboxConfigFile(values teamMailboxConfigValues) error {
+	filePath := teamMailboxConfigFilePath()
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
+		return err
+	}
+	content := strings.Join([]string{
+		"# Managed by XIASS Team child mailbox import. Keep this file private.",
+		"TEAM_CHILD_MAIL_API_BASE=" + strconv.Quote(values.baseURL),
+		"TEAM_CHILD_MAIL_AUTH_MODE=" + strconv.Quote(values.authMode),
+		"TEAM_CHILD_MAIL_API_KEY=" + strconv.Quote(values.apiKey),
+		"TEAM_CHILD_MAIL_CUSTOM_AUTH=" + strconv.Quote(values.customAuth),
+		"TEAM_CHILD_MAIL_DOMAIN=" + strconv.Quote(values.domain),
+		"TEAM_CHILD_MAIL_CREATE_PATH=" + strconv.Quote(values.createPath),
+		"TEAM_CHILD_MAIL_MESSAGES_PATH=" + strconv.Quote(values.messagesPath),
+		"",
+	}, "\n")
+	if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(filePath, 0o600)
+}
+
+func teamMailboxEndpointPath(raw, fallback string) (string, error) {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		endpoint = fallback
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("team child mailbox endpoint path is invalid")
+	}
+	if !strings.HasPrefix(parsed.Path, "/") {
+		parsed.Path = "/" + parsed.Path
+	}
+	return parsed.Path, nil
+}
+
+func (s *openAITeamMailboxStore) pruneLocked(now time.Time) {
+	for sessionID, session := range s.sessions {
+		if !session.expiresAt.After(now) {
+			delete(s.sessions, sessionID)
+		}
+	}
+}
+
+func (s *openAITeamMailboxStore) redisClient() *redis.Client {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.redis
+}
+
+func (s *openAITeamMailboxStore) create(ctx context.Context, sessionID string, session openAITeamMailboxSession) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if s == nil || sessionID == "" || len(sessionID) > 256 || session.adminUserID <= 0 || session.email == "" || session.token == "" || session.config.baseURL == nil || session.expiresAt.IsZero() {
+		return errors.New("temporary mailbox session is invalid")
+	}
+	if redisClient := s.redisClient(); redisClient != nil {
+		payload, err := encodePersistedTeamMailboxSession(session)
+		if err != nil {
+			return err
+		}
+		ttl := time.Until(session.expiresAt)
+		if ttl <= 0 {
+			return errors.New("temporary mailbox session has expired")
+		}
+		return redisClient.Set(ctx, teamMailboxRedisKeyPrefix+sessionID, payload, ttl).Err()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(s.now())
+	s.sessions[sessionID] = session
+	return nil
+}
+
+func newTeamMailboxSessionID() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func (h *OpenAIOAuthHandler) lookupTeamMailboxSession(sessionID string) (openAITeamMailboxSession, bool) {
+	session, ok, _ := h.lookupTeamMailboxSessionContext(context.Background(), sessionID, 0)
+	return session, ok
+}
+
+func (h *OpenAIOAuthHandler) lookupTeamMailboxSessionContext(ctx context.Context, sessionID string, ownerID int64) (openAITeamMailboxSession, bool, error) {
+	if h == nil || h.teamMailboxStore == nil {
+		return openAITeamMailboxSession{}, false, errors.New("temporary mailbox store is unavailable")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || len(sessionID) > 256 {
+		return openAITeamMailboxSession{}, false, nil
+	}
+	var (
+		session openAITeamMailboxSession
+		ok      bool
+		err     error
+	)
+	if redisClient := h.teamMailboxStore.redisClient(); redisClient != nil {
+		var payload []byte
+		payload, err = redisClient.Get(ctx, teamMailboxRedisKeyPrefix+sessionID).Bytes()
+		if errors.Is(err, redis.Nil) {
+			return openAITeamMailboxSession{}, false, nil
+		}
+		if err != nil {
+			return openAITeamMailboxSession{}, false, err
+		}
+		session, err = decodePersistedTeamMailboxSession(payload)
+		if err != nil {
+			_ = redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err()
+			return openAITeamMailboxSession{}, false, err
+		}
+		ok = session.expiresAt.After(h.teamMailboxStore.now())
+		if !ok {
+			_ = redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err()
+		}
+	} else {
+		h.teamMailboxStore.mu.Lock()
+		now := h.teamMailboxStore.now()
+		h.teamMailboxStore.pruneLocked(now)
+		session, ok = h.teamMailboxStore.sessions[sessionID]
+		ok = ok && session.expiresAt.After(now)
+		h.teamMailboxStore.mu.Unlock()
+	}
+	if ok && ownerID > 0 && session.adminUserID > 0 && session.adminUserID != ownerID {
+		return openAITeamMailboxSession{}, false, nil
+	}
+	return session, ok, nil
+}
+
+func (s *openAITeamMailboxStore) delete(ctx context.Context, sessionID string, ownerID int64) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if s == nil || sessionID == "" || len(sessionID) > 256 {
+		return nil
+	}
+	if redisClient := s.redisClient(); redisClient != nil {
+		// Do not allow a caller to delete another administrator's mailbox handle.
+		// The read + delete race is harmless for this cleanup-only operation, and
+		// the owner check is repeated by the normal lookup path before use.
+		payload, err := redisClient.Get(ctx, teamMailboxRedisKeyPrefix+sessionID).Bytes()
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		session, err := decodePersistedTeamMailboxSession(payload)
+		if err != nil {
+			return redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err()
+		}
+		if ownerID > 0 && session.adminUserID > 0 && session.adminUserID != ownerID {
+			return nil
+		}
+		return redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[sessionID]
+	if ok && ownerID > 0 && session.adminUserID > 0 && session.adminUserID != ownerID {
+		return nil
+	}
+	delete(s.sessions, sessionID)
+	s.pruneLocked(s.now())
+	return nil
+}
+
+func encodePersistedTeamMailboxSession(session openAITeamMailboxSession) ([]byte, error) {
+	if session.config.baseURL == nil {
+		return nil, errors.New("temporary mailbox configuration is invalid")
+	}
+	return json.Marshal(persistedTeamMailboxSession{
+		AdminUserID: session.adminUserID,
+		Email:       session.email,
+		Token:       session.token,
+		Config: persistedTeamMailboxConfig{
+			BaseURL:      session.config.baseURL.String(),
+			CreatePath:   session.config.createPath,
+			MessagesPath: session.config.messagesPath,
+			Domain:       session.config.domain,
+			APIKey:       session.config.apiKey,
+			AuthMode:     session.config.authMode,
+			CustomAuth:   session.config.customAuth,
+		},
+		ExpiresAt: session.expiresAt.UTC(),
+	})
+}
+
+func decodePersistedTeamMailboxSession(payload []byte) (openAITeamMailboxSession, error) {
+	var persisted persistedTeamMailboxSession
+	if err := json.Unmarshal(payload, &persisted); err != nil {
+		return openAITeamMailboxSession{}, fmt.Errorf("decode temporary mailbox session: %w", err)
+	}
+	baseURL, err := url.Parse(persisted.Config.BaseURL)
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" || persisted.Email == "" || persisted.Token == "" || persisted.ExpiresAt.IsZero() {
+		return openAITeamMailboxSession{}, errors.New("temporary mailbox session is invalid")
+	}
+	return openAITeamMailboxSession{
+		adminUserID: persisted.AdminUserID,
+		email:       persisted.Email,
+		token:       persisted.Token,
+		config: teamMailboxProviderConfig{
+			baseURL:      baseURL,
+			createPath:   persisted.Config.CreatePath,
+			messagesPath: persisted.Config.MessagesPath,
+			domain:       persisted.Config.Domain,
+			apiKey:       persisted.Config.APIKey,
+			authMode:     persisted.Config.AuthMode,
+			customAuth:   persisted.Config.CustomAuth,
+		},
+		expiresAt: persisted.ExpiresAt,
+	}, nil
+}
+
+func (h *OpenAIOAuthHandler) createTeamChildMailbox(ctx context.Context, config teamMailboxProviderConfig) (string, string, error) {
+	payload := map[string]any{}
+	if strings.EqualFold(strings.TrimRight(config.createPath, "/"), "/admin/new_address") {
+		name, err := newTeamMailboxAddressName()
+		if err != nil {
+			return "", "", err
+		}
+		// cloudflare_temp_email's administrator endpoint requires both fields;
+		// its public /api/new_address endpoint accepts an empty object instead.
+		payload["name"] = name
+		payload["enablePrefix"] = true
+	}
+	if config.domain != "" {
+		payload["domain"] = config.domain
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", err
+	}
+	endpoint := teamMailboxURL(config.baseURL, config.createPath)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return "", "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	applyTeamMailboxCreateAuth(request, config)
+
+	responseBody, status, err := h.doTeamMailboxRequest(request)
+	if err != nil {
+		return "", "", err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return "", "", fmt.Errorf("mailbox create request failed with HTTP %d", status)
+	}
+	data, err := decodeTeamMailboxObject(responseBody)
+	if err != nil {
+		return "", "", err
+	}
+	data = nestedTeamMailboxData(data)
+	email := strings.TrimSpace(teamMailboxString(data["address"]))
+	if email == "" {
+		email = strings.TrimSpace(teamMailboxString(data["email"]))
+	}
+	token := strings.TrimSpace(teamMailboxString(data["jwt"]))
+	if token == "" {
+		token = strings.TrimSpace(teamMailboxString(data["token"]))
+	}
+	if !teamMailboxAddressRE.MatchString(email) || token == "" {
+		return "", "", fmt.Errorf("mailbox create response is incomplete")
+	}
+	return email, token, nil
+}
+
+func newTeamMailboxAddressName() (string, error) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	buf := make([]byte, 10)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		buf[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	return string(buf), nil
+}
+
+func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, session openAITeamMailboxSession) (string, error) {
+	endpoint := teamMailboxURL(session.config.baseURL, session.config.messagesPath)
+	query := endpoint.Query()
+	query.Set("limit", "20")
+	query.Set("offset", "0")
+	if session.config.authMode == "query-key" && session.config.apiKey != "" {
+		query.Set("key", session.config.apiKey)
+	}
+	endpoint.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	applyTeamMailboxReadAuth(request, session)
+	body, status, err := h.doTeamMailboxRequest(request)
+	if err != nil {
+		return "", err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("mailbox list request failed with HTTP %d", status)
+	}
+	data, err := decodeTeamMailboxObject(body)
+	if err != nil {
+		return "", err
+	}
+	for _, message := range teamMailboxMessageList(data) {
+		if !teamMailboxMessageMatchesAddress(message, session.email) {
+			continue
+		}
+		if code := extractTeamMailboxVerificationCode(teamMailboxReadableText(message)); code != "" {
+			return code, nil
+		}
+		messageID := strings.TrimSpace(teamMailboxString(message["id"]))
+		if messageID == "" {
+			messageID = strings.TrimSpace(teamMailboxString(message["msgid"]))
+		}
+		if messageID == "" {
+			continue
+		}
+		if detail, detailErr := h.fetchTeamMailboxMessage(ctx, session, messageID); detailErr == nil {
+			if code := extractTeamMailboxVerificationCode(teamMailboxReadableText(detail)); code != "" {
+				return code, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func (h *OpenAIOAuthHandler) fetchTeamMailboxMessage(ctx context.Context, session openAITeamMailboxSession, messageID string) (map[string]any, error) {
+	candidates := []string{
+		"/api/mail/" + url.PathEscape(messageID),
+		strings.TrimSuffix(session.config.messagesPath, "/") + "/" + url.PathEscape(messageID),
+	}
+	var lastErr error
+	for _, endpointPath := range candidates {
+		endpoint := teamMailboxURL(session.config.baseURL, endpointPath)
+		query := endpoint.Query()
+		if session.config.authMode == "query-key" && session.config.apiKey != "" {
+			query.Set("key", session.config.apiKey)
+		}
+		endpoint.RawQuery = query.Encode()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		applyTeamMailboxReadAuth(request, session)
+		body, status, err := h.doTeamMailboxRequest(request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if status < http.StatusOK || status >= http.StatusMultipleChoices {
+			lastErr = fmt.Errorf("mailbox detail request failed with HTTP %d", status)
+			continue
+		}
+		data, err := decodeTeamMailboxObject(body)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return nestedTeamMailboxData(data), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("mailbox detail request failed")
+	}
+	return nil, lastErr
+}
+
+func (h *OpenAIOAuthHandler) doTeamMailboxRequest(request *http.Request) ([]byte, int, error) {
+	if h == nil || h.teamMailboxStore == nil || h.teamMailboxStore.client == nil {
+		return nil, 0, fmt.Errorf("mailbox client is unavailable")
+	}
+	resp, err := h.teamMailboxStore.client.Do(request)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, teamMailboxBodyLimit+1))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if len(body) > teamMailboxBodyLimit {
+		return nil, resp.StatusCode, fmt.Errorf("mailbox provider response is too large")
+	}
+	return body, resp.StatusCode, nil
+}
+
+func teamMailboxURL(base *url.URL, endpointPath string) *url.URL {
+	resolved := *base
+	resolved.Path = path.Join("/", base.Path, endpointPath)
+	resolved.RawPath = ""
+	return &resolved
+}
+
+func applyTeamMailboxCreateAuth(request *http.Request, config teamMailboxProviderConfig) {
+	if config.customAuth != "" {
+		request.Header.Set("x-custom-auth", config.customAuth)
+	}
+	switch config.authMode {
+	case "x-api-key":
+		request.Header.Set("X-API-Key", config.apiKey)
+	case "x-admin-auth":
+		request.Header.Set("x-admin-auth", config.apiKey)
+	case "bearer":
+		request.Header.Set("Authorization", "Bearer "+config.apiKey)
+	case "query-key":
+		query := request.URL.Query()
+		query.Set("key", config.apiKey)
+		request.URL.RawQuery = query.Encode()
+	}
+}
+
+func applyTeamMailboxReadAuth(request *http.Request, session openAITeamMailboxSession) {
+	request.Header.Set("Authorization", "Bearer "+session.token)
+	if session.config.customAuth != "" {
+		request.Header.Set("x-custom-auth", session.config.customAuth)
+	}
+}
+
+func decodeTeamMailboxObject(body []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var data map[string]any
+	if err := decoder.Decode(&data); err != nil || data == nil {
+		return nil, fmt.Errorf("mailbox provider returned invalid JSON")
+	}
+	return data, nil
+}
+
+func nestedTeamMailboxData(data map[string]any) map[string]any {
+	if nested, ok := data["data"].(map[string]any); ok {
+		return nested
+	}
+	return data
+}
+
+func teamMailboxMessageList(data map[string]any) []map[string]any {
+	for _, value := range []any{data["results"], data["messages"], data["hydra:member"], data["data"]} {
+		if messages := teamMailboxObjectSlice(value); len(messages) > 0 {
+			return messages
+		}
+		if nested, ok := value.(map[string]any); ok {
+			if messages := teamMailboxObjectSlice(nested["messages"]); len(messages) > 0 {
+				return messages
+			}
+		}
+	}
+	return nil
+}
+
+func teamMailboxObjectSlice(value any) []map[string]any {
+	list, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	messages := make([]map[string]any, 0, len(list))
+	for _, item := range list {
+		if message, ok := item.(map[string]any); ok {
+			messages = append(messages, message)
+		}
+	}
+	return messages
+}
+
+func teamMailboxMessageMatchesAddress(message map[string]any, email string) bool {
+	target := strings.ToLower(strings.TrimSpace(email))
+	if target == "" {
+		return false
+	}
+	for _, candidate := range teamMailboxAddresses(message["to"]) {
+		if candidate == target {
+			return true
+		}
+	}
+	if value := strings.ToLower(strings.TrimSpace(teamMailboxString(message["address"]))); value != "" {
+		return value == target
+	}
+	// Some Worker list endpoints omit recipients. The mailbox JWT scopes the
+	// list to this session, so accepting the entry is safer than discarding a
+	// legitimate verification message solely because its recipient is absent.
+	return message["to"] == nil && message["address"] == nil
+}
+
+func teamMailboxAddresses(value any) []string {
+	var values []string
+	var collect func(any)
+	collect = func(item any) {
+		switch typed := item.(type) {
+		case string:
+			values = append(values, teamMailboxAddressRE.FindAllString(strings.ToLower(typed), -1)...)
+		case map[string]any:
+			collect(typed["address"])
+			collect(typed["email"])
+		case []any:
+			for _, child := range typed {
+				collect(child)
+			}
+		}
+	}
+	collect(value)
+	return values
+}
+
+func teamMailboxReadableText(message map[string]any) string {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{"subject", "text", "content", "intro", "body", "snippet"} {
+		if value := strings.TrimSpace(teamMailboxString(message[key])); value != "" {
+			// Some providers put HTML in generic body fields. Normalizing every
+			// readable field keeps style/script-only code fragments out of matches.
+			parts = append(parts, teamMailboxTextFromHTML(value))
+		}
+	}
+	switch html := message["html"].(type) {
+	case string:
+		parts = append(parts, teamMailboxTextFromHTML(html))
+	case []any:
+		for _, item := range html {
+			if value := teamMailboxString(item); value != "" {
+				parts = append(parts, teamMailboxTextFromHTML(value))
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func teamMailboxTextFromHTML(raw string) string {
+	return strings.Join(strings.Fields(teamMailboxHTMLNoiseRE.ReplaceAllString(raw, " ")), " ")
+}
+
+func extractTeamMailboxVerificationCode(text string) string {
+	if match := teamMailboxSemanticCodeRE.FindStringSubmatch(text); len(match) == 2 {
+		return match[1]
+	}
+	if match := teamMailboxReverseCodeRE.FindStringSubmatch(text); len(match) == 2 {
+		return match[1]
+	}
+	return ""
+}
+
+func teamMailboxString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case json.Number:
+		return typed.String()
+	case float64:
+		return fmt.Sprintf("%.0f", typed)
+	default:
+		return ""
+	}
+}

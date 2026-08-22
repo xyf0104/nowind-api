@@ -575,6 +575,16 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/team-child-creation',
+    name: 'AdminTeamChildCreation',
+    component: () => import('@/views/admin/TeamChildCreationView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Team 子号创建'
+    }
+  },
+  {
     path: '/admin/token-converter',
     redirect: '/token-converter'
   },

@@ -32,6 +32,7 @@ UPDATE_STARTED=false
 UPDATE_SUCCEEDED=false
 LOCK_HELD=false
 CREATED_UPDATE_REMOTE=false
+RUNTIME_START_SCRIPT=""
 
 log() { printf '[XIASS] %s\n' "$*"; }
 die() { printf '[XIASS] 错误：%s\n' "$*" >&2; exit 1; }
@@ -46,6 +47,50 @@ read_env_compat() {
     value=$(read_env_value "$1")
     [ -n "$value" ] || value=$(read_env_value "$2")
     printf '%s\n' "$value"
+}
+
+generate_runtime_token() {
+    local token=""
+    if command -v openssl >/dev/null 2>&1; then
+        token=$(openssl rand -hex 32 2>/dev/null || true)
+    fi
+    if [ -z "$token" ] && command -v od >/dev/null 2>&1; then
+        token=$(head -c 32 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)
+    fi
+    [ -n "$token" ] || die "无法生成 Team 自动化服务令牌。"
+    printf '%s\n' "$token"
+}
+
+append_env_default() {
+    local key="$1" value="$2"
+    if ! grep -qE "^${key}=" "$DEPLOY_DIR/.env"; then
+        printf '\n%s=%s\n' "$key" "$value" >> "$DEPLOY_DIR/.env"
+    fi
+}
+
+ensure_team_child_runtime_config() {
+    local token
+    # Existing explicit values remain authoritative. These defaults only make
+    # the newly added Team workflow usable on older XIASS installations.
+    append_env_default TEAM_CHILD_BROWSER_ENABLED true
+    append_env_default TEAM_CHILD_BROWSER_START_DELAY_SECONDS 5
+    append_env_default TEAM_CHILD_AUTOMATION_IMAGE ghcr.io/xyf0104/xiass-team-child-automation:latest
+    append_env_default XIASS_UPDATER_IMAGE ghcr.io/xyf0104/xiass-updater:latest
+
+    token=$(read_env_value TEAM_CHILD_AUTOMATION_TOKEN)
+    if [ -z "$token" ]; then
+        token=$(generate_runtime_token)
+        if grep -qE '^TEAM_CHILD_AUTOMATION_TOKEN=' "$DEPLOY_DIR/.env"; then
+            if sed --version >/dev/null 2>&1; then
+                sed -i "s/^TEAM_CHILD_AUTOMATION_TOKEN=.*/TEAM_CHILD_AUTOMATION_TOKEN=${token}/" "$DEPLOY_DIR/.env"
+            else
+                sed -i '' "s/^TEAM_CHILD_AUTOMATION_TOKEN=.*/TEAM_CHILD_AUTOMATION_TOKEN=${token}/" "$DEPLOY_DIR/.env"
+            fi
+        else
+            printf '\nTEAM_CHILD_AUTOMATION_TOKEN=%s\n' "$token" >> "$DEPLOY_DIR/.env"
+        fi
+    fi
+    chmod 600 "$DEPLOY_DIR/.env"
 }
 
 container_exists() {
@@ -279,13 +324,38 @@ stop_known_runtime_containers() {
     for container_name in \
         xiass-api xiass-api-watchtower xiass-api-postgres xiass-api-redis \
         nowind-api nowind-api-watchtower nowind-api-postgres nowind-api-redis \
-        sub2api sub2api-watchtower sub2api-postgres sub2api-redis; do
+        sub2api sub2api-watchtower sub2api-postgres sub2api-redis \
+        xiass-api-team-child-browser xiass-api-team-child-automation \
+        nowind-api-team-child-browser nowind-api-team-child-automation \
+        sub2api-team-child-browser sub2api-team-child-automation; do
         if container_exists "$container_name"; then
             log "停止旧运行容器 $container_name（不删除卷或数据目录）..."
             docker stop -t 60 "$container_name" >/dev/null 2>&1 || true
             docker rm "$container_name" >/dev/null 2>&1 || true
         fi
     done
+}
+
+start_runtime_stack() {
+    local core_ready="${1:-false}"
+    RUNTIME_START_SCRIPT="$DEPLOY_DIR/xiass-runtime-start.sh"
+    if [ -x "$RUNTIME_START_SCRIPT" ]; then
+        INSTALL_DIR="$INSTALL_DIR" \
+        DEPLOY_DIR="$DEPLOY_DIR" \
+        COMPOSE_FILE="$COMPOSE_FILE" \
+        COMPOSE_BUILD_FILE="${COMPOSE_FILES[1]:-}" \
+        PERSISTENCE_MODE="$PERSISTENCE_MODE" \
+        BUILD_MODE="$(read_env_compat XIASS_BUILD_MODE NOWIND_BUILD_MODE)" \
+        XIASS_RUNTIME_CORE_READY="$core_ready" \
+        bash "$RUNTIME_START_SCRIPT"
+        return 0
+    fi
+
+    # Older rollback targets do not contain the two-phase helper yet. Keep
+    # their recovery path functional; the next successful update installs it.
+    log "旧版本没有两阶段启动脚本，使用兼容 Compose 恢复路径。"
+    compose up -d --no-build
+    wait_for_health
 }
 
 compose() {
@@ -342,6 +412,7 @@ rollback_update() {
     if [ -f "$COMPOSE_FILE" ]; then
         init_compose
         compose down >/dev/null 2>&1 || true
+        stop_known_runtime_containers
     fi
 
     if ! git -C "$INSTALL_DIR" reset --hard "$PREVIOUS_REF" >/dev/null 2>&1; then
@@ -370,7 +441,7 @@ rollback_update() {
     fi
 
     if "$image_tag_restored"; then
-        if compose up -d --no-build >/dev/null 2>&1; then
+        if start_runtime_stack false >/dev/null 2>&1; then
             rollback_started=true
         else
             log "使用旧应用镜像启动失败，将按原 compose 配置再次尝试恢复。"
@@ -452,7 +523,7 @@ main() {
     log "同步已验证的 XIASS API 部署文件..."
     capture_previous_image
 
-    log "停止当前容器栈以迁移运行时名称（不会删除卷或数据）..."
+    log "停止旧栈以切换到新版本（不会删除卷或数据）..."
     UPDATE_STARTED=true
     if ! compose down; then
         log "Compose 未能完整停止旧栈，改为按已知容器名安全停止。"
@@ -460,21 +531,15 @@ main() {
     stop_known_runtime_containers
 
     git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"
+    ensure_team_child_runtime_config
     COMPOSE_FILES=()
     ACTUAL_COMPOSE_FILES=()
     select_compose_file true
     init_compose
 
-    if [ "$(read_env_compat XIASS_BUILD_MODE NOWIND_BUILD_MODE)" = "source" ]; then
-        log "从最新源码重新构建并启动 XIASS 容器栈..."
-        compose up -d --build
-    else
-        log "拉取最新正式镜像并启动 XIASS 容器栈..."
-        compose pull xiass-api watchtower
-        compose up -d
-    fi
-
-    if ! wait_for_health; then
+    # The runtime helper starts the core first and only then downloads/builds
+    # Chromium and the Team automation service after the core health check.
+    if ! start_runtime_stack false; then
         compose ps || true
         compose logs --tail 160 xiass-api || true
         die "更新后健康检查失败。数据没有删除，更新前备份位于 ${BACKUP_DIR}，可使用 xiass-restore.sh 恢复。"

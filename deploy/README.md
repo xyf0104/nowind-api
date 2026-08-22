@@ -35,6 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/xyf0104/xiass-api/main/install.sh |
 | `docker-compose.standalone.yml` | 使用外部 PostgreSQL/Redis |
 | `docker-compose.build.yml` | 本机源码构建覆盖配置 |
 | `.env.example` | 环境变量模板，不含真实密钥 |
+| `TEAM_CHILD_BROWSER_SETUP.md` | Team 子号创建、临时邮箱和服务器 Chromium 的完整部署与使用教程 |
 | `config.example.yaml` | 高级配置模板 |
 | `Caddyfile` | HTTPS 反向代理示例 |
 | `install.sh` | 二进制/systemd 安装器，需自备 PostgreSQL/Redis |
@@ -55,6 +56,74 @@ curl -fsSL https://raw.githubusercontent.com/xyf0104/xiass-api/main/install.sh |
 ```bash
 docker compose down -v
 ```
+
+## Team Child Mailbox Configuration
+
+Configure the temporary mailbox only from `账号管理` -> `创建 Team 子号` ->
+`导入邮箱配置`. The administrator uploads one private mailbox configuration
+file; XIASS validates it, writes its normalized form to the persistent
+`/app/data/team-child-mail.env` file with restrictive permissions, and never
+returns its credentials to the browser.
+
+The release repository, image, Compose templates, and generated artifacts do
+not contain imported provider configuration. Import takes effect immediately;
+do not copy mailbox credentials into Git or a release `.env` template.
+
+## Team Child Browser Workspace
+
+需要按步骤完成环境变量、Docker profile 和管理端使用流程时，请阅读 [TEAM_CHILD_BROWSER_SETUP.md](./TEAM_CHILD_BROWSER_SETUP.md)。
+
+The Team child-account page can embed a persistent server-side Chromium desktop.
+It is a visible browser workspace, not a headless automation process. The first
+OpenAI login happens manually inside the XIASS page; Chromium keeps its profile
+in the `/config` mount (`team_child_browser_data` for local directories or the
+named `team_child_browser_data` volume), so the login survives container
+restarts and upgrades as long as that directory/volume is retained.
+
+Add these entries to `deploy/.env` after completing the temporary-mail setup:
+
+```dotenv
+TEAM_CHILD_BROWSER_ENABLED=true
+TEAM_CHILD_BROWSER_UPSTREAM_URL=https://team-child-browser:3001
+TEAM_CHILD_BROWSER_SESSION_TTL_MINUTES=720
+TEAM_CHILD_BROWSER_TICKET_TTL_SECONDS=180
+TEAM_CHILD_BROWSER_START_URL=https://chatgpt.com/admin/members
+TEAM_CHILD_BROWSER_PUID=1000
+TEAM_CHILD_BROWSER_PGID=1000
+TEAM_CHILD_AUTOMATION_URL=http://team-child-browser:8090
+TEAM_CHILD_AUTOMATION_TOKEN=<random-private-token>
+```
+
+Generate the private service token with `openssl rand -hex 32` and set the same
+value for `xiass-api` and `team-child-automation`. Do not commit it or expose it
+in browser responses. Without this token, the member automation endpoints stay
+disabled.
+
+For the recommended local-directory deployment, recreate XIASS and start the
+explicit browser profile:
+
+```bash
+cd /opt/xiass-api/deploy
+docker compose -f docker-compose.local.yml --profile team-browser up -d --force-recreate xiass-api team-child-browser team-child-automation
+```
+
+Then open `账号管理` -> `创建 Team 子号`. The right-side `服务器浏览器` panel loads
+the remote Chromium desktop. Log into OpenAI there once, generate a temporary
+mailbox from the left-side workflow, and use the copy control in `邀请成员邮箱` to
+paste it into the browser. Copy the generated authorization URL to the server
+browser address bar, complete every third-party prompt yourself, then paste the
+callback URL into XIASS for import.
+
+The Chromium container has no published host ports. XIASS creates a short-lived,
+same-origin iframe session and proxies only to the internal browser service; it
+does not forward XIASS authorization headers, API keys, or cookies to Chromium.
+The container is also started with its desktop hardening options, but anyone who
+can access this admin panel can operate the shared browser profile. Use a
+separate XIASS deployment or profile volume for stronger per-administrator
+isolation. Do not expose the Chromium service directly to the Internet.
+
+CAPTCHA, SMS, identity verification, and workspace confirmation remain manual
+third-party actions in the visible browser. XIASS does not bypass those steps.
 
 ## 端口
 

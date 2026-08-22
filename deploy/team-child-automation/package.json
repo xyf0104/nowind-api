@@ -1,0 +1,8 @@
+{
+  "name": "xiass-team-child-automation",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@playwright/test": "1.55.0"
+  }
+}

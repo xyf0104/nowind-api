@@ -25,6 +25,8 @@ type OpenAIOAuthHandler struct {
 	adminService       service.AdminService
 	quotaService       openAIQuotaService
 	rateLimitService   openAIAccountStateRecoverer
+	teamMailboxStore   *openAITeamMailboxStore
+	teamBrowserStore   *openAITeamBrowserStore
 }
 
 type openAIQuotaService interface {
@@ -100,6 +102,8 @@ func NewOpenAIOAuthHandler(
 	h := &OpenAIOAuthHandler{
 		openaiOAuthService: openaiOAuthService,
 		adminService:       adminService,
+		teamMailboxStore:   newOpenAITeamMailboxStore(),
+		teamBrowserStore:   newOpenAITeamBrowserStore(),
 	}
 	// Assign through explicit nil checks: storing a nil *Service in an interface
 	// field yields a non-nil interface, which would silently defeat the

@@ -16,6 +16,16 @@
             @refresh="handleManualRefresh"
             @create="showCreate = true"
           >
+            <template #beforeCreate>
+              <button
+                type="button"
+                class="btn btn-primary flex items-center gap-2"
+                @click="openTeamChildCreation"
+              >
+                <Icon name="userPlus" size="sm" :stroke-width="2" />
+                <span>创建 Team 子号</span>
+              </button>
+            </template>
             <template #after>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
@@ -603,6 +613,10 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const route = useRoute() as ReturnType<typeof useRoute> | undefined
 const router = useRouter() as ReturnType<typeof useRouter> | undefined
+
+function openTeamChildCreation() {
+  void router?.push({ name: 'AdminTeamChildCreation' })
+}
 
 const normalizeActiveConcurrencyGroup = (value: unknown): string => {
   const rawValue = Array.isArray(value) ? value[0] : value

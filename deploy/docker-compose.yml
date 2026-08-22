@@ -81,6 +81,7 @@ services:
       - XIASS_DEPLOYMENT_MODE=container
       - XIASS_WATCHTOWER_TOKEN=${XIASS_WATCHTOWER_TOKEN:-${NOWIND_WATCHTOWER_TOKEN:-sub2api-update-token}}
       - NOWIND_WATCHTOWER_TOKEN=${XIASS_WATCHTOWER_TOKEN:-${NOWIND_WATCHTOWER_TOKEN:-sub2api-update-token}}
+      - XIASS_UPDATER_IMAGE=${XIASS_UPDATER_IMAGE:-ghcr.io/xyf0104/xiass-updater:latest}
 
       # =======================================================================
       # Server Configuration
@@ -93,6 +94,20 @@ services:
       - SOFT_ROUTER_PROXY_PUBLIC_PORT_RANGE=${SOFT_ROUTER_PROXY_PUBLIC_PORT_RANGE:-1101-1120}
       - SOFT_ROUTER_PROXY_RAW_PORT_RANGE=${SOFT_ROUTER_PROXY_RAW_PORT_RANGE:-12083-12150}
       - ALIPAY_MOBILE_PRECREATE_DEEP_LINK=${ALIPAY_MOBILE_PRECREATE_DEEP_LINK:-}
+      - TEAM_CHILD_MAIL_API_BASE=${TEAM_CHILD_MAIL_API_BASE:-}
+      - TEAM_CHILD_MAIL_AUTH_MODE=${TEAM_CHILD_MAIL_AUTH_MODE:-none}
+      - TEAM_CHILD_MAIL_API_KEY=${TEAM_CHILD_MAIL_API_KEY:-}
+      - TEAM_CHILD_MAIL_CUSTOM_AUTH=${TEAM_CHILD_MAIL_CUSTOM_AUTH:-}
+      - TEAM_CHILD_MAIL_DOMAIN=${TEAM_CHILD_MAIL_DOMAIN:-}
+      - TEAM_CHILD_MAIL_CREATE_PATH=${TEAM_CHILD_MAIL_CREATE_PATH:-/api/new_address}
+      - TEAM_CHILD_MAIL_MESSAGES_PATH=${TEAM_CHILD_MAIL_MESSAGES_PATH:-/api/mails}
+      - TEAM_CHILD_MAIL_CONFIG_FILE=${TEAM_CHILD_MAIL_CONFIG_FILE:-/app/data/team-child-mail.env}
+      - TEAM_CHILD_BROWSER_ENABLED=${TEAM_CHILD_BROWSER_ENABLED:-false}
+      - TEAM_CHILD_BROWSER_UPSTREAM_URL=${TEAM_CHILD_BROWSER_UPSTREAM_URL:-https://team-child-browser:3001}
+      - TEAM_CHILD_BROWSER_SESSION_TTL_MINUTES=${TEAM_CHILD_BROWSER_SESSION_TTL_MINUTES:-720}
+      - TEAM_CHILD_BROWSER_TICKET_TTL_SECONDS=${TEAM_CHILD_BROWSER_TICKET_TTL_SECONDS:-180}
+      - TEAM_CHILD_AUTOMATION_URL=${TEAM_CHILD_AUTOMATION_URL:-http://team-child-browser:8090}
+      - TEAM_CHILD_AUTOMATION_TOKEN=${TEAM_CHILD_AUTOMATION_TOKEN:-}
 
       # =======================================================================
       # Database Configuration (PostgreSQL)
@@ -239,6 +254,59 @@ services:
       retries: 3
       start_period: 30s
 
+  # A persistent, visible Chromium desktop for the Team child-account workflow.
+  # It is reachable only from xiass-api through the same-origin browser proxy.
+  # Start explicitly: docker compose --profile team-browser up -d
+  team-child-browser:
+    image: lscr.io/linuxserver/chromium:latest
+    container_name: xiass-api-team-child-browser
+    restart: unless-stopped
+    profiles: ["team-browser"]
+    security_opt:
+      - no-new-privileges:true
+    shm_size: "1gb"
+    environment:
+      - PUID=${TEAM_CHILD_BROWSER_PUID:-1000}
+      - PGID=${TEAM_CHILD_BROWSER_PGID:-1000}
+      - TZ=${TZ:-Asia/Shanghai}
+      - SUBFOLDER=/api/v1/team-child-browser/
+      - CHROME_CLI=--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 ${TEAM_CHILD_BROWSER_START_URL:-https://chatgpt.com/admin/members}
+      - TITLE=XIASS Team Browser
+      - START_DOCKER=false
+      - HARDEN_DESKTOP=true
+      - HARDEN_OPENBOX=true
+      - RESTART_APP=true
+      - NO_DECOR=true
+    volumes:
+      - team_child_browser_data:/config
+    networks:
+      - xiass-api-network
+
+  # Same-origin module operations for the persistent Chromium profile.
+  # This service has no published host port and is only reachable by XIASS.
+  team-child-automation:
+    image: ${TEAM_CHILD_AUTOMATION_IMAGE:-ghcr.io/xyf0104/xiass-team-child-automation:latest}
+    build:
+      context: ./team-child-automation
+    container_name: xiass-api-team-child-automation
+    restart: unless-stopped
+    profiles: ["team-browser"]
+    environment:
+      - BROWSER_CDP_URL=http://127.0.0.1:9222
+      - MEMBERS_URL=${TEAM_CHILD_BROWSER_START_URL:-https://chatgpt.com/admin/members}
+      - TEAM_CHILD_AUTOMATION_TOKEN=${TEAM_CHILD_AUTOMATION_TOKEN:-}
+      - TZ=${TZ:-Asia/Shanghai}
+    depends_on:
+      team-child-browser:
+        condition: service_started
+    network_mode: "service:team-child-browser"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 30s
+
   # ===========================================================================
   # PostgreSQL Database
   # ===========================================================================
@@ -329,6 +397,8 @@ services:
 volumes:
   # Historical key: changing it would orphan existing deploy_sub2api_data volumes.
   sub2api_data:
+    driver: local
+  team_child_browser_data:
     driver: local
   postgres_data:
     driver: local

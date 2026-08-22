@@ -131,6 +131,44 @@ def check_public_branding_and_privacy(errors: list[str]) -> None:
             errors.append(f"检测到疑似管理员密钥: {relative}")
 
 
+def check_team_child_mailbox_release_privacy(errors: list[str]) -> None:
+    """Keep imported mailbox provider settings out of release artifacts."""
+    legacy_importer = ROOT / "deploy/import-team-child-mail-config.sh"
+    if legacy_importer.exists():
+        errors.append("发布物不得包含命令行邮箱配置迁移脚本")
+
+    template = read("deploy/.env.example")
+    expected_defaults = {
+        "TEAM_CHILD_MAIL_API_BASE": "",
+        "TEAM_CHILD_MAIL_AUTH_MODE": "none",
+        "TEAM_CHILD_MAIL_API_KEY": "",
+        "TEAM_CHILD_MAIL_CUSTOM_AUTH": "",
+        "TEAM_CHILD_MAIL_DOMAIN": "",
+        "TEAM_CHILD_MAIL_CREATE_PATH": "/api/new_address",
+        "TEAM_CHILD_MAIL_MESSAGES_PATH": "/api/mails",
+        "TEAM_CHILD_MAIL_CONFIG_FILE": "/app/data/team-child-mail.env",
+    }
+    for key, expected in expected_defaults.items():
+        match = re.search(rf"(?m)^{re.escape(key)}=(.*)$", template)
+        if not match or match.group(1) != expected:
+            errors.append(f"deploy/.env.example 的 {key} 必须保持发布安全默认值")
+
+    public_mail_docs = ("deploy/.env.example", "deploy/README.md", "deploy/TEAM_CHILD_BROWSER_SETUP.md")
+    for relative in public_mail_docs:
+        content = read(relative)
+        if "import-team-child-mail-config.sh" in content:
+            errors.append(f"{relative} 不得引导使用命令行邮箱配置迁移脚本")
+        if "cloudflare_api_" in content:
+            errors.append(f"{relative} 不得包含旧邮箱配置字段")
+
+    require_all(
+        "deploy/TEAM_CHILD_BROWSER_SETUP.md",
+        read("deploy/TEAM_CHILD_BROWSER_SETUP.md"),
+        ["导入邮箱配置", "/app/data/team-child-mail.env"],
+        errors,
+    )
+
+
 def check_frontend_visible_branding(errors: list[str]) -> None:
     index_path = "frontend/index.html"
     manifest_path = "frontend/public/site.webmanifest"
@@ -542,6 +580,34 @@ def check_update_bridge(errors: list[str]) -> None:
         errors,
     )
 
+    runtime_start_script = read("deploy/xiass-runtime-start.sh")
+    require_all(
+        "deploy/xiass-runtime-start.sh",
+        runtime_start_script,
+        [
+            "start_core()",
+            "wait_for_core_health()",
+            'curl -fsS --max-time 3 "http://127.0.0.1:${port}/health"',
+            "start_browser_stack()",
+            'sleep "$CORE_READY_DELAY_SECONDS"',
+            "team-child-browser",
+            "team-child-automation",
+            "主服务保持运行",
+        ],
+        errors,
+    )
+    runtime_main = runtime_start_script.partition("main() {")[2]
+    runtime_order = [
+        "resolve_compose",
+        "start_core",
+        "start_browser_stack",
+    ]
+    runtime_positions = [runtime_main.find(marker) for marker in runtime_order]
+    if any(position < 0 for position in runtime_positions) or runtime_positions != sorted(
+        runtime_positions
+    ):
+        errors.append("xiass-runtime-start.sh 必须先启动并验证主服务，再进入浏览器组件阶段")
+
     update_script = read("deploy/xiass-update.sh")
     main_body = update_script.partition("main() {")[2]
     ordered_markers = [
@@ -567,13 +633,16 @@ def check_update_bridge(errors: list[str]) -> None:
             'PREVIOUS_IMAGE_ID=""',
             'PREVIOUS_IMAGE_REF=""',
             "capture_previous_image()",
+            "generate_runtime_token()",
+            "append_env_default()",
+            "ensure_team_child_runtime_config()",
+            "TEAM_CHILD_AUTOMATION_TOKEN",
             "{{.Image}} {{.Config.Image}}",
             "rollback_update()",
             'git -C "$INSTALL_DIR" reset --hard "$PREVIOUS_REF"',
             'docker image tag "$PREVIOUS_IMAGE_ID" "$PREVIOUS_IMAGE_REF"',
-            "compose up -d --no-build",
             "UPDATE_STARTED=true",
-            "compose pull xiass-api watchtower",
+            "start_runtime_stack false",
             "snapshot_previous_compose()",
             "PREVIOUS_COMPOSE_FILES",
             "com.docker.compose.project.config_files",
@@ -601,7 +670,7 @@ def check_update_bridge(errors: list[str]) -> None:
     rollback_markers = [
         'git -C "$INSTALL_DIR" reset --hard "$PREVIOUS_REF"',
         'docker image tag "$PREVIOUS_IMAGE_ID" "$PREVIOUS_IMAGE_REF"',
-        "compose up -d --no-build",
+        "start_runtime_stack false",
         "compose up -d >/dev/null",
     ]
     rollback_positions = [rollback_body.find(marker) for marker in rollback_markers]
@@ -609,7 +678,7 @@ def check_update_bridge(errors: list[str]) -> None:
         rollback_positions
     ):
         errors.append(
-            "xiass-update.sh 回滚必须恢复 Git 和旧镜像 tag，以 --no-build 启动，"
+            "xiass-update.sh 回滚必须恢复 Git 和旧镜像 tag，通过两阶段启动脚本恢复，"
             "并保留普通 compose 启动降级"
         )
     if "git clean" in update_script:
@@ -681,6 +750,7 @@ def main() -> int:
     errors: list[str] = []
     check_version(errors)
     check_public_branding_and_privacy(errors)
+    check_team_child_mailbox_release_privacy(errors)
     check_frontend_visible_branding(errors)
     check_release_branding_and_compatibility(errors)
     check_compose_branding(errors)
