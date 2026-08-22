@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.34-0ea5e9" alt="当前版本 v1.1.34" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.35-0ea5e9" alt="当前版本 v1.1.35" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.34
+> 当前版本：v1.1.35
+
+v1.1.35 修复 Grok 免费额度回退测试对异步上游模型观测请求的误判，保持额度查询本身仍只执行两次 billing 请求和一次活动探测；Team 子号 OAuth 电话号码被上游拒绝时的站内确认换号、完整国际号码填入内嵌浏览器并继续当前步骤的修复继续保留。
 
 v1.1.34 修复 Team 子号 OAuth 电话验证被拒绝后的恢复链路：识别“电话号码已被使用/不可用”等页面状态后，在 XIASS 接码模块保留站内确认换号，新号码以完整国际格式规范化并填入嵌入式 OAuth 电话输入框，再点击页面自身的 Continue 继续当前步骤，不重复成员移除或邀请。成员邀请结果改为强制刷新并核对 Pending invites 中的目标邮箱；邮箱验证码轮询兼容嵌套响应、HTML 正文和常见收件人字段，并在临时服务错误时持续重试。现有管理员保护、人工接管和取消/换号确认契约继续保留。
 
