@@ -5,6 +5,7 @@ const { teamChildAPI, groupsAPI, appStore } = vi.hoisted(() => ({
   teamChildAPI: {
     getMailboxStatus: vi.fn(),
     createMailbox: vi.fn(),
+    getActiveMailbox: vi.fn(),
     generateOpenAIAuthUrl: vi.fn(),
     pollMailboxCode: vi.fn(),
     deleteMailboxSession: vi.fn(),
@@ -20,6 +21,9 @@ const { teamChildAPI, groupsAPI, appStore } = vi.hoisted(() => ({
     startTeamChildWorkflow: vi.fn(),
     getTeamChildWorkflow: vi.fn(),
     continueTeamChildWorkflow: vi.fn(),
+    submitTeamChildWorkflowPhone: vi.fn(),
+    submitTeamChildWorkflowCode: vi.fn(),
+    restartTeamChildWorkflowOAuth: vi.fn(),
     cancelTeamChildWorkflow: vi.fn(),
     createOpenAIAccountFromOAuth: vi.fn()
   },
@@ -39,7 +43,11 @@ import TeamChildCreationView from '../TeamChildCreationView.vue'
 
 const PixlabSMSReceiverStub = {
   props: { active: { type: Boolean, default: false } },
-  template: '<div data-testid="team-sms-receiver" :data-active="String(active)" />'
+  template: `<div data-testid="team-sms-receiver" :data-active="String(active)">
+    <button type="button" data-testid="sms-phone-ready" @click="$emit('phone-ready', '+14155550123')" />
+    <button type="button" data-testid="sms-code-received" @click="$emit('code-received', '123456')" />
+    <button type="button" data-testid="sms-session-cancelled" @click="$emit('session-cancelled')" />
+  </div>`
 }
 
 const BrowserWorkspaceStub = {
@@ -94,6 +102,7 @@ describe('TeamChildCreationView', () => {
       email: 'team-child@example.test',
       expires_at: '2026-08-22T12:30:00.000Z'
     })
+    teamChildAPI.getActiveMailbox.mockResolvedValue(null)
     teamChildAPI.generateOpenAIAuthUrl.mockResolvedValue({
       auth_url: 'https://auth.openai.com/authorize?state=team-state',
       session_id: 'oauth-session'
@@ -127,6 +136,27 @@ describe('TeamChildCreationView', () => {
       ]
     })
     teamChildAPI.getTeamChildWorkflow.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop',
+      status: 'manual_required',
+      manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z',
+      steps: []
+    })
+    teamChildAPI.submitTeamChildWorkflowPhone.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop',
+      status: 'manual_required',
+      manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z',
+      steps: []
+    })
+    teamChildAPI.submitTeamChildWorkflowCode.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop',
+      status: 'manual_required',
+      manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z',
+      steps: []
+    })
+    teamChildAPI.restartTeamChildWorkflowOAuth.mockResolvedValue({
       id: 'workflow-token-abcdefghijklmnop',
       status: 'manual_required',
       manual_required: true,
@@ -191,10 +221,99 @@ describe('TeamChildCreationView', () => {
       seat_email: 'member@example.test',
       invite_email: 'team-child@example.test',
       auth_url: 'https://auth.openai.com/authorize?state=team-state',
+      seat_already_removed: false,
       confirmed: true
     })
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
 
+    wrapper.unmount()
+  })
+
+  it('continues after a manually released seat only when the live members are protected', async () => {
+    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+      ready: true,
+      members: [
+        { id: 'owner@example.test', email: 'owner@example.test', role: 'owner', protected: true },
+        { id: 'admin@example.test', email: 'admin@example.test', role: 'admin', protected: true }
+      ]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    expect(mailboxButton).toBeDefined()
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
+      invite_email: 'team-child@example.test',
+      auth_url: 'https://auth.openai.com/authorize?state=team-state',
+      seat_already_removed: true,
+      confirmed: true
+    })
+    wrapper.unmount()
+  })
+
+  it('restores the active temporary mailbox after a refresh without creating another address', async () => {
+    teamChildAPI.getActiveMailbox.mockResolvedValue({
+      session_id: 'restored-mailbox-session',
+      email: 'restored@example.test',
+      expires_at: '2026-08-22T12:30:00.000Z'
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(teamChildAPI.getActiveMailbox).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.createMailbox).not.toHaveBeenCalled()
+    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('restored@example.test')
+    wrapper.unmount()
+  })
+
+  it('forwards confirmed SMS events to the active OAuth workflow', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="sms-phone-ready"]').trigger('click')
+    await wrapper.get('[data-testid="sms-code-received"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.submitTeamChildWorkflowPhone).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop', '+14155550123')
+    expect(teamChildAPI.submitTeamChildWorkflowCode).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop', '123456')
+    wrapper.unmount()
+  })
+
+  it('restarts only OAuth after confirmed SMS cancellation', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="sms-session-cancelled"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(2)
+    expect(teamChildAPI.restartTeamChildWorkflowOAuth).toHaveBeenCalledWith(
+      'workflow-token-abcdefghijklmnop',
+      'https://auth.openai.com/authorize?state=team-state'
+    )
+    expect(teamChildAPI.cancelTeamChildWorkflow).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

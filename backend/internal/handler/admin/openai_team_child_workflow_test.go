@@ -31,6 +31,8 @@ func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T)
 		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize","confirmed":false}`,
 		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://example.test/authorize","confirmed":true}`,
 		`{"seat_email":"member@example.test","invite_email":"member@example.test","auth_url":"https://auth.openai.com/authorize","confirmed":true}`,
+		`{"invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize","confirmed":true}`,
+		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize","seat_already_removed":true,"confirmed":true}`,
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
@@ -76,6 +78,37 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	require.Equal(t, "/workflows", receivedPath)
 	require.Equal(t, "member@example.test", receivedBody["seat_email"])
 	require.Equal(t, "new@example.test", receivedBody["invite_email"])
+	require.Equal(t, false, receivedBody["seat_already_removed"])
+	require.Equal(t, true, receivedBody["confirmed"])
+}
+
+func TestTeamChildWorkflowAllowsConfirmedManualSeatRelease(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	var receivedBody map[string]any
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"running","steps":[]}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/workflows", handler.StartTeamChildWorkflow)
+
+	payload := `{"invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize?client_id=example","seat_already_removed":true,"confirmed":true}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Empty(t, receivedBody["seat_email"])
+	require.Equal(t, "new@example.test", receivedBody["invite_email"])
+	require.Equal(t, true, receivedBody["seat_already_removed"])
 	require.Equal(t, true, receivedBody["confirmed"])
 }
 
@@ -166,6 +199,77 @@ func TestTeamChildWorkflowStatusAndCancelValidateIDAndForward(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/workflows/too-short", nil))
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
+}
+
+func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	var requests []struct {
+		method string
+		path   string
+		body   map[string]any
+	}
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := struct {
+			method string
+			path   string
+			body   map[string]any
+		}{method: r.Method, path: r.URL.Path}
+		if r.Body != nil {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&request.body))
+		}
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"manual_required","steps":[]}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/workflows/:workflow_id/phone", handler.SubmitTeamChildWorkflowPhone)
+	router.POST("/workflows/:workflow_id/code", handler.SubmitTeamChildWorkflowCode)
+	router.POST("/workflows/:workflow_id/restart-oauth", handler.RestartTeamChildWorkflowOAuth)
+
+	for _, test := range []struct {
+		path    string
+		payload string
+	}{
+		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"+14155550123"}`},
+		{path: "/workflows/abcdefghijklmnoP/code", payload: `{"code":"123456"}`},
+		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"https://auth.openai.com/authorize?state=fresh"}`},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.payload))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code)
+	}
+
+	require.Len(t, requests, 3)
+	require.Equal(t, "/workflows/abcdefghijklmnoP/phone", requests[0].path)
+	require.Equal(t, "+14155550123", requests[0].body["phone"])
+	require.Equal(t, "/workflows/abcdefghijklmnoP/code", requests[1].path)
+	require.Equal(t, "123456", requests[1].body["code"])
+	require.Equal(t, "/workflows/abcdefghijklmnoP/restart-oauth", requests[2].path)
+	require.Equal(t, "https://auth.openai.com/authorize?state=fresh", requests[2].body["auth_url"])
+
+	for _, test := range []struct {
+		path    string
+		payload string
+	}{
+		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"123"}`},
+		{path: "/workflows/abcdefghijklmnoP/code", payload: `{"code":"abc"}`},
+		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"https://example.test/authorize"}`},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.payload))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+	}
+	require.Len(t, requests, 3)
 }
 
 func TestValidateTeamChildWorkflowAuthURL(t *testing.T) {

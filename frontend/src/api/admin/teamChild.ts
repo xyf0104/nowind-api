@@ -111,9 +111,11 @@ export interface TeamChildWorkflow {
 }
 
 export interface StartTeamChildWorkflowRequest {
-  seat_email: string
+  /** Empty only when the ordinary member seat was already removed manually. */
+  seat_email?: string
   invite_email: string
   auth_url: string
+  seat_already_removed: boolean
   /** Must be set only after the XIASS in-page destructive-action dialog. */
   confirmed: true
 }
@@ -126,6 +128,11 @@ export async function getMailboxStatus(): Promise<TeamChildMailboxStatus> {
 export async function createMailbox(): Promise<TeamChildMailbox> {
   const { data } = await apiClient.post<TeamChildMailbox>('/admin/openai/team-child/mailboxes')
   return data
+}
+
+export async function getActiveMailbox(): Promise<TeamChildMailbox | null> {
+  const { data } = await apiClient.get<{ active: boolean; mailbox?: TeamChildMailbox }>('/admin/openai/team-child/mailboxes/active')
+  return data.active && data.mailbox ? data.mailbox : null
 }
 
 export async function importMailboxConfig(file: File): Promise<TeamChildMailboxConfigImportResult> {
@@ -206,6 +213,30 @@ export async function continueTeamChildWorkflow(workflowID: string): Promise<Tea
   return data
 }
 
+export async function submitTeamChildWorkflowPhone(workflowID: string, phone: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(
+    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/phone`,
+    { phone }
+  )
+  return data
+}
+
+export async function submitTeamChildWorkflowCode(workflowID: string, code: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(
+    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/code`,
+    { code }
+  )
+  return data
+}
+
+export async function restartTeamChildWorkflowOAuth(workflowID: string, authURL: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(
+    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/restart-oauth`,
+    { auth_url: authURL }
+  )
+  return data
+}
+
 export async function cancelTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.delete<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}`)
   return data
@@ -246,8 +277,12 @@ export const teamChildAPI = {
   startTeamChildWorkflow,
   getTeamChildWorkflow,
   continueTeamChildWorkflow,
+  submitTeamChildWorkflowPhone,
+  submitTeamChildWorkflowCode,
+  restartTeamChildWorkflowOAuth,
   cancelTeamChildWorkflow,
   createMailbox,
+  getActiveMailbox,
   importMailboxConfig,
   pollMailboxCode,
   deleteMailboxSession,

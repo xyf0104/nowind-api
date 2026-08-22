@@ -200,14 +200,14 @@
     :show="confirmationAction !== null"
     :title="confirmationAction === 'cancel' ? '取消当前号码' : confirmationAction === 'change' ? '更换当前号码' : '领取授权手机号'"
     :message="confirmationAction === 'cancel'
-      ? '确认取消当前手机号并结束本次 OAuth 授权接码会话吗？'
+      ? '确认取消当前手机号，并只重新打开 OAuth 授权步骤吗？'
       : confirmationAction === 'change'
-        ? '确认释放当前手机号并领取一个新的 OAuth 授权手机号吗？'
+        ? '确认释放当前手机号并领取新的号码，覆盖原号码后继续当前 OAuth 步骤吗？'
         : '确认领取一个用于当前 OAuth 授权的手机号吗？'"
     :detail="confirmationAction === 'cancel'
-      ? '尚未收到验证码时会释放当前号码和卡密；已经收到验证码时仍按实际结果处理。'
+      ? '只重走授权页和验证步骤；成员移除、邀请和临时邮箱不会重复执行。'
       : confirmationAction === 'change'
-        ? '当前号码会先释放，再领取新的号码；已经收到的验证码按现有规则处理。'
+        ? '确认成功后，新号码会自动填入当前授权页面并覆盖旧号码；已经收到的验证码按现有规则处理。'
         : '领取成功后会立即开始监听验证码，可随时刷新、换号或在未收到验证码时取消。'"
     :confirm-label="confirmationAction === 'cancel' ? '确认取消号码' : confirmationAction === 'change' ? '确认换号' : '确认领取号码'"
     :pending-label="confirmationAction === 'cancel' ? '正在取消…' : confirmationAction === 'change' ? '正在换号…' : '正在领取…'"
@@ -232,6 +232,12 @@ const props = withDefaults(defineProps<{
 }>(), {
   active: false
 })
+
+const emit = defineEmits<{
+  'phone-ready': [phone: string]
+  'code-received': [code: string]
+  'session-cancelled': []
+}>()
 
 const appStore = useAppStore()
 const { copyToClipboard } = useClipboard()
@@ -265,6 +271,7 @@ const isClearingKeys = ref(false)
 const hasManuallyStarted = ref(false)
 const isStartingPhone = ref(false)
 const confirmationAction = ref<'claim' | 'cancel' | 'change' | null>(null)
+const lastEmittedCode = ref('')
 const needsManualStart = computed(() => !hasManuallyStarted.value)
 const confirmationPending = computed(() => {
   if (confirmationAction.value === 'claim') return isStartingPhone.value
@@ -291,6 +298,7 @@ async function requestPhone(): Promise<void> {
   isStartingPhone.value = true
   hasManuallyStarted.value = true
   const started = await begin()
+  if (started && receiver.phoneForCopy.value) emit('phone-ready', receiver.phoneForCopy.value)
   if (!started || ['expired', 'unavailable'].includes(receiver.phase.value)) {
     hasManuallyStarted.value = false
   }
@@ -312,7 +320,11 @@ async function refresh(): Promise<void> {
 
 async function changeNumber(): Promise<void> {
   try {
-    await receiver.changeNumber()
+    // A replacement starts a new SMS session. Clear the local display before
+    // the server response so an old code cannot be mistaken for the new one.
+    lastEmittedCode.value = ''
+    const outcome = await receiver.changeNumber()
+    if (outcome === 'waiting' && receiver.phoneForCopy.value) emit('phone-ready', receiver.phoneForCopy.value)
   } catch (error) {
     showError(error)
   }
@@ -333,6 +345,7 @@ async function cancel(): Promise<void> {
     }
     hasManuallyStarted.value = false
     appStore.showInfo('已取消当前手机号。')
+    emit('session-cancelled')
   } catch (error) {
     showError(error)
   }
@@ -426,6 +439,17 @@ watch(
   },
   { immediate: true }
 )
+
+watch(code, (value) => {
+  const normalized = value.trim()
+  if (!normalized || normalized === '--') {
+    lastEmittedCode.value = ''
+    return
+  }
+  if (normalized === lastEmittedCode.value) return
+  lastEmittedCode.value = normalized
+  emit('code-received', normalized)
+})
 
 onBeforeUnmount(() => {
   confirmationAction.value = null

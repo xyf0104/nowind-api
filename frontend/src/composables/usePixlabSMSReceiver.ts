@@ -446,8 +446,14 @@ export function usePixlabSMSReceiver(scope: SMSReceiverScope = 'admin') {
       return 'expired'
     }
 
-    if (result.session_id) {
-      activeSessionID.value = result.session_id
+		if (result.session_id && result.session_id !== previousSessionID) {
+			// A confirmed claim/change starts a fresh SMS session. Clear the old
+			// code before polling it so a Team OAuth workflow cannot submit a stale
+			// verification code after a number replacement.
+			code.value = '--'
+		}
+		if (result.session_id) {
+			activeSessionID.value = result.session_id
 			writeActiveSession(scope, result.session_id)
     }
     applySessionExpiry(result, previousSessionID)

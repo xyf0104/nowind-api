@@ -112,6 +112,7 @@ describe('PixlabSMSReceiver', () => {
     await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
     await flushPromises()
     expect(receiverMocks.start).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060']])
     expect(wrapper.find('[data-testid="request-sms-phone"]').exists()).toBe(false)
   })
 
@@ -161,6 +162,7 @@ describe('PixlabSMSReceiver', () => {
     await flushPromises()
 
     expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('session-cancelled')).toBeUndefined()
     expect(wrapper.find('[data-testid="request-sms-phone"]').exists()).toBe(false)
   })
 
@@ -183,6 +185,25 @@ describe('PixlabSMSReceiver', () => {
     await flushPromises()
 
     expect(receiverMocks.changeNumber).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060'], ['+27749433060']])
+  })
+
+  it('emits cancellation only after a confirmed cancellation completes', async () => {
+    receiverMocks.cancel.mockResolvedValue('expired')
+    const wrapper = mountReceiver()
+    await claimNumber(wrapper)
+
+    const cancelButton = wrapper.findAll('button').find((button) => button.text().includes('取消'))
+    expect(cancelButton).toBeDefined()
+    await cancelButton!.trigger('click')
+    await flushPromises()
+    expect(receiverMocks.cancel).not.toHaveBeenCalled()
+    expect(wrapper.emitted('session-cancelled')).toBeUndefined()
+
+    await wrapper.get('[data-testid="confirm-sms-receiver-action"]').trigger('click')
+    await flushPromises()
+    expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('session-cancelled')).toEqual([[]])
   })
 
 })

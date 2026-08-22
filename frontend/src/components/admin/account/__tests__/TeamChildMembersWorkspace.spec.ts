@@ -137,4 +137,26 @@ describe('TeamChildMembersWorkspace', () => {
     await inviteButton!.trigger('click')
     expect((wrapper.get('[data-dialog="邀请成员"] input').element as HTMLInputElement).value).toBe('temporary@example.test')
   })
+
+  it('shows a non-destructive workflow state after a verified manual seat release', () => {
+    const wrapper = mount(TeamChildMembersWorkspace, {
+      props: {
+        members: [
+          { ...member, email: 'owner@example.test', id: 'owner@example.test', role: 'owner', protected: true },
+          { ...member, email: 'admin@example.test', id: 'admin@example.test', role: 'admin', protected: true }
+        ],
+        ready: true,
+        seatAlreadyRemoved: true,
+        workflowReady: true,
+        invitationEmail: 'temporary@example.test'
+      },
+      global
+    })
+
+    expect(wrapper.text()).toContain('已实时确认普通成员席位已由人工腾出')
+    const startButton = wrapper.findAll('button').find((button) => button.text().includes('一键授权'))
+    expect(startButton).toBeDefined()
+    expect(startButton!.attributes('disabled')).toBeUndefined()
+    expect(startButton!.attributes('title')).toContain('确认已人工腾出席位')
+  })
 })

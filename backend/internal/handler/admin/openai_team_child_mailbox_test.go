@@ -39,6 +39,7 @@ func setupTeamMailboxTestHandler(t *testing.T, provider http.HandlerFunc) (*Open
 	})
 	router.GET("/status", handler.TeamChildMailboxStatus)
 	router.POST("/mailboxes", handler.CreateTeamChildMailbox)
+	router.GET("/mailboxes/active", handler.GetActiveTeamChildMailbox)
 	router.GET("/mailboxes/:session_id/code", handler.PollTeamChildMailboxCode)
 	router.DELETE("/mailboxes/:session_id", handler.DeleteTeamChildMailboxSession)
 	return handler, router
@@ -89,6 +90,35 @@ func TestCreateTeamChildMailboxKeepsProviderTokenServerSide(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 	require.NotEmpty(t, response.Data.SessionID)
 	require.Equal(t, "one@example.test", response.Data.Email)
+}
+
+func TestActiveTeamChildMailboxRestoresOnlyCurrentAdministratorHandle(t *testing.T) {
+	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"address":"one@example.test","jwt":"mailbox-jwt-secret"}`))
+	})
+
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/mailboxes", nil))
+	require.Equal(t, http.StatusOK, createRec.Code)
+	var created struct {
+		Data openAITeamMailboxCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &created))
+
+	activeRec := httptest.NewRecorder()
+	router.ServeHTTP(activeRec, httptest.NewRequest(http.MethodGet, "/mailboxes/active", nil))
+	require.Equal(t, http.StatusOK, activeRec.Code)
+	require.NotContains(t, activeRec.Body.String(), "mailbox-jwt-secret")
+	var active struct {
+		Data struct {
+			Active  bool                            `json:"active"`
+			Mailbox openAITeamMailboxCreateResponse `json:"mailbox"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(activeRec.Body.Bytes(), &active))
+	require.True(t, active.Data.Active)
+	require.Equal(t, created.Data.SessionID, active.Data.Mailbox.SessionID)
+	require.Equal(t, created.Data.Email, active.Data.Mailbox.Email)
 }
 
 func TestCreateTeamChildMailboxUsesAdminWorkerPayload(t *testing.T) {
@@ -284,4 +314,39 @@ func TestTeamChildMailboxRedisStoreEnforcesOwnerAcrossHandlers(t *testing.T) {
 	_, ok, err = firstHandler.lookupTeamMailboxSessionContext(t.Context(), "mailbox-session", 42)
 	require.NoError(t, err)
 	require.False(t, ok)
+	_, _, ok, err = first.active(t.Context(), 42)
+	require.NoError(t, err)
+	require.False(t, ok)
+	_, err = client.Get(t.Context(), teamMailboxActiveKeyPrefix+"42").Result()
+	require.ErrorIs(t, err, redis.Nil)
+}
+
+func TestTeamChildMailboxRedisStoreRecoversLegacyActiveSession(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	baseURL, err := url.Parse("https://mail.example.test")
+	require.NoError(t, err)
+
+	store := newOpenAITeamMailboxStore()
+	store.configureRedis(client)
+	session := openAITeamMailboxSession{
+		adminUserID: 42,
+		email:       "one@example.test",
+		token:       "mailbox-token",
+		config:      teamMailboxProviderConfig{baseURL: baseURL},
+		expiresAt:   time.Now().Add(time.Minute),
+	}
+	payload, err := encodePersistedTeamMailboxSession(session)
+	require.NoError(t, err)
+	require.NoError(t, client.Set(t.Context(), teamMailboxRedisKeyPrefix+"legacy-session", payload, time.Minute).Err())
+
+	id, restored, ok, err := store.active(t.Context(), 42)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "legacy-session", id)
+	require.Equal(t, "one@example.test", restored.email)
+	indexedID, err := client.Get(t.Context(), teamMailboxActiveKeyPrefix+"42").Result()
+	require.NoError(t, err)
+	require.Equal(t, "legacy-session", indexedID)
 }

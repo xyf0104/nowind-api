@@ -17,7 +17,7 @@
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
         </button>
         <button type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>手动接管</span></button>
-        <button type="button" class="btn btn-primary flex items-center gap-2 whitespace-nowrap" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? '确认替换已选普通成员并打开授权页' : '先获取临时邮箱并选择普通成员席位'" @click="emit('start-workflow')">
+        <button type="button" class="btn btn-primary flex items-center gap-2 whitespace-nowrap" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后打开授权页' : '确认替换已选普通成员并打开授权页') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
           <Icon :name="workflowBusy ? 'refresh' : 'play'" size="sm" :class="workflowBusy ? 'animate-spin' : ''" :stroke-width="2" />
           <span>{{ workflowBusy ? '正在执行' : '一键授权' }}</span>
         </button>
@@ -59,6 +59,11 @@
       <div v-if="invitationEmail" class="min-w-0"><span class="font-medium text-gray-500 dark:text-gray-400">本次临时邮箱</span><code class="mt-1 block truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{{ invitationEmail }}</code></div>
       <div v-if="seatEmail" class="min-w-0"><span class="font-medium text-gray-500 dark:text-gray-400">默认待替换席位</span><code class="mt-1 block truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{{ seatEmail }}</code></div>
       <span v-if="workspaceName"><span class="font-medium">工作区：</span>{{ workspaceName }}</span>
+    </div>
+
+    <div v-if="seatAlreadyRemoved" class="flex items-start gap-2 border-b border-green-200 bg-green-50 px-4 py-3 text-xs text-green-800 dark:border-green-900/60 dark:bg-green-950/20 dark:text-green-200">
+      <Icon name="check" size="sm" class="mt-0.5 flex-shrink-0" :stroke-width="2.5" />
+      <span>已实时确认普通成员席位已由人工腾出，当前仅保留受保护成员。一键授权将跳过移除步骤，仅邀请当前临时邮箱。</span>
     </div>
 
     <div v-if="error" class="m-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300"><Icon name="exclamationTriangle" size="sm" class="mt-0.5 flex-shrink-0" :stroke-width="2" /><span>{{ error }}</span></div>
@@ -114,11 +119,12 @@ const props = withDefaults(defineProps<{
   workspaceName?: string
   invitationEmail?: string
   selectedEmail?: string
+  seatAlreadyRemoved?: boolean
   workflowReady?: boolean
   workflowBusy?: boolean
   workflow?: TeamChildWorkflow | null
   workflowContinuing?: boolean
-}>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false })
+}>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false })
 const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': [] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)

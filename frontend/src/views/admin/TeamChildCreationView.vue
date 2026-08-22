@@ -37,7 +37,7 @@
           <div class="mb-5 flex items-start justify-between gap-4">
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">流程状态</h2>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">先获取临时邮箱，再选择一个可替换席位并启动已确认的授权工作流。</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">先获取临时邮箱，再选择可替换席位；若普通席位已人工腾出，系统会实时确认后直接邀请。</p>
             </div>
             <button v-if="isStarted" type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" :disabled="busy" @click="resetFlow">
               <Icon name="refresh" size="sm" :stroke-width="2" />
@@ -91,9 +91,16 @@
       </section>
 
         <section v-if="teamWorkflow || callbackURL || createdAccount" class="space-y-5">
-          <details v-if="teamWorkflow?.manual_required" class="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <details v-if="smsWorkflowVisible" class="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <summary class="flex cursor-pointer items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">接码服务 <Icon name="arrowRight" size="sm" class="text-gray-400" :stroke-width="2" /></summary>
-            <div class="border-t border-gray-200 p-4 dark:border-dark-700"><PixlabSMSReceiver :active="true" /></div>
+            <div class="border-t border-gray-200 p-4 dark:border-dark-700">
+              <PixlabSMSReceiver
+                :active="true"
+                @phone-ready="submitWorkflowPhone"
+                @code-received="submitWorkflowCode"
+                @session-cancelled="restartWorkflowOAuth"
+              />
+            </div>
           </details>
 
           <div v-if="callbackURL || createdAccount" class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
@@ -122,6 +129,7 @@
         :workspace-name="workspaceName"
         :invitation-email="mailbox?.email || ''"
         :selected-email="selectedMemberEmail"
+        :seat-already-removed="manualSeatReady"
         :workflow-ready="workflowReady"
         :workflow-busy="workflowBusy"
         :workflow="teamWorkflow"
@@ -153,9 +161,9 @@
     </div>
     <ConfirmDialog
       :show="workflowConfirmOpen"
-      title="确认替换成员并授权"
+      :title="workflowConfirmationTitle"
       :message="workflowConfirmationMessage"
-      confirm-text="移除并邀请"
+      :confirm-text="manualSeatReady ? '邀请并授权' : '移除并邀请'"
       cancel-text="取消"
       danger
       @confirm="startConfirmedWorkflow"
@@ -233,7 +241,7 @@ let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
 
 const steps: Array<{ key: StepKey; label: string; description: string }> = [
   { key: 'mailbox', label: '生成临时邮箱', description: '由服务器端邮箱服务创建并保管访问令牌。' },
-  { key: 'replace', label: '替换 Team 成员', description: '确认后移除选中的成员席位，并邀请当前临时邮箱。' },
+  { key: 'replace', label: '确认 Team 席位', description: '确认后替换选中的普通成员；若普通席位已人工腾出，会跳过移除并仅发送邀请。' },
   { key: 'verify', label: '完成 OpenAI 授权', description: '授权页会在服务器浏览器的新标签中打开，回调自动识别。' },
   { key: 'import', label: '导入 XIASS', description: '使用固定并发数 10、优先级 1 创建一个 OpenAI OAuth 账号。' }
 ]
@@ -270,11 +278,27 @@ const parsedCallbackError = computed(() => {
 function isReplaceableMember(member: TeamChildMember | undefined) {
   return Boolean(member) && /^(member|成员)$/i.test(member!.role.trim()) && !member!.protected
 }
+function isProtectedMember(member: TeamChildMember) {
+  return Boolean(member.protected) || /^(owner|所有者|admin|administrator|管理员)$/i.test(member.role.trim())
+}
 const selectedReplaceableMember = computed(() => members.value.find((member) => member.email === selectedMemberEmail.value))
 const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || teamWorkflow.value?.status === 'running')
-const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && isReplaceableMember(selectedReplaceableMember.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value?.status || ''))
+const smsWorkflowVisible = computed(() => {
+  const workflow = teamWorkflow.value
+  if (!workflow) return false
+  if (workflow.status === 'manual_required') return true
+  return Boolean(
+    workflow.status === 'failed'
+    && workflow.steps.some((step) => step.key === 'oauth' && step.status === 'completed')
+  )
+})
+const manualSeatReady = computed(() => membersReady.value && members.value.length > 0 && !members.value.some((member) => isReplaceableMember(member)) && members.value.every(isProtectedMember))
+const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value?.status || ''))
+const workflowConfirmationTitle = computed(() => manualSeatReady.value ? '确认邀请并授权' : '确认替换成员并授权')
 const workflowConfirmationMessage = computed(() => {
-  if (!mailbox.value?.email || !selectedMemberEmail.value) return '当前缺少临时邮箱或待替换成员。'
+  if (!mailbox.value?.email) return '当前缺少临时邮箱。'
+  if (manualSeatReady.value) return `已实时确认普通成员席位已由人工腾出，当前仅剩受保护成员。将不移除任何成员，直接向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。`
+  if (!selectedMemberEmail.value) return '当前缺少待替换成员。'
   return `将从 ChatGPT 工作区移除 ${selectedMemberEmail.value}，随后向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。已完成的外部操作不会自动回滚。`
 })
 const canImport = computed(() => Boolean(parsedCallback.value) && !parsedCallbackError.value && Boolean(mailbox.value) && Boolean(oauthSessionID.value) && !importing.value)
@@ -465,7 +489,7 @@ async function removeMember(email: string) {
 }
 function openWorkflowConfirmation() {
   if (!workflowReady.value) {
-    appStore.showError('请先获取临时邮箱并选择一个可替换成员席位')
+    appStore.showError('请先获取临时邮箱，并选择可替换成员或刷新确认已人工腾出的席位')
     return
   }
   workflowConfirmOpen.value = true
@@ -480,15 +504,17 @@ function scheduleWorkflowPoll(delay = 1200) {
   workflowPollTimer = setTimeout(() => void pollWorkflow(), delay)
 }
 async function startConfirmedWorkflow() {
-  if (!mailbox.value?.email || !selectedMemberEmail.value || !authUrl.value || workflowStarting.value || !isReplaceableMember(selectedReplaceableMember.value)) return
+  const seatAlreadyRemoved = manualSeatReady.value
+  if (!mailbox.value?.email || !authUrl.value || workflowStarting.value || (!seatAlreadyRemoved && !isReplaceableMember(selectedReplaceableMember.value))) return
   workflowConfirmOpen.value = false
   workflowStarting.value = true
   errorMessage.value = ''
   try {
     teamWorkflow.value = await teamChildAPI.startTeamChildWorkflow({
-      seat_email: selectedMemberEmail.value,
+      ...(seatAlreadyRemoved ? {} : { seat_email: selectedMemberEmail.value }),
       invite_email: mailbox.value.email,
       auth_url: authUrl.value,
+      seat_already_removed: seatAlreadyRemoved,
       confirmed: true
     })
     status.value = 'workflow'
@@ -515,6 +541,89 @@ async function continueWorkflow() {
     workflowContinuing.value = false
   }
 }
+
+async function submitWorkflowPhone(phone: string) {
+  const workflow = teamWorkflow.value
+  if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
+  try {
+    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowPhone(workflow.id, phone)
+    status.value = teamWorkflow.value.status === 'callback_ready' ? 'callback' : 'waiting'
+    if (teamWorkflow.value.status === 'callback_ready' && teamWorkflow.value.callback_url) {
+      callbackURL.value = teamWorkflow.value.callback_url
+      clearWorkflowPoll()
+      appStore.showSuccess('手机号已更新，授权回调已就绪')
+      return
+    }
+    appStore.showInfo('新手机号已填入授权页面，将继续当前步骤')
+    scheduleWorkflowPoll(900)
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '新手机号未能填入授权页面，请在浏览器中手动完成当前步骤')
+    await syncWorkflowAfterActionError()
+  }
+}
+
+async function submitWorkflowCode(code: string) {
+  const workflow = teamWorkflow.value
+  if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
+  try {
+    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowCode(workflow.id, code)
+    status.value = teamWorkflow.value.status === 'callback_ready' ? 'callback' : 'waiting'
+    if (teamWorkflow.value.status === 'callback_ready' && teamWorkflow.value.callback_url) {
+      callbackURL.value = teamWorkflow.value.callback_url
+      clearWorkflowPoll()
+      appStore.showSuccess('验证码已提交，授权回调已就绪')
+      return
+    }
+    appStore.showInfo('验证码已填入授权页面，将继续当前步骤')
+    scheduleWorkflowPoll(900)
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '验证码未能填入授权页面，请在浏览器中手动完成当前步骤')
+    await syncWorkflowAfterActionError()
+  }
+}
+
+async function restartWorkflowOAuth() {
+  const workflow = teamWorkflow.value
+  if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
+  clearWorkflowPoll()
+  try {
+    const auth = await teamChildAPI.generateOpenAIAuthUrl()
+    authUrl.value = auth.auth_url
+    oauthSessionID.value = auth.session_id
+    oauthState.value = new URL(auth.auth_url).searchParams.get('state') || ''
+    teamWorkflow.value = await teamChildAPI.restartTeamChildWorkflowOAuth(workflow.id, auth.auth_url)
+    callbackURL.value = ''
+    status.value = 'workflow'
+    errorMessage.value = ''
+    appStore.showInfo('已取消旧手机号，正在重新打开授权步骤')
+    scheduleWorkflowPoll(900)
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '取消号码后未能重新打开授权步骤，请手动接管浏览器')
+  }
+}
+
+async function syncWorkflowAfterActionError() {
+  const workflow = teamWorkflow.value
+  if (!workflow) return
+  try {
+    const latest = await teamChildAPI.getTeamChildWorkflow(workflow.id)
+    teamWorkflow.value = latest
+    if (latest.status === 'failed') {
+      status.value = 'error'
+      return
+    }
+    if (latest.status === 'manual_required') {
+      status.value = 'waiting'
+      scheduleWorkflowPoll(2500)
+    }
+  } catch {
+    // Keep the original action error visible when the status read also fails.
+  }
+}
+
 async function pollWorkflow() {
   if (!teamWorkflow.value || !['running', 'manual_required'].includes(teamWorkflow.value.status)) return
   try {
@@ -558,6 +667,24 @@ async function startFlow() {
     status.value = 'ready'
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '流程启动失败') }
 }
+
+async function restoreActiveMailbox() {
+  if (!mailboxConfigured.value || mailbox.value || busy.value) return
+  try {
+    const restored = await teamChildAPI.getActiveMailbox()
+    if (!restored) return
+    mailbox.value = restored
+    accountName.value = restored.email
+    const auth = await teamChildAPI.generateOpenAIAuthUrl()
+    authUrl.value = auth.auth_url
+    oauthSessionID.value = auth.session_id
+    oauthState.value = new URL(auth.auth_url).searchParams.get('state') || ''
+    status.value = 'ready'
+    appStore.showInfo('已恢复当前临时邮箱，可以继续成员邀请和授权')
+  } catch {
+    // A missing or expired mailbox is normal after its short server-side TTL.
+  }
+}
 function schedulePoll() {
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = setTimeout(pollMailbox, 4000)
@@ -596,6 +723,7 @@ onMounted(async () => {
   mailboxConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.configured)
   browserConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.browser_configured)
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
+  await restoreActiveMailbox()
   if (browserConfigured.value) await refreshMembers(false)
 })
 onBeforeUnmount(() => {

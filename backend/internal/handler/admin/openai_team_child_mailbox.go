@@ -35,14 +35,17 @@ const (
 	teamMailboxBodyLimit       = 512 * 1024
 	teamMailboxConfigBodyLimit = 256 * 1024
 	teamMailboxRedisKeyPrefix  = "xiass:team-child:mailbox:"
+	teamMailboxActiveKeyPrefix = "xiass:team-child:mailbox:active:"
+	teamMailboxLegacyScanLimit = 128
 )
 
 type openAITeamMailboxStore struct {
-	mu       sync.Mutex
-	sessions map[string]openAITeamMailboxSession
-	client   *http.Client
-	redis    *redis.Client
-	now      func() time.Time
+	mu            sync.Mutex
+	sessions      map[string]openAITeamMailboxSession
+	activeByAdmin map[int64]string
+	client        *http.Client
+	redis         *redis.Client
+	now           func() time.Time
 }
 
 type openAITeamMailboxSession struct {
@@ -102,9 +105,10 @@ var (
 
 func newOpenAITeamMailboxStore() *openAITeamMailboxStore {
 	return &openAITeamMailboxStore{
-		sessions: make(map[string]openAITeamMailboxSession),
-		client:   &http.Client{Timeout: 12 * time.Second},
-		now:      time.Now,
+		sessions:      make(map[string]openAITeamMailboxSession),
+		activeByAdmin: make(map[int64]string),
+		client:        &http.Client{Timeout: 12 * time.Second},
+		now:           time.Now,
 	}
 }
 
@@ -220,6 +224,39 @@ func (h *OpenAIOAuthHandler) CreateTeamChildMailbox(c *gin.Context) {
 		SessionID: sessionID,
 		Email:     email,
 		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// GetActiveTeamChildMailbox restores the current administrator's short-lived
+// mailbox handle after a page refresh or an application update. Only the
+// address, opaque session ID, and expiry are returned; the provider token stays
+// in the server-side store.
+// GET /api/v1/admin/openai/team-child/mailboxes/active
+func (h *OpenAIOAuthHandler) GetActiveTeamChildMailbox(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.teamMailboxStore == nil {
+		response.Success(c, gin.H{"active": false})
+		return
+	}
+	ownerID := teamChildRequestOwnerID(c)
+	sessionID, session, ok, err := h.teamMailboxStore.active(c.Request.Context(), ownerID)
+	if err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "temporary mailbox service is temporarily unavailable")
+		return
+	}
+	if !ok {
+		response.Success(c, gin.H{"active": false})
+		return
+	}
+	response.Success(c, gin.H{
+		"active": true,
+		"mailbox": openAITeamMailboxCreateResponse{
+			SessionID: sessionID,
+			Email:     session.email,
+			ExpiresAt: session.expiresAt.UTC().Format(time.RFC3339),
+		},
 	})
 }
 
@@ -441,6 +478,9 @@ func (s *openAITeamMailboxStore) pruneLocked(now time.Time) {
 	for sessionID, session := range s.sessions {
 		if !session.expiresAt.After(now) {
 			delete(s.sessions, sessionID)
+			if s.activeByAdmin[session.adminUserID] == sessionID {
+				delete(s.activeByAdmin, session.adminUserID)
+			}
 		}
 	}
 }
@@ -468,13 +508,116 @@ func (s *openAITeamMailboxStore) create(ctx context.Context, sessionID string, s
 		if ttl <= 0 {
 			return errors.New("temporary mailbox session has expired")
 		}
-		return redisClient.Set(ctx, teamMailboxRedisKeyPrefix+sessionID, payload, ttl).Err()
+		sessionKey := teamMailboxRedisKeyPrefix + sessionID
+		if err := redisClient.Set(ctx, sessionKey, payload, ttl).Err(); err != nil {
+			return err
+		}
+		if err := redisClient.Set(ctx, teamMailboxActiveKeyPrefix+strconv.FormatInt(session.adminUserID, 10), sessionID, ttl).Err(); err != nil {
+			// Do not leave a newly created, but unreachable, mailbox session behind
+			// when the index write fails. A later request cannot safely recover it.
+			_ = redisClient.Del(ctx, sessionKey).Err()
+			return err
+		}
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(s.now())
 	s.sessions[sessionID] = session
+	s.activeByAdmin[session.adminUserID] = sessionID
 	return nil
+}
+
+func (s *openAITeamMailboxStore) active(ctx context.Context, ownerID int64) (string, openAITeamMailboxSession, bool, error) {
+	if s == nil || ownerID <= 0 {
+		return "", openAITeamMailboxSession{}, false, nil
+	}
+	now := s.now()
+	if redisClient := s.redisClient(); redisClient != nil {
+		indexKey := teamMailboxActiveKeyPrefix + strconv.FormatInt(ownerID, 10)
+		sessionID, err := redisClient.Get(ctx, indexKey).Result()
+		if errors.Is(err, redis.Nil) {
+			// Sessions created before the active-session index was introduced are
+			// still recoverable through a bounded, read-only prefix scan.
+			return s.findActiveInRedis(ctx, redisClient, ownerID, now)
+		}
+		if err != nil {
+			return "", openAITeamMailboxSession{}, false, err
+		}
+		payload, err := redisClient.Get(ctx, teamMailboxRedisKeyPrefix+sessionID).Bytes()
+		if errors.Is(err, redis.Nil) {
+			_ = redisClient.Del(ctx, indexKey).Err()
+			return s.findActiveInRedis(ctx, redisClient, ownerID, now)
+		}
+		if err != nil {
+			return "", openAITeamMailboxSession{}, false, err
+		}
+		session, err := decodePersistedTeamMailboxSession(payload)
+		if err != nil || session.adminUserID != ownerID || !session.expiresAt.After(now) {
+			_ = redisClient.Del(ctx, indexKey).Err()
+			return s.findActiveInRedis(ctx, redisClient, ownerID, now)
+		}
+		return sessionID, session, true, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now)
+	sessionID := s.activeByAdmin[ownerID]
+	session, ok := s.sessions[sessionID]
+	if !ok || !session.expiresAt.After(now) || session.adminUserID != ownerID {
+		delete(s.activeByAdmin, ownerID)
+		return "", openAITeamMailboxSession{}, false, nil
+	}
+	return sessionID, session, true, nil
+}
+
+func (s *openAITeamMailboxStore) findActiveInRedis(ctx context.Context, redisClient *redis.Client, ownerID int64, now time.Time) (string, openAITeamMailboxSession, bool, error) {
+	var (
+		cursor     uint64
+		bestID     string
+		best       openAITeamMailboxSession
+		bestExpiry time.Time
+		scanned    int
+	)
+	for {
+		keys, next, err := redisClient.Scan(ctx, cursor, teamMailboxRedisKeyPrefix+"*", 100).Result()
+		if err != nil {
+			return "", openAITeamMailboxSession{}, false, err
+		}
+		for _, key := range keys {
+			scanned++
+			if scanned > teamMailboxLegacyScanLimit {
+				break
+			}
+			if strings.HasPrefix(key, teamMailboxActiveKeyPrefix) {
+				continue
+			}
+			payload, err := redisClient.Get(ctx, key).Bytes()
+			if err != nil {
+				continue
+			}
+			session, err := decodePersistedTeamMailboxSession(payload)
+			if err != nil || session.adminUserID != ownerID || !session.expiresAt.After(now) {
+				continue
+			}
+			if bestID == "" || session.expiresAt.After(bestExpiry) {
+				bestID, best, bestExpiry = strings.TrimPrefix(key, teamMailboxRedisKeyPrefix), session, session.expiresAt
+			}
+		}
+		cursor = next
+		if cursor == 0 || scanned >= teamMailboxLegacyScanLimit {
+			break
+		}
+	}
+	if bestID == "" {
+		return "", openAITeamMailboxSession{}, false, nil
+	}
+	ttl := best.expiresAt.Sub(now)
+	if ttl > 0 {
+		_ = redisClient.Set(ctx, teamMailboxActiveKeyPrefix+strconv.FormatInt(ownerID, 10), bestID, ttl).Err()
+	}
+	return bestID, best, true, nil
 }
 
 func newTeamMailboxSessionID() (string, error) {
@@ -553,12 +696,21 @@ func (s *openAITeamMailboxStore) delete(ctx context.Context, sessionID string, o
 		}
 		session, err := decodePersistedTeamMailboxSession(payload)
 		if err != nil {
+			// The unreadable session cannot reveal an owner safely. Remove only the
+			// payload; active() will discard a stale index on its next lookup.
 			return redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err()
 		}
 		if ownerID > 0 && session.adminUserID > 0 && session.adminUserID != ownerID {
 			return nil
 		}
-		return redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err()
+		if err := redisClient.Del(ctx, teamMailboxRedisKeyPrefix+sessionID).Err(); err != nil {
+			return err
+		}
+		indexKey := teamMailboxActiveKeyPrefix + strconv.FormatInt(session.adminUserID, 10)
+		if currentID, getErr := redisClient.Get(ctx, indexKey).Result(); getErr == nil && currentID == sessionID {
+			return redisClient.Del(ctx, indexKey).Err()
+		}
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -567,6 +719,9 @@ func (s *openAITeamMailboxStore) delete(ctx context.Context, sessionID string, o
 		return nil
 	}
 	delete(s.sessions, sessionID)
+	if currentID := s.activeByAdmin[session.adminUserID]; currentID == sessionID {
+		delete(s.activeByAdmin, session.adminUserID)
+	}
 	s.pruneLocked(s.now())
 	return nil
 }

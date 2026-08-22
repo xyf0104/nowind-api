@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -12,14 +13,33 @@ import (
 
 // Team child workflow requests are deliberately narrow. The backend accepts
 // only an OpenAI authorization URL produced by its existing OAuth endpoint;
-// mailbox access tokens, verification codes, passwords, and browser cookies
-// never cross this proxy.
+// mailbox access tokens, passwords, and browser cookies never cross this
+// proxy. A one-time SMS code is forwarded only during the active workflow
+// action and is never persisted or written to logs.
 type teamChildWorkflowStartRequest struct {
-	SeatEmail   string `json:"seat_email" binding:"required,email"`
-	InviteEmail string `json:"invite_email" binding:"required,email"`
-	AuthURL     string `json:"auth_url" binding:"required"`
-	Confirmed   bool   `json:"confirmed"`
+	SeatEmail          string `json:"seat_email" binding:"omitempty,email"`
+	InviteEmail        string `json:"invite_email" binding:"required,email"`
+	AuthURL            string `json:"auth_url" binding:"required"`
+	SeatAlreadyRemoved bool   `json:"seat_already_removed"`
+	Confirmed          bool   `json:"confirmed"`
 }
+
+type teamChildWorkflowPhoneRequest struct {
+	Phone string `json:"phone" binding:"required"`
+}
+
+type teamChildWorkflowCodeRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+type teamChildWorkflowRestartOAuthRequest struct {
+	AuthURL string `json:"auth_url" binding:"required"`
+}
+
+var (
+	teamChildWorkflowPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
+	teamChildWorkflowCodePattern  = regexp.MustCompile(`^[0-9]{4,8}$`)
+)
 
 // StartTeamChildWorkflow confirms the chosen replacement seat, sends the
 // temporary-email invitation through the internal Playwright service, and opens
@@ -32,21 +52,30 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 	}
 	var req teamChildWorkflowStartRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "请输入待替换成员、临时邮箱和授权链接")
+		response.BadRequest(c, "请输入临时邮箱和授权链接")
 		return
 	}
 	req.SeatEmail = strings.TrimSpace(req.SeatEmail)
 	req.InviteEmail = strings.TrimSpace(req.InviteEmail)
 	req.AuthURL = strings.TrimSpace(req.AuthURL)
 	if !req.Confirmed {
-		response.BadRequest(c, "请先确认移除成员并发送邀请")
+		response.BadRequest(c, "请先确认成员操作并发送邀请")
 		return
 	}
-	if strings.EqualFold(req.SeatEmail, req.InviteEmail) {
+	if req.SeatAlreadyRemoved {
+		if req.SeatEmail != "" {
+			response.BadRequest(c, "人工腾位工作流不能携带待移除成员")
+			return
+		}
+	} else if req.SeatEmail == "" {
+		response.BadRequest(c, "请选择待替换的普通成员")
+		return
+	}
+	if req.SeatEmail != "" && strings.EqualFold(req.SeatEmail, req.InviteEmail) {
 		response.BadRequest(c, "临时邮箱不能与待替换成员相同")
 		return
 	}
-	if isTeamChildProtectedMemberEmail(req.SeatEmail) {
+	if req.SeatEmail != "" && isTeamChildProtectedMemberEmail(req.SeatEmail) {
 		response.Forbidden(c, "受保护的管理员账号不可替换")
 		return
 	}
@@ -81,6 +110,72 @@ func (h *OpenAIOAuthHandler) ContinueTeamChildWorkflow(c *gin.Context) {
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/continue", nil)
+}
+
+// SubmitTeamChildWorkflowPhone replaces the visible phone field in the current
+// OAuth tab after the operator has confirmed a new XIASS SMS session. The
+// value is forwarded only to the short-lived browser automation process.
+func (h *OpenAIOAuthHandler) SubmitTeamChildWorkflowPhone(c *gin.Context) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return
+	}
+	var req teamChildWorkflowPhoneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "手机号格式无效")
+		return
+	}
+	req.Phone = strings.TrimSpace(req.Phone)
+	if !teamChildWorkflowPhonePattern.MatchString(req.Phone) {
+		response.BadRequest(c, "手机号格式无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/phone", req)
+}
+
+// SubmitTeamChildWorkflowCode sends one newly received SMS code to the active
+// OAuth tab. Codes are never stored in the workflow summary or application DB.
+func (h *OpenAIOAuthHandler) SubmitTeamChildWorkflowCode(c *gin.Context) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return
+	}
+	var req teamChildWorkflowCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "验证码格式无效")
+		return
+	}
+	req.Code = strings.TrimSpace(req.Code)
+	if !teamChildWorkflowCodePattern.MatchString(req.Code) {
+		response.BadRequest(c, "验证码格式无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/code", req)
+}
+
+// RestartTeamChildWorkflowOAuth opens a fresh standard OAuth page after a
+// confirmed SMS cancellation. Member removal, invitation, and mailbox state
+// remain untouched; only OAuth/verification state is reset by the automation
+// service.
+func (h *OpenAIOAuthHandler) RestartTeamChildWorkflowOAuth(c *gin.Context) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return
+	}
+	var req teamChildWorkflowRestartOAuthRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "授权链接无效")
+		return
+	}
+	req.AuthURL = strings.TrimSpace(req.AuthURL)
+	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/restart-oauth", req)
 }
 
 // CancelTeamChildWorkflow stops only the pending callback observation. It never
