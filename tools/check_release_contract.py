@@ -608,6 +608,17 @@ def check_update_bridge(errors: list[str]) -> None:
     ):
         errors.append("xiass-runtime-start.sh 必须先启动并验证主服务，再进入浏览器组件阶段")
 
+    updater_dockerfile = read("deploy/xiass-updater/Dockerfile")
+    require_all(
+        "deploy/xiass-updater/Dockerfile",
+        updater_dockerfile,
+        [
+            "COPY xiass-update.sh xiass-runtime-start.sh xiass-backup.sh ./",
+            "COPY xiass-updater/xiass-updater-entrypoint.sh /usr/local/bin/xiass-updater",
+        ],
+        errors,
+    )
+
     update_script = read("deploy/xiass-update.sh")
     main_body = update_script.partition("main() {")[2]
     ordered_markers = [
