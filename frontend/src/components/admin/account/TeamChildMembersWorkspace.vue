@@ -17,6 +17,10 @@
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
         </button>
         <button type="button" class="btn btn-secondary flex items-center gap-2" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>手动接管浏览器</span></button>
+        <button type="button" class="btn btn-primary flex items-center gap-2" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? '确认替换已选成员并打开授权页' : '先获取临时邮箱并选择可替换成员'" @click="emit('start-workflow')">
+          <Icon :name="workflowBusy ? 'refresh' : 'play'" size="sm" :class="workflowBusy ? 'animate-spin' : ''" :stroke-width="2" />
+          <span>{{ workflowBusy ? '正在执行' : '一键授权' }}</span>
+        </button>
       </div>
     </header>
 
@@ -74,8 +78,8 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { TeamChildMember } from '@/api/admin/teamChild'
 
-const props = withDefaults(defineProps<{ members: TeamChildMember[]; pendingInvites?: number; loading?: boolean; error?: string; ready?: boolean; seatEmail?: string; workspaceName?: string; invitationEmail?: string; selectedEmail?: string }>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '' })
-const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': [] }>()
+const props = withDefaults(defineProps<{ members: TeamChildMember[]; pendingInvites?: number; loading?: boolean; error?: string; ready?: boolean; seatEmail?: string; workspaceName?: string; invitationEmail?: string; selectedEmail?: string; workflowReady?: boolean; workflowBusy?: boolean }>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', workflowReady: false, workflowBusy: false })
+const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': [] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)
 const removeOpen = ref(false)

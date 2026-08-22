@@ -8,6 +8,21 @@ export interface TeamChildMailboxStatus {
 export interface TeamChildBrowserSession {
   embed_url: string
   expires_at: string
+  ticket_expires_at?: string
+  controller_id: string
+  control_expires_at: string
+}
+
+export interface TeamChildBrowserSessionRequest {
+  controller_id?: string
+  /** Explicitly replace the current graphical-browser controller. */
+  take_over?: boolean
+}
+
+export interface TeamChildBrowserControl {
+  controller_id: string
+  control_expires_at?: string
+  released?: boolean
 }
 
 export interface TeamChildMailbox {
@@ -73,6 +88,34 @@ export interface TeamChildMembersResult {
   }
 }
 
+export type TeamChildWorkflowStatus = 'running' | 'manual_required' | 'callback_ready' | 'failed' | 'cancelled'
+
+export interface TeamChildWorkflowStep {
+  key: 'members' | 'remove' | 'invite' | 'oauth' | 'verify'
+  number: number
+  label: string
+  status: 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  message?: string
+}
+
+export interface TeamChildWorkflow {
+  id: string
+  status: TeamChildWorkflowStatus
+  expires_at: string
+  manual_required: boolean
+  callback_url?: string
+  error?: string
+  steps: TeamChildWorkflowStep[]
+}
+
+export interface StartTeamChildWorkflowRequest {
+  seat_email: string
+  invite_email: string
+  auth_url: string
+  /** Must be set only after the XIASS in-page destructive-action dialog. */
+  confirmed: true
+}
+
 export async function getMailboxStatus(): Promise<TeamChildMailboxStatus> {
   const { data } = await apiClient.get<TeamChildMailboxStatus>('/admin/openai/team-child/mailbox-status')
   return data
@@ -94,10 +137,25 @@ export async function importMailboxConfig(file: File): Promise<TeamChildMailboxC
   return data
 }
 
-export async function createBrowserSession(): Promise<TeamChildBrowserSession> {
+export async function createBrowserSession(payload: TeamChildBrowserSessionRequest = {}): Promise<TeamChildBrowserSession> {
   const { data } = await apiClient.post<TeamChildBrowserSession>(
-    '/admin/openai/team-child/browser-sessions'
+    '/admin/openai/team-child/browser-sessions',
+    payload
   )
+  return data
+}
+
+export async function heartbeatTeamChildBrowserControl(controllerID: string): Promise<TeamChildBrowserControl> {
+  const { data } = await apiClient.post<TeamChildBrowserControl>('/admin/openai/team-child/browser-control/heartbeat', {
+    controller_id: controllerID
+  })
+  return data
+}
+
+export async function releaseTeamChildBrowserControl(controllerID: string): Promise<TeamChildBrowserControl> {
+  const { data } = await apiClient.delete<TeamChildBrowserControl>('/admin/openai/team-child/browser-control', {
+    data: { controller_id: controllerID }
+  })
   return data
 }
 
@@ -131,6 +189,21 @@ export async function removeTeamChildMember(email: string): Promise<TeamChildMem
   return data
 }
 
+export async function startTeamChildWorkflow(payload: StartTeamChildWorkflowRequest): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>('/admin/openai/team-child/workflows', payload)
+  return data
+}
+
+export async function getTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.get<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}`)
+  return data
+}
+
+export async function cancelTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.delete<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}`)
+  return data
+}
+
 export async function pollMailboxCode(sessionId: string): Promise<TeamChildMailboxCode> {
   const { data } = await apiClient.get<TeamChildMailboxCode>(
     `/admin/openai/team-child/mailboxes/${encodeURIComponent(sessionId)}/code`
@@ -155,12 +228,17 @@ export async function createOpenAIAccountFromOAuth(payload: TeamChildCreateAccou
 export const teamChildAPI = {
   getMailboxStatus,
   createBrowserSession,
+  heartbeatTeamChildBrowserControl,
+  releaseTeamChildBrowserControl,
   listTeamChildMembers,
   refreshTeamChildMembers,
   inspectTeamChildSeat,
   inviteTeamChildMember,
   updateTeamChildMember,
   removeTeamChildMember,
+  startTeamChildWorkflow,
+  getTeamChildWorkflow,
+  cancelTeamChildWorkflow,
   createMailbox,
   importMailboxConfig,
   pollMailboxCode,

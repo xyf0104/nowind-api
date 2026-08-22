@@ -87,6 +87,7 @@ TEAM_CHILD_BROWSER_ENABLED=true
 TEAM_CHILD_BROWSER_UPSTREAM_URL=https://team-child-browser:3001
 TEAM_CHILD_BROWSER_SESSION_TTL_MINUTES=720
 TEAM_CHILD_BROWSER_TICKET_TTL_SECONDS=180
+TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS=120
 TEAM_CHILD_BROWSER_START_URL=https://chatgpt.com/admin/members
 TEAM_CHILD_BROWSER_PUID=1000
 TEAM_CHILD_BROWSER_PGID=1000
@@ -98,6 +99,12 @@ Generate the private service token with `openssl rand -hex 32` and set the same
 value for `xiass-api` and `team-child-automation`. Do not commit it or expose it
 in browser responses. Without this token, the member automation endpoints stay
 disabled.
+
+The member automation workspace is the default page after the persistent browser
+has been logged in once. A graphical browser is opened only for explicit manual
+takeover. `TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS` is the short controller lease
+for that shared graphical surface; a second device receives a visible conflict
+and must explicitly take over instead of silently terminating the first view.
 
 For the recommended local-directory deployment, recreate XIASS and start the
 explicit browser profile:

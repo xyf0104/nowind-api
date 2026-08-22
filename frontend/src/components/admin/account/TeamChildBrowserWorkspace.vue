@@ -93,6 +93,10 @@
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
           <span>重新连接</span>
         </button>
+        <button v-if="controlConflict" type="button" class="btn btn-primary mt-3 flex items-center gap-2" :disabled="loading" @click="$emit('force-take-over')">
+          <Icon name="arrowRight" size="sm" :stroke-width="2" />
+          <span>接管浏览器</span>
+        </button>
       </div>
     </div>
 
@@ -114,17 +118,20 @@ const props = withDefaults(defineProps<{
   error?: string
   mailboxEmail?: string
   membersReady?: boolean
+  controlConflict?: boolean
 }>(), {
   loading: false,
   error: '',
   mailboxEmail: '',
-  membersReady: false
+  membersReady: false,
+  controlConflict: false
 })
 
 defineEmits<{
   reload: []
   copyMailbox: []
   'open-modular': []
+  'force-take-over': []
 }>()
 
 const frameLoading = ref(Boolean(props.embedUrl))

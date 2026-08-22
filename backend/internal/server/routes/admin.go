@@ -444,6 +444,8 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.GET("/team-child/mailbox-status", h.Admin.OpenAIOAuth.TeamChildMailboxStatus)
 		openai.POST("/team-child/mailbox-config", h.Admin.OpenAIOAuth.ImportTeamChildMailboxConfig)
 		openai.POST("/team-child/browser-sessions", h.Admin.OpenAIOAuth.CreateTeamChildBrowserSession)
+		openai.POST("/team-child/browser-control/heartbeat", h.Admin.OpenAIOAuth.HeartbeatTeamChildBrowserControl)
+		openai.DELETE("/team-child/browser-control", h.Admin.OpenAIOAuth.ReleaseTeamChildBrowserControl)
 		openai.GET("/team-child/members", h.Admin.OpenAIOAuth.ListTeamChildMembers)
 		openai.POST("/team-child/members/refresh", h.Admin.OpenAIOAuth.RefreshTeamChildMembers)
 		openai.POST("/team-child/members/inspect", h.Admin.OpenAIOAuth.InspectTeamChildSeat)
@@ -451,6 +453,9 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Member identity is the email address, not a volatile table row index.
 		openai.PATCH("/team-child/members", h.Admin.OpenAIOAuth.UpdateTeamChildMember)
 		openai.DELETE("/team-child/members", h.Admin.OpenAIOAuth.RemoveTeamChildMember)
+		openai.POST("/team-child/workflows", h.Admin.OpenAIOAuth.StartTeamChildWorkflow)
+		openai.GET("/team-child/workflows/:workflow_id", h.Admin.OpenAIOAuth.GetTeamChildWorkflow)
+		openai.DELETE("/team-child/workflows/:workflow_id", h.Admin.OpenAIOAuth.CancelTeamChildWorkflow)
 		openai.POST("/team-child/mailboxes", h.Admin.OpenAIOAuth.CreateTeamChildMailbox)
 		openai.GET("/team-child/mailboxes/:session_id/code", h.Admin.OpenAIOAuth.PollTeamChildMailboxCode)
 		openai.DELETE("/team-child/mailboxes/:session_id", h.Admin.OpenAIOAuth.DeleteTeamChildMailboxSession)

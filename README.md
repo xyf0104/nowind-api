@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.29-0ea5e9" alt="当前版本 v1.1.29" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.30-0ea5e9" alt="当前版本 v1.1.30" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.29
+> 当前版本：v1.1.30
+
+v1.1.30 将 Team 子号创建默认收敛为成员自动化工作区：已登录的持久 Chromium 可直接识别成员、选择可替换席位，并在 XIASS 站内确认后依次移除成员、发送临时邮箱邀请、在独立标签打开 OAuth 授权页和识别回调。外部邮箱、短信、CAPTCHA、身份与工作区验证仍保留人工确认和接管。图形浏览器改为显式手动入口，并使用短期控制权租约避免多设备互相中断；官方安装和在线更新会自动补齐相应配置，不影响既有登录资料、数据卷或邮箱配置。
 
 v1.1.29 修复公开设置未返回模型价格开关导致模型价格入口隐藏的问题，修正 Team 浏览器同源 iframe 的安全响应头，并优化 OAuth 接码页面的步骤图标显示。上一版的 host updater 构建上下文修复、Team 子号工作流、OAuth 接码复用、服务器浏览器、成员管理和两阶段启动更新能力继续保留。
 

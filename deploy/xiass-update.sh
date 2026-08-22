@@ -74,6 +74,7 @@ ensure_team_child_runtime_config() {
     # the newly added Team workflow usable on older XIASS installations.
     append_env_default TEAM_CHILD_BROWSER_ENABLED true
     append_env_default TEAM_CHILD_BROWSER_START_DELAY_SECONDS 5
+    append_env_default TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS 120
     append_env_default TEAM_CHILD_AUTOMATION_IMAGE ghcr.io/xyf0104/xiass-team-child-automation:latest
     append_env_default XIASS_UPDATER_IMAGE ghcr.io/xyf0104/xiass-updater:latest
 

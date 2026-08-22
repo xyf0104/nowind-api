@@ -61,6 +61,7 @@ TEAM_CHILD_BROWSER_ENABLED=true
 TEAM_CHILD_BROWSER_UPSTREAM_URL=https://team-child-browser:3001
 TEAM_CHILD_BROWSER_SESSION_TTL_MINUTES=720
 TEAM_CHILD_BROWSER_TICKET_TTL_SECONDS=180
+TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS=120
 TEAM_CHILD_BROWSER_START_URL=https://chatgpt.com/admin/members
 TEAM_CHILD_BROWSER_PUID=1000
 TEAM_CHILD_BROWSER_PGID=1000
@@ -79,6 +80,8 @@ docker compose -f docker-compose.local.yml --profile team-browser up -d --force-
 ```
 
 这会启动名为 `xiass-api-team-child-browser` 和 `xiass-api-team-child-automation` 的容器。它们没有公开宿主机端口；XIASS 为管理员签发一次性 iframe 链接，并使用 HttpOnly 会话 Cookie 代理到 Docker 内部的 `https://team-child-browser:3001`。当前 Chromium 镜像将 Chrome DevTools 绑定在容器回环地址，自动化服务因此与浏览器共享网络命名空间，并通过 `127.0.0.1:9222` 连接同一个持久化浏览器会话；XIASS 通过 `team-child-browser:8090` 访问该自动化服务。浏览器个人资料位于 Chromium 的 `/config` 持久化挂载：本地目录 Compose 对应 `deploy/team_child_browser_data`，命名卷 Compose 对应 `team_child_browser_data`。只要不删除该目录或卷，容器重启、XIASS 重建或镜像升级都不会清除浏览器登录状态。
+
+登录完成后，`创建 Team 子号` 默认显示成员自动化工作区，而不会自动嵌入图形浏览器。需要处理外部登录、CAPTCHA、短信、身份或工作区确认时，再点击“手动接管浏览器”。该图形界面是共享资源，`TEAM_CHILD_BROWSER_CONTROL_TTL_SECONDS`（默认 `120`）控制单个设备的短租约；第二个设备会看到明确的冲突提示，只有在 XIASS 站内确认后才会接管，避免 Chromium 主客户端被静默中断。
 
 确认服务状态：
 
