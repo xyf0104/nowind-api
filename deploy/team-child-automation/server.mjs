@@ -8,6 +8,8 @@ const cdpURL = process.env.BROWSER_CDP_URL || 'http://127.0.0.1:9222'
 const membersURL = process.env.MEMBERS_URL || 'https://chatgpt.com/admin/members'
 const operationTimeout = Number(process.env.OPERATION_TIMEOUT_MS || 30000)
 const confirmationTimeout = Number(process.env.CONFIRMATION_TIMEOUT_MS || 12000)
+const memberRenderTimeout = boundedDuration(process.env.MEMBER_RENDER_TIMEOUT_MS, 15000, 5000, 60000)
+const pendingInviteRenderTimeout = boundedDuration(process.env.PENDING_INVITE_RENDER_TIMEOUT_MS, 15000, 3000, 60000)
 const requestBodyLimit = Number(process.env.REQUEST_BODY_LIMIT_BYTES || 32768)
 const serviceToken = String(process.env.TEAM_CHILD_AUTOMATION_TOKEN || '').trim()
 const browserConnectTimeout = boundedDuration(process.env.BROWSER_CONNECT_TIMEOUT_MS, 30000, 1000, 120000)
@@ -30,8 +32,11 @@ let browserPromise
 let operation = Promise.resolve()
 let activeWorkflowID = ''
 const workflows = new Map()
-let managedMembersPage
-let managedPendingInvitesPage
+// All automated Team/OAuth navigation stays in one dedicated browser tab.
+// Route changes (Members -> Pending invites -> OAuth) are serialized by the
+// operation queue, so a second tab only creates stale SPA state and confuses
+// the operator watching the server browser.
+let managedBrowserPage
 
 function json(res, status, payload) {
   res.writeHead(status, {
@@ -108,6 +113,11 @@ async function releaseCacheSession(cdpSession) {
 }
 
 async function reloadMemberPage(active, targetURL, forceRefresh) {
+  // A normal read is deliberately DOM-only. The managed tab may already have
+  // a fully authenticated Members SPA, and re-running goto here resets its
+  // React state before member or invitation rows finish rendering.
+  if (!forceRefresh && isTeamMembersPage(active)) return undefined
+
   let cdpSession
   if (forceRefresh) {
     try {
@@ -131,20 +141,33 @@ async function reloadMemberPage(active, targetURL, forceRefresh) {
   }
 }
 
+function isTeamMembersPage(page) {
+  try {
+    const parsed = new URL(page.url())
+    return parsed.hostname.toLowerCase() === 'chatgpt.com' && parsed.pathname.toLowerCase() === '/admin/members'
+  } catch {
+    return false
+  }
+}
+
+function reusableTeamPage(context, { allowNonMembers = false } = {}) {
+  if (managedBrowserPage && !managedBrowserPage.isClosed() && (allowNonMembers || isTeamMembersPage(managedBrowserPage))) return managedBrowserPage
+  return context.pages().find((page) => isTeamMembersPage(page) && !page.isClosed())
+}
+
 async function membersPage({ forceRefresh = false, targetURL = membersURL, pending = false } = {}) {
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
-  // Never reuse an arbitrary visible tab. The manual browser may be on an OAuth
-  // page, a CAPTCHA, or a human confirmation step; member automation must not
-  // navigate it away. Keep separate tabs for Members and Pending invites so a
-  // slow SPA route change cannot make an old table look like the new view.
-  let active = pending ? managedPendingInvitesPage : managedMembersPage
-  if (!active || active.isClosed()) {
-    active = await context.newPage()
-    if (pending) managedPendingInvitesPage = active
-    else managedMembersPage = active
+  // Never reuse an arbitrary visible tab. Only the single dedicated Members
+  // page owned by this service is eligible; OAuth/CAPTCHA/manual tabs remain
+  // untouched until this workflow explicitly takes over that same page.
+  let active = reusableTeamPage(context)
+  if (!active && managedBrowserPage && !managedBrowserPage.isClosed()) {
+    throw new Error('服务器浏览器当前正在 OpenAI 授权页，成员检查不会打断授权流程')
   }
+  if (!active) active = await context.newPage()
+  managedBrowserPage = active
   let cdpSession
   try {
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
@@ -154,12 +177,11 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
     // another user-visible tab.
     if (!active.isClosed()) throw error
     active = await context.newPage()
-    if (pending) managedPendingInvitesPage = active
-    else managedMembersPage = active
+    managedBrowserPage = active
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   }
   try {
-    if (pending) await waitForPendingInvitesPageReady(active)
+    if (pending) await waitForPendingInvitesPageReady(active, { allowRecoveryNavigation: forceRefresh })
     else await waitForMemberPageReady(active)
     return active
   } finally {
@@ -169,7 +191,7 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
   }
 }
 
-async function pendingInvitesPage({ forceRefresh = true } = {}) {
+async function pendingInvitesPage({ forceRefresh = false } = {}) {
   // Start from the real Members route and let the page select its own Pending
   // invites tab. Some hosted builds keep `?tab=invites` in the URL while still
   // rendering the Members panel, which made a stale member row look like a
@@ -323,6 +345,11 @@ async function pendingInvitesRouteSelected(current) {
   try {
     const parsed = new URL(current.url())
     if (parsed.pathname.toLowerCase().includes('/invites')) return true
+    // ChatGPT's current Members page keeps the selected tab in the query
+    // string (`/admin/members?tab=invites`). The page body and exact target
+    // email are still checked by the caller, so honoring this selected route
+    // does not turn a stale Members shell into a pending invitation.
+    if ((parsed.searchParams.get('tab') || '').toLowerCase() === 'invites') return true
   } catch {
     // The selected tab or active panel below is enough for SPA builds that use
     // a non-URL route.
@@ -351,8 +378,25 @@ async function pendingInvitesControl(current) {
   return null
 }
 
-async function pendingInviteSnapshot({ forceRefresh = true, expectedEmail = '' } = {}) {
+async function membersControl(current) {
+  const pattern = /^members$|^成员$/i
+  for (const role of ['tab', 'button', 'link']) {
+    const controls = current.getByRole(role, { name: pattern })
+    const count = await controls.count().catch(() => 0)
+    for (let index = 0; index < count; index += 1) {
+      const control = controls.nth(index)
+      if (await control.isVisible().catch(() => false)) return control
+    }
+  }
+  return null
+}
+
+async function pendingInviteSnapshot({ forceRefresh = false, expectedEmail = '', waitForExpectedEmail = false } = {}) {
   const current = await pendingInvitesPage({ forceRefresh })
+  const wanted = normalizeEmail(expectedEmail)
+  if (wanted && waitForExpectedEmail) {
+    await waitForVisiblePendingInviteEmail(current, wanted)
+  }
   const pendingRows = current.locator(
     'table tbody tr, [role="row"], [role="listitem"], article, [data-testid*="invite" i], [data-testid*="pending" i]'
   )
@@ -369,7 +413,6 @@ async function pendingInviteSnapshot({ forceRefresh = true, expectedEmail = '' }
     const email = normalizeEmail(extractEmail(await rows.nth(index).innerText()))
     if (email) emails.add(email)
   }
-  const wanted = normalizeEmail(expectedEmail)
   if (wanted && await visiblePendingInviteEmail(current, wanted)) {
     // A few hosted builds render the invitation as an unstructured text card.
     // Only the exact requested email is accepted in that fallback; arbitrary
@@ -381,6 +424,19 @@ async function pendingInviteSnapshot({ forceRefresh = true, expectedEmail = '' }
     emails,
     pendingInvites: parsePendingInvites(body) ?? emails.size
   }
+}
+
+async function waitForVisiblePendingInviteEmail(current, wanted) {
+  const deadline = Date.now() + pendingInviteRenderTimeout
+  while (Date.now() < deadline) {
+    if (await visiblePendingInviteEmail(current, wanted)) return true
+    // Keep the same SPA page alive while its pending-invite data arrives. A
+    // navigation/reload on every poll can reset the tab before React commits
+    // the invitation row, which previously caused successful invites to look
+    // like failures.
+    await sleep(300)
+  }
+  return false
 }
 
 async function visiblePendingInviteEmail(current, wanted) {
@@ -413,17 +469,18 @@ async function visiblePendingInviteEmail(current, wanted) {
 
 async function waitForPendingInviteEmail(email) {
   const wanted = normalizeEmail(email)
-  let latest
-  await waitUntil('邀请操作已提交但待处理邀请中未出现该邮箱', async () => {
-    latest = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: wanted })
-    if (latest.emails.has(wanted)) return true
-
-    // Some hosted builds immediately move the accepted invite into Members.
-    // Treat that as success too, but never infer success from a count alone.
-    const members = await listMembers({ forceRefresh: true })
-    return members.members.some((member) => normalizeEmail(member.email) === wanted)
+  const latest = await pendingInviteSnapshot({
+    forceRefresh: false,
+    expectedEmail: wanted,
+    waitForExpectedEmail: true
   })
-  return latest || { emails: new Set([wanted]), pendingInvites: 1 }
+  if (latest.emails.has(wanted)) return latest
+
+  // Some hosted builds immediately move the accepted invite into Members.
+  // Treat that as success too, but never infer success from a count alone.
+  const members = await listMembers({ forceRefresh: false })
+  if (members.members.some((member) => normalizeEmail(member.email) === wanted)) return latest
+  throw new Error('邀请操作已提交但待处理邀请中未出现该邮箱，未在规定时间内确认页面状态')
 }
 
 // The ChatGPT members page is a client-rendered application. DOMContentLoaded
@@ -432,16 +489,39 @@ async function waitForPendingInviteEmail(email) {
 // then allow the table a short window to populate. An actually empty workspace
 // still returns normally once the toolbar is visible.
 async function waitForMemberPageReady(current) {
-  const deadline = Date.now() + Math.min(operationTimeout, 12000)
+  const deadline = Date.now() + Math.min(operationTimeout, memberRenderTimeout)
   const inviteButton = current.getByRole('button', { name: /invite member|邀请成员/i }).first()
   const rows = current.locator('table tbody tr, [role="row"]')
+  let toolbarVisibleAt = 0
+  let emptyStateVisibleAt = 0
   while (Date.now() < deadline) {
     if (await pendingInvitesRouteSelected(current)) {
-      await sleep(250)
+      const control = await membersControl(current)
+      if (control) {
+        await control.click().catch(() => undefined)
+        await sleep(500)
+        continue
+      }
+      await sleep(400)
       continue
     }
     if (await rows.first().isVisible().catch(() => false)) return
-    if (await inviteButton.isVisible().catch(() => false)) return
+    if (await inviteButton.isVisible().catch(() => false)) {
+      // The Members toolbar commits before the table data. Returning as soon
+      // as Invite member appears makes an owner-only workspace look empty on
+      // slower sessions. Give the row query time to observe the same render;
+      // only accept an empty result after a short stable toolbar window.
+      toolbarVisibleAt ||= Date.now()
+      const body = await current.locator('body').innerText().catch(() => '')
+      const explicitEmpty = /no members|no users|暂无成员|没有成员|还没有成员/i.test(body)
+      if (explicitEmpty) {
+        emptyStateVisibleAt ||= Date.now()
+        if (Date.now() - emptyStateVisibleAt >= 1500) return
+      } else {
+        emptyStateVisibleAt = 0
+      }
+      if (Date.now() - toolbarVisibleAt >= 5000) return
+    }
     await sleep(250)
   }
   if (await pendingInvitesRouteSelected(current)) {
@@ -452,27 +532,40 @@ async function waitForMemberPageReady(current) {
   // is rejected explicitly above instead of being parsed as members.
 }
 
-async function waitForPendingInvitesPageReady(current) {
+async function waitForPendingInvitesPageReady(current, { allowRecoveryNavigation = false } = {}) {
   const pendingPattern = /pending invitations?|pending invites?|待处理邀请|待接受邀请/i
   const emptyPattern = /no pending|no invitations|暂无.*邀请|没有.*邀请|还没有.*邀请/i
-  const deadline = Date.now() + Math.min(operationTimeout, 12000)
+  const deadline = Date.now() + Math.min(
+    operationTimeout,
+    Math.max(memberRenderTimeout, pendingInviteRenderTimeout)
+  )
   let attemptedTab = false
   let attemptedDirectRoute = false
+  let selectedSince = 0
 
   while (Date.now() < deadline) {
     const body = await current.locator('body').innerText().catch(() => '')
     const routeSelected = await pendingInvitesRouteSelected(current)
     const selectedControls = current.locator('[role="tab"][aria-selected="true"], [aria-current="page"], [aria-pressed="true"]')
     const selectedText = (await selectedControls.allTextContents().catch(() => [])).join(' ')
-    const pendingSelected = routeSelected || pendingPattern.test(selectedText)
-    const pendingContent = pendingPattern.test(body) || emptyPattern.test(body)
-    if (pendingSelected && (pendingContent || body.trim().length > 0)) {
+    const selectedControl = pendingPattern.test(selectedText)
+    const visiblePanels = current.locator('[role="tabpanel"]:visible, main:visible, section:visible')
+    const panelText = (await visiblePanels.allTextContents().catch(() => [])).join(' ')
+    const pendingContent = pendingPattern.test(panelText) || emptyPattern.test(panelText)
+    const pendingSelected = selectedControl || (routeSelected && pendingContent)
+    if (pendingSelected && pendingContent) {
+      selectedSince ||= Date.now()
+      if (Date.now() - selectedSince < 750) {
+        await sleep(250)
+        continue
+      }
       // Give the SPA one short render tick after the route/tab selection. This
       // prevents a previous Members table from being mistaken for Pending
       // invites when the page reuses its shell.
-      await sleep(250)
+      await sleep(500)
       return
     }
+    selectedSince = 0
 
     if (!attemptedTab) {
       attemptedTab = true
@@ -486,7 +579,7 @@ async function waitForPendingInvitesPageReady(current) {
 
     // Query-string routing is only a fallback. The next loop still requires an
     // actual selected panel/heading before the page is accepted.
-    if (!attemptedDirectRoute) {
+    if (allowRecoveryNavigation && !attemptedDirectRoute) {
       attemptedDirectRoute = true
       await current.goto(pendingInvitesURL(), { waitUntil: 'domcontentloaded', timeout: operationTimeout }).catch(() => undefined)
       await sleep(300)
@@ -715,8 +808,11 @@ async function inviteMember(email) {
     try {
       // A previous click may have succeeded while the SPA response was slow.
       // Check the live member and pending-invite views before submitting again.
-      const existing = await listMembers({ forceRefresh: true, requireEmails: true })
-      const pendingBefore = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: normalized })
+      const existing = await listMembers({ forceRefresh: false, requireEmails: true })
+      // The same slow SPA render can happen before a retry or a manually
+      // completed invitation. Wait for the exact target before deciding that
+      // a second native invite is necessary.
+      const pendingBefore = await pendingInviteSnapshot({ forceRefresh: false, expectedEmail: normalized, waitForExpectedEmail: true })
       if (existing.members.some((member) => normalizeEmail(member.email) === normalized) || pendingBefore.emails.has(normalized)) {
         return {
           ...existing,
@@ -725,12 +821,12 @@ async function inviteMember(email) {
         }
       }
 
-      const current = await membersPage({ forceRefresh: true })
+      const current = await membersPage({ forceRefresh: false })
       const scope = await openInviteDialog(current)
       await submitInviteDialog(scope, normalized)
 
       const confirmedPending = await waitForPendingInviteEmail(normalized)
-      const latest = await listMembers({ forceRefresh: true, requireEmails: true })
+      const latest = await listMembers({ forceRefresh: false, requireEmails: true })
       return {
         ...latest,
         pending_invites: confirmedPending?.pendingInvites || 1,
@@ -752,7 +848,7 @@ async function inviteMember(email) {
 
 async function removeMember(email) {
   const normalized = normalizeEmail(email)
-  const current = await membersPage({ forceRefresh: true })
+  const current = await membersPage({ forceRefresh: false })
   const record = await memberRecord(current, normalized)
   assertRemovableMember(record.member)
   await clickMemberMenu(current, normalized)
@@ -768,7 +864,7 @@ async function updateMember(email, role) {
   const normalized = normalizeEmail(email)
   const normalizedTargetRole = normalizedRole(role)
   if (!['admin', 'member'].includes(normalizedTargetRole)) throw new Error('成员角色无效')
-  const current = await membersPage({ forceRefresh: true })
+  const current = await membersPage({ forceRefresh: false })
   const record = await memberRecord(current, normalized)
   assertRemovableMember(record.member)
   await clickMemberMenu(current, normalized)
@@ -957,7 +1053,7 @@ function completeInviteStep(workflow, message) {
 
 async function confirmManualStepCompletion(workflow, step) {
   if (step.key === 'members') {
-    const latest = await listMembers({ forceRefresh: true, requireEmails: true })
+    const latest = await listMembers({ forceRefresh: false, requireEmails: true })
     if (workflow.seatAlreadyRemoved) {
       const unexpected = latest.members.find((member) => !isProtectedTeamMember(member))
       if (unexpected) throw new Error('成员列表仍有未确认的普通成员，请先在浏览器完成席位处理')
@@ -974,7 +1070,7 @@ async function confirmManualStepCompletion(workflow, step) {
   }
 
   if (step.key === 'remove') {
-    const latest = await listMembers({ forceRefresh: true, requireEmails: true })
+    const latest = await listMembers({ forceRefresh: false, requireEmails: true })
     if (latest.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
       throw new Error('待替换成员仍在实时成员列表中，请先在内嵌浏览器完成移除')
     }
@@ -986,12 +1082,12 @@ async function confirmManualStepCompletion(workflow, step) {
     // workspace may contain no member rows at all. Pending invites is the
     // authoritative confirmation for this step; an empty Members table must
     // not block continuation.
-    const latestMembers = await listMembers({ forceRefresh: true })
+    const latestMembers = await listMembers({ forceRefresh: false })
     if (latestMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)) {
       completeInviteStep(workflow, '临时邮箱已在实时成员列表中确认')
       return '临时邮箱已在实时成员列表中确认'
     }
-    const pending = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: workflow.inviteEmail })
+    const pending = await pendingInviteSnapshot({ forceRefresh: false, expectedEmail: workflow.inviteEmail, waitForExpectedEmail: true })
     if (!pending.emails.has(normalizeEmail(workflow.inviteEmail))) {
       throw new Error('Pending invites 中未找到目标临时邮箱，请在内嵌浏览器中点击邀请并确认后再继续')
     }
@@ -1062,9 +1158,11 @@ async function openOAuthAuthorizationPage(authURL) {
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
-  // Keep the members tab intact. The manually controlled browser can switch to
-  // this tab only after the seat replacement and invitation both finish.
-  const oauthPage = await context.newPage()
+  // Continue in the same automation tab after the invite is confirmed. This
+  // keeps the server browser easy to watch and avoids leaving stale Members or
+  // OAuth tabs behind after a retry or a page refresh.
+  const oauthPage = reusableTeamPage(context, { allowNonMembers: true }) || await context.newPage()
+  managedBrowserPage = oauthPage
   await oauthPage.goto(authURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
   return oauthPage
 }
@@ -1106,6 +1204,9 @@ async function phoneRejectedOnPage(oauthPage) {
 // codes, phone numbers, or credentials into workflow state or logs.
 async function describeOAuthNextStep(oauthPage) {
   if (!oauthPage || oauthPage.isClosed()) return '授权标签已关闭；请接管浏览器后重新开始授权。'
+  if (await isVisible(oauthPage.getByRole('button', { name: /^sign\s*up$/i }))) {
+    return '授权页已打开，检测到 Sign up；请在当前浏览器标签页点击 Sign up 后继续。'
+  }
   if (await isVisible(oauthPage.getByRole('button', { name: /use another account|使用其他账号/i }))) {
     return '已打开登录页，请在服务器浏览器中选择“使用其他账号”。'
   }
@@ -1415,7 +1516,7 @@ async function restartOAuthWorkflow(id, value) {
     workflow.authURL = authURL
     setWorkflowStep(workflow, 'oauth', 'running', '正在重新打开 OpenAI 授权页')
     workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已重新打开，等待外部验证')
+    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页重新打开，等待外部验证')
     await waitForWorkflowCallback(workflow, '已重新打开授权页，请完成登录和验证；系统会自动识别回调地址')
     return workflowSummary(workflow)
   } catch (error) {
@@ -1452,7 +1553,7 @@ async function resumeWorkflowFromNextStep(workflow) {
       // If the operator also completed removal while recovering the previous
       // Members step, recognize the live absence instead of submitting a
       // duplicate destructive action.
-      const currentMembers = await listMembers({ forceRefresh: true, requireEmails: true })
+      const currentMembers = await listMembers({ forceRefresh: false, requireEmails: true })
       if (!currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
         setWorkflowStep(workflow, 'remove', 'completed', '已在实时成员列表确认成员已由人工移除')
         continue
@@ -1471,7 +1572,7 @@ async function resumeWorkflowFromNextStep(workflow) {
     if (step.key === 'oauth') {
       setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
       workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在服务器浏览器的新标签中打开')
+      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页打开')
       continue
     }
     if (step.key === 'verify') {
@@ -1505,7 +1606,7 @@ async function executeSingleWorkflowStep(workflow, index) {
     if (workflow.seatAlreadyRemoved) {
       setWorkflowStep(workflow, 'remove', 'completed', '成员席位已由人工腾出，跳过移除')
     } else {
-      const currentMembers = await listMembers({ forceRefresh: true, requireEmails: true })
+      const currentMembers = await listMembers({ forceRefresh: false, requireEmails: true })
       if (!currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
         setWorkflowStep(workflow, 'remove', 'completed', '已在实时成员列表确认成员已由人工移除')
       } else {
@@ -1521,7 +1622,7 @@ async function executeSingleWorkflowStep(workflow, index) {
   } else if (step.key === 'oauth') {
     setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
     workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在服务器浏览器的新标签中打开')
+    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页打开')
   } else if (step.key === 'verify') {
     await waitForWorkflowCallback(workflow, '请在内置浏览器完成外部验证；系统会自动识别回调地址')
     return
@@ -1563,10 +1664,10 @@ async function executeWorkflow(workflow) {
     }
 
     setWorkflowStep(workflow, 'members', 'running', '正在读取成员管理页')
-    // A workflow never trusts an earlier UI snapshot. The first browser action
-    // disables cache and retries the members route until member email data is
-    // present, so a stale tab cannot select or remove the wrong account.
-    const initial = await listMembers({ forceRefresh: true, requireEmails: true })
+    // A workflow reads the live managed tab and waits for real member rows. A
+    // reload is reserved for an explicit refresh or a failed operation retry;
+    // normal SPA reads must not reset the page while its data is arriving.
+    const initial = await listMembers({ forceRefresh: false, requireEmails: true })
     const selected = initial.members.find((member) => normalizeEmail(member.email) === workflow.seatEmail)
 
     if (workflow.seatAlreadyRemoved) {
@@ -1597,12 +1698,12 @@ async function executeWorkflow(workflow) {
     }
 
     setWorkflowStep(workflow, 'invite', 'running', '正在确认临时邮箱邀请状态')
-    const currentMembers = await listMembers({ forceRefresh: true })
+    const currentMembers = await listMembers({ forceRefresh: false })
     const invitationAccepted = currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)
     if (invitationAccepted) {
       completeInviteStep(workflow, '临时邮箱已出现在成员列表中')
     } else {
-      const pendingSnapshot = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: workflow.inviteEmail })
+      const pendingSnapshot = await pendingInviteSnapshot({ forceRefresh: false, expectedEmail: workflow.inviteEmail, waitForExpectedEmail: true })
       if (pendingSnapshot.emails.has(normalizeEmail(workflow.inviteEmail))) {
         completeInviteStep(workflow, '临时邮箱已出现在待处理邀请中')
       } else if (workflow.seatAlreadyRemoved && pendingSnapshot.emails.size > 0) {
@@ -1616,7 +1717,7 @@ async function executeWorkflow(workflow) {
     if (!isWorkflowStepCompleted(workflow, 'oauth') || !workflow.oauthPage || workflow.oauthPage.isClosed()) {
       setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
       workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在服务器浏览器的新标签中打开')
+      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页打开')
     }
     setWorkflowStep(workflow, 'verify', 'waiting', '请在需要时接管浏览器，完成外部验证；系统会自动识别回调地址')
     workflow.status = 'manual_required'

@@ -58,14 +58,15 @@
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ item.label }}</div>
                   <button
-                    v-if="item.key !== 'mailbox' && canRunTopLevelStep(item.key)"
+                    v-if="item.key !== 'mailbox' && isStarted"
                     type="button"
                     :data-testid="'team-step-' + item.key"
-                    class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 text-xs"
+                    class="btn btn-secondary flex min-w-[5.75rem] items-center justify-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 text-xs"
+                    :disabled="!canRunTopLevelStep(item.key)"
                     @click="runTopLevelStep(item.key)"
                   >
-                    <Icon name="play" size="sm" :stroke-width="2" />
-                    <span>执行此步</span>
+                    <Icon :name="isTopLevelStepRunning(item.key) ? 'refresh' : isStepComplete(item.key) ? 'check' : 'play'" size="sm" :class="isTopLevelStepRunning(item.key) ? 'animate-spin' : ''" :stroke-width="2" />
+                    <span>{{ isTopLevelStepRunning(item.key) ? '执行中' : isStepComplete(item.key) ? '已完成' : '执行此步' }}</span>
                   </button>
                 </div>
                 <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ item.description }}</div>
@@ -86,10 +87,9 @@
             <div class="mt-3 flex items-end gap-2">
               <div class="min-w-0 flex-1">
                 <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">邮箱验证码</label>
-                <input :value="mailboxCode || ''" readonly class="input h-9 w-full font-mono text-sm tracking-[0.16em]" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" />
+                <input :value="mailboxCode || ''" readonly class="input h-9 w-44 max-w-full cursor-copy font-mono text-sm tracking-[0.16em]" :class="mailboxCode ? 'text-center' : ''" :title="mailboxCode ? '点击验证码复制' : undefined" :aria-label="mailboxCode ? '邮箱验证码，点击复制' : '邮箱验证码'" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" @click="mailboxCode && copyText(mailboxCode)" />
               </div>
               <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" title="立即检查邮箱" aria-label="立即检查邮箱" :disabled="!mailbox || mailboxCodeLoading || Boolean(mailboxCode)" @click="pollMailbox"><Icon name="refresh" size="sm" :class="mailboxCodeLoading ? 'animate-spin' : ''" :stroke-width="2" /></button>
-              <button v-if="mailboxCode" type="button" class="btn btn-secondary flex h-9 items-center gap-2 whitespace-nowrap" @click="copyText(mailboxCode)"><Icon name="copy" size="sm" :stroke-width="2" /><span>复制</span></button>
             </div>
             <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ mailboxCodeHint }}</p>
           </div>
@@ -282,6 +282,9 @@ const steps: Array<{ key: StepKey; label: string; description: string }> = [
 ]
 
 const busy = computed(() => ['creating', 'polling', 'workflow', 'importing'].includes(status.value) || workflowStarting.value || workflowContinuing.value)
+// Mailbox polling is a background task and must not make workflow controls
+// appear, disappear, or resize while the refresh icon is spinning.
+const workflowActionBusy = computed(() => ['creating', 'workflow', 'importing'].includes(status.value) || workflowStarting.value || workflowContinuing.value)
 const isStarted = computed(() => Boolean(mailbox.value))
 const importing = computed(() => status.value === 'importing')
 const statusLabel = computed(() => ({ idle: '未开始', creating: '创建中', ready: '等待授权', workflow: '正在替换成员', waiting: '等待外部验证', polling: '检查邮箱', received: '已收到验证码', callback: '已获取回调', importing: '正在导入', completed: '已完成', error: '需要处理' })[status.value])
@@ -321,7 +324,7 @@ function isReplaceableMember(member: TeamChildMember | undefined) {
 function isProtectedMember(member: TeamChildMember) {
   return Boolean(member.protected) || /^(owner|所有者|admin|administrator|管理员)$/i.test(member.role.trim())
 }
-const selectedReplaceableMember = computed(() => members.value.find((member) => member.email === selectedMemberEmail.value))
+const selectedReplaceableMember = computed(() => members.value.find((member) => normalizeTeamChildEmail(member.email) === normalizeTeamChildEmail(selectedMemberEmail.value)))
 const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || workflowStepRunning.value || teamWorkflow.value?.status === 'running')
 const smsWorkflowVisible = computed(() => {
   const workflow = teamWorkflow.value
@@ -387,11 +390,12 @@ function assertOfficialOAuthSession(auth: { auth_url: string; session_id: string
 }
 
 function normalizeTeamChildEmail(value: string) {
-  return String(value || '')
+  const normalized = String(value || '')
     .normalize('NFKC')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .trim()
     .toLowerCase()
+  return normalized.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i)?.[0] || normalized
 }
 
 async function generateFreshOAuthSession() {
@@ -528,8 +532,23 @@ function applyMembersResult(result: { members?: TeamChildMember[]; pending_invit
   const selectedStillAvailable = nextMembers.some((member) => member.email === selectedMemberEmail.value && isReplaceableMember(member))
   if (!selectedStillAvailable) selectedMemberEmail.value = seatEmail.value || replaceable?.email || ''
 }
-async function refreshMembers(notify = true, force = false) {
-  if (membersLoading.value && !force) return
+async function loadMembers(notify = false) {
+  if (membersLoading.value) return
+  membersLoading.value = true
+  membersError.value = ''
+  try {
+    const result = await teamChildAPI.listTeamChildMembers()
+    applyMembersResult(result)
+    if (notify && membersReady.value) appStore.showSuccess(`成员信息已读取（${members.value.length} 位成员）`)
+  } catch (error) {
+    membersReady.value = false
+    membersError.value = extractApiErrorMessage(error, '无法读取成员信息，请先在服务器浏览器中登录。')
+  } finally {
+    membersLoading.value = false
+  }
+}
+async function refreshMembers(notify = true) {
+  if (membersLoading.value) return
   membersLoading.value = true
   membersError.value = ''
   try {
@@ -560,16 +579,17 @@ async function inspectSeat() {
 }
 async function inviteMember(email: string) {
   membersLoading.value = true
+  const inviteEmail = normalizeTeamChildEmail(email)
   try {
-    const result = await teamChildAPI.inviteTeamChildMember(email)
+    const result = await teamChildAPI.inviteTeamChildMember(inviteEmail)
     if (result.operation?.confirmed !== true) {
-      await refreshMembers(false, true)
+      await refreshMembers(false)
       appStore.showError('邀请请求已提交，但服务器未确认成员状态，请刷新后核实')
       return
     }
     members.value = result.members || members.value
     pendingInvites.value = result.pending_invites || 0
-    appStore.showSuccess(`邀请已发送：${email}`)
+    appStore.showSuccess(`邀请已发送：${inviteEmail}`)
   } catch (error) { appStore.showError(extractApiErrorMessage(error, '邀请成员失败')) } finally { membersLoading.value = false }
 }
 async function editMember(email: string, role: string) {
@@ -577,7 +597,7 @@ async function editMember(email: string, role: string) {
   try {
     const result = await teamChildAPI.updateTeamChildMember(email, role)
     if (result.operation?.confirmed !== true) {
-      await refreshMembers(false, true)
+      await refreshMembers(false)
       appStore.showError('角色更新未得到服务器确认，请刷新后核实')
       return
     }
@@ -590,7 +610,7 @@ async function removeMember(email: string) {
   try {
     const result = await teamChildAPI.removeTeamChildMember(email)
     if (result.operation?.confirmed !== true) {
-      await refreshMembers(false, true)
+      await refreshMembers(false)
       appStore.showError('移除请求已提交，但服务器未确认成员状态，请刷新后核实')
       return
     }
@@ -601,11 +621,17 @@ async function removeMember(email: string) {
   } catch (error) { appStore.showError(extractApiErrorMessage(error, '移除成员失败')) } finally { membersLoading.value = false }
 }
 function canRunTopLevelStep(key: StepKey) {
-  if (busy.value || workflowBusy.value) return false
+  if (workflowActionBusy.value || workflowBusy.value) return false
   if (key === 'mailbox') return !mailbox.value && mailboxConfigured.value
   if (key === 'replace') return Boolean(mailbox.value?.email && authUrl.value && membersReady.value && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && !teamWorkflow.value)
   if (key === 'verify') return Boolean(mailbox.value?.email && authUrl.value && membersReady.value && manualSeatReady.value && pendingInvites.value > 0 && !teamWorkflow.value)
   return canImport.value
+}
+function isTopLevelStepRunning(key: StepKey) {
+  if (key === 'mailbox') return status.value === 'creating'
+  if (key === 'replace') return workflowStarting.value || teamWorkflow.value?.steps.some((step) => ['members', 'remove', 'invite'].includes(step.key) && step.status === 'running') === true
+  if (key === 'verify') return teamWorkflow.value?.steps.some((step) => ['oauth', 'verify'].includes(step.key) && step.status === 'running') === true
+  return status.value === 'importing'
 }
 function runTopLevelStep(key: StepKey) {
   if (!canRunTopLevelStep(key)) return
@@ -689,6 +715,14 @@ async function confirmWorkflowStep() {
   workflowStepConfirmOpen.value = false
   workflowStepRunning.value = true
   errorMessage.value = ''
+  const selected = workflow.steps.find((item) => item.key === step)
+  if (selected) {
+    selected.status = 'running'
+    selected.message = `正在执行第 ${selected.number} 步：${selected.label}`
+  }
+  workflow.status = 'running'
+  status.value = 'workflow'
+  scheduleWorkflowPoll(250)
   try {
     teamWorkflow.value = await teamChildAPI.runTeamChildWorkflowStep(workflow.id, step)
     if (teamWorkflow.value.status === 'callback_ready' && teamWorkflow.value.callback_url) {
@@ -949,7 +983,7 @@ onMounted(async () => {
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
   await restoreActiveMailbox()
   await restoreActiveWorkflow()
-  if (browserConfigured.value) await refreshMembers(false)
+  if (browserConfigured.value) await loadMembers()
 })
 onBeforeUnmount(() => {
   if (pollTimer) clearTimeout(pollTimer)

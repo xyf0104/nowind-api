@@ -359,3 +359,21 @@ func TestNormalizeTeamChildWorkflowPhoneRequiresFullInternationalNumber(t *testi
 		require.Error(t, err, input)
 	}
 }
+
+func TestNormalizeTeamChildWorkflowEmailAcceptsTemporaryMailboxAndDisplayText(t *testing.T) {
+	for _, test := range []struct {
+		input    string
+		expected string
+	}{
+		{input: "nba0nfm7d7@ncml1.top", expected: "nba0nfm7d7@ncml1.top"},
+		{input: "  成员邮箱：NBA0NFM7D7@NCML1.TOP  ", expected: "nba0nfm7d7@ncml1.top"},
+	} {
+		actual := normalizeTeamChildWorkflowEmail(test.input)
+		require.Equal(t, test.expected, actual)
+		require.True(t, validTeamChildWorkflowEmail(actual))
+	}
+
+	for _, input := range []string{"", "not-an-email", "name@localhost"} {
+		require.False(t, validTeamChildWorkflowEmail(normalizeTeamChildWorkflowEmail(input)), input)
+	}
+}

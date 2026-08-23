@@ -13,6 +13,7 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
     createBrowserSession: vi.fn(),
     heartbeatTeamChildBrowserControl: vi.fn(),
     releaseTeamChildBrowserControl: vi.fn(),
+    listTeamChildMembers: vi.fn(),
     refreshTeamChildMembers: vi.fn(),
     inspectTeamChildSeat: vi.fn(),
     inviteTeamChildMember: vi.fn(),
@@ -133,7 +134,7 @@ describe('TeamChildCreationView', () => {
     vi.clearAllMocks()
     teamChildAPI.getMailboxStatus.mockResolvedValue({ configured: true, browser_configured: true })
     groupsAPI.getAll.mockResolvedValue([])
-    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+    teamChildAPI.listTeamChildMembers.mockResolvedValue({
       ready: true,
       members: [{ id: 'member@example.test', email: 'member@example.test', role: 'member' }],
       seat_email: 'member@example.test'
@@ -228,7 +229,8 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
 
     await flushPromises()
-    expect(teamChildAPI.refreshTeamChildMembers).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.listTeamChildMembers).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.refreshTeamChildMembers).not.toHaveBeenCalled()
     expect(teamChildAPI.createBrowserSession).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="team-members-workspace"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="team-sms-receiver"]').exists()).toBe(false)
@@ -341,7 +343,7 @@ describe('TeamChildCreationView', () => {
   })
 
   it('starts directly at OAuth after the live page shows only protected members and a pending invite', async () => {
-    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+    teamChildAPI.listTeamChildMembers.mockResolvedValue({
       ready: true,
       pending_invites: 1,
       members: [{ id: 'owner@example.test', email: 'owner@example.test', role: 'owner', protected: true }]
@@ -367,8 +369,30 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
+  it('keeps the verification code control stable and copies from the code itself', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'received', code: '123456' })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('button[aria-label="立即检查邮箱"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('input[aria-label="邮箱验证码，点击复制"]').trigger('click')
+    await flushPromises()
+
+    const codeInput = wrapper.get('input[aria-label="邮箱验证码，点击复制"]')
+    expect(codeInput.classes()).toContain('w-44')
+    expect(writeText).toHaveBeenCalledWith('123456')
+    expect(wrapper.findAll('button').some((button) => button.text().trim() === '复制')).toBe(false)
+    wrapper.unmount()
+  })
+
   it('continues after a manually released seat only when the live members are protected', async () => {
-    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+    teamChildAPI.listTeamChildMembers.mockResolvedValue({
       ready: true,
       members: [
         { id: 'owner@example.test', email: 'owner@example.test', role: 'owner', protected: true },

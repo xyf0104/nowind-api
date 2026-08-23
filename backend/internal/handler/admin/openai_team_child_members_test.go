@@ -116,6 +116,32 @@ func TestTeamChildMemberAutomationInspectRouteIsForwarded(t *testing.T) {
 	require.Equal(t, "/members/inspect", receivedPath)
 }
 
+func TestTeamChildMemberInviteNormalizesTemporaryMailboxBeforeForwarding(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	var receivedBody map[string]any
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ready":true,"members":[],"pending_invites":1,"operation":{"type":"invite","email":"nba0nfm7d7@ncml1.top","confirmed":true}}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/members/invite", handler.InviteTeamChildMember)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/members/invite", strings.NewReader(`{"email":"成员邮箱：NBA0NFM7D7@NCML1.TOP"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "nba0nfm7d7@ncml1.top", receivedBody["email"])
+}
+
 func TestTeamChildProtectedMemberCannotBeChangedOrRemoved(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	t.Setenv("TEAM_CHILD_PROTECTED_MEMBER_EMAILS", "protected-admin@example.test")

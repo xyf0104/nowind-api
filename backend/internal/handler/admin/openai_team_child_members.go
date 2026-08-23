@@ -38,16 +38,16 @@ func loadTeamChildMemberAutomationConfig() (teamChildMemberAutomationConfig, err
 }
 
 type teamChildMemberInviteRequest struct {
-	Email string `json:"email" binding:"required,email"`
+	Email string `json:"email" binding:"required"`
 }
 
 type teamChildMemberRoleRequest struct {
-	Email string `json:"email" binding:"required,email"`
+	Email string `json:"email" binding:"required"`
 	Role  string `json:"role" binding:"required"`
 }
 
 type teamChildMemberRemoveRequest struct {
-	Email string `json:"email" binding:"required,email"`
+	Email string `json:"email" binding:"required"`
 }
 
 // teamChildProtectedMemberEmails is an instance-local deny list for the Team
@@ -164,11 +164,15 @@ func (h *OpenAIOAuthHandler) InspectTeamChildSeat(c *gin.Context) {
 
 func (h *OpenAIOAuthHandler) InviteTeamChildMember(c *gin.Context) {
 	var req teamChildMemberInviteRequest
-	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Email) == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请输入有效的成员邮箱")
 		return
 	}
-	req.Email = strings.TrimSpace(req.Email)
+	req.Email = normalizeTeamChildWorkflowEmail(req.Email)
+	if !validTeamChildWorkflowEmail(req.Email) {
+		response.BadRequest(c, "请输入有效的成员邮箱")
+		return
+	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/members/invite", req)
 }
 
@@ -181,8 +185,12 @@ func (h *OpenAIOAuthHandler) UpdateTeamChildMember(c *gin.Context) {
 		response.BadRequest(c, "请输入有效的成员邮箱和角色")
 		return
 	}
-	req.Email = strings.TrimSpace(req.Email)
+	req.Email = normalizeTeamChildWorkflowEmail(req.Email)
 	req.Role = strings.TrimSpace(req.Role)
+	if !validTeamChildWorkflowEmail(req.Email) {
+		response.BadRequest(c, "请输入有效的成员邮箱和角色")
+		return
+	}
 	if err := validateTeamChildMemberRole(req.Role); err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -199,11 +207,15 @@ func (h *OpenAIOAuthHandler) RemoveTeamChildMember(c *gin.Context) {
 		return
 	}
 	var req teamChildMemberRemoveRequest
-	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Email) == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请输入有效的成员邮箱")
 		return
 	}
-	req.Email = strings.TrimSpace(req.Email)
+	req.Email = normalizeTeamChildWorkflowEmail(req.Email)
+	if !validTeamChildWorkflowEmail(req.Email) {
+		response.BadRequest(c, "请输入有效的成员邮箱")
+		return
+	}
 	if isTeamChildProtectedMemberEmail(req.Email) {
 		response.Forbidden(c, "受保护的管理员账号不可移除")
 		return

@@ -19,8 +19,11 @@ import (
 // proxy. A one-time SMS code is forwarded only during the active workflow
 // action and is never persisted or written to logs.
 type teamChildWorkflowStartRequest struct {
-	SeatEmail          string `json:"seat_email" binding:"omitempty,email"`
-	InviteEmail        string `json:"invite_email" binding:"required,email"`
+	// Temporary mailbox domains are validated with the same normalized rule as
+	// the browser automation, so both workflow entry points accept the same
+	// provider-generated address.
+	SeatEmail          string `json:"seat_email"`
+	InviteEmail        string `json:"invite_email" binding:"required"`
 	AuthURL            string `json:"auth_url" binding:"required"`
 	SeatAlreadyRemoved bool   `json:"seat_already_removed"`
 	StartStep          string `json:"start_step"`
@@ -41,10 +44,24 @@ type teamChildWorkflowRestartOAuthRequest struct {
 }
 
 var (
-	teamChildWorkflowPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
-	teamChildWorkflowCodePattern  = regexp.MustCompile(`^[0-9]{4,8}$`)
-	teamChildWorkflowStartPattern = regexp.MustCompile(`^(members|remove|invite|oauth|verify)?$`)
+	teamChildWorkflowPhonePattern  = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
+	teamChildWorkflowCodePattern   = regexp.MustCompile(`^[0-9]{4,8}$`)
+	teamChildWorkflowStartPattern  = regexp.MustCompile(`^(members|remove|invite|oauth|verify)?$`)
+	teamChildWorkflowEmailPattern  = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	teamChildWorkflowEmbeddedEmail = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
 )
+
+func normalizeTeamChildWorkflowEmail(value string) string {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	if match := teamChildWorkflowEmbeddedEmail.FindString(normalized); match != "" {
+		return match
+	}
+	return normalized
+}
+
+func validTeamChildWorkflowEmail(value string) bool {
+	return len(value) > 0 && len(value) <= 320 && teamChildWorkflowEmailPattern.MatchString(value)
+}
 
 func normalizeTeamChildWorkflowPhone(value string) (string, error) {
 	raw := strings.TrimSpace(value)
@@ -89,10 +106,18 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 		response.BadRequest(c, "请输入临时邮箱和授权链接")
 		return
 	}
-	req.SeatEmail = strings.TrimSpace(req.SeatEmail)
-	req.InviteEmail = strings.TrimSpace(req.InviteEmail)
+	req.SeatEmail = normalizeTeamChildWorkflowEmail(req.SeatEmail)
+	req.InviteEmail = normalizeTeamChildWorkflowEmail(req.InviteEmail)
 	req.AuthURL = strings.TrimSpace(req.AuthURL)
 	req.StartStep = strings.TrimSpace(strings.ToLower(req.StartStep))
+	if req.InviteEmail == "" || !validTeamChildWorkflowEmail(req.InviteEmail) {
+		response.BadRequest(c, "临时邮箱格式无效")
+		return
+	}
+	if req.SeatEmail != "" && !validTeamChildWorkflowEmail(req.SeatEmail) {
+		response.BadRequest(c, "成员邮箱格式无效")
+		return
+	}
 	if !req.Confirmed {
 		response.BadRequest(c, "请先确认成员操作并发送邀请")
 		return
