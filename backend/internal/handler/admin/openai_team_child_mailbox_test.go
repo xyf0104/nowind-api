@@ -246,6 +246,15 @@ func TestTeamMailboxCodeExtractionNormalizesSeparatedDigits(t *testing.T) {
 	require.Equal(t, "654321", extractTeamMailboxVerificationCode("验证码：654321"))
 }
 
+func TestTeamMailboxCodeExtractionFallsBackForAnySender(t *testing.T) {
+	message := map[string]any{
+		"from":    "Test sender <tester@example.test>",
+		"subject": "Test verification email",
+		"text":    "Private test message with a standalone number: 418204",
+	}
+	require.Equal(t, "418204", extractTeamMailboxVerificationCodeFromMessage(message))
+}
+
 func TestTeamChildMailboxExpiredSessionIsRejectedAndCanBeDeleted(t *testing.T) {
 	handler := &OpenAIOAuthHandler{teamMailboxStore: newOpenAITeamMailboxStore()}
 	now := time.Now()

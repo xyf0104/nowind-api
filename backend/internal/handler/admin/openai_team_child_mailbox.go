@@ -102,11 +102,12 @@ type openAITeamMailboxCodeResponse struct {
 }
 
 var (
-	teamMailboxAddressRE      = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
-	teamMailboxSemanticCodeRE = regexp.MustCompile(`(?is)(?:verification|verify|confirmation|one[\s-]*time|security\s+code|login\s+code|验证码|验证(?:码)?)[^0-9]{0,80}([0-9](?:[\s-]?[0-9]){3,7})`)
-	teamMailboxCodeLabelRE    = regexp.MustCompile(`(?is)(?:\bcode\b|验证码|验证(?:码)?)[^0-9]{0,32}([0-9](?:[\s-]?[0-9]){3,7})`)
-	teamMailboxReverseCodeRE  = regexp.MustCompile(`(?is)\b([0-9](?:[\s-]?[0-9]){3,7})\b[^\n]{0,80}(?:verification|verify|confirmation|security|login|验证码|验证(?:码)?)`)
-	teamMailboxHTMLNoiseRE    = regexp.MustCompile(`(?is)<(?:style|script)\b[^>]*>.*?</(?:style|script)>|<!--.*?-->|<[^>]+>`)
+	teamMailboxAddressRE            = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	teamMailboxSemanticCodeRE       = regexp.MustCompile(`(?is)(?:verification|verify|confirmation|one[\s-]*time|security\s+code|login\s+code|验证码|验证(?:码)?)[^0-9]{0,80}([0-9](?:[\s-]?[0-9]){3,7})`)
+	teamMailboxCodeLabelRE          = regexp.MustCompile(`(?is)(?:\bcode\b|验证码|验证(?:码)?)[^0-9]{0,32}([0-9](?:[\s-]?[0-9]){3,7})`)
+	teamMailboxReverseCodeRE        = regexp.MustCompile(`(?is)\b([0-9](?:[\s-]?[0-9]){3,7})\b[^\n]{0,80}(?:verification|verify|confirmation|security|login|验证码|验证(?:码)?)`)
+	teamMailboxStandaloneSixDigitRE = regexp.MustCompile(`(?is)(?:^|[^0-9])([0-9](?:[\s-]?[0-9]){5})(?:$|[^0-9])`)
+	teamMailboxHTMLNoiseRE          = regexp.MustCompile(`(?is)<(?:style|script)\b[^>]*>.*?</(?:style|script)>|<!--.*?-->|<[^>]+>`)
 )
 
 func newOpenAITeamMailboxStore() *openAITeamMailboxStore {
@@ -874,7 +875,7 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 		if !teamMailboxMessageMatchesAddress(message, session.email) {
 			continue
 		}
-		if code := extractTeamMailboxVerificationCode(teamMailboxReadableText(message)); code != "" {
+		if code := extractTeamMailboxVerificationCodeFromMessage(message); code != "" {
 			return code, nil
 		}
 		messageID := strings.TrimSpace(teamMailboxString(message["id"]))
@@ -885,7 +886,7 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 			continue
 		}
 		if detail, detailErr := h.fetchTeamMailboxMessage(ctx, session, messageID); detailErr == nil {
-			if code := extractTeamMailboxVerificationCode(teamMailboxReadableText(detail)); code != "" {
+			if code := extractTeamMailboxVerificationCodeFromMessage(detail); code != "" {
 				return code, nil
 			}
 		}
@@ -1207,6 +1208,41 @@ func extractTeamMailboxVerificationCode(text string) string {
 		}
 	}
 	return ""
+}
+
+// A provider can omit the visible "code" label from a localized or
+// template-driven body. The caller has already matched the message to the
+// current mailbox session, so allow this fallback for any sender; this also
+// keeps private test emails usable without weakening cross-mailbox isolation.
+func extractTeamMailboxVerificationCodeFromMessage(message map[string]any) string {
+	text := teamMailboxReadableText(message)
+	if code := extractTeamMailboxVerificationCode(text); code != "" {
+		return code
+	}
+
+	for _, key := range []string{
+		"text", "plain", "plain_text", "body_text", "body", "content", "message", "preview", "subject", "html",
+	} {
+		var parts []string
+		appendTeamMailboxReadableValue(&parts, message[key], 0)
+		if code := extractTeamMailboxStandaloneSixDigitCode(strings.Join(parts, "\n")); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+func extractTeamMailboxStandaloneSixDigitCode(text string) string {
+	match := teamMailboxStandaloneSixDigitRE.FindStringSubmatch(text)
+	if len(match) != 2 {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, match[1])
 }
 
 func teamMailboxString(value any) string {
