@@ -148,6 +148,7 @@ func TestTeamChildMailboxPollUsesMailboxJWTAndExtractsReadableVerificationCode(t
 		case "/api/new_address":
 			_, _ = w.Write([]byte(`{"address":"one@example.test","jwt":"mailbox-jwt-secret"}`))
 		case "/api/mails":
+			require.Equal(t, teamMailboxProviderUserAgent, r.Header.Get("User-Agent"))
 			require.Equal(t, "Bearer mailbox-jwt-secret", r.Header.Get("Authorization"))
 			require.Equal(t, "", r.Header.Get("X-API-Key"))
 			require.Equal(t, "20", r.URL.Query().Get("limit"))

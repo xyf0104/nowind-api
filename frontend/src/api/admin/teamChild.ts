@@ -44,11 +44,6 @@ export interface TeamChildMailboxConfigImportResult {
   restart_required: boolean
 }
 
-export interface TeamChildAuthURL {
-  auth_url: string
-  session_id: string
-}
-
 export interface TeamChildCreateAccountRequest {
   session_id: string
   code: string
@@ -110,6 +105,11 @@ export interface TeamChildWorkflow {
   callback_url?: string
   error?: string
   steps: TeamChildWorkflowStep[]
+}
+
+export interface ActiveTeamChildWorkflowResult {
+  active: boolean
+  workflow?: TeamChildWorkflow
 }
 
 export interface StartTeamChildWorkflowRequest {
@@ -210,6 +210,11 @@ export async function getTeamChildWorkflow(workflowID: string): Promise<TeamChil
   return data
 }
 
+export async function getActiveTeamChildWorkflow(): Promise<TeamChildWorkflow | null> {
+  const { data } = await apiClient.get<ActiveTeamChildWorkflowResult>('/admin/openai/team-child/workflows/active')
+  return data.active && data.workflow ? data.workflow : null
+}
+
 export async function continueTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/continue`)
   return data
@@ -255,11 +260,6 @@ export async function deleteMailboxSession(sessionId: string): Promise<void> {
   await apiClient.delete(`/admin/openai/team-child/mailboxes/${encodeURIComponent(sessionId)}`)
 }
 
-export async function generateOpenAIAuthUrl(config: { proxy_id?: number; redirect_uri?: string } = {}): Promise<TeamChildAuthURL> {
-  const { data } = await apiClient.post<TeamChildAuthURL>('/admin/openai/generate-auth-url', config)
-  return data
-}
-
 export async function createOpenAIAccountFromOAuth(payload: TeamChildCreateAccountRequest) {
   const { data } = await apiClient.post('/admin/openai/create-from-oauth', payload)
   return data as { id?: number; name?: string; email?: string; status?: string; [key: string]: unknown }
@@ -278,6 +278,7 @@ export const teamChildAPI = {
   removeTeamChildMember,
   startTeamChildWorkflow,
   getTeamChildWorkflow,
+  getActiveTeamChildWorkflow,
   continueTeamChildWorkflow,
   submitTeamChildWorkflowPhone,
   submitTeamChildWorkflowCode,
@@ -288,7 +289,6 @@ export const teamChildAPI = {
   importMailboxConfig,
   pollMailboxCode,
   deleteMailboxSession,
-  generateOpenAIAuthUrl,
   createOpenAIAccountFromOAuth
 }
 

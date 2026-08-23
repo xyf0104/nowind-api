@@ -38,6 +38,10 @@ const (
 	teamMailboxRedisKeyPrefix  = "xiass:team-child:mailbox:"
 	teamMailboxActiveKeyPrefix = "xiass:team-child:mailbox:active:"
 	teamMailboxLegacyScanLimit = 128
+	// The mailbox Worker blocks non-browser client signatures with Cloudflare
+	// error 1010. Keep this on the server-side provider client only; it is not
+	// exposed to the browser or copied into user-facing request metadata.
+	teamMailboxProviderUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 type openAITeamMailboxStore struct {
@@ -934,6 +938,9 @@ func (h *OpenAIOAuthHandler) fetchTeamMailboxMessage(ctx context.Context, sessio
 func (h *OpenAIOAuthHandler) doTeamMailboxRequest(request *http.Request) ([]byte, int, error) {
 	if h == nil || h.teamMailboxStore == nil || h.teamMailboxStore.client == nil {
 		return nil, 0, fmt.Errorf("mailbox client is unavailable")
+	}
+	if request.Header.Get("User-Agent") == "" {
+		request.Header.Set("User-Agent", teamMailboxProviderUserAgent)
 	}
 	resp, err := h.teamMailboxStore.client.Do(request)
 	if err != nil {

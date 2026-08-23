@@ -130,6 +130,14 @@ func (h *OpenAIOAuthHandler) GetTeamChildWorkflow(c *gin.Context) {
 	h.teamChildMemberAutomationRequest(c, http.MethodGet, "/workflows/"+url.PathEscape(workflowID), nil)
 }
 
+// GetActiveTeamChildWorkflow restores a still-running Team child workflow
+// after the admin page is reopened. It returns only the short-lived workflow
+// summary; credentials, codes, mailbox tokens, and browser cookies remain in
+// their existing automation/browser processes.
+func (h *OpenAIOAuthHandler) GetActiveTeamChildWorkflow(c *gin.Context) {
+	h.teamChildMemberAutomationRequest(c, http.MethodGet, "/workflows/active", nil)
+}
+
 // ContinueTeamChildWorkflow rechecks the live Team page after an operator has
 // handled an external interruption. The automation service resumes only the
 // unfinished stages and never replays completed operations blindly.

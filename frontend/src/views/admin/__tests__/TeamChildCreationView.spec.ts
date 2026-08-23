@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { teamChildAPI, groupsAPI, appStore } = vi.hoisted(() => ({
+const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(() => ({
   teamChildAPI: {
     getMailboxStatus: vi.fn(),
     createMailbox: vi.fn(),
     getActiveMailbox: vi.fn(),
-    generateOpenAIAuthUrl: vi.fn(),
+    getActiveTeamChildWorkflow: vi.fn(),
     pollMailboxCode: vi.fn(),
     deleteMailboxSession: vi.fn(),
     importMailboxConfig: vi.fn(),
@@ -28,6 +28,7 @@ const { teamChildAPI, groupsAPI, appStore } = vi.hoisted(() => ({
     createOpenAIAccountFromOAuth: vi.fn()
   },
   groupsAPI: { getAll: vi.fn() },
+  nativeGenerateAuthUrl: vi.fn(),
   appStore: {
     showError: vi.fn(),
     showInfo: vi.fn(),
@@ -37,6 +38,41 @@ const { teamChildAPI, groupsAPI, appStore } = vi.hoisted(() => ({
 
 vi.mock('@/api/admin/teamChild', () => ({ teamChildAPI }))
 vi.mock('@/api/admin/groups', () => ({ groupsAPI }))
+vi.mock('@/composables/useOpenAIOAuth', async () => {
+  const { ref } = await import('vue')
+  return {
+    useOpenAIOAuth: () => {
+      const authUrl = ref('')
+      const sessionId = ref('')
+      const oauthState = ref('')
+      const loading = ref(false)
+      const error = ref('')
+      return {
+        authUrl,
+        sessionId,
+        oauthState,
+        loading,
+        error,
+        resetState: () => {
+          authUrl.value = ''
+          sessionId.value = ''
+          oauthState.value = ''
+          loading.value = false
+          error.value = ''
+        },
+        generateAuthUrl: async () => {
+          loading.value = true
+          const result = await nativeGenerateAuthUrl()
+          authUrl.value = result.auth_url
+          sessionId.value = result.session_id
+          oauthState.value = new URL(result.auth_url).searchParams.get('state') || ''
+          loading.value = false
+          return true
+        }
+      }
+    }
+  }
+})
 vi.mock('@/stores/app', () => ({ useAppStore: () => appStore }))
 
 import TeamChildCreationView from '../TeamChildCreationView.vue'
@@ -106,7 +142,8 @@ describe('TeamChildCreationView', () => {
       expires_at: '2026-08-22T12:30:00.000Z'
     })
     teamChildAPI.getActiveMailbox.mockResolvedValue(null)
-    teamChildAPI.generateOpenAIAuthUrl.mockResolvedValue({
+    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue(null)
+    nativeGenerateAuthUrl.mockResolvedValue({
       auth_url: testAuthURL,
       session_id: 'oauth-session'
     })
@@ -191,6 +228,27 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.releaseTeamChildBrowserControl).toHaveBeenCalledWith('controller-token-abcdefghijklmnop')
   })
 
+  it('restores an active workflow after the page is reopened', async () => {
+    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop',
+      status: 'manual_required',
+      manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z',
+      steps: [
+        { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed' },
+        { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' },
+        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'waiting' }
+      ]
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(teamChildAPI.getActiveTeamChildWorkflow).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('等待外部验证')
+    wrapper.unmount()
+  })
+
   it('keeps the mailbox configuration action on one line', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -202,20 +260,16 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
-  it('requires the in-page confirmation before starting replace-seat authorization', async () => {
+  it('requires the in-page confirmation and reuses the displayed official OAuth session', async () => {
     const wrapper = mountView()
     await flushPromises()
-
-    teamChildAPI.generateOpenAIAuthUrl
-      .mockResolvedValueOnce({ auth_url: testAuthURL, session_id: 'oauth-session-initial' })
-      .mockResolvedValueOnce({ auth_url: freshTestAuthURL, session_id: 'oauth-session-fresh' })
 
     const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
     expect(mailboxButton).toBeDefined()
     await mailboxButton!.trigger('click')
     await flushPromises()
     expect(teamChildAPI.createMailbox).toHaveBeenCalledTimes(1)
-    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(1)
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
 
     await wrapper.get('[data-testid="team-member-select"]').trigger('click')
     await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
@@ -224,11 +278,11 @@ describe('TeamChildCreationView', () => {
 
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
-    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(2)
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
       seat_email: 'member@example.test',
       invite_email: 'team-child@example.test',
-      auth_url: freshTestAuthURL,
+      auth_url: testAuthURL,
       seat_already_removed: false,
       confirmed: true
     })
@@ -277,7 +331,7 @@ describe('TeamChildCreationView', () => {
 
     expect(teamChildAPI.getActiveMailbox).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.createMailbox).not.toHaveBeenCalled()
-    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(1)
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('restored@example.test')
     wrapper.unmount()
   })
@@ -303,6 +357,9 @@ describe('TeamChildCreationView', () => {
   })
 
   it('restarts only OAuth after confirmed SMS cancellation', async () => {
+    nativeGenerateAuthUrl
+      .mockResolvedValueOnce({ auth_url: testAuthURL, session_id: 'oauth-session-initial' })
+      .mockResolvedValueOnce({ auth_url: freshTestAuthURL, session_id: 'oauth-session-fresh' })
     const wrapper = mountView()
     await flushPromises()
     const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
@@ -316,10 +373,10 @@ describe('TeamChildCreationView', () => {
     await wrapper.get('[data-testid="sms-session-cancelled"]').trigger('click')
     await flushPromises()
 
-    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(3)
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(2)
     expect(teamChildAPI.restartTeamChildWorkflowOAuth).toHaveBeenCalledWith(
       'workflow-token-abcdefghijklmnop',
-      testAuthURL
+      freshTestAuthURL
     )
     expect(teamChildAPI.cancelTeamChildWorkflow).not.toHaveBeenCalled()
     wrapper.unmount()

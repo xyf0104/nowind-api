@@ -59,7 +59,7 @@
       </button>
     </div>
 
-    <div class="relative min-h-[520px] bg-gray-100 dark:bg-dark-900 sm:min-h-[600px] xl:min-h-[680px]">
+    <div data-testid="team-browser-frame" class="relative aspect-video min-h-[320px] w-full overflow-hidden bg-gray-100 dark:bg-dark-900 sm:min-h-[400px] xl:min-h-[500px]">
       <iframe
         v-if="embedUrl"
         :key="embedUrl"

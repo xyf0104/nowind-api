@@ -227,8 +227,10 @@ function isProtectedTeamMember(member) {
 function parsePendingInvites(text) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim()
   const patterns = [
-    /(?:pending invitations?|pending invites?|待处理邀请|待接受邀请)[^\d]{0,24}(\d{1,5})/i,
-    /(\d{1,5})[^\d]{0,24}(?:pending invitations?|pending invites?|待处理邀请|待接受邀请)/i
+    /(?:pending invitations?|pending invites?)\s*(?:[(:·-]\s*)?(\d{1,5})\b/i,
+    /\b(\d{1,5})\s+(?:pending invitations?|pending invites?)\b/i,
+    /(?:待处理邀请|待接受邀请)\s*(?:[（(：:]\s*)?(\d{1,5})\s*(?:个|条)?/i,
+    /(\d{1,5})\s*(?:个|条)\s*(?:待处理邀请|待接受邀请)/i
   ]
   for (const pattern of patterns) {
     const match = normalized.match(pattern)
@@ -278,7 +280,7 @@ async function readMembers(current) {
     ready: true,
     url: current.url(),
     members,
-    ...(pendingInvites === undefined ? {} : { pending_invites: pendingInvites }),
+    pending_invites: pendingInvites ?? 0,
     seat_email: seatEmail,
     workspace_name: pageTitle
   }
@@ -600,15 +602,21 @@ async function submitInviteDialog(scope, email) {
   // address chip, or look for a second send/purchase action: the embedded
   // browser's Continue button submits the invitation directly. The caller
   // verifies the result in the live pending/member list afterwards.
-  let continueButton
-  await waitUntil('邀请成员弹窗中找不到可用的 Continue 按钮', async () => {
-    const button = await firstVisibleDialogButton(scope, /continue|继续/i)
-    if (!button || await button.isDisabled().catch(() => true)) return false
-    continueButton = button
-    return true
+  let submitButton
+  await waitUntil('邀请成员弹窗中找不到可用的提交按钮', async () => {
+    // Hosted ChatGPT builds use both labels for the same invitation submit
+    // action. Keep the exact Continue path preferred, while accepting the
+    // current Send invites variant after the email field is populated.
+    for (const pattern of [/continue|继续/i, /^send invites?$/i, /^发送邀请$/i]) {
+      const button = await firstVisibleDialogButton(scope, pattern)
+      if (!button || await button.isDisabled().catch(() => true)) continue
+      submitButton = button
+      return true
+    }
+    return false
   })
-  if (!continueButton) throw new Error('邀请成员弹窗中找不到可用的 Continue 按钮')
-  await continueButton.click()
+  if (!submitButton) throw new Error('邀请成员弹窗中找不到可用的提交按钮')
+  await submitButton.click()
 }
 
 async function memberRecord(current, email, required = true) {
@@ -663,7 +671,24 @@ async function clickMemberMenu(current, email) {
   const buttons = row.locator('button')
   const buttonCount = await buttons.count()
   if (!buttonCount) throw new Error('成员行中找不到操作菜单')
-  await buttons.nth(buttonCount - 1).click()
+  const trigger = buttons.nth(buttonCount - 1)
+
+  // The current ChatGPT table renders the three-dot trigger as an icon-only
+  // Radix menu. A default center click can land on the nested SVG <use>
+  // element and leave the menu closed even though the button is interactive.
+  // Click a stable button edge first, then use the keyboard activation path as
+  // a fallback for builds that ignore pointer activation from the icon area.
+  const openMenu = async () => {
+    if (await trigger.getAttribute('aria-expanded').catch(() => '') === 'true') return true
+    if (await current.locator('[role="menu"]:visible').count().catch(() => 0)) return true
+    return false
+  }
+
+  await trigger.click({ position: { x: 4, y: 18 } }).catch(() => undefined)
+  if (await openMenu()) return
+
+  await trigger.press('Enter').catch(() => undefined)
+  await waitUntil('成员操作菜单未展开', openMenu)
 }
 
 async function inviteMember(email) {
@@ -991,6 +1016,12 @@ function activeWorkflow() {
   return workflow
 }
 
+async function activeWorkflowStatus() {
+  const workflow = activeWorkflow()
+  if (!workflow) return { active: false }
+  return { active: true, workflow: await workflowStatus(workflow.id) }
+}
+
 async function openOAuthAuthorizationPage(authURL) {
   const connected = await browser()
   const context = connected.contexts()[0]
@@ -1210,6 +1241,38 @@ async function firstVisibleOAuthContinue(page) {
   return null
 }
 
+async function selectWorkflowSMSMethod(page) {
+  // OpenAI has rendered this choice both as a native radio and as a labelled
+  // custom control. Select SMS only when an explicit text-message option is
+  // present; some supported flows omit the choice entirely.
+  const radios = page.locator('input[type="radio"]')
+  const radioCount = await radios.count()
+  for (let index = 0; index < radioCount; index += 1) {
+    const radio = radios.nth(index)
+    if (!(await radio.isVisible().catch(() => false))) continue
+    const metadata = [
+      await radio.getAttribute('value'),
+      await radio.getAttribute('name'),
+      await radio.getAttribute('id'),
+      await radio.getAttribute('aria-label')
+    ].filter(Boolean).join(' ').toLowerCase()
+    if (!/(^|[^a-z])(sms|text message|text)([^a-z]|$)|短信/.test(metadata)) continue
+    if (!(await radio.isChecked().catch(() => false))) await radio.check().catch(() => radio.click())
+    return true
+  }
+
+  const labelledRadio = page.getByRole('radio', { name: /text message|sms|短信/i })
+  const labelledCount = await labelledRadio.count()
+  for (let index = 0; index < labelledCount; index += 1) {
+    const radio = labelledRadio.nth(index)
+    if (!(await radio.isVisible().catch(() => false))) continue
+    if (!(await radio.isChecked().catch(() => false))) await radio.click()
+    return true
+  }
+
+  return false
+}
+
 async function submitOAuthField(workflow, value, selectors, fieldLabel) {
   const input = await firstVisibleOAuthInput(workflow.oauthPage, selectors)
   if (!input) throw new Error(`授权页中找不到可见的${fieldLabel}输入框`)
@@ -1265,6 +1328,7 @@ async function submitWorkflowPhone(id, value) {
     // Blur once so masked/controlled inputs commit the parsed country before
     // the page's Continue handler reads the field.
     await input.press('Tab').catch(() => undefined)
+    await selectWorkflowSMSMethod(workflow.oauthPage)
     const continueButton = await firstVisibleOAuthContinue(workflow.oauthPage)
     if (!continueButton) throw new Error('授权页中找不到可用的手机号继续按钮')
     await continueButton.click()
@@ -1567,6 +1631,14 @@ async function handle(req, res) {
     }
   }
   if (!authorized(req)) return json(res, 401, { error: 'automation service authentication required' })
+
+  if (req.method === 'GET' && path === '/workflows/active') {
+    try {
+      return json(res, 200, await activeWorkflowStatus())
+    } catch (error) {
+      return json(res, 409, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
 
   const workflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})$/)
   // Progress inspection is intentionally outside the serialized browser queue.

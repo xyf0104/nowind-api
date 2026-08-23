@@ -454,6 +454,7 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.PATCH("/team-child/members", h.Admin.OpenAIOAuth.UpdateTeamChildMember)
 		openai.DELETE("/team-child/members", h.Admin.OpenAIOAuth.RemoveTeamChildMember)
 		openai.POST("/team-child/workflows", h.Admin.OpenAIOAuth.StartTeamChildWorkflow)
+		openai.GET("/team-child/workflows/active", h.Admin.OpenAIOAuth.GetActiveTeamChildWorkflow)
 		openai.GET("/team-child/workflows/:workflow_id", h.Admin.OpenAIOAuth.GetTeamChildWorkflow)
 		openai.POST("/team-child/workflows/:workflow_id/continue", h.Admin.OpenAIOAuth.ContinueTeamChildWorkflow)
 		openai.POST("/team-child/workflows/:workflow_id/phone", h.Admin.OpenAIOAuth.SubmitTeamChildWorkflowPhone)
