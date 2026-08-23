@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.41-0ea5e9" alt="当前版本 v1.1.41" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.42-0ea5e9" alt="当前版本 v1.1.42" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.41
+> 当前版本：v1.1.42
+
+v1.1.42 新增 Team 子号的官方 OAuth 验证工作区：在不默认打开嵌入式浏览器的情况下集中展示授权阶段、接码状态、一次性验证码提交、回调捕获和复制动作；外部账号登录、注册和身份验证仍由操作者在官方页面完成，敏感凭据不进入 XIASS 工作流。调度器在快照暂时为空时增加一次只读数据库回退，避免异步快照重建造成误报 503；真实没有可用候选账号时仍按原规则返回 503。
 
 v1.1.41 改进 Team 子号成员页与 Pending invites 的 SPA 渲染等待：正常读取复用同一浏览器标签页，不再反复刷新或新开标签；邀请结果按目标邮箱精确核对，并在慢页面完成渲染后再判定。同步稳定邮箱验证码工作区和逐步执行控件的布局。外部 OpenAI 注册、密码和验证码流程仍由操作者在受控浏览器中完成。
 

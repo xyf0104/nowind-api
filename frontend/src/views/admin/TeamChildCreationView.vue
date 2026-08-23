@@ -8,7 +8,7 @@
         </div>
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Team 子号创建</h1>
         <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
-          一次处理一个账号。邮箱由 XIASS 服务端托管，外部登录和验证在服务器浏览器中完成。
+          一次处理一个账号。邮箱由 XIASS 服务端托管，流程状态、接码动作和回调导入集中在当前工作区。
         </p>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-2">
@@ -104,18 +104,18 @@
       </section>
 
         <section v-if="teamWorkflow || callbackURL || createdAccount" class="space-y-5">
-          <details v-if="smsWorkflowVisible" class="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
-            <summary class="flex cursor-pointer items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">接码服务 <Icon name="arrowRight" size="sm" class="text-gray-400" :stroke-width="2" /></summary>
-            <div class="border-t border-gray-200 p-4 dark:border-dark-700">
-              <PixlabSMSReceiver
-                :active="true"
-                :replacement-required="teamWorkflow?.phone_rejected === true"
-                @phone-ready="submitWorkflowPhone"
-                @code-received="submitWorkflowCode"
-                @session-cancelled="restartWorkflowOAuth"
-              />
-            </div>
-          </details>
+          <TeamChildOAuthWorkspace
+            v-if="oauthWorkspaceVisible && teamWorkflow"
+            :workflow="teamWorkflow"
+            :mailbox-email="mailbox?.email || ''"
+            :callback-url="callbackURL"
+            :busy="workflowBusy"
+            @phone-ready="submitWorkflowPhone"
+            @code-received="submitWorkflowCode"
+            @session-cancelled="restartWorkflowOAuth"
+            @open-browser="openBrowserWorkspace"
+            @copy-callback="copyText(callbackURL)"
+          />
 
           <div v-if="callbackURL || createdAccount" class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">导入 XIASS</h2>
@@ -210,8 +210,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Icon } from '@/components/icons'
 import TeamChildBrowserWorkspace from '@/components/admin/account/TeamChildBrowserWorkspace.vue'
+import TeamChildOAuthWorkspace from '@/components/admin/account/TeamChildOAuthWorkspace.vue'
 import TeamChildMembersWorkspace from '@/components/admin/account/TeamChildMembersWorkspace.vue'
-import PixlabSMSReceiver from '@/components/account/PixlabSMSReceiver.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
@@ -326,14 +326,11 @@ function isProtectedMember(member: TeamChildMember) {
 }
 const selectedReplaceableMember = computed(() => members.value.find((member) => normalizeTeamChildEmail(member.email) === normalizeTeamChildEmail(selectedMemberEmail.value)))
 const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || workflowStepRunning.value || teamWorkflow.value?.status === 'running')
-const smsWorkflowVisible = computed(() => {
+const oauthWorkspaceVisible = computed(() => {
   const workflow = teamWorkflow.value
   if (!workflow) return false
-  if (workflow.status === 'manual_required') return true
-  return Boolean(
-    workflow.status === 'failed'
-    && workflow.steps.some((step) => step.key === 'oauth' && step.status === 'completed')
-  )
+  if (['manual_required', 'callback_ready'].includes(workflow.status)) return true
+  return workflow.steps.some((step) => step.key === 'oauth' && ['running', 'completed'].includes(step.status))
 })
 const manualSeatReady = computed(() => membersReady.value && members.value.length > 0 && !members.value.some((member) => isReplaceableMember(member)) && members.value.every(isProtectedMember))
 const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value?.status || ''))

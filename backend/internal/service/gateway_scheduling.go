@@ -1000,7 +1000,35 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				}
 			}
 		}
+		// A snapshot can legitimately be empty for a short period while a
+		// bucket rebuild is catching up with a newly enabled account or a
+		// cleared transient block.  Do one read-only repository fallback before
+		// reporting capacity exhaustion; the same transient filters are applied
+		// by the database query, and candidate policy is reapplied below.
+		if err == nil && len(accounts) == 0 && s.accountRepo != nil {
+			dbAccounts, dbUseMixed, dbErr := s.listSchedulableAccountsFromDatabase(ctx, groupID, platform, hasForcePlatform)
+			if dbErr == nil && len(dbAccounts) > 0 {
+				slog.Warn("account_scheduling_snapshot_empty_db_fallback",
+					"group_id", derefGroupID(groupID),
+					"platform", platform,
+					"count", len(dbAccounts))
+				return dbAccounts, dbUseMixed, nil
+			}
+			if dbErr != nil {
+				slog.Debug("account_scheduling_snapshot_db_fallback_failed",
+					"group_id", derefGroupID(groupID),
+					"platform", platform,
+					"error", dbErr)
+			}
+		}
 		return accounts, useMixed, err
+	}
+	return s.listSchedulableAccountsFromDatabase(ctx, groupID, platform, hasForcePlatform)
+}
+
+func (s *GatewayService) listSchedulableAccountsFromDatabase(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	if s.accountRepo == nil {
+		return nil, false, errors.New("account repository is not configured")
 	}
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {

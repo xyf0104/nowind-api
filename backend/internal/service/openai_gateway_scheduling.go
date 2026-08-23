@@ -1254,7 +1254,33 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		if err != nil {
 			return nil, err
 		}
+		// Snapshot rebuilds are asynchronous. If the snapshot is empty while
+		// the repository already exposes a schedulable account, use one
+		// read-only DB fallback so a stale bucket does not become a false 503.
+		if len(accounts) == 0 && s.accountRepo != nil {
+			dbAccounts, dbErr := s.listSchedulableAccountsFromDatabase(ctx, groupID, platform)
+			if dbErr == nil && len(dbAccounts) > 0 {
+				slog.Warn("openai_account_scheduling_snapshot_empty_db_fallback",
+					"group_id", derefGroupID(groupID),
+					"platform", platform,
+					"count", len(dbAccounts))
+				return dbAccounts, nil
+			}
+			if dbErr != nil {
+				slog.Debug("openai_account_scheduling_snapshot_db_fallback_failed",
+					"group_id", derefGroupID(groupID),
+					"platform", platform,
+					"error", dbErr)
+			}
+		}
 		return accounts, nil
+	}
+	return s.listSchedulableAccountsFromDatabase(ctx, groupID, platform)
+}
+
+func (s *OpenAIGatewayService) listSchedulableAccountsFromDatabase(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
+	if s.accountRepo == nil {
+		return nil, errors.New("account repository is not configured")
 	}
 	var accounts []Account
 	var err error
