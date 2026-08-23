@@ -54,8 +54,20 @@
                 </div>
                 <div v-if="index < steps.length - 1" class="mt-1 h-full min-h-6 w-px bg-gray-200 dark:bg-dark-600"></div>
               </div>
-              <div class="min-w-0 pb-3">
-                <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ item.label }}</div>
+              <div class="min-w-0 flex-1 pb-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ item.label }}</div>
+                  <button
+                    v-if="item.key !== 'mailbox' && canRunTopLevelStep(item.key)"
+                    type="button"
+                    :data-testid="'team-step-' + item.key"
+                    class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 text-xs"
+                    @click="runTopLevelStep(item.key)"
+                  >
+                    <Icon name="play" size="sm" :stroke-width="2" />
+                    <span>执行此步</span>
+                  </button>
+                </div>
                 <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ item.description }}</div>
               </div>
             </li>
@@ -145,6 +157,7 @@
         @open-browser="openBrowserWorkspace"
         @start-workflow="openWorkflowConfirmation"
         @continue-workflow="continueWorkflow"
+        @run-step="requestWorkflowStep"
       />
       <TeamChildBrowserWorkspace
         v-else
@@ -165,11 +178,21 @@
       :show="workflowConfirmOpen"
       :title="workflowConfirmationTitle"
       :message="workflowConfirmationMessage"
-      :confirm-text="manualSeatReady ? '邀请并授权' : '移除并邀请'"
+      :confirm-text="workflowStartStep === 'oauth' ? '打开授权页' : manualSeatReady ? '邀请并授权' : '移除并邀请'"
       cancel-text="取消"
-      danger
+      :danger="workflowStartStep !== 'oauth'"
       @confirm="startConfirmedWorkflow"
       @cancel="workflowConfirmOpen = false"
+    />
+    <ConfirmDialog
+      :show="workflowStepConfirmOpen"
+      :title="workflowStepConfirmationTitle"
+      :message="workflowStepConfirmationMessage"
+      :confirm-text="workflowStepToRun === 'remove' ? '确认移除' : workflowStepToRun === 'invite' ? '确认邀请' : '继续执行'"
+      cancel-text="取消"
+      :danger="workflowStepToRun === 'remove' || workflowStepToRun === 'invite'"
+      @confirm="confirmWorkflowStep"
+      @cancel="cancelWorkflowStep"
     />
     <ConfirmDialog
       :show="browserTakeOverConfirmOpen"
@@ -194,7 +217,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { extractApiErrorCode, extractApiErrorMessage } from '@/utils/apiError'
-import { teamChildAPI, type TeamChildMailbox, type TeamChildMember, type TeamChildWorkflow } from '@/api/admin/teamChild'
+import { teamChildAPI, type TeamChildMailbox, type TeamChildMember, type TeamChildWorkflow, type TeamChildWorkflowStepKey } from '@/api/admin/teamChild'
 import { groupsAPI } from '@/api/admin/groups'
 import type { AdminGroup } from '@/types'
 
@@ -240,6 +263,11 @@ const errorMessage = ref('')
 const createdAccount = ref<{ id?: number; name?: string; [key: string]: unknown } | null>(null)
 const teamWorkflow = ref<TeamChildWorkflow | null>(null)
 const workflowConfirmOpen = ref(false)
+const workflowStartStep = ref<TeamChildWorkflowStepKey>('members')
+const workflowRunOnlyStep = ref(false)
+const workflowStepConfirmOpen = ref(false)
+const workflowStepToRun = ref<TeamChildWorkflowStepKey | null>(null)
+const workflowStepRunning = ref(false)
 const workflowStarting = ref(false)
 const workflowContinuing = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
@@ -294,7 +322,7 @@ function isProtectedMember(member: TeamChildMember) {
   return Boolean(member.protected) || /^(owner|所有者|admin|administrator|管理员)$/i.test(member.role.trim())
 }
 const selectedReplaceableMember = computed(() => members.value.find((member) => member.email === selectedMemberEmail.value))
-const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || teamWorkflow.value?.status === 'running')
+const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || workflowStepRunning.value || teamWorkflow.value?.status === 'running')
 const smsWorkflowVisible = computed(() => {
   const workflow = teamWorkflow.value
   if (!workflow) return false
@@ -309,9 +337,34 @@ const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(au
 const workflowConfirmationTitle = computed(() => manualSeatReady.value ? '确认邀请并授权' : '确认替换成员并授权')
 const workflowConfirmationMessage = computed(() => {
   if (!mailbox.value?.email) return '当前缺少临时邮箱。'
+  if (workflowStartStep.value === 'oauth') return workflowRunOnlyStep.value
+    ? '已由实时页面确认成员席位和 Pending invites 状态。只执行 OAuth 步骤并停在外部验证，不会重复移除成员或发送邀请。'
+    : '已由实时页面确认成员席位和 Pending invites 状态。将从 OAuth 步骤打开 XIASS 官方 OpenAI 授权页，不会重复移除成员或发送邀请。'
+  if (workflowStartStep.value === 'remove') return manualSeatReady.value
+    ? workflowRunOnlyStep.value
+      ? '普通成员席位已经由人工腾出，本次只确认并跳过移除步骤。'
+      : '普通成员席位已经由人工腾出，将跳过移除并从邀请步骤继续。'
+    : workflowRunOnlyStep.value
+      ? `将从实时成员页面处理已选普通成员 ${selectedMemberEmail.value}，只执行当前成员席位步骤。`
+      : `将从实时成员页面处理已选普通成员 ${selectedMemberEmail.value}，完成后继续邀请和授权。`
   if (manualSeatReady.value) return `已实时确认普通成员席位已由人工腾出，当前仅剩受保护成员。将不移除任何成员，直接向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。`
   if (!selectedMemberEmail.value) return '当前缺少待替换成员。'
   return `将从 ChatGPT 工作区移除 ${selectedMemberEmail.value}，随后向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。已完成的外部操作不会自动回滚。`
+})
+const workflowStepConfirmationTitle = computed(() => {
+  if (workflowStepToRun.value === 'remove') return '执行成员移除步骤'
+  if (workflowStepToRun.value === 'invite') return '执行成员邀请步骤'
+  if (workflowStepToRun.value === 'oauth') return '执行 OpenAI 授权步骤'
+  if (workflowStepToRun.value === 'verify') return '检查授权回调'
+  return '执行成员页面步骤'
+})
+const workflowStepConfirmationMessage = computed(() => {
+  const key = workflowStepToRun.value
+  if (key === 'remove') return '会先刷新实时成员页面；如果目标成员已由人工移除，系统只确认状态，不会重复提交移除。'
+  if (key === 'invite') return '会先精确检查 Members 和 Pending invites 中的当前临时邮箱；已存在时只确认成功，不会重复发送邀请。'
+  if (key === 'oauth') return '会复用当前 XIASS 官方 OpenAI OAuth 会话，打开授权页并继续后续等待，不会重新生成第二条授权链接。'
+  if (key === 'verify') return '会读取当前授权页的回调地址；未完成时保持等待，完成后才返回可导入的回调。'
+  return '会刷新实时成员页面并确认当前工作区状态，然后继续未完成的步骤。'
 })
 const canImport = computed(() => Boolean(parsedCallback.value) && !parsedCallbackError.value && Boolean(mailbox.value) && Boolean(oauthSessionID.value) && !importing.value)
 
@@ -331,6 +384,14 @@ function assertOfficialOAuthSession(auth: { auth_url: string; session_id: string
     && query.get('codex_cli_simplified_flow') === 'true'
     && query.get('id_token_add_organizations') === 'true'
   if (!valid || !auth.session_id) throw new Error('内置 OpenAI OAuth 会话无效，请重新生成授权链接')
+}
+
+function normalizeTeamChildEmail(value: string) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toLowerCase()
 }
 
 async function generateFreshOAuthSession() {
@@ -539,11 +600,32 @@ async function removeMember(email: string) {
     appStore.showSuccess('成员已从工作空间移除')
   } catch (error) { appStore.showError(extractApiErrorMessage(error, '移除成员失败')) } finally { membersLoading.value = false }
 }
-function openWorkflowConfirmation() {
-  if (!workflowReady.value) {
+function canRunTopLevelStep(key: StepKey) {
+  if (busy.value || workflowBusy.value) return false
+  if (key === 'mailbox') return !mailbox.value && mailboxConfigured.value
+  if (key === 'replace') return Boolean(mailbox.value?.email && authUrl.value && membersReady.value && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && !teamWorkflow.value)
+  if (key === 'verify') return Boolean(mailbox.value?.email && authUrl.value && membersReady.value && manualSeatReady.value && pendingInvites.value > 0 && !teamWorkflow.value)
+  return canImport.value
+}
+function runTopLevelStep(key: StepKey) {
+  if (!canRunTopLevelStep(key)) return
+  if (key === 'mailbox') return void startFlow()
+  if (key === 'replace') return openWorkflowConfirmation('remove', true)
+  if (key === 'verify') return openWorkflowConfirmation('oauth', true)
+  return void importAccount()
+}
+function openWorkflowConfirmation(startStep: TeamChildWorkflowStepKey = 'members', runOnlyStep = false) {
+  if (startStep === 'oauth') {
+    if (!canRunTopLevelStep('verify')) {
+      appStore.showError('请先刷新确认目标临时邮箱已出现在 Pending invites 中')
+      return
+    }
+  } else if (!workflowReady.value) {
     appStore.showError('请先获取临时邮箱，并选择可替换成员或刷新确认已人工腾出的席位')
     return
   }
+  workflowStartStep.value = startStep
+  workflowRunOnlyStep.value = runOnlyStep
   workflowConfirmOpen.value = true
 }
 function clearWorkflowPoll() {
@@ -555,7 +637,7 @@ function scheduleWorkflowPoll(delay = 1200) {
   if (!teamWorkflow.value || !['running', 'manual_required'].includes(teamWorkflow.value.status)) return
   workflowPollTimer = setTimeout(() => void pollWorkflow(), delay)
 }
-async function startConfirmedWorkflow() {
+async function startConfirmedWorkflow(startStep: TeamChildWorkflowStepKey = workflowStartStep.value) {
   const seatAlreadyRemoved = manualSeatReady.value
   if (!mailbox.value?.email || workflowStarting.value || (!seatAlreadyRemoved && !isReplaceableMember(selectedReplaceableMember.value))) return
   if (!authUrl.value || !oauthSessionID.value) {
@@ -572,10 +654,12 @@ async function startConfirmedWorkflow() {
     // the same PKCE state visible in this workspace.
     callbackURL.value = ''
     teamWorkflow.value = await teamChildAPI.startTeamChildWorkflow({
-      ...(seatAlreadyRemoved ? {} : { seat_email: selectedMemberEmail.value }),
-      invite_email: mailbox.value.email,
+      ...(seatAlreadyRemoved ? {} : { seat_email: normalizeTeamChildEmail(selectedMemberEmail.value) }),
+      invite_email: normalizeTeamChildEmail(mailbox.value.email),
       auth_url: authUrl.value,
       seat_already_removed: seatAlreadyRemoved,
+      start_step: startStep,
+      ...(workflowRunOnlyStep.value ? { run_only_step: true } : {}),
       confirmed: true
     })
     status.value = 'workflow'
@@ -585,6 +669,44 @@ async function startConfirmedWorkflow() {
     errorMessage.value = extractApiErrorMessage(error, '无法启动成员替换和授权工作流')
   } finally {
     workflowStarting.value = false
+  }
+}
+function requestWorkflowStep(step: TeamChildWorkflowStepKey) {
+  if (!teamWorkflow.value || workflowBusy.value) return
+  const selected = teamWorkflow.value.steps.find((item) => item.key === step)
+  if (!selected || !['pending', 'waiting', 'failed'].includes(selected.status)) return
+  workflowStepToRun.value = step
+  workflowStepConfirmOpen.value = true
+}
+function cancelWorkflowStep() {
+  workflowStepConfirmOpen.value = false
+  workflowStepToRun.value = null
+}
+async function confirmWorkflowStep() {
+  const workflow = teamWorkflow.value
+  const step = workflowStepToRun.value
+  if (!workflow || !step || workflowStepRunning.value) return
+  workflowStepConfirmOpen.value = false
+  workflowStepRunning.value = true
+  errorMessage.value = ''
+  try {
+    teamWorkflow.value = await teamChildAPI.runTeamChildWorkflowStep(workflow.id, step)
+    if (teamWorkflow.value.status === 'callback_ready' && teamWorkflow.value.callback_url) {
+      callbackURL.value = teamWorkflow.value.callback_url
+      status.value = 'callback'
+      clearWorkflowPoll()
+      appStore.showSuccess('已识别授权回调地址，可以导入 XIASS')
+    } else {
+      status.value = teamWorkflow.value.status === 'manual_required' ? 'waiting' : 'workflow'
+      scheduleWorkflowPoll(500)
+    }
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '指定步骤执行失败')
+    await syncWorkflowAfterActionError()
+  } finally {
+    workflowStepRunning.value = false
+    workflowStepToRun.value = null
   }
 }
 async function continueWorkflow() {

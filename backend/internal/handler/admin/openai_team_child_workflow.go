@@ -23,6 +23,8 @@ type teamChildWorkflowStartRequest struct {
 	InviteEmail        string `json:"invite_email" binding:"required,email"`
 	AuthURL            string `json:"auth_url" binding:"required"`
 	SeatAlreadyRemoved bool   `json:"seat_already_removed"`
+	StartStep          string `json:"start_step"`
+	RunOnlyStep        bool   `json:"run_only_step"`
 	Confirmed          bool   `json:"confirmed"`
 }
 
@@ -41,6 +43,7 @@ type teamChildWorkflowRestartOAuthRequest struct {
 var (
 	teamChildWorkflowPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
 	teamChildWorkflowCodePattern  = regexp.MustCompile(`^[0-9]{4,8}$`)
+	teamChildWorkflowStartPattern = regexp.MustCompile(`^(members|remove|invite|oauth|verify)?$`)
 )
 
 func normalizeTeamChildWorkflowPhone(value string) (string, error) {
@@ -89,6 +92,7 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 	req.SeatEmail = strings.TrimSpace(req.SeatEmail)
 	req.InviteEmail = strings.TrimSpace(req.InviteEmail)
 	req.AuthURL = strings.TrimSpace(req.AuthURL)
+	req.StartStep = strings.TrimSpace(strings.ToLower(req.StartStep))
 	if !req.Confirmed {
 		response.BadRequest(c, "请先确认成员操作并发送邀请")
 		return
@@ -110,11 +114,40 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 		response.Forbidden(c, "受保护的管理员账号不可替换")
 		return
 	}
+	if !teamChildWorkflowStartPattern.MatchString(req.StartStep) {
+		response.BadRequest(c, "工作流起始步骤无效")
+		return
+	}
 	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows", req)
+}
+
+// RunTeamChildWorkflowStep executes one selected unfinished workflow stage.
+// The automation service rechecks all earlier stages against the live browser
+// state before it performs the requested stage.
+// POST /api/v1/admin/openai/team-child/workflows/:workflow_id/run-step
+func (h *OpenAIOAuthHandler) RunTeamChildWorkflowStep(c *gin.Context) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return
+	}
+	var req struct {
+		Step string `json:"step" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "步骤无效")
+		return
+	}
+	req.Step = strings.TrimSpace(strings.ToLower(req.Step))
+	if !teamChildWorkflowStartPattern.MatchString(req.Step) || req.Step == "" {
+		response.BadRequest(c, "步骤无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/run-step", req)
 }
 
 // GetTeamChildWorkflow returns only a short-lived progress snapshot. A callback

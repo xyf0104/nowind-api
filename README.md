@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.38-0ea5e9" alt="当前版本 v1.1.38" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.39-0ea5e9" alt="当前版本 v1.1.39" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.38
+> 当前版本：v1.1.39
+
+v1.1.39 完善 Team 子号工作流的逐步执行和完整连续执行：邀请严格使用成员页面原生 Email 输入框与 Continue/Send invites，提交后精确核对 Pending invites 目标邮箱；每个未完成步骤均可单独执行并停在下一步，人工已完成的前置步骤只做实时确认，不重复移除或邀请；保留一键授权完整链路、XIASS 官方 OpenAI PKCE 授权会话、管理员成员保护和回调校验导入逻辑。
 
 v1.1.38 修复 Team 子号工作流的活动状态恢复、成员邀请提交和 Pending invites 精确核验；继续使用 XIASS 内置 OpenAI 官方 PKCE 授权链接，不重复生成第二条 OAuth 会话；手机号按完整国际格式填入并在页面存在时明确选择 Text Message/SMS；邮箱服务请求兼容 Cloudflare 浏览器签名限制。保留管理员成员保护、接码站内确认、人工接管与回调校验导入逻辑。
 

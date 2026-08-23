@@ -43,9 +43,20 @@
         </div>
       </div>
       <ol class="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        <li v-for="step in workflow.steps" :key="step.key" class="min-w-0 border-l-2 px-3 py-1.5" :class="workflowStepClass(step.status)">
+        <li
+          v-for="step in workflow.steps"
+          :key="step.key"
+          class="min-w-0 border-l-2 px-3 py-1.5"
+          :class="[workflowStepClass(step.status), canRunWorkflowStep(step) ? 'cursor-pointer hover:bg-primary-50/70 dark:hover:bg-primary-950/20' : '']"
+          :role="canRunWorkflowStep(step) ? 'button' : undefined"
+          :tabindex="canRunWorkflowStep(step) ? 0 : undefined"
+          :aria-label="canRunWorkflowStep(step) ? `执行第 ${step.number} 步：${step.label}` : undefined"
+          @click="canRunWorkflowStep(step) && emit('run-step', step.key)"
+          @keydown.enter="canRunWorkflowStep(step) && emit('run-step', step.key)"
+        >
           <div class="flex items-center gap-2"><span class="text-xs font-semibold tabular-nums">{{ step.number }}</span><span class="truncate text-xs font-medium text-gray-800 dark:text-gray-100">{{ step.label }}</span></div>
           <p v-if="step.message" class="mt-1 line-clamp-2 text-xs leading-4 text-gray-500 dark:text-gray-400">{{ step.message }}</p>
+          <span v-if="canRunWorkflowStep(step)" class="mt-1 inline-block text-[11px] font-medium text-primary-600 dark:text-primary-400">点击执行</span>
         </li>
       </ol>
     </section>
@@ -125,7 +136,7 @@ const props = withDefaults(defineProps<{
   workflow?: TeamChildWorkflow | null
   workflowContinuing?: boolean
 }>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false })
-const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': [] }>()
+const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': []; 'run-step': [step: TeamChildWorkflowStep['key']] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)
 const removeOpen = ref(false)
@@ -179,6 +190,11 @@ function workflowStepClass(status: TeamChildWorkflowStep['status']) {
   if (status === 'waiting') return 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/10'
   if (status === 'cancelled') return 'border-gray-300 bg-gray-100/70 dark:border-dark-600 dark:bg-dark-900/30'
   return 'border-gray-300 dark:border-dark-600'
+}
+function canRunWorkflowStep(step: TeamChildWorkflowStep) {
+  return Boolean(props.workflow)
+    && !props.workflowBusy
+    && ['pending', 'waiting', 'failed'].includes(step.status)
 }
 function openEdit(member: TeamChildMember) {
   if (!canManageMember(member)) return

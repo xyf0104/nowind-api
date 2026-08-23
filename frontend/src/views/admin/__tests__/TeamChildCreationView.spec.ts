@@ -19,6 +19,7 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
     updateTeamChildMember: vi.fn(),
     removeTeamChildMember: vi.fn(),
     startTeamChildWorkflow: vi.fn(),
+    runTeamChildWorkflowStep: vi.fn(),
     getTeamChildWorkflow: vi.fn(),
     continueTeamChildWorkflow: vi.fn(),
     submitTeamChildWorkflowPhone: vi.fn(),
@@ -97,6 +98,7 @@ const MembersWorkspaceStub = {
   template: `<div>
     <button type="button" data-testid="team-member-select" @click="$emit('select', 'member@example.test')" />
     <button type="button" data-testid="team-start-workflow" @click="$emit('start-workflow')" />
+    <button type="button" data-testid="team-run-step" @click="$emit('run-step', 'invite')" />
     <button type="button" data-testid="team-members-workspace" @click="$emit('open-browser')" />
   </div>`
 }
@@ -181,6 +183,19 @@ describe('TeamChildCreationView', () => {
       manual_required: true,
       expires_at: '2026-08-22T12:30:00.000Z',
       steps: []
+    })
+    teamChildAPI.runTeamChildWorkflowStep.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop',
+      status: 'manual_required',
+      manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z',
+      steps: [
+        { key: 'members', number: 1, label: '读取成员席位', status: 'completed' },
+        { key: 'remove', number: 2, label: '移除已选成员', status: 'completed' },
+        { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed' },
+        { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' },
+        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'waiting' }
+      ]
     })
     teamChildAPI.submitTeamChildWorkflowPhone.mockResolvedValue({
       id: 'workflow-token-abcdefghijklmnop',
@@ -284,10 +299,71 @@ describe('TeamChildCreationView', () => {
       invite_email: 'team-child@example.test',
       auth_url: testAuthURL,
       seat_already_removed: false,
+      start_step: 'members',
       confirmed: true
     })
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
 
+    wrapper.unmount()
+  })
+
+  it('runs a selected unfinished workflow step only after in-page confirmation', async () => {
+    teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce({
+      id: 'workflow-token-abcdefghijklmnop',
+      status: 'manual_required',
+      manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z',
+      steps: [
+        { key: 'members', number: 1, label: '读取成员席位', status: 'completed' },
+        { key: 'remove', number: 2, label: '移除已选成员', status: 'completed' },
+        { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'pending' },
+        { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'pending' },
+        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'pending' }
+      ]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-run-step"]').trigger('click')
+    expect(teamChildAPI.runTeamChildWorkflowStep).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.runTeamChildWorkflowStep).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop', 'invite')
+    wrapper.unmount()
+  })
+
+  it('starts directly at OAuth after the live page shows only protected members and a pending invite', async () => {
+    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+      ready: true,
+      pending_invites: 1,
+      members: [{ id: 'owner@example.test', email: 'owner@example.test', role: 'owner', protected: true }]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-step-verify"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
+      invite_email: 'team-child@example.test',
+      auth_url: testAuthURL,
+      seat_already_removed: true,
+      start_step: 'oauth',
+      run_only_step: true,
+      confirmed: true
+    })
     wrapper.unmount()
   })
 
@@ -315,6 +391,7 @@ describe('TeamChildCreationView', () => {
       invite_email: 'team-child@example.test',
       auth_url: testAuthURL,
       seat_already_removed: true,
+      start_step: 'members',
       confirmed: true
     })
     wrapper.unmount()

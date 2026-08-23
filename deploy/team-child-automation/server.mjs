@@ -189,7 +189,21 @@ function extractEmail(text) {
 }
 
 function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase()
+  return String(email || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+function normalizeWorkflowEmail(value) {
+  const normalized = normalizeEmail(value)
+  const embedded = extractEmail(normalized)
+  return embedded || normalized
+}
+
+function isValidWorkflowEmail(value) {
+  return Boolean(value) && value.length <= 320 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)
 }
 
 function displayRole(value) {
@@ -692,9 +706,9 @@ async function clickMemberMenu(current, email) {
 }
 
 async function inviteMember(email) {
-  const normalized = normalizeEmail(email)
-  if (!normalized || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) {
-    throw new Error('成员邮箱格式无效')
+  const normalized = normalizeWorkflowEmail(email)
+  if (!isValidWorkflowEmail(normalized)) {
+    throw new Error('邀请邮箱格式无效')
   }
   let lastError
   for (let attempt = 1; attempt <= inviteAttempts; attempt += 1) {
@@ -800,8 +814,8 @@ async function updateMember(email, role) {
 }
 
 function validateWorkflowEmail(value, label) {
-  const email = normalizeEmail(value)
-  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 320) {
+  const email = normalizeWorkflowEmail(value)
+  if (!isValidWorkflowEmail(email)) {
     throw new Error(`${label}格式无效`)
   }
   return email
@@ -857,6 +871,8 @@ function createWorkflow(seatEmail, inviteEmail, authURL, seatAlreadyRemoved) {
     seatAlreadyRemoved,
     inviteEmail,
     authURL,
+    startStep: 'members',
+    runOnlyStep: false,
     createdAt: now,
     expiresAt: now + workflowTTL,
     status: 'running',
@@ -878,6 +894,26 @@ function createWorkflow(seatEmail, inviteEmail, authURL, seatAlreadyRemoved) {
       workflowStep('verify', 5, '完成外部验证并捕获回调')
     ]
   }
+}
+
+const workflowStepKeys = new Set(['members', 'remove', 'invite', 'oauth', 'verify'])
+
+function validateWorkflowStartStep(value) {
+  const step = String(value || '').trim().toLowerCase() || 'members'
+  if (!workflowStepKeys.has(step)) throw new Error('工作流起始步骤无效')
+  return step
+}
+
+function validateWorkflowStep(value) {
+  const step = String(value || '').trim().toLowerCase()
+  if (!step || !workflowStepKeys.has(step)) throw new Error('步骤无效')
+  return step
+}
+
+function workflowStepIndex(stepKey) {
+  const index = ['members', 'remove', 'invite', 'oauth', 'verify'].indexOf(stepKey)
+  if (index < 0) throw new Error('步骤无效')
+  return index
 }
 
 function workflowSummary(workflow) {
@@ -1404,7 +1440,8 @@ async function resumeWorkflowFromNextStep(workflow) {
     if (step.status === 'completed') continue
 
     if (step.key === 'members') {
-      setWorkflowStep(workflow, 'members', 'completed', '成员读取步骤已由人工处理，继续下一步')
+      const message = await confirmManualStepCompletion(workflow, step)
+      setWorkflowStep(workflow, 'members', 'completed', message)
       continue
     }
     if (step.key === 'remove') {
@@ -1446,9 +1483,81 @@ async function resumeWorkflowFromNextStep(workflow) {
   await waitForWorkflowCallback(workflow, '等待授权回调地址')
 }
 
+async function executeSingleWorkflowStep(workflow, index) {
+  for (let previous = 0; previous < index; previous += 1) {
+    const step = workflow.steps[previous]
+    if (step.status === 'completed') continue
+    const message = await confirmManualStepCompletion(workflow, step)
+    setWorkflowStep(workflow, step.key, 'completed', message)
+  }
+
+  const step = workflow.steps[index]
+  if (!step || step.status === 'completed') {
+    workflow.status = 'manual_required'
+    activeWorkflowID = workflow.id
+    return
+  }
+
+  if (step.key === 'members') {
+    const message = await confirmManualStepCompletion(workflow, step)
+    setWorkflowStep(workflow, 'members', 'completed', message)
+  } else if (step.key === 'remove') {
+    if (workflow.seatAlreadyRemoved) {
+      setWorkflowStep(workflow, 'remove', 'completed', '成员席位已由人工腾出，跳过移除')
+    } else {
+      const currentMembers = await listMembers({ forceRefresh: true, requireEmails: true })
+      if (!currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
+        setWorkflowStep(workflow, 'remove', 'completed', '已在实时成员列表确认成员已由人工移除')
+      } else {
+        setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
+        await removeMember(workflow.seatEmail)
+        setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
+      }
+    }
+  } else if (step.key === 'invite') {
+    setWorkflowStep(workflow, 'invite', 'running', '正在邀请临时邮箱')
+    await inviteMember(workflow.inviteEmail)
+    completeInviteStep(workflow, '邀请已发送并出现在待处理邀请中')
+  } else if (step.key === 'oauth') {
+    setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
+    workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
+    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在服务器浏览器的新标签中打开')
+  } else if (step.key === 'verify') {
+    await waitForWorkflowCallback(workflow, '请在内置浏览器完成外部验证；系统会自动识别回调地址')
+    return
+  }
+
+  workflow.status = 'manual_required'
+  workflow.error = ''
+  activeWorkflowID = workflow.id
+  if (step.key === 'oauth') {
+    setWorkflowStep(workflow, 'verify', 'waiting', '授权页已打开，请完成外部验证；完成后可单独执行回调检查')
+  }
+}
+
 async function executeWorkflow(workflow) {
   try {
     if (workflow.resumeRequested) {
+      await resumeWorkflowFromNextStep(workflow)
+      return
+    }
+
+    const startIndex = workflowStepIndex(workflow.startStep || 'members')
+    if (startIndex > 0) {
+      if (workflow.runOnlyStep) {
+        await executeSingleWorkflowStep(workflow, startIndex)
+        return
+      }
+      // A manually completed prefix is accepted only after the live browser
+      // confirms every earlier stage. This allows starting at OAuth after an
+      // operator handled the member page without replaying destructive actions.
+      for (let index = 0; index < startIndex; index += 1) {
+        const step = workflow.steps[index]
+        if (step.status === 'completed') continue
+        const message = await confirmManualStepCompletion(workflow, step)
+        setWorkflowStep(workflow, step.key, 'completed', message)
+      }
+      workflow.resumeNextStepIndex = startIndex
       await resumeWorkflowFromNextStep(workflow)
       return
     }
@@ -1522,18 +1631,54 @@ async function executeWorkflow(workflow) {
   }
 }
 
+function markSpecificWorkflowStepFailed(workflow, stepKey, error) {
+  const message = redactWorkflowError(error)
+  workflow.status = 'failed'
+  workflow.error = message
+  workflow.failedStepKey = stepKey
+  setWorkflowStep(workflow, stepKey, 'failed', message)
+  return message
+}
+
+async function runWorkflowStep(id, stepKey) {
+  pruneWorkflows()
+  const workflow = workflows.get(String(id || '').trim())
+  if (!workflow) throw new Error('工作流不存在或已过期')
+  if (!workflowStepKeys.has(stepKey)) throw new Error('步骤无效')
+  if (workflow.status === 'running') throw new Error('当前工作流正在执行，请等待当前步骤完成')
+  if (workflow.status === 'cancelled') throw new Error('当前工作流已停止，请重新开始')
+
+  const index = workflowStepIndex(stepKey)
+  const selected = workflow.steps[index]
+  if (selected.status === 'completed') return workflowSummary(workflow)
+
+  workflow.status = 'running'
+  workflow.error = ''
+  workflow.failedStepKey = ''
+  try {
+    await executeSingleWorkflowStep(workflow, index)
+    return workflowSummary(workflow)
+  } catch (error) {
+    markSpecificWorkflowStepFailed(workflow, stepKey, error)
+    throw error
+  }
+}
+
 async function startWorkflow(payload) {
   const seatAlreadyRemoved = payload?.seat_already_removed === true
-  const rawSeatEmail = String(payload?.seat_email || '').trim()
+  const rawSeatEmail = normalizeWorkflowEmail(payload?.seat_email)
   if (seatAlreadyRemoved && rawSeatEmail) throw new Error('人工腾位工作流不能携带待移除成员')
   const seatEmail = seatAlreadyRemoved ? '' : validateWorkflowEmail(rawSeatEmail, '成员邮箱')
   const inviteEmail = validateWorkflowEmail(payload?.invite_email, '临时邮箱')
   if (seatEmail && seatEmail === inviteEmail) throw new Error('临时邮箱不能与待移除成员相同')
   if (payload?.confirmed !== true) throw new Error('需要确认移除成员和发送邀请后才能开始')
   const authURL = validateOpenAIAuthURL(payload?.auth_url)
+  const startStep = validateWorkflowStartStep(payload?.start_step)
   if (activeWorkflow()) throw new Error('已有 Team 子号工作流正在进行，请先完成或取消当前工作流')
 
   const workflow = createWorkflow(seatEmail, inviteEmail, authURL, seatAlreadyRemoved)
+  workflow.startStep = startStep
+  workflow.runOnlyStep = payload?.run_only_step === true
   workflows.set(workflow.id, workflow)
   activeWorkflowID = workflow.id
   // Return immediately so the UI can show the operation timeline while the
@@ -1681,6 +1826,11 @@ async function handle(req, res) {
       }
       const continueWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/continue$/)
       if (continueWorkflowMatch && req.method === 'POST') return continueWorkflow(continueWorkflowMatch[1])
+      const runStepMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/run-step$/)
+      if (runStepMatch && req.method === 'POST') {
+        const body = await readBody(req)
+        return runWorkflowStep(runStepMatch[1], validateWorkflowStep(body?.step))
+      }
       const phoneWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/phone$/)
       if (phoneWorkflowMatch && req.method === 'POST') {
         const body = await readBody(req)

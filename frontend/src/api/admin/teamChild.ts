@@ -118,9 +118,13 @@ export interface StartTeamChildWorkflowRequest {
   invite_email: string
   auth_url: string
   seat_already_removed: boolean
+  start_step?: TeamChildWorkflowStepKey
+  run_only_step?: boolean
   /** Must be set only after the XIASS in-page destructive-action dialog. */
   confirmed: true
 }
+
+export type TeamChildWorkflowStepKey = TeamChildWorkflowStep['key']
 
 export async function getMailboxStatus(): Promise<TeamChildMailboxStatus> {
   const { data } = await apiClient.get<TeamChildMailboxStatus>('/admin/openai/team-child/mailbox-status')
@@ -220,6 +224,14 @@ export async function continueTeamChildWorkflow(workflowID: string): Promise<Tea
   return data
 }
 
+export async function runTeamChildWorkflowStep(workflowID: string, step: TeamChildWorkflowStepKey): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(
+    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/run-step`,
+    { step }
+  )
+  return data
+}
+
 export async function submitTeamChildWorkflowPhone(workflowID: string, phone: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/phone`,
@@ -280,6 +292,7 @@ export const teamChildAPI = {
   getTeamChildWorkflow,
   getActiveTeamChildWorkflow,
   continueTeamChildWorkflow,
+  runTeamChildWorkflowStep,
   submitTeamChildWorkflowPhone,
   submitTeamChildWorkflowCode,
   restartTeamChildWorkflowOAuth,

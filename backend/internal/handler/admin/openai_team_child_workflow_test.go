@@ -35,6 +35,7 @@ func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T)
 		`{"seat_email":"member@example.test","invite_email":"member@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`,
 		`{"invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`,
 		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","seat_already_removed":true,"confirmed":true}`,
+		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","start_step":"invalid","confirmed":true}`,
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
@@ -43,6 +44,49 @@ func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T)
 		require.Equal(t, http.StatusBadRequest, recorder.Code)
 	}
 	require.False(t, called)
+}
+
+func TestTeamChildWorkflowRunStepValidatesAndForwards(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	var receivedMethod string
+	var receivedPath string
+	var receivedBody map[string]any
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedMethod = r.Method
+		receivedPath = r.URL.Path
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"manual_required","steps":[]}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/workflows/:workflow_id/run-step", handler.RunTeamChildWorkflowStep)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/workflows/abcdefghijklmnoP/run-step", strings.NewReader(`{"step":"oauth"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, http.MethodPost, receivedMethod)
+	require.Equal(t, "/workflows/abcdefghijklmnoP/run-step", receivedPath)
+	require.Equal(t, "oauth", receivedBody["step"])
+
+	for _, payload := range []string{`{}`, `{"step":""}`, `{"step":"invalid"}`} {
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodPost, "/workflows/abcdefghijklmnoP/run-step", strings.NewReader(payload))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+	}
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/workflows/too-short/run-step", strings.NewReader(`{"step":"oauth"}`)))
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
 
 func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.T) {
@@ -68,7 +112,7 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	router.Use(teamChildAdminTestMiddleware("admin"))
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
-	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`
+	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","start_step":"oauth","run_only_step":true,"confirmed":true}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -81,6 +125,8 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	require.Equal(t, "member@example.test", receivedBody["seat_email"])
 	require.Equal(t, "new@example.test", receivedBody["invite_email"])
 	require.Equal(t, false, receivedBody["seat_already_removed"])
+	require.Equal(t, "oauth", receivedBody["start_step"])
+	require.Equal(t, true, receivedBody["run_only_step"])
 	require.Equal(t, true, receivedBody["confirmed"])
 }
 
