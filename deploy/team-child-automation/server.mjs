@@ -170,7 +170,11 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
 }
 
 async function pendingInvitesPage({ forceRefresh = true } = {}) {
-  const current = await membersPage({ forceRefresh, targetURL: pendingInvitesURL(), pending: true })
+  // Start from the real Members route and let the page select its own Pending
+  // invites tab. Some hosted builds keep `?tab=invites` in the URL while still
+  // rendering the Members panel, which made a stale member row look like a
+  // confirmed invitation.
+  const current = await membersPage({ forceRefresh, targetURL: membersURL, pending: true })
   return current
 }
 
@@ -300,23 +304,42 @@ function pendingInvitesURL() {
 }
 
 async function pendingInvitesRouteSelected(current) {
-  let tab = ''
   try {
     const parsed = new URL(current.url())
-    tab = parsed.searchParams.get('tab') || ''
     if (parsed.pathname.toLowerCase().includes('/invites')) return true
   } catch {
-    // The selected tab below is enough for SPA builds that remove the query.
+    // The selected tab or active panel below is enough for SPA builds that use
+    // a non-URL route.
   }
-  if (tab.toLowerCase() === 'invites') return true
   const selectedControls = current.locator('[role="tab"][aria-selected="true"], [aria-current="page"], [aria-pressed="true"]')
   const selectedText = (await selectedControls.allTextContents().catch(() => [])).join(' ')
-  return /pending invitations?|pending invites?|待处理邀请|待接受邀请/i.test(selectedText)
+  if (/pending invitations?|pending invites?|待处理邀请|待接受邀请/i.test(selectedText)) return true
+
+  // Do not scan the whole page here: the Members shell normally contains a
+  // navigation label for Pending invites even when that panel is not selected.
+  const headings = current.locator('h1:visible, h2:visible, h3:visible, [role="heading"]:visible, [role="tabpanel"]:visible')
+  const headingText = (await headings.allTextContents().catch(() => [])).join(' ')
+  return /pending invitations?|pending invites?|待处理邀请|待接受邀请/i.test(headingText)
+}
+
+async function pendingInvitesControl(current) {
+  const pattern = /pending invitations?|pending invites?|待处理邀请|待接受邀请/i
+  for (const role of ['tab', 'button', 'link']) {
+    const controls = current.getByRole(role, { name: pattern })
+    const count = await controls.count().catch(() => 0)
+    for (let index = 0; index < count; index += 1) {
+      const control = controls.nth(index)
+      if (await control.isVisible().catch(() => false)) return control
+    }
+  }
+  return null
 }
 
 async function pendingInviteSnapshot({ forceRefresh = true, expectedEmail = '' } = {}) {
   const current = await pendingInvitesPage({ forceRefresh })
-  const pendingRows = current.locator('table tbody tr, [role="row"], [data-testid*="invite" i], [data-testid*="pending" i], article, li')
+  const pendingRows = current.locator(
+    'table tbody tr, [role="row"], [role="listitem"], article, [data-testid*="invite" i], [data-testid*="pending" i]'
+  )
   try {
     await pendingRows.first().waitFor({ state: 'visible', timeout: 2500 })
   } catch {
@@ -330,32 +353,46 @@ async function pendingInviteSnapshot({ forceRefresh = true, expectedEmail = '' }
     const email = normalizeEmail(extractEmail(await rows.nth(index).innerText()))
     if (email) emails.add(email)
   }
-  // Some ChatGPT builds render invitation cards without table/row semantics;
-  // merge the visible page emails as a conservative fallback. Seeing an email
-  // already present is safe to treat as idempotent, while sending a duplicate
-  // invitation can create a second pending invite for the same seat.
-  const body = await current.locator('body').innerText()
-  // Once the pending table/cards expose at least one email, trust only those
-  // records. The page shell can also contain the owner/admin email, which must
-  // never count as a pending invitation. Fall back to body text only for
-  // builds that render an entirely unstructured invitation list.
-  if (emails.size === 0) {
-    for (const match of body.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
-      emails.add(normalizeEmail(match[0]))
-    }
-  }
   const wanted = normalizeEmail(expectedEmail)
-  if (wanted && await pendingInvitesRouteSelected(current)) {
-    // A target email may be rendered outside table semantics. Only promote the
-    // exact target after the dedicated pending-invites route is selected; this
-    // avoids treating the owner/admin email in the page shell as an invite.
-    const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    if (new RegExp(`(?:^|[^A-Z0-9._%+-])${escaped}(?:$|[^A-Z0-9._%+-])`, 'i').test(body)) emails.add(wanted)
+  if (wanted && await visiblePendingInviteEmail(current, wanted)) {
+    // A few hosted builds render the invitation as an unstructured text card.
+    // Only the exact requested email is accepted in that fallback; arbitrary
+    // emails from the page shell are never treated as pending invitations.
+    emails.add(wanted)
   }
+  const body = await current.locator('body').innerText().catch(() => '')
   return {
     emails,
     pendingInvites: parsePendingInvites(body) ?? emails.size
   }
+}
+
+async function visiblePendingInviteEmail(current, wanted) {
+  if (!await pendingInvitesRouteSelected(current)) return false
+  const escapedWanted = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const exactMatches = current.getByText(new RegExp(`^${escapedWanted}$`, 'i'))
+  const count = await exactMatches.count().catch(() => 0)
+  for (let index = 0; index < count; index += 1) {
+    const candidate = exactMatches.nth(index)
+    if (!(await candidate.isVisible().catch(() => false))) continue
+    const isRecord = await candidate.evaluate((element) => {
+      let node = element
+      for (let depth = 0; node && depth < 7; depth += 1) {
+        const tag = node.tagName.toLowerCase()
+        const role = node.getAttribute('role') || ''
+        const testID = (node.getAttribute('data-testid') || '').toLowerCase()
+        if (tag === 'tr' || tag === 'article' || role === 'row' || role === 'listitem' || /pending|invite/.test(testID)) return true
+        node = node.parentElement
+      }
+      return false
+    }).catch(() => false)
+    if (isRecord) return true
+  }
+
+  // Last-resort support for a page that has no semantic row/card wrapper. The
+  // exact text is still required, and the route has already been verified as
+  // the selected Pending invites panel.
+  return count > 0
 }
 
 async function waitForPendingInviteEmail(email) {
@@ -403,6 +440,8 @@ async function waitForPendingInvitesPageReady(current) {
   const pendingPattern = /pending invitations?|pending invites?|待处理邀请|待接受邀请/i
   const emptyPattern = /no pending|no invitations|暂无.*邀请|没有.*邀请|还没有.*邀请/i
   const deadline = Date.now() + Math.min(operationTimeout, 12000)
+  let attemptedTab = false
+  let attemptedDirectRoute = false
 
   while (Date.now() < deadline) {
     const body = await current.locator('body').innerText().catch(() => '')
@@ -417,6 +456,25 @@ async function waitForPendingInvitesPageReady(current) {
       // invites when the page reuses its shell.
       await sleep(250)
       return
+    }
+
+    if (!attemptedTab) {
+      attemptedTab = true
+      const control = await pendingInvitesControl(current)
+      if (control) {
+        await control.click().catch(() => undefined)
+        await sleep(300)
+        continue
+      }
+    }
+
+    // Query-string routing is only a fallback. The next loop still requires an
+    // actual selected panel/heading before the page is accepted.
+    if (!attemptedDirectRoute) {
+      attemptedDirectRoute = true
+      await current.goto(pendingInvitesURL(), { waitUntil: 'domcontentloaded', timeout: operationTimeout }).catch(() => undefined)
+      await sleep(300)
+      continue
     }
     await sleep(250)
   }
@@ -448,8 +506,8 @@ async function openInviteDialog(current) {
   const existing = await visibleInviteDialog(current)
   if (existing) return existing
 
-  const inviteButton = current.getByRole('button', { name: /invite(?:\s+members?)?|邀请成员|邀请/i }).first()
-  if (!(await inviteButton.count()) || !(await inviteButton.isVisible().catch(() => false))) {
+  const inviteButton = await firstVisibleInviteButton(current)
+  if (!inviteButton) {
     throw new Error('成员页面中找不到邀请成员按钮')
   }
   await inviteButton.click()
@@ -460,12 +518,56 @@ async function openInviteDialog(current) {
   return dialog
 }
 
+async function firstVisibleInviteButton(current) {
+  // Prefer the actual action label. A broad `/invite/` selector can pick the
+  // Pending invites tab before it reaches the real Invite members button.
+  for (const pattern of [/^invite members?$/i, /^invite$/i, /^邀请成员$/i, /^邀请$/i]) {
+    const buttons = current.getByRole('button', { name: pattern })
+    const count = await buttons.count().catch(() => 0)
+    for (let index = 0; index < count; index += 1) {
+      const button = buttons.nth(index)
+      if (await button.isVisible().catch(() => false)) return button
+    }
+  }
+
+  const buttons = current.locator('button')
+  const count = await buttons.count().catch(() => 0)
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index)
+    if (!(await button.isVisible().catch(() => false))) continue
+    const metadata = [
+      await button.innerText().catch(() => ''),
+      await button.getAttribute('aria-label'),
+      await button.getAttribute('title'),
+      await button.getAttribute('data-testid')
+    ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+    if (!/invite|邀请/i.test(metadata) || /pending|待处理|待接受/i.test(metadata)) continue
+    return button
+  }
+  return null
+}
+
 async function firstVisibleDialogButton(scope, pattern) {
+  const exactPatterns = pattern.test('continue') || pattern.test('继续')
+    ? [/^continue$/i, /^继续$/i]
+    : [pattern]
+  for (const exactPattern of exactPatterns) {
+    const buttons = scope.getByRole('button', { name: exactPattern })
+    const count = await buttons.count()
+    for (let index = 0; index < count; index += 1) {
+      const button = buttons.nth(index)
+      if (await button.isVisible().catch(() => false)) return button
+    }
+  }
+
   const buttons = scope.getByRole('button', { name: pattern })
   const count = await buttons.count()
   for (let index = 0; index < count; index += 1) {
     const button = buttons.nth(index)
-    if (await button.isVisible().catch(() => false)) return button
+    if (!(await button.isVisible().catch(() => false))) continue
+    const label = (await button.innerText().catch(() => '')).replace(/\s+/g, ' ').trim()
+    if (/continue\s+(with|to)|继续使用|继续前往/i.test(label)) continue
+    return button
   }
   return null
 }
@@ -736,6 +838,7 @@ function createWorkflow(seatEmail, inviteEmail, authURL, seatAlreadyRemoved) {
     error: '',
     resumeRequested: false,
     resumeNextStepIndex: -1,
+    failedStepKey: '',
     seatObserved: false,
     inviteConfirmed: false,
     inviteConfirmedAt: 0,
@@ -791,17 +894,71 @@ function completeInviteStep(workflow, message) {
   setWorkflowStep(workflow, 'invite', 'completed', message)
 }
 
-function completeFailedStepForManualContinuation(workflow) {
-  const failedIndex = workflow.steps.findIndex((step) => step.status === 'failed')
+async function confirmManualStepCompletion(workflow, step) {
+  if (step.key === 'members') {
+    const latest = await listMembers({ forceRefresh: true, requireEmails: true })
+    if (workflow.seatAlreadyRemoved) {
+      const unexpected = latest.members.find((member) => !isProtectedTeamMember(member))
+      if (unexpected) throw new Error('成员列表仍有未确认的普通成员，请先在浏览器完成席位处理')
+      return '成员页面已刷新并确认当前席位状态'
+    }
+    const selected = latest.members.find((member) => normalizeEmail(member.email) === workflow.seatEmail)
+    if (selected) {
+      assertRemovableMember(selected)
+      workflow.seatObserved = true
+      return '成员页面已刷新，下一步将处理已选普通成员席位'
+    }
+    if (workflow.seatObserved) return '已确认已选成员不再出现在实时列表中'
+    throw new Error('未在实时成员页面确认已选席位，请先登录并刷新成员列表')
+  }
+
+  if (step.key === 'remove') {
+    const latest = await listMembers({ forceRefresh: true, requireEmails: true })
+    if (latest.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
+      throw new Error('待替换成员仍在实时成员列表中，请先在内嵌浏览器完成移除')
+    }
+    return '已在实时成员列表确认席位已腾出'
+  }
+
+  if (step.key === 'invite') {
+    // The ordinary seat has already been removed by this point, so a valid
+    // workspace may contain no member rows at all. Pending invites is the
+    // authoritative confirmation for this step; an empty Members table must
+    // not block continuation.
+    const latestMembers = await listMembers({ forceRefresh: true })
+    if (latestMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)) {
+      completeInviteStep(workflow, '临时邮箱已在实时成员列表中确认')
+      return '临时邮箱已在实时成员列表中确认'
+    }
+    const pending = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: workflow.inviteEmail })
+    if (!pending.emails.has(normalizeEmail(workflow.inviteEmail))) {
+      throw new Error('Pending invites 中未找到目标临时邮箱，请在内嵌浏览器中点击邀请并确认后再继续')
+    }
+    completeInviteStep(workflow, '临时邮箱已在 Pending invites 中确认')
+    return '临时邮箱已在 Pending invites 中确认'
+  }
+
+  if (step.key === 'oauth' && (!workflow.oauthPage || workflow.oauthPage.isClosed())) {
+    throw new Error('OAuth 页面尚未打开，请先在浏览器中打开授权页后再继续')
+  }
+  return '该步骤已由人工处理，自动化将直接执行下一步'
+}
+
+async function completeFailedStepForManualContinuation(workflow) {
+  const failedIndex = workflow.failedStepKey
+    ? workflow.steps.findIndex((step) => step.key === workflow.failedStepKey && step.status === 'failed')
+    : workflow.steps.findIndex((step) => step.status === 'failed')
   if (failedIndex < 0) throw new Error('当前工作流没有可继续的失败步骤')
   const failed = workflow.steps[failedIndex]
+  const confirmationMessage = await confirmManualStepCompletion(workflow, failed)
   failed.status = 'completed'
-  failed.message = '该步骤已由人工处理，自动化将直接执行下一步'
+  failed.message = confirmationMessage
   if (failed.key === 'invite') {
     workflow.inviteConfirmed = true
     workflow.inviteConfirmedAt = Date.now()
   }
   workflow.resumeNextStepIndex = failedIndex + 1
+  workflow.failedStepKey = ''
 }
 
 function redactWorkflowError(error) {
@@ -1086,7 +1243,9 @@ function markWorkflowActionFailed(workflow, error) {
   workflow.status = 'failed'
   workflow.error = message
   const active = workflow.steps.find((step) => step.status === 'running')
-  setWorkflowStep(workflow, active?.key || 'verify', 'failed', message)
+  const failedKey = active?.key || 'verify'
+  workflow.failedStepKey = failedKey
+  setWorkflowStep(workflow, failedKey, 'failed', message)
   return message
 }
 
@@ -1189,6 +1348,14 @@ async function resumeWorkflowFromNextStep(workflow) {
         setWorkflowStep(workflow, 'remove', 'completed', '成员席位已由人工腾出，跳过移除')
         continue
       }
+      // If the operator also completed removal while recovering the previous
+      // Members step, recognize the live absence instead of submitting a
+      // duplicate destructive action.
+      const currentMembers = await listMembers({ forceRefresh: true, requireEmails: true })
+      if (!currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
+        setWorkflowStep(workflow, 'remove', 'completed', '已在实时成员列表确认成员已由人工移除')
+        continue
+      }
       setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
       await removeMember(workflow.seatEmail)
       setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
@@ -1262,7 +1429,7 @@ async function executeWorkflow(workflow) {
     if (invitationAccepted) {
       completeInviteStep(workflow, '临时邮箱已出现在成员列表中')
     } else {
-      const pendingSnapshot = await pendingInviteSnapshot({ forceRefresh: true })
+      const pendingSnapshot = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: workflow.inviteEmail })
       if (pendingSnapshot.emails.has(normalizeEmail(workflow.inviteEmail))) {
         completeInviteStep(workflow, '临时邮箱已出现在待处理邀请中')
       } else if (workflow.seatAlreadyRemoved && pendingSnapshot.emails.size > 0) {
@@ -1285,7 +1452,9 @@ async function executeWorkflow(workflow) {
     workflow.status = 'failed'
     workflow.error = message
     const active = workflow.steps.find((step) => step.status === 'running')
-    if (active) setWorkflowStep(workflow, active.key, 'failed', message)
+    const failedKey = active?.key || 'verify'
+    workflow.failedStepKey = failedKey
+    setWorkflowStep(workflow, failedKey, 'failed', message)
   }
 }
 
@@ -1317,7 +1486,7 @@ async function continueWorkflow(id) {
   const current = activeWorkflow()
   if (current && current.id !== workflow.id) throw new Error('已有其他 Team 子号工作流正在进行')
 
-  completeFailedStepForManualContinuation(workflow)
+  await completeFailedStepForManualContinuation(workflow)
   workflow.status = 'running'
   workflow.error = ''
   workflow.resumeRequested = true
