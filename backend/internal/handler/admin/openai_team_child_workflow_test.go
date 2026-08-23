@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testTeamChildAuthURL = "https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state"
+
 func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	called := false
@@ -28,11 +30,11 @@ func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T)
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
 	for _, payload := range []string{
-		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize","confirmed":false}`,
+		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":false}`,
 		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://example.test/authorize","confirmed":true}`,
-		`{"seat_email":"member@example.test","invite_email":"member@example.test","auth_url":"https://auth.openai.com/authorize","confirmed":true}`,
-		`{"invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize","confirmed":true}`,
-		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize","seat_already_removed":true,"confirmed":true}`,
+		`{"seat_email":"member@example.test","invite_email":"member@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`,
+		`{"invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`,
+		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","seat_already_removed":true,"confirmed":true}`,
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
@@ -66,7 +68,7 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	router.Use(teamChildAdminTestMiddleware("admin"))
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
-	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize?client_id=example","confirmed":true}`
+	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -99,7 +101,7 @@ func TestTeamChildWorkflowAllowsConfirmedManualSeatRelease(t *testing.T) {
 	router.Use(teamChildAdminTestMiddleware("admin"))
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
-	payload := `{"invite_email":"new@example.test","auth_url":"https://auth.openai.com/authorize?client_id=example","seat_already_removed":true,"confirmed":true}`
+	payload := `{"invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","seat_already_removed":true,"confirmed":true}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -130,7 +132,7 @@ func TestTeamChildWorkflowRejectsProtectedReplacementSeat(t *testing.T) {
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader("{\"seat_email\":\"protected-admin@example.test\",\"invite_email\":\"new@example.test\",\"auth_url\":\"https://auth.openai.com/authorize\",\"confirmed\":true}"))
+	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(`{"seat_email":"protected-admin@example.test","invite_email":"new@example.test","auth_url":"`+testTeamChildAuthURL+`","confirmed":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
 
@@ -238,7 +240,7 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 	}{
 		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"+57 315 1855041"}`},
 		{path: "/workflows/abcdefghijklmnoP/code", payload: `{"code":"123456"}`},
-		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"https://auth.openai.com/authorize?state=fresh"}`},
+		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"` + testTeamChildAuthURL + `"}`},
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.payload))
@@ -253,7 +255,7 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 	require.Equal(t, "/workflows/abcdefghijklmnoP/code", requests[1].path)
 	require.Equal(t, "123456", requests[1].body["code"])
 	require.Equal(t, "/workflows/abcdefghijklmnoP/restart-oauth", requests[2].path)
-	require.Equal(t, "https://auth.openai.com/authorize?state=fresh", requests[2].body["auth_url"])
+	require.Equal(t, testTeamChildAuthURL, requests[2].body["auth_url"])
 
 	for _, test := range []struct {
 		path    string
@@ -274,16 +276,18 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 
 func TestValidateTeamChildWorkflowAuthURL(t *testing.T) {
 	for _, raw := range []string{
-		"https://auth.openai.com/authorize?client_id=example",
-		"https://login.openai.com/authorize",
-		"https://chatgpt.com/auth/login",
+		testTeamChildAuthURL,
 	} {
 		require.NoError(t, validateTeamChildWorkflowAuthURL(raw))
 	}
 	for _, raw := range []string{
-		"http://auth.openai.com/authorize",
-		"https://user:pass@auth.openai.com/authorize",
-		"https://auth.openai.com.example.test/authorize",
+		"http://auth.openai.com/oauth/authorize?client_id=x&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=s&code_challenge=c&code_challenge_method=S256",
+		"https://user:pass@auth.openai.com/oauth/authorize?client_id=x&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=s&code_challenge=c&code_challenge_method=S256",
+		"https://auth.openai.com.example.test/oauth/authorize?client_id=x&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=s&code_challenge=c&code_challenge_method=S256",
+		"https://auth.openai.com/authorize?client_id=example",
+		"https://auth.openai.com/oauth/authorize?client_id=wrong&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state",
+		"https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=https%3A%2F%2Fexample.test%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state",
+		"https://login.openai.com/authorize",
 		"not a URL",
 	} {
 		require.Error(t, validateTeamChildWorkflowAuthURL(raw))

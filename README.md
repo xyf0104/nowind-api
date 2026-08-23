@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.35-0ea5e9" alt="当前版本 v1.1.35" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.36-0ea5e9" alt="当前版本 v1.1.36" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.35
+> 当前版本：v1.1.36
+
+v1.1.36 修复 Team 子号自动化邀请步骤：始终在内嵌浏览器的邀请弹窗中填写邮箱并点击页面 Continue，提交后独立刷新 Pending invites 页面并按目标邮箱确认结果，兼容邀请直接进入成员列表和最多三次刷新重试。启动授权时强制重新生成并校验 XIASS 内置 OpenAI 官方 PKCE OAuth 链接，保证 client、state、PKCE、回调和导入会话一致；成员页、邀请页和人工失败后继续下一步的既有流程保持不变。
 
 v1.1.35 修复 Grok 免费额度回退测试对异步上游模型观测请求的误判，保持额度查询本身仍只执行两次 billing 请求和一次活动探测；Team 子号 OAuth 电话号码被上游拒绝时的站内确认换号、完整国际号码填入内嵌浏览器并继续当前步骤的修复继续保留。
 

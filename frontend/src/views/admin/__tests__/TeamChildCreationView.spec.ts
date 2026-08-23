@@ -41,6 +41,9 @@ vi.mock('@/stores/app', () => ({ useAppStore: () => appStore }))
 
 import TeamChildCreationView from '../TeamChildCreationView.vue'
 
+const testAuthURL = 'https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=team-state'
+const freshTestAuthURL = 'https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=fresh-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=fresh-team-state'
+
 const PixlabSMSReceiverStub = {
   props: { active: { type: Boolean, default: false } },
   template: `<div data-testid="team-sms-receiver" :data-active="String(active)">
@@ -104,7 +107,7 @@ describe('TeamChildCreationView', () => {
     })
     teamChildAPI.getActiveMailbox.mockResolvedValue(null)
     teamChildAPI.generateOpenAIAuthUrl.mockResolvedValue({
-      auth_url: 'https://auth.openai.com/authorize?state=team-state',
+      auth_url: testAuthURL,
       session_id: 'oauth-session'
     })
     teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'waiting' })
@@ -203,6 +206,10 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
+    teamChildAPI.generateOpenAIAuthUrl
+      .mockResolvedValueOnce({ auth_url: testAuthURL, session_id: 'oauth-session-initial' })
+      .mockResolvedValueOnce({ auth_url: freshTestAuthURL, session_id: 'oauth-session-fresh' })
+
     const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
     expect(mailboxButton).toBeDefined()
     await mailboxButton!.trigger('click')
@@ -217,10 +224,11 @@ describe('TeamChildCreationView', () => {
 
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
+    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(2)
     expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
       seat_email: 'member@example.test',
       invite_email: 'team-child@example.test',
-      auth_url: 'https://auth.openai.com/authorize?state=team-state',
+      auth_url: freshTestAuthURL,
       seat_already_removed: false,
       confirmed: true
     })
@@ -251,7 +259,7 @@ describe('TeamChildCreationView', () => {
 
     expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
       invite_email: 'team-child@example.test',
-      auth_url: 'https://auth.openai.com/authorize?state=team-state',
+      auth_url: testAuthURL,
       seat_already_removed: true,
       confirmed: true
     })
@@ -308,10 +316,10 @@ describe('TeamChildCreationView', () => {
     await wrapper.get('[data-testid="sms-session-cancelled"]').trigger('click')
     await flushPromises()
 
-    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(2)
+    expect(teamChildAPI.generateOpenAIAuthUrl).toHaveBeenCalledTimes(3)
     expect(teamChildAPI.restartTeamChildWorkflowOAuth).toHaveBeenCalledWith(
       'workflow-token-abcdefghijklmnop',
-      'https://auth.openai.com/authorize?state=team-state'
+      testAuthURL
     )
     expect(teamChildAPI.cancelTeamChildWorkflow).not.toHaveBeenCalled()
     wrapper.unmount()

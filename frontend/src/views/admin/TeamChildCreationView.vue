@@ -311,6 +311,33 @@ const workflowConfirmationMessage = computed(() => {
 })
 const canImport = computed(() => Boolean(parsedCallback.value) && !parsedCallbackError.value && Boolean(mailbox.value) && Boolean(oauthSessionID.value) && !importing.value)
 
+function applyOAuthSession(auth: { auth_url: string; session_id: string }) {
+  const parsed = new URL(auth.auth_url)
+  const query = parsed.searchParams
+  const valid = parsed.protocol === 'https:'
+    && parsed.hostname.toLowerCase() === 'auth.openai.com'
+    && parsed.pathname === '/oauth/authorize'
+    && query.get('response_type') === 'code'
+    && query.get('client_id') === 'app_EMoamEEZ73f0CkXaXp7hrann'
+    && query.get('redirect_uri') === 'http://localhost:1455/auth/callback'
+    && query.get('scope') === 'openid profile email offline_access'
+    && Boolean(query.get('state'))
+    && Boolean(query.get('code_challenge'))
+    && query.get('code_challenge_method') === 'S256'
+    && query.get('codex_cli_simplified_flow') === 'true'
+    && query.get('id_token_add_organizations') === 'true'
+  if (!valid || !auth.session_id) throw new Error('内置 OpenAI OAuth 会话无效，请重新生成授权链接')
+  authUrl.value = auth.auth_url
+  oauthSessionID.value = auth.session_id
+  oauthState.value = query.get('state') || ''
+}
+
+async function generateFreshOAuthSession() {
+  const auth = await teamChildAPI.generateOpenAIAuthUrl()
+  applyOAuthSession(auth)
+  return auth
+}
+
 function isStepComplete(key: StepKey) {
   if (key === 'mailbox') return Boolean(mailbox.value)
   if (key === 'replace') return teamWorkflow.value?.steps.find((item) => item.key === 'invite')?.status === 'completed'
@@ -513,15 +540,21 @@ function scheduleWorkflowPoll(delay = 1200) {
 }
 async function startConfirmedWorkflow() {
   const seatAlreadyRemoved = manualSeatReady.value
-  if (!mailbox.value?.email || !authUrl.value || workflowStarting.value || (!seatAlreadyRemoved && !isReplaceableMember(selectedReplaceableMember.value))) return
+  if (!mailbox.value?.email || workflowStarting.value || (!seatAlreadyRemoved && !isReplaceableMember(selectedReplaceableMember.value))) return
   workflowConfirmOpen.value = false
   workflowStarting.value = true
   errorMessage.value = ''
   try {
+    // The URL created when the mailbox was first opened may be close to its
+    // session TTL or belong to a previous manual attempt. Mint a new official
+    // PKCE session at the confirmation boundary and use that same session for
+    // the later callback exchange.
+    const auth = await generateFreshOAuthSession()
+    callbackURL.value = ''
     teamWorkflow.value = await teamChildAPI.startTeamChildWorkflow({
       ...(seatAlreadyRemoved ? {} : { seat_email: selectedMemberEmail.value }),
       invite_email: mailbox.value.email,
-      auth_url: authUrl.value,
+      auth_url: auth.auth_url,
       seat_already_removed: seatAlreadyRemoved,
       confirmed: true
     })
@@ -597,10 +630,7 @@ async function restartWorkflowOAuth() {
   if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
   clearWorkflowPoll()
   try {
-    const auth = await teamChildAPI.generateOpenAIAuthUrl()
-    authUrl.value = auth.auth_url
-    oauthSessionID.value = auth.session_id
-    oauthState.value = new URL(auth.auth_url).searchParams.get('state') || ''
+    const auth = await generateFreshOAuthSession()
     teamWorkflow.value = await teamChildAPI.restartTeamChildWorkflowOAuth(workflow.id, auth.auth_url)
     callbackURL.value = ''
     status.value = 'workflow'
@@ -670,10 +700,7 @@ async function startFlow() {
     mailbox.value = await teamChildAPI.createMailbox()
     accountName.value = mailbox.value.email
     schedulePoll(250)
-    const auth = await teamChildAPI.generateOpenAIAuthUrl()
-    authUrl.value = auth.auth_url
-    oauthSessionID.value = auth.session_id
-    oauthState.value = new URL(auth.auth_url).searchParams.get('state') || ''
+    await generateFreshOAuthSession()
     status.value = 'ready'
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '流程启动失败') }
 }
@@ -687,10 +714,7 @@ async function restoreActiveMailbox() {
     accountName.value = restored.email
     mailboxCodeError.value = ''
     schedulePoll(250)
-    const auth = await teamChildAPI.generateOpenAIAuthUrl()
-    authUrl.value = auth.auth_url
-    oauthSessionID.value = auth.session_id
-    oauthState.value = new URL(auth.auth_url).searchParams.get('state') || ''
+    await generateFreshOAuthSession()
     status.value = 'ready'
     appStore.showInfo('已恢复当前临时邮箱，可以继续成员邀请和授权')
   } catch {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -242,10 +243,19 @@ func validateTeamChildWorkflowAuthURL(raw string) error {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 		return fmt.Errorf("授权链接无效")
 	}
-	switch strings.ToLower(parsed.Hostname()) {
-	case "auth.openai.com", "login.openai.com", "chatgpt.com":
-		return nil
-	default:
-		return fmt.Errorf("授权链接不是受支持的 OpenAI 地址")
+	query := parsed.Query()
+	if strings.ToLower(parsed.Hostname()) != "auth.openai.com" ||
+		parsed.Path != "/oauth/authorize" ||
+		query.Get("response_type") != "code" ||
+		query.Get("client_id") != openai.ClientID ||
+		query.Get("redirect_uri") != openai.DefaultRedirectURI ||
+		query.Get("scope") != openai.DefaultScopes ||
+		query.Get("state") == "" ||
+		query.Get("code_challenge") == "" ||
+		query.Get("code_challenge_method") != "S256" ||
+		query.Get("codex_cli_simplified_flow") != "true" ||
+		query.Get("id_token_add_organizations") != "true" {
+		return fmt.Errorf("授权链接必须使用 XIASS 内置 OpenAI PKCE 登录流程")
 	}
+	return nil
 }

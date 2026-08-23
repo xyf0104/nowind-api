@@ -16,6 +16,9 @@ const workflowTTL = boundedDuration(process.env.WORKFLOW_TTL_MS, 45 * 60 * 1000,
 const memberRefreshAttempts = 3
 const inviteAttempts = 3
 const workflowPhonePattern = /^\+[1-9][0-9]{7,14}$/
+const officialOpenAIClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const officialOpenAIRedirectURI = 'http://localhost:1455/auth/callback'
+const officialOpenAIScope = 'openid profile email offline_access'
 const protectedMemberEmails = new Set(
   String(process.env.TEAM_CHILD_PROTECTED_MEMBER_EMAILS || '')
     .split(/[\s,;]+/)
@@ -28,6 +31,7 @@ let operation = Promise.resolve()
 let activeWorkflowID = ''
 const workflows = new Map()
 let managedMembersPage
+let managedPendingInvitesPage
 
 function json(res, status, payload) {
   res.writeHead(status, {
@@ -133,11 +137,13 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
   // Never reuse an arbitrary visible tab. The manual browser may be on an OAuth
   // page, a CAPTCHA, or a human confirmation step; member automation must not
-  // navigate it away. This service owns one separate members-page tab only.
-  let active = managedMembersPage
+  // navigate it away. Keep separate tabs for Members and Pending invites so a
+  // slow SPA route change cannot make an old table look like the new view.
+  let active = pending ? managedPendingInvitesPage : managedMembersPage
   if (!active || active.isClosed()) {
     active = await context.newPage()
-    managedMembersPage = active
+    if (pending) managedPendingInvitesPage = active
+    else managedMembersPage = active
   }
   let cdpSession
   try {
@@ -148,7 +154,8 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
     // another user-visible tab.
     if (!active.isClosed()) throw error
     active = await context.newPage()
-    managedMembersPage = active
+    if (pending) managedPendingInvitesPage = active
+    else managedMembersPage = active
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   }
   try {
@@ -292,7 +299,22 @@ function pendingInvitesURL() {
   return target.toString()
 }
 
-async function pendingInviteSnapshot({ forceRefresh = true } = {}) {
+async function pendingInvitesRouteSelected(current) {
+  let tab = ''
+  try {
+    const parsed = new URL(current.url())
+    tab = parsed.searchParams.get('tab') || ''
+    if (parsed.pathname.toLowerCase().includes('/invites')) return true
+  } catch {
+    // The selected tab below is enough for SPA builds that remove the query.
+  }
+  if (tab.toLowerCase() === 'invites') return true
+  const selectedControls = current.locator('[role="tab"][aria-selected="true"], [aria-current="page"], [aria-pressed="true"]')
+  const selectedText = (await selectedControls.allTextContents().catch(() => [])).join(' ')
+  return /pending invitations?|pending invites?|待处理邀请|待接受邀请/i.test(selectedText)
+}
+
+async function pendingInviteSnapshot({ forceRefresh = true, expectedEmail = '' } = {}) {
   const current = await pendingInvitesPage({ forceRefresh })
   const pendingRows = current.locator('table tbody tr, [role="row"], [data-testid*="invite" i], [data-testid*="pending" i], article, li')
   try {
@@ -322,10 +344,33 @@ async function pendingInviteSnapshot({ forceRefresh = true } = {}) {
       emails.add(normalizeEmail(match[0]))
     }
   }
+  const wanted = normalizeEmail(expectedEmail)
+  if (wanted && await pendingInvitesRouteSelected(current)) {
+    // A target email may be rendered outside table semantics. Only promote the
+    // exact target after the dedicated pending-invites route is selected; this
+    // avoids treating the owner/admin email in the page shell as an invite.
+    const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (new RegExp(`(?:^|[^A-Z0-9._%+-])${escaped}(?:$|[^A-Z0-9._%+-])`, 'i').test(body)) emails.add(wanted)
+  }
   return {
     emails,
     pendingInvites: parsePendingInvites(body) ?? emails.size
   }
+}
+
+async function waitForPendingInviteEmail(email) {
+  const wanted = normalizeEmail(email)
+  let latest
+  await waitUntil('邀请操作已提交但待处理邀请中未出现该邮箱', async () => {
+    latest = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: wanted })
+    if (latest.emails.has(wanted)) return true
+
+    // Some hosted builds immediately move the accepted invite into Members.
+    // Treat that as success too, but never infer success from a count alone.
+    const members = await listMembers({ forceRefresh: true })
+    return members.members.some((member) => normalizeEmail(member.email) === wanted)
+  })
+  return latest || { emails: new Set([wanted]), pendingInvites: 1 }
 }
 
 // The ChatGPT members page is a client-rendered application. DOMContentLoaded
@@ -334,24 +379,24 @@ async function pendingInviteSnapshot({ forceRefresh = true } = {}) {
 // then allow the table a short window to populate. An actually empty workspace
 // still returns normally once the toolbar is visible.
 async function waitForMemberPageReady(current) {
+  const deadline = Date.now() + Math.min(operationTimeout, 12000)
   const inviteButton = current.getByRole('button', { name: /invite member|邀请成员/i }).first()
   const rows = current.locator('table tbody tr, [role="row"]')
-  try {
-    // The pending-invites tab does not always render an "Invite member" button.
-    // Waiting for the table first prevents a fresh invite from being mistaken
-    // for a missing invite while the SPA is still rendering its rows.
-    await rows.first().waitFor({ state: 'visible', timeout: 3500 })
-    return
-  } catch {
-    // An empty workspace can have no rows; the toolbar is the readiness signal
-    // for the regular members route in that case.
+  while (Date.now() < deadline) {
+    if (await pendingInvitesRouteSelected(current)) {
+      await sleep(250)
+      continue
+    }
+    if (await rows.first().isVisible().catch(() => false)) return
+    if (await inviteButton.isVisible().catch(() => false)) return
+    await sleep(250)
   }
-  try {
-    await inviteButton.waitFor({ state: 'visible', timeout: Math.min(operationTimeout, 12000) })
-  } catch {
-    // A pending-invites page may expose neither signal when it is empty. The
-    // caller will return an empty result and can safely report that state.
+  if (await pendingInvitesRouteSelected(current)) {
+    throw new Error('成员页面仍停留在待处理邀请页，请刷新成员页面后重试')
   }
+  // Preserve the previous behavior for a genuinely empty workspace: readMembers
+  // will produce the useful login/page error, while a stale Pending invites tab
+  // is rejected explicitly above instead of being parsed as members.
 }
 
 async function waitForPendingInvitesPageReady(current) {
@@ -361,18 +406,12 @@ async function waitForPendingInvitesPageReady(current) {
 
   while (Date.now() < deadline) {
     const body = await current.locator('body').innerText().catch(() => '')
-    const url = current.url()
-    let tab = ''
-    try {
-      tab = new URL(url).searchParams.get('tab') || ''
-    } catch {
-      // The visible selected tab below is enough when the SPA removes the query.
-    }
+    const routeSelected = await pendingInvitesRouteSelected(current)
     const selectedControls = current.locator('[role="tab"][aria-selected="true"], [aria-current="page"], [aria-pressed="true"]')
     const selectedText = (await selectedControls.allTextContents().catch(() => [])).join(' ')
-    const pendingSelected = tab === 'invites' || pendingPattern.test(selectedText)
+    const pendingSelected = routeSelected || pendingPattern.test(selectedText)
     const pendingContent = pendingPattern.test(body) || emptyPattern.test(body)
-    if (pendingSelected && pendingContent) {
+    if (pendingSelected && (pendingContent || body.trim().length > 0)) {
       // Give the SPA one short render tick after the route/tab selection. This
       // prevents a previous Members table from being mistaken for Pending
       // invites when the page reuses its shell.
@@ -409,7 +448,7 @@ async function openInviteDialog(current) {
   const existing = await visibleInviteDialog(current)
   if (existing) return existing
 
-  const inviteButton = current.getByRole('button', { name: /^(invite member|邀请成员)$/i }).first()
+  const inviteButton = current.getByRole('button', { name: /invite(?:\s+members?)?|邀请成员|邀请/i }).first()
   if (!(await inviteButton.count()) || !(await inviteButton.isVisible().catch(() => false))) {
     throw new Error('成员页面中找不到邀请成员按钮')
   }
@@ -432,8 +471,27 @@ async function firstVisibleDialogButton(scope, pattern) {
 }
 
 async function submitInviteDialog(scope, email) {
-  const input = scope.locator('input[type="email"]').first()
-  if (!(await input.count())) throw new Error('邀请成员弹窗中找不到邮箱输入框')
+  const inputs = scope.locator('input')
+  let input
+  const count = await inputs.count()
+  for (let index = 0; index < count; index += 1) {
+    const candidate = inputs.nth(index)
+    if (!(await candidate.isVisible().catch(() => false))) continue
+    const type = (await candidate.getAttribute('type') || 'text').toLowerCase()
+    const metadata = [
+      type,
+      await candidate.getAttribute('autocomplete'),
+      await candidate.getAttribute('name'),
+      await candidate.getAttribute('id'),
+      await candidate.getAttribute('aria-label'),
+      await candidate.getAttribute('placeholder')
+    ].filter(Boolean).join(' ').toLowerCase()
+    if (type === 'email' || /email|邮箱/.test(metadata)) {
+      input = candidate
+      break
+    }
+  }
+  if (!input) throw new Error('邀请成员弹窗中找不到邮箱输入框')
   await input.fill(email)
 
   // This is the only supported invitation path. Do not press Enter, add an
@@ -442,7 +500,7 @@ async function submitInviteDialog(scope, email) {
   // verifies the result in the live pending/member list afterwards.
   let continueButton
   await waitUntil('邀请成员弹窗中找不到可用的 Continue 按钮', async () => {
-    const button = await firstVisibleDialogButton(scope, /^(continue|继续)$/i)
+    const button = await firstVisibleDialogButton(scope, /continue|继续/i)
     if (!button || await button.isDisabled().catch(() => true)) return false
     continueButton = button
     return true
@@ -516,8 +574,8 @@ async function inviteMember(email) {
     try {
       // A previous click may have succeeded while the SPA response was slow.
       // Check the live member and pending-invite views before submitting again.
-      const existing = await listMembers({ forceRefresh: true })
-      const pendingBefore = await pendingInviteSnapshot({ forceRefresh: true })
+      const existing = await listMembers({ forceRefresh: true, requireEmails: true })
+      const pendingBefore = await pendingInviteSnapshot({ forceRefresh: true, expectedEmail: normalized })
       if (existing.members.some((member) => normalizeEmail(member.email) === normalized) || pendingBefore.emails.has(normalized)) {
         return {
           ...existing,
@@ -530,13 +588,10 @@ async function inviteMember(email) {
       const scope = await openInviteDialog(current)
       await submitInviteDialog(scope, normalized)
 
-      let confirmedPending
-      await waitUntil('邀请操作已提交但待处理邀请中未出现该邮箱', async () => {
-        confirmedPending = await pendingInviteSnapshot({ forceRefresh: true })
-        return confirmedPending.emails.has(normalized)
-      })
+      const confirmedPending = await waitForPendingInviteEmail(normalized)
+      const latest = await listMembers({ forceRefresh: true, requireEmails: true })
       return {
-        ...existing,
+        ...latest,
         pending_invites: confirmedPending?.pendingInvites || 1,
         operation: { type: 'invite', email: normalized, confirmed: true }
       }
@@ -634,10 +689,22 @@ function validateOpenAIAuthURL(value) {
   } catch {
     throw new Error('授权链接无效')
   }
-  const allowedHosts = new Set(['auth.openai.com', 'login.openai.com', 'chatgpt.com'])
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || !allowedHosts.has(parsed.hostname.toLowerCase())) {
-    throw new Error('授权链接不是受支持的 OpenAI 地址')
-  }
+  const query = parsed.searchParams
+  const isOfficialPKCE = parsed.protocol === 'https:'
+    && !parsed.username
+    && !parsed.password
+    && parsed.hostname.toLowerCase() === 'auth.openai.com'
+    && parsed.pathname === '/oauth/authorize'
+    && query.get('response_type') === 'code'
+    && query.get('client_id') === officialOpenAIClientID
+    && query.get('redirect_uri') === officialOpenAIRedirectURI
+    && query.get('scope') === officialOpenAIScope
+    && Boolean(query.get('state'))
+    && Boolean(query.get('code_challenge'))
+    && query.get('code_challenge_method') === 'S256'
+    && query.get('codex_cli_simplified_flow') === 'true'
+    && query.get('id_token_add_organizations') === 'true'
+  if (!isOfficialPKCE) throw new Error('授权链接必须使用 XIASS 内置 OpenAI PKCE 登录流程')
   return parsed.toString()
 }
 
