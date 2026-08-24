@@ -137,7 +137,7 @@ describe('PixlabSMSReceiver', () => {
 
     expect(wrapper.text()).toContain('+27')
     expect(wrapper.text()).toContain('749433060')
-    await wrapper.get('[title="点击复制完整国际号码"]').trigger('click')
+	await wrapper.get('[title="点击手机号框复制完整国际号码"]').trigger('click')
     expect(copyToClipboardMock).toHaveBeenCalledWith('+27749433060', '手机号已复制')
   })
 

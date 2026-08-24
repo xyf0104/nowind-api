@@ -12,6 +12,7 @@ const {
   getUpstreamBillingProbeSettings,
   getAllProxies,
   getAllGroups,
+  getSettings,
   showError
 } = vi.hoisted(() => ({
   routerPush: vi.fn(),
@@ -21,6 +22,7 @@ const {
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
+  getSettings: vi.fn(),
   showError: vi.fn()
 }))
 
@@ -42,7 +44,8 @@ vi.mock('@/api/admin', () => ({
       toggleSchedulable: vi.fn()
     },
     proxies: { getAll: getAllProxies },
-    groups: { getAll: getAllGroups }
+    groups: { getAll: getAllGroups },
+    settings: { getSettings }
   }
 }))
 
@@ -166,6 +169,7 @@ describe('admin AccountsView user account allowlist entry', () => {
     getBatchTodayStats.mockResolvedValue({ stats: {} })
     getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: true, interval_minutes: 30 })
     getAllProxies.mockResolvedValue([])
+    getSettings.mockResolvedValue({})
   })
 
   afterEach(() => {
