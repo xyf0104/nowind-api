@@ -711,6 +711,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSnapshotExtraKey)
+		// Team-child identity is established only by the state-bound OAuth import.
+		// Ordinary account edits may neither forge nor clear these managed fields.
+		delete(normalizedExtra, OpenAITeamChildExtraKey)
+		delete(normalizedExtra, OpenAITeamChildEmailExtraKey)
 		// 保留配额用量和专用服务受管字段，防止普通账号编辑意外覆盖。
 		for _, key := range []string{
 			"quota_used",
@@ -726,6 +730,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OllamaCloudUsageAutoRefreshExtraKey,
 			OllamaCloudUsageSnapshotExtraKey,
 			openAIWeeklyEstimateBaselineKey,
+			OpenAITeamChildExtraKey,
+			OpenAITeamChildEmailExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v

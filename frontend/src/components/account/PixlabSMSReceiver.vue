@@ -44,15 +44,22 @@
 
     <div v-if="replacementRequired" class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
       <div class="flex items-start justify-between gap-3">
-        <span class="leading-5">当前号码已被授权页拒绝。确认换号后会自动覆盖内嵌浏览器中的完整国际号码并继续当前步骤。</span>
-        <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap !px-2.5 !py-1.5 text-xs" :disabled="!canChangeNumber || confirmationAction !== null" @click="requestRequiredReplacement">
+        <span class="leading-5">{{ automationMode ? '当前号码已被授权页拒绝，系统正在自动更换并覆盖内嵌浏览器中的完整国际号码。' : '当前号码已被授权页拒绝。确认换号后会自动覆盖内嵌浏览器中的完整国际号码并继续当前步骤。' }}</span>
+        <button v-if="!automationMode" type="button" class="btn btn-secondary shrink-0 whitespace-nowrap !px-2.5 !py-1.5 text-xs" :disabled="!canChangeNumber || confirmationAction !== null" @click="requestRequiredReplacement">
           <Icon name="swap" size="xs" class="mr-1" />换号
         </button>
+        <span v-else class="shrink-0 whitespace-nowrap text-xs font-medium text-amber-700 dark:text-amber-300">自动换号中</span>
       </div>
     </div>
 
     <div v-if="!needsManualStart" class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,0.8fr)]">
-      <div class="min-w-0 rounded-md border border-blue-200 bg-white/85 px-3 py-2.5 dark:border-blue-900/80 dark:bg-gray-900/70">
+      <button
+        type="button"
+        class="group min-w-0 rounded-md border border-blue-200 bg-white/85 px-3 py-2.5 text-left transition-colors hover:border-blue-400 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-70 dark:border-blue-900/80 dark:bg-gray-900/70 dark:hover:border-blue-700 dark:hover:bg-gray-900"
+        :disabled="!phoneForCopy"
+        :title="phoneForCopy ? '点击手机号框复制完整国际号码' : '等待获取手机号'"
+        @click="copyPhone"
+      >
         <span class="block text-[11px] font-medium text-blue-700 dark:text-blue-300">手机号</span>
         <div class="mt-1 flex min-w-0 items-center gap-2">
           <span
@@ -61,22 +68,16 @@
           >
             +{{ countryCallingCode }}
           </span>
-          <button
-            type="button"
-            class="group flex min-w-0 flex-1 items-center justify-between gap-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            :disabled="!phoneForCopy"
-            :title="phoneForCopy ? '点击复制完整国际号码' : '等待获取手机号'"
-            @click="copyPhone"
-          >
+          <span class="flex min-w-0 flex-1 items-center justify-between gap-2">
             <span class="truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ localPhoneNumber }}</span>
             <Icon
               :name="phoneCopied ? 'check' : 'copy'"
               size="sm"
               :class="phoneCopied ? 'shrink-0 text-emerald-600 dark:text-emerald-300' : 'shrink-0 text-blue-600 opacity-0 transition-opacity group-hover:opacity-100 dark:text-blue-300'"
             />
-          </button>
+          </span>
         </div>
-      </div>
+      </button>
 
       <div class="min-w-0 rounded-md border border-blue-200 bg-white/85 px-3 py-2.5 dark:border-blue-900/80 dark:bg-gray-900/70">
         <span class="block text-[11px] font-medium text-blue-700 dark:text-blue-300">地区</span>
@@ -210,7 +211,7 @@
   </BaseDialog>
 
   <SMSReceiverActionDialog
-    :show="confirmationAction !== null"
+    :show="!automationMode && confirmationAction !== null"
     :title="confirmationAction === 'cancel' ? '取消当前号码' : confirmationAction === 'change' ? '更换当前号码' : '领取授权手机号'"
     :message="confirmationAction === 'cancel'
       ? '确认取消当前手机号，并只重新打开 OAuth 授权步骤吗？'
@@ -247,11 +248,17 @@ const props = withDefaults(defineProps<{
   submissionKey?: string
   /** Keep the legacy OAuth receiver behavior enabled by default. */
   autoSubmit?: boolean
+  /** Team protocol 2 only: bypass manual confirmations for workflow-owned actions. */
+  automationMode?: boolean
+  /** Replace a waiting Team number once after this interval. */
+  automationReplaceAfterMs?: number
 }>(), {
   active: false,
   replacementRequired: false,
   submissionKey: '',
-  autoSubmit: true
+  autoSubmit: true,
+  automationMode: false,
+  automationReplaceAfterMs: 120_000
 })
 
 const emit = defineEmits<{
@@ -296,6 +303,7 @@ const confirmationAction = ref<'claim' | 'cancel' | 'change' | null>(null)
 const lastEmittedCode = ref('')
 const lastEmittedPhoneSignature = ref('')
 const replacementPromptHandled = ref(false)
+let automationReplacementTimer: ReturnType<typeof setTimeout> | null = null
 const needsManualStart = computed(() => !hasManuallyStarted.value && !hasActiveSession.value)
 const replacementRequired = computed(() => props.replacementRequired && hasActiveSession.value && !replacementPromptHandled.value)
 const confirmationPending = computed(() => {
@@ -332,6 +340,10 @@ async function requestPhone(): Promise<void> {
 
 function requestRequiredReplacement(): void {
   if (!props.active || isChangingNumber.value || isStartingPhone.value) return
+  if (props.automationMode) {
+    void changeNumber()
+    return
+  }
   // The external page explicitly rejected this number. The same in-app
   // confirmation used for an ordinary replacement remains mandatory.
   confirmationAction.value = 'change'
@@ -339,6 +351,10 @@ function requestRequiredReplacement(): void {
 
 function requestPhoneConfirmation(): void {
   if (!props.active || isStartingPhone.value) return
+  if (props.automationMode) {
+    void requestPhone()
+    return
+  }
   confirmationAction.value = 'claim'
 }
 
@@ -351,6 +367,7 @@ async function refresh(): Promise<void> {
 }
 
 async function changeNumber(): Promise<void> {
+  clearAutomationReplacementTimer()
   try {
     // A replacement starts a new SMS session. Clear the local display before
     // the server response so an old code cannot be mistaken for the new one.
@@ -376,6 +393,10 @@ function emitPhoneIfReady(confirmedNow = false): void {
 
 function requestChangeConfirmation(): void {
   if (!canChangeNumber.value || isChangingNumber.value) return
+  if (props.automationMode) {
+    void changeNumber()
+    return
+  }
   confirmationAction.value = 'change'
 }
 
@@ -397,6 +418,10 @@ async function cancel(): Promise<void> {
 
 function requestCancelConfirmation(): void {
   if (!canCancel.value || isCancelling.value) return
+  if (props.automationMode) {
+    void cancel()
+    return
+  }
   confirmationAction.value = 'cancel'
 }
 
@@ -414,6 +439,26 @@ async function confirmReceiverAction(): Promise<void> {
   } finally {
     if (confirmationAction.value === action) confirmationAction.value = null
   }
+}
+
+function clearAutomationReplacementTimer(): void {
+  if (automationReplacementTimer) clearTimeout(automationReplacementTimer)
+  automationReplacementTimer = null
+}
+
+function scheduleAutomationReplacement(): void {
+  clearAutomationReplacementTimer()
+  if (!props.automationMode || !props.active || receiver.phase.value !== 'waiting' || !hasActiveSession.value || !receiver.phoneForCopy.value.trim()) return
+  const delay = Math.max(1_000, Math.trunc(props.automationReplaceAfterMs || 120_000))
+  automationReplacementTimer = setTimeout(() => {
+    automationReplacementTimer = null
+    if (!props.automationMode || !props.active || receiver.phase.value !== 'waiting' || !hasActiveSession.value || isChangingNumber.value) return
+    if (!canChangeNumber.value) {
+      scheduleAutomationReplacement()
+      return
+    }
+    void changeNumber()
+  }, delay)
 }
 
 async function copyPhone(): Promise<void> {
@@ -473,6 +518,7 @@ async function clearQueuedKeys(): Promise<void> {
 watch(
   () => props.active,
   (active) => {
+    clearAutomationReplacementTimer()
     if (!active) {
       hasManuallyStarted.value = false
       confirmationAction.value = null
@@ -480,12 +526,14 @@ watch(
       return
     }
     receiver.stop()
+    if (props.automationMode) void requestPhone()
   },
   { immediate: true }
 )
 
-watch(replacementRequired, (required) => {
+watch([replacementRequired, canChangeNumber], ([required]) => {
   if (!required || confirmationAction.value || isChangingNumber.value) return
+  if (props.automationMode && !canChangeNumber.value) return
   requestRequiredReplacement()
 }, { immediate: true })
 
@@ -514,7 +562,14 @@ watch(code, (value) => {
   emit('code-received', normalized)
 })
 
+watch(
+  [() => props.automationMode, () => props.active, phase, phoneForCopy, hasActiveSession],
+  () => { scheduleAutomationReplacement() },
+  { immediate: true }
+)
+
 onBeforeUnmount(() => {
+  clearAutomationReplacementTimer()
   confirmationAction.value = null
   receiver.stop()
 })

@@ -192,9 +192,11 @@ func ProvideOpenAIOAuthHandler(
 	quotaService *service.OpenAIQuotaService,
 	rateLimitService *service.RateLimitService,
 	redisClient *redis.Client,
+	secretEncryptor service.SecretEncryptor,
 ) *admin.OpenAIOAuthHandler {
 	h := admin.NewOpenAIOAuthHandler(openaiOAuthService, adminService, quotaService, rateLimitService)
 	h.ConfigureTeamChildSessionStore(redisClient)
+	h.ConfigureTeamChildSecrets(secretEncryptor)
 	return h
 }
 

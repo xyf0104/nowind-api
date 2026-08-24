@@ -43,6 +43,101 @@ func TestIsRunningInContainerHonorsExplicitDeploymentMode(t *testing.T) {
 	})
 }
 
+func TestTeamChildBrowserEnabled(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(teamChildBrowserEnabledEnv, value)
+			require.True(t, teamChildBrowserEnabled())
+		})
+	}
+
+	for _, value := range []string{"", "0", "false", "off", "unexpected"} {
+		t.Run("disabled_"+value, func(t *testing.T) {
+			t.Setenv(teamChildBrowserEnabledEnv, value)
+			require.False(t, teamChildBrowserEnabled())
+		})
+	}
+}
+
+func TestPerformDockerContainerUpdate(t *testing.T) {
+	t.Run("host updater success never invokes watchtower", func(t *testing.T) {
+		watchtowerCalled := false
+		err := performDockerContainerUpdate(
+			context.Background(),
+			true,
+			func(context.Context) (bool, error) { return true, nil },
+			func(context.Context) error {
+				watchtowerCalled = true
+				return nil
+			},
+		)
+		require.NoError(t, err)
+		require.False(t, watchtowerCalled)
+	})
+
+	t.Run("team installation rejects partial watchtower fallback", func(t *testing.T) {
+		watchtowerCalled := false
+		err := performDockerContainerUpdate(
+			context.Background(),
+			true,
+			func(context.Context) (bool, error) { return false, fmt.Errorf("updater unavailable") },
+			func(context.Context) error {
+				watchtowerCalled = true
+				return nil
+			},
+		)
+		require.ErrorContains(t, err, "existing containers were not changed")
+		require.ErrorContains(t, err, "updater unavailable")
+		require.False(t, watchtowerCalled)
+	})
+
+	t.Run("team installation rejects empty launcher result", func(t *testing.T) {
+		watchtowerCalled := false
+		err := performDockerContainerUpdate(
+			context.Background(),
+			true,
+			func(context.Context) (bool, error) { return false, nil },
+			func(context.Context) error {
+				watchtowerCalled = true
+				return nil
+			},
+		)
+		require.ErrorContains(t, err, "existing containers were not changed")
+		require.False(t, watchtowerCalled)
+	})
+
+	t.Run("lightweight installation retains watchtower compatibility", func(t *testing.T) {
+		watchtowerCalled := false
+		err := performDockerContainerUpdate(
+			context.Background(),
+			false,
+			func(context.Context) (bool, error) { return false, fmt.Errorf("updater unavailable") },
+			func(context.Context) error {
+				watchtowerCalled = true
+				return nil
+			},
+		)
+		require.NoError(t, err)
+		require.True(t, watchtowerCalled)
+	})
+}
+
+func TestReadDockerPullProgress(t *testing.T) {
+	t.Run("accepts successful progress stream", func(t *testing.T) {
+		stream := strings.NewReader("{\"status\":\"Pulling from xyf0104/xiass-updater\"}\n{\"status\":\"Downloaded newer image\"}\n")
+		require.NoError(t, readDockerPullProgress(stream))
+	})
+
+	t.Run("returns an error embedded in a successful HTTP stream", func(t *testing.T) {
+		stream := strings.NewReader("{\"status\":\"Pulling\"}\n{\"errorDetail\":{\"message\":\"manifest denied\"},\"error\":\"manifest denied\"}\n")
+		require.ErrorContains(t, readDockerPullProgress(stream), "manifest denied")
+	})
+
+	t.Run("rejects malformed daemon output", func(t *testing.T) {
+		require.ErrorContains(t, readDockerPullProgress(strings.NewReader("not-json")), "invalid Docker pull response")
+	})
+}
+
 func TestNewWatchtowerUpdateRequest(t *testing.T) {
 	t.Run("uses service DNS and configured token", func(t *testing.T) {
 		t.Setenv(watchtowerTokenEnv, "xiass-token")

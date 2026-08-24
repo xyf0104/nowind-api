@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +18,11 @@ import (
 // Team child member operations are intentionally proxied through a separate
 // service that controls the already-authenticated Chromium profile. XIASS
 // never receives ChatGPT session cookies or stores page credentials.
-const teamChildMembersDefaultTimeout = 30 * time.Second
+const (
+	teamChildMembersDefaultTimeout   = 30 * time.Second
+	teamChildWorkflowProtocolHeader  = "X-XIASS-Team-Child-Protocol"
+	teamChildWorkflowProtocolVersion = "2"
+)
 
 type teamChildMemberAutomationConfig struct {
 	baseURL string
@@ -50,10 +55,6 @@ type teamChildMemberRemoveRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
-type teamChildBrowserNavigateRequest struct {
-	URL string `json:"url" binding:"required"`
-}
-
 // teamChildProtectedMemberEmails is an instance-local deny list for the Team
 // workspace owner/admin identity. The browser automation independently treats
 // every upstream owner/admin row as protected; this value also protects a
@@ -84,6 +85,13 @@ func (h *OpenAIOAuthHandler) teamChildMemberAutomationRequest(c *gin.Context, me
 	if err != nil {
 		response.BadRequest(c, "Team child member automation is not configured")
 		return
+	}
+	isWorkflowRequest := path == "/workflows" || strings.HasPrefix(path, "/workflows/")
+	if path == "/workflows" && method == http.MethodPost {
+		if err := requireCurrentTeamChildWorkflowProtocol(c.Request.Context(), config); err != nil {
+			response.Error(c, http.StatusBadGateway, "Team 自动化运行组件版本不匹配，请完成运行组件更新后重试")
+			return
+		}
 	}
 	var body io.Reader
 	if payload != nil {
@@ -124,6 +132,10 @@ func (h *OpenAIOAuthHandler) teamChildMemberAutomationRequest(c *gin.Context, me
 		response.Error(c, result.StatusCode, message)
 		return
 	}
+	if isWorkflowRequest && result.Header.Get(teamChildWorkflowProtocolHeader) != teamChildWorkflowProtocolVersion {
+		response.Error(c, http.StatusBadGateway, "Team 自动化运行组件版本不匹配，请完成运行组件更新后重试")
+		return
+	}
 	var data any
 	if len(resultBody) == 0 {
 		data = gin.H{"ok": true}
@@ -131,6 +143,25 @@ func (h *OpenAIOAuthHandler) teamChildMemberAutomationRequest(c *gin.Context, me
 		data = gin.H{"ok": true, "message": strings.TrimSpace(string(resultBody))}
 	}
 	response.Success(c, data)
+}
+
+func requireCurrentTeamChildWorkflowProtocol(ctx context.Context, config teamChildMemberAutomationConfig) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, config.baseURL+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	result, err := config.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer result.Body.Close()
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("automation health returned status %d", result.StatusCode)
+	}
+	if result.Header.Get(teamChildWorkflowProtocolHeader) != teamChildWorkflowProtocolVersion {
+		return fmt.Errorf("automation workflow protocol mismatch")
+	}
+	return nil
 }
 
 func teamChildAutomationErrorMessage(body []byte) string {
@@ -152,24 +183,6 @@ func teamChildAutomationErrorMessage(body []byte) string {
 // persistent Chromium profile and whether ChatGPT members are currently ready.
 func (h *OpenAIOAuthHandler) TeamChildMemberAutomationStatus(c *gin.Context) {
 	h.teamChildMemberAutomationRequest(c, http.MethodGet, "/members", nil)
-}
-
-// NavigateTeamChildBrowser moves the existing persistent Chromium tab to the
-// XIASS-generated official OpenAI PKCE page. The URL is validated here and
-// again by the automation service; arbitrary destinations are never proxied
-// through this admin action.
-func (h *OpenAIOAuthHandler) NavigateTeamChildBrowser(c *gin.Context) {
-	var req teamChildBrowserNavigateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "授权链接无效")
-		return
-	}
-	req.URL = strings.TrimSpace(req.URL)
-	if err := validateTeamChildWorkflowAuthURL(req.URL); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/browser/navigate", req)
 }
 
 func (h *OpenAIOAuthHandler) ListTeamChildMembers(c *gin.Context) {

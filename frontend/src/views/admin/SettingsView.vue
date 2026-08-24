@@ -6414,6 +6414,16 @@
                 </div>
                 <Toggle v-model="form.hide_ccs_import_button" />
               </div>
+
+              <div
+                class="flex min-w-0 flex-col gap-3 border-t border-gray-100 pt-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div class="min-w-0">
+                  <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.site.teamChildCreation") }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.site.teamChildCreationHint") }}</p>
+                </div>
+                <Toggle v-model="form.team_child_creation_enabled" />
+              </div>
             </div>
           </div>
 
@@ -9349,6 +9359,7 @@ const form = reactive<SettingsForm>({
   home_content: "",
   backend_mode_enabled: false,
   hide_ccs_import_button: false,
+  team_child_creation_enabled: false,
   payment_enabled: false,
   risk_control_enabled: false,
   cyber_session_block_enabled: false,
@@ -10962,6 +10973,7 @@ async function saveSettings() {
       home_content: form.home_content,
       backend_mode_enabled: form.backend_mode_enabled,
       hide_ccs_import_button: form.hide_ccs_import_button,
+      team_child_creation_enabled: form.team_child_creation_enabled,
       table_default_page_size: form.table_default_page_size,
       table_page_size_options: form.table_page_size_options,
       custom_menu_items: form.custom_menu_items,

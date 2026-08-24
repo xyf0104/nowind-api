@@ -89,7 +89,7 @@ import { ref } from 'vue'
 import { Icon } from '@/components/icons'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import type { TeamChildMember, TeamChildWorkflow, TeamChildWorkflowStep } from '@/api/admin/teamChild'
+import type { TeamChildMember, TeamChildWorkflow } from '@/api/admin/teamChild'
 
 const props = withDefaults(defineProps<{
   members: TeamChildMember[]
@@ -109,7 +109,7 @@ const props = withDefaults(defineProps<{
   browserConfigured?: boolean
   browserLoading?: boolean
 }>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false, browserConfigured: false, browserLoading: false })
-const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': []; 'run-step': [step: TeamChildWorkflowStep['key']] }>()
+const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': [] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)
 const removeOpen = ref(false)

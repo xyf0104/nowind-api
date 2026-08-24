@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.45-0ea5e9" alt="当前版本 v1.1.45" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.46-0ea5e9" alt="当前版本 v1.1.46" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.45
+> 当前版本：v1.1.46
+
+v1.1.46 删除 Team 子号旧 5 步工作流及其单步执行、起始步骤、旧浏览器导航和前端兼容回退，只保留协议版本 2 的完整 22 节点流程。后端、前端、Compose 健康检查和两阶段启动脚本会共同校验协议、节点数量与顺序，旧运行组件无法再执行成员移除或邀请；Pending invites 只读取当前可见邀请表格或选中面板，空列表权威判定为空，并且只有在 Members 或 Pending invites 中精确匹配本次临时邮箱才确认邀请成功。Team 浏览器开启时，网页更新必须使用 XIASS 官方主机更新器同步主应用、部署文件和自动化组件；更新器启动或镜像拉取失败会保持原运行栈并返回实际 Docker 进度流错误，不再静默退回到只替换主应用的 Watchtower 路径。
 
 v1.1.45 将 Team 子号创建贯通为 22 个可恢复节点：服务器浏览器实时识别和移除普通成员，在 ChatGPT 原生 Invite member 页面填写本次临时邮箱，并分别从 Members 与 Pending invites 精确确认邀请；后续复用 XIASS 原生 OpenAI PKCE 会话，完成 Sign up、13 位随机密码、Cloudflare 邮箱验证码、XIASS 站内确认接码、完整国际手机号、短信验证码、资料、默认工作空间、回调校验与按已选分组/并发/优先级自动导入。随机密码仅保存在自动化进程内存，验证码不进入工作流摘要。任一节点失败后可打开 XIASS 内嵌浏览器人工接管，确认完成后从下一节点继续；手机号被拒绝时只进入一次站内换号确认并覆盖旧号码。管理页使用独立的顶部悬浮进度卡，实际授权、接码、错误恢复与导入控件仍保留在下方工作卡；Team 子号导入标记、401 重新授权入口、实时并发防缓存和多设备浏览器租约恢复同步完善。
 

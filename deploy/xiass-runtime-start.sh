@@ -107,12 +107,19 @@ container_health() {
 }
 
 wait_for_automation_health() {
-    local container="$1" attempt state health
+    local container="$1" attempt state health protocol
     log "等待 Team 自动化服务就绪..."
     for attempt in $(seq 1 60); do
         state=$(container_state "$container")
         health=$(container_health "$container")
         if [ "$health" = "healthy" ]; then
+            protocol=$(docker exec "$container" node -e \
+                "fetch('http://127.0.0.1:8090/healthz').then(async (response) => { const body = await response.json(); process.stdout.write(response.headers.get('x-xiass-team-child-protocol') === '2' && body.workflow_schema_version === 2 ? '2' : '') }).catch(() => process.exit(1))" \
+                2>/dev/null || true)
+            if [ "$protocol" != "2" ]; then
+                warn "Team 自动化服务协议不是当前版本，拒绝将旧工作流标记为就绪。"
+                return 1
+            fi
             log "Team 自动化服务已就绪。"
             return 0
         fi
@@ -197,7 +204,7 @@ start_browser_stack() {
     local automation_container
     automation_container=$(profile_compose ps -q team-child-automation 2>/dev/null | head -n 1 || true)
     if [ -z "$automation_container" ] || ! wait_for_automation_health "$automation_container"; then
-        warn "Team 自动化服务未及时就绪；XIASS 主服务保持运行，请检查组件日志。"
+        warn "Team 自动化服务未通过当前协议检查；XIASS 主服务保持运行，但 Team 工作流不会启动。"
     fi
 }
 

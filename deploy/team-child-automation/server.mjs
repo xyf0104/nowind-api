@@ -1,5 +1,7 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import http from 'node:http'
+import path from 'node:path'
 
 import { chromium } from '@playwright/test'
 
@@ -15,9 +17,13 @@ const serviceToken = String(process.env.TEAM_CHILD_AUTOMATION_TOKEN || '').trim(
 const browserConnectTimeout = boundedDuration(process.env.BROWSER_CONNECT_TIMEOUT_MS, 30000, 1000, 120000)
 const browserConnectRetryDelay = boundedDuration(process.env.BROWSER_CONNECT_RETRY_DELAY_MS, 750, 100, 5000)
 const workflowTTL = boundedDuration(process.env.WORKFLOW_TTL_MS, 45 * 60 * 1000, 5 * 60 * 1000, 2 * 60 * 60 * 1000)
+const workflowStateFile = process.env.NODE_ENV === 'test'
+  ? ''
+  : String(process.env.WORKFLOW_STATE_FILE || '/app/data/workflows.enc').trim()
 const oauthPageTimeout = boundedDuration(process.env.OAUTH_PAGE_TIMEOUT_MS, 45000, 10000, 120000)
 const memberRefreshAttempts = 3
 const inviteAttempts = 3
+const workflowProtocolVersion = 2
 const officialOpenAIClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const officialOpenAIRedirectURI = 'http://localhost:1455/auth/callback'
 const officialOpenAIScope = 'openid profile email offline_access'
@@ -37,10 +43,94 @@ const workflows = new Map()
 // are serialized by the operation queue and stay in this same managed tab.
 let managedBrowserPage
 
+function workflowStateEncryptionKey() {
+  if (!serviceToken) return undefined
+  return crypto.createHash('sha256').update(`xiass-team-child-workflow:${serviceToken}`).digest()
+}
+
+function encryptWorkflowState(payload) {
+  const key = workflowStateEncryptionKey()
+  if (!key) throw new Error('workflow state encryption is unavailable')
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()])
+  return JSON.stringify({
+    version: 1,
+    iv: iv.toString('base64url'),
+    tag: cipher.getAuthTag().toString('base64url'),
+    ciphertext: ciphertext.toString('base64url')
+  })
+}
+
+function decryptWorkflowState(payload) {
+  const key = workflowStateEncryptionKey()
+  if (!key) throw new Error('workflow state encryption is unavailable')
+  const envelope = JSON.parse(payload)
+  if (envelope?.version !== 1) throw new Error('workflow state version is unsupported')
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64url'))
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64url'))
+  return Buffer.concat([
+    decipher.update(Buffer.from(envelope.ciphertext, 'base64url')),
+    decipher.final()
+  ]).toString('utf8')
+}
+
+function persistWorkflowState() {
+  if (!workflowStateFile || !serviceToken) return
+  try {
+    const directory = path.dirname(workflowStateFile)
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+    const temporary = `${workflowStateFile}.${process.pid}.tmp`
+    const encoded = encryptWorkflowState(JSON.stringify({
+      schema_version: workflowProtocolVersion,
+      active_workflow_id: activeWorkflowID,
+      workflows: Array.from(workflows.values())
+    }))
+    fs.writeFileSync(temporary, encoded, { encoding: 'utf8', mode: 0o600 })
+    fs.renameSync(temporary, workflowStateFile)
+  } catch {
+    console.error('team-child workflow state could not be persisted')
+  }
+}
+
+function restoreWorkflowState() {
+  if (!workflowStateFile || !serviceToken || !fs.existsSync(workflowStateFile)) return
+  try {
+    const decoded = JSON.parse(decryptWorkflowState(fs.readFileSync(workflowStateFile, 'utf8')))
+    if (decoded?.schema_version !== workflowProtocolVersion || !Array.isArray(decoded.workflows)) return
+    const now = Date.now()
+    for (const candidate of decoded.workflows) {
+      if (!candidate || typeof candidate.id !== 'string' || candidate.expiresAt <= now) continue
+      if (!Array.isArray(candidate.nodes) || candidate.nodes.length !== workflowNodeDefinitions.length) continue
+      const workflow = candidate
+      if (workflow.status === 'running') {
+        workflow.status = 'failed'
+        workflow.failedNodeKey = workflow.currentNodeKey || 'oauth'
+        workflow.error = '自动化组件已恢复，请核对服务器浏览器当前页面后继续'
+        const activeNode = workflow.nodes.find((node) => node.key === workflow.failedNodeKey)
+        if (activeNode) {
+          activeNode.status = 'failed'
+          activeNode.message = workflow.error
+        }
+      }
+      workflows.set(workflow.id, workflow)
+    }
+    const restoredActiveID = String(decoded.active_workflow_id || '')
+    const restoredActive = workflows.get(restoredActiveID)
+    if (restoredActive && ['running', 'manual_required', 'callback_ready', 'failed'].includes(restoredActive.status)) {
+      activeWorkflowID = restoredActiveID
+    }
+    persistWorkflowState()
+  } catch {
+    console.error('team-child workflow state could not be restored')
+  }
+}
+
 function json(res, status, payload) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store'
+    'cache-control': 'no-store',
+    'x-xiass-team-child-protocol': String(workflowProtocolVersion)
   })
   res.end(JSON.stringify(payload))
 }
@@ -220,6 +310,26 @@ async function navigatePersistentBrowser(value) {
     timeout: operationTimeout
   })
   return { ok: true, url: active.url() }
+}
+
+async function workflowBrowserPage(workflow) {
+  if (managedBrowserPage && !managedBrowserPage.isClosed()) return managedBrowserPage
+  const connected = await browser()
+  const context = connected.contexts()[0]
+  if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
+  const pages = context.pages().filter((page) => !page.isClosed())
+  const oauthPage = pages.find((page) => {
+    try {
+      const parsed = new URL(page.url())
+      return parsed.hostname === 'auth.openai.com' || parsed.hostname === 'openai.com' || parsed.hostname === 'localhost'
+    } catch {
+      return false
+    }
+  })
+  const active = oauthPage || pages.find((page) => isTeamMembersPage(page))
+  if (!active) throw new Error('服务器浏览器没有可恢复的工作流标签页')
+  managedBrowserPage = active
+  return active
 }
 
 async function rowsFor(current) {
@@ -419,9 +529,19 @@ async function pendingInviteSnapshot({ forceRefresh = false, expectedEmail = '',
   if (wanted && waitForExpectedEmail) {
     await waitForVisiblePendingInviteEmail(current, wanted)
   }
-  const pendingRows = current.locator(
-    'table tbody tr, [role="row"], [role="listitem"], article, [data-testid*="invite" i], [data-testid*="pending" i]'
-  )
+
+  // Prefer the visible invitation table. When it exists with no body rows, the
+  // result is authoritatively empty; never fall back to broad page selectors
+  // that can capture an administrator email or a stale Members row.
+  const visibleTables = current.locator('table:visible')
+  const hasVisibleTable = await visibleTables.count() > 0
+  const visiblePanels = current.locator('[role="tabpanel"]:visible')
+  const recordScope = await visiblePanels.count() > 0
+    ? visiblePanels.last()
+    : current.locator('main:visible').first()
+  const pendingRows = hasVisibleTable
+    ? visibleTables.locator('tbody tr, [role="row"]')
+    : recordScope.locator('[role="row"], [role="listitem"], article, [data-testid*="invite" i], [data-testid*="pending" i]')
   try {
     await pendingRows.first().waitFor({ state: 'visible', timeout: 2500 })
   } catch {
@@ -430,22 +550,32 @@ async function pendingInviteSnapshot({ forceRefresh = false, expectedEmail = '',
 
   const rows = pendingRows
   const count = await rows.count()
-  const emails = new Set()
+  const recordTexts = []
   for (let index = 0; index < count; index += 1) {
-    const email = normalizeEmail(extractEmail(await rows.nth(index).innerText()))
-    if (email) emails.add(email)
+    recordTexts.push(await rows.nth(index).innerText())
   }
+  const emails = pendingInviteEmailsFromTexts(recordTexts)
   if (wanted && await visiblePendingInviteEmail(current, wanted)) {
     // A few hosted builds render the invitation as an unstructured text card.
     // Only the exact requested email is accepted in that fallback; arbitrary
     // emails from the page shell are never treated as pending invitations.
     emails.add(wanted)
   }
-  const body = await current.locator('body').innerText().catch(() => '')
+  const body = await recordScope.innerText().catch(() => '')
+  const explicitlyEmpty = /\bno results\b|\bno pending (?:invites?|invitations?)\b|暂无.*邀请|没有.*邀请|还没有.*邀请/i.test(body)
   return {
-    emails,
-    pendingInvites: parsePendingInvites(body) ?? emails.size
+    emails: explicitlyEmpty && emails.size === 0 ? new Set() : emails,
+    pendingInvites: explicitlyEmpty && emails.size === 0 ? 0 : (parsePendingInvites(body) ?? emails.size)
   }
+}
+
+function pendingInviteEmailsFromTexts(texts) {
+  const emails = new Set()
+  for (const text of texts) {
+    const email = normalizeEmail(extractEmail(String(text || '')))
+    if (email) emails.add(email)
+  }
+  return emails
 }
 
 async function waitForVisiblePendingInviteEmail(current, wanted) {
@@ -1120,7 +1250,7 @@ async function verificationInputs(current) {
 async function fillVerificationCode(current, rawCode) {
   const code = String(rawCode || '').replace(/\s+/g, '')
   if (!/^\d{4,10}$/.test(code)) throw new Error('验证码格式无效')
-  const inputs = await waitForOAuthPage('OpenAI 页面中找不到验证码输入框', verificationInputs)
+  const inputs = await waitForOAuthPage('OpenAI 页面中找不到验证码输入框', () => verificationInputs(current))
   if (inputs.length === 1) {
     await inputs[0].fill(code)
   } else {
@@ -1220,21 +1350,51 @@ async function chooseDefaultWorkspace(current) {
   await clickOAuthContinue(current)
 }
 
-async function captureWorkflowCallback(current, workflow) {
-  const raw = await waitForOAuthPage('浏览器未出现 OAuth 回调 URL', async () => {
-    const currentURL = current.url()
+function callbackURLFromNavigationEntries(entries, expectedState) {
+  for (const entry of [...(Array.isArray(entries) ? entries : [])].reverse()) {
     try {
-      const parsed = new URL(currentURL)
-      return parsed.searchParams.get('code') && parsed.searchParams.get('state') ? currentURL : ''
+      const parsed = new URL(String(entry?.url || ''))
+      if (
+        ['http:', 'https:'].includes(parsed.protocol)
+        && parsed.hostname === 'localhost'
+        && parsed.pathname === '/auth/callback'
+        && Boolean(parsed.searchParams.get('code'))
+        && parsed.searchParams.get('state') === expectedState
+      ) return parsed.toString()
     } catch {
-      return ''
+      // Ignore unrelated or browser-internal history entries.
     }
-  })
+  }
+  return ''
+}
+
+async function workflowCallbackURLFromPage(current, workflow) {
+  const expectedState = new URL(workflow.authURL).searchParams.get('state') || ''
+  const direct = callbackURLFromNavigationEntries([{ url: current.url() }], expectedState)
+  if (direct) return direct
+
+  let cdpSession
+  try {
+    // Chromium replaces page.url() with chrome-error://chromewebdata when the
+    // localhost receiver is absent, while the address bar keeps code/state.
+    cdpSession = await current.context().newCDPSession(current)
+    const history = await cdpSession.send('Page.getNavigationHistory')
+    return callbackURLFromNavigationEntries(history?.entries, expectedState)
+  } catch {
+    return ''
+  } finally {
+    await cdpSession?.detach().catch(() => undefined)
+  }
+}
+
+async function captureWorkflowCallback(current, workflow) {
+  const raw = await waitForOAuthPage('浏览器未出现 OAuth 回调 URL', () => (
+    workflowCallbackURLFromPage(current, workflow)
+  ))
   return validateWorkflowCallbackURL(raw, workflow)
 }
 
 async function runOAuthRegistrationUntilMailbox(workflow) {
-  setWorkflowStep(workflow, 'oauth', 'running', '正在打开 XIASS 官方 OpenAI OAuth 页面')
   setWorkflowNode(workflow, 'oauth', 'running', '正在当前服务器浏览器标签页打开官方 PKCE URL')
   await navigatePersistentBrowser(workflow.authURL)
   const current = managedBrowserPage
@@ -1251,45 +1411,44 @@ async function runOAuthRegistrationUntilMailbox(workflow) {
 
   setWorkflowNode(workflow, 'password', 'running', '正在生成并填入 13 位随机密码')
   workflow.generatedPassword = generateWorkflowPassword()
+  persistWorkflowState()
   await fillWorkflowPassword(current, workflow.generatedPassword)
   completeWorkflowNode(workflow, 'password', '13 位随机密码已生成并填入')
   completeWorkflowNode(workflow, 'mail', 'OpenAI 验证邮件已发送')
-  setWorkflowStep(workflow, 'oauth', 'completed', '官方注册页已提交，正在等待邮箱验证码')
-  setWorkflowStep(workflow, 'verify', 'waiting', '正在通过 Cloudflare 邮箱读取 OpenAI 验证码')
   setWorkflowNode(workflow, 'mailbox', 'waiting', '正在轮询本次临时邮箱')
   workflow.status = 'manual_required'
   activeWorkflowID = workflow.id
+  persistWorkflowState()
 }
 
 async function continueWorkflowWithEmailCode(workflow, code) {
-  const current = managedBrowserPage
-  if (!current || current.isClosed()) throw new Error('服务器浏览器授权标签页不可用')
+  const current = await workflowBrowserPage(workflow)
   completeWorkflowNode(workflow, 'mailbox', 'Cloudflare 已读取 OpenAI 验证邮件')
   setWorkflowNode(workflow, 'email_code', 'running', '正在将邮箱验证码填入 OpenAI')
   await fillVerificationCode(current, code)
   completeWorkflowNode(workflow, 'email_code', '邮箱验证码已自动填入并提交')
   await waitForPhonePage(current)
   completeWorkflowNode(workflow, 'phone', '已进入 OpenAI 手机号验证页面')
-  setWorkflowNode(workflow, 'sms_confirm', 'waiting', '请在 XIASS 站内弹窗确认领取手机号')
+  setWorkflowNode(workflow, 'sms_confirm', 'waiting', '等待 XIASS Team 自动化领取手机号')
   workflow.status = 'manual_required'
   activeWorkflowID = workflow.id
+  persistWorkflowState()
 }
 
 async function continueWorkflowWithPhone(workflow, phone) {
-  const current = managedBrowserPage
-  if (!current || current.isClosed()) throw new Error('服务器浏览器授权标签页不可用')
-  completeWorkflowNode(workflow, 'sms_confirm', '已通过 XIASS 站内确认领取手机号')
+  const current = await workflowBrowserPage(workflow)
+  completeWorkflowNode(workflow, 'sms_confirm', 'XIASS Team 自动化已领取手机号')
   setWorkflowNode(workflow, 'phone_submit', 'running', '正在填入完整号码并选择 Text message')
   await submitPhoneOnOpenAI(current, phone)
   completeWorkflowNode(workflow, 'phone_submit', '号码已提交并选择 Text message')
   setWorkflowNode(workflow, 'sms_poll', 'waiting', '正在通过 XIASS SMS 服务轮询验证码')
   workflow.status = 'manual_required'
   activeWorkflowID = workflow.id
+  persistWorkflowState()
 }
 
 async function continueWorkflowWithSMSCode(workflow, code) {
-  const current = managedBrowserPage
-  if (!current || current.isClosed()) throw new Error('服务器浏览器授权标签页不可用')
+  const current = await workflowBrowserPage(workflow)
   completeWorkflowNode(workflow, 'sms_poll', 'XIASS SMS 服务已读取验证码')
   setWorkflowNode(workflow, 'sms_code', 'running', '正在填入短信验证码并继续')
   await fillVerificationCode(current, code)
@@ -1308,14 +1467,9 @@ async function continueWorkflowWithSMSCode(workflow, code) {
   setWorkflowNode(workflow, 'callback', 'running', '正在读取浏览器地址栏中的 OAuth 回调')
   workflow.callbackURL = await captureWorkflowCallback(current, workflow)
   completeWorkflowNode(workflow, 'callback', 'OAuth 回调 code/state 已捕获并校验')
-  setWorkflowStep(workflow, 'verify', 'completed', '外部验证已完成，回调 URL 已校验')
   workflow.status = 'callback_ready'
   workflow.currentNodeKey = 'import'
   setWorkflowNode(workflow, 'import', 'waiting', '等待按已勾选配置导入 XIASS')
-}
-
-function workflowStep(key, number, label) {
-  return { key, number, label, status: 'pending', message: '' }
 }
 
 function workflowNode(key, number, label) {
@@ -1335,7 +1489,7 @@ const workflowNodeDefinitions = [
   ['mailbox', 'Cloudflare 读取验证邮件'],
   ['email_code', '自动填入邮箱验证码'],
   ['phone', '进入手机号页面'],
-  ['sms_confirm', '确认领取手机号'],
+  ['sms_confirm', '自动领取手机号'],
   ['phone_submit', '填入号码并选择 Text message'],
   ['sms_poll', '轮询短信验证码'],
   ['sms_code', '自动填入短信验证码'],
@@ -1357,56 +1511,24 @@ function createWorkflow(seatEmail, inviteEmail, authURL, oauthSessionID, seatAlr
     inviteEmail,
     authURL,
     oauthSessionID,
-    startStep: 'members',
-    runOnlyStep: false,
     createdAt: now,
     expiresAt: now + workflowTTL,
     status: 'running',
     error: '',
-    resumeRequested: false,
-    resumeNextStepIndex: -1,
-    failedStepKey: '',
     failedNodeKey: '',
-    seatObserved: false,
     inviteConfirmed: false,
     inviteConfirmedAt: 0,
     callbackURL: '',
     generatedPassword: '',
     currentNodeKey: '',
-    steps: [
-      workflowStep('members', 1, seatAlreadyRemoved ? '确认已腾出席位' : '读取成员席位'),
-      workflowStep('remove', 2, seatAlreadyRemoved ? '跳过成员移除' : '移除已选成员'),
-      workflowStep('invite', 3, '邀请临时邮箱'),
-      workflowStep('oauth', 4, '准备 OpenAI 授权链接'),
-      workflowStep('verify', 5, '完成外部授权并提交回调')
-    ],
     nodes: workflowNodeDefinitions.map(([key, label], index) => workflowNode(key, index + 1, label))
   }
-}
-
-const workflowStepKeys = new Set(['members', 'remove', 'invite', 'oauth', 'verify'])
-
-function validateWorkflowStartStep(value) {
-  const step = String(value || '').trim().toLowerCase() || 'members'
-  if (!workflowStepKeys.has(step)) throw new Error('工作流起始步骤无效')
-  return step
-}
-
-function validateWorkflowStep(value) {
-  const step = String(value || '').trim().toLowerCase()
-  if (!step || !workflowStepKeys.has(step)) throw new Error('步骤无效')
-  return step
-}
-
-function workflowStepIndex(stepKey) {
-  const index = ['members', 'remove', 'invite', 'oauth', 'verify'].indexOf(stepKey)
-  if (index < 0) throw new Error('步骤无效')
-  return index
 }
 
 function workflowSummary(workflow) {
   const oauthState = new URL(workflow.authURL).searchParams.get('state') || ''
   const summary = {
+    schema_version: workflowProtocolVersion,
     id: workflow.id,
     status: workflow.status,
     expires_at: new Date(workflow.expiresAt).toISOString(),
@@ -1415,7 +1537,7 @@ function workflowSummary(workflow) {
     oauth_session_id: workflow.oauthSessionID,
     oauth_state: oauthState,
     current_node: workflow.currentNodeKey || '',
-    steps: workflow.steps.map(({ key, number, label, status, message }) => ({ key, number, label, status, ...(message ? { message } : {}) })),
+    password_available: Boolean(workflow.generatedPassword),
     nodes: workflow.nodes.map(({ key, number, label, status, message }) => ({ key, number, label, status, ...(message ? { message } : {}) }))
   }
   if (workflow.error) summary.error = workflow.error
@@ -1426,19 +1548,13 @@ function workflowSummary(workflow) {
   return summary
 }
 
-function setWorkflowStep(workflow, key, status, message = '') {
-  const step = workflow.steps.find((item) => item.key === key)
-  if (!step) return
-  step.status = status
-  step.message = message
-}
-
 function setWorkflowNode(workflow, key, status, message = '') {
   const node = workflow.nodes.find((item) => item.key === key)
   if (!node) return
   node.status = status
   node.message = message
   if (['running', 'waiting', 'failed'].includes(status)) workflow.currentNodeKey = key
+  persistWorkflowState()
 }
 
 function completeWorkflowNode(workflow, key, message) {
@@ -1449,18 +1565,15 @@ function workflowNodeState(workflow, key) {
   return workflow.nodes.find((node) => node.key === key)
 }
 
-function workflowStepState(workflow, key) {
-  return workflow.steps.find((step) => step.key === key)
+function workflowFailureNodeKey(workflow, fallbackKey) {
+  return workflow.nodes.find((node) => node.status === 'running')?.key
+    || workflow.currentNodeKey
+    || fallbackKey
 }
 
-function isWorkflowStepCompleted(workflow, key) {
-  return workflowStepState(workflow, key)?.status === 'completed' || (key === 'invite' && workflow.inviteConfirmed === true)
-}
-
-function completeInviteStep(workflow, message) {
+function completeInviteStep(workflow) {
   workflow.inviteConfirmed = true
   workflow.inviteConfirmedAt = Date.now()
-  setWorkflowStep(workflow, 'invite', 'completed', message)
 }
 
 function completeInviteNodes(workflow, submissionMessage, confirmationMessage) {
@@ -1472,7 +1585,7 @@ async function confirmInviteNode(workflow) {
   setWorkflowNode(workflow, 'invite_confirm', 'running', '正在核对 Members 和 Pending invites')
   const latestMembers = await listMembers({ forceRefresh: false })
   if (latestMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)) {
-    completeInviteStep(workflow, '临时邮箱已在实时成员列表中确认')
+    completeInviteStep(workflow)
     completeWorkflowNode(workflow, 'invite_confirm', '临时邮箱已在实时成员列表中确认')
     return
   }
@@ -1480,75 +1593,8 @@ async function confirmInviteNode(workflow) {
   if (!pending.emails.has(normalizeEmail(workflow.inviteEmail))) {
     throw new Error('Pending invites 中未找到目标临时邮箱，请在内嵌浏览器完成邀请后继续')
   }
-  completeInviteStep(workflow, '临时邮箱已在 Pending invites 中确认')
+  completeInviteStep(workflow)
   completeWorkflowNode(workflow, 'invite_confirm', '已在 Pending invites 精确匹配临时邮箱')
-}
-
-async function confirmManualStepCompletion(workflow, step) {
-  if (step.key === 'members') {
-    const latest = await listMembers({ forceRefresh: false, requireEmails: true })
-    if (workflow.seatAlreadyRemoved) {
-      const unexpected = latest.members.find((member) => !isProtectedTeamMember(member))
-      if (unexpected) throw new Error('成员列表仍有未确认的普通成员，请先在浏览器完成席位处理')
-      return '成员页面已刷新并确认当前席位状态'
-    }
-    const selected = latest.members.find((member) => normalizeEmail(member.email) === workflow.seatEmail)
-    if (selected) {
-      assertRemovableMember(selected)
-      workflow.seatObserved = true
-      return '成员页面已刷新，下一步将处理已选普通成员席位'
-    }
-    if (workflow.seatObserved) return '已确认已选成员不再出现在实时列表中'
-    throw new Error('未在实时成员页面确认已选席位，请先登录并刷新成员列表')
-  }
-
-  if (step.key === 'remove') {
-    const latest = await listMembers({ forceRefresh: false, requireEmails: true })
-    if (latest.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
-      throw new Error('待替换成员仍在实时成员列表中，请先在内嵌浏览器完成移除')
-    }
-    return '已在实时成员列表确认席位已腾出'
-  }
-
-  if (step.key === 'invite') {
-    // The ordinary seat has already been removed by this point, so a valid
-    // workspace may contain no member rows at all. Pending invites is the
-    // authoritative confirmation for this step; an empty Members table must
-    // not block continuation.
-    const latestMembers = await listMembers({ forceRefresh: false })
-    if (latestMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)) {
-      completeInviteStep(workflow, '临时邮箱已在实时成员列表中确认')
-      return '临时邮箱已在实时成员列表中确认'
-    }
-    const pending = await pendingInviteSnapshot({ forceRefresh: false, expectedEmail: workflow.inviteEmail, waitForExpectedEmail: true })
-    if (!pending.emails.has(normalizeEmail(workflow.inviteEmail))) {
-      throw new Error('Pending invites 中未找到目标临时邮箱，请在内嵌浏览器中点击邀请并确认后再继续')
-    }
-    completeInviteStep(workflow, '临时邮箱已在 Pending invites 中确认')
-    return '临时邮箱已在 Pending invites 中确认'
-  }
-
-  if (step.key === 'oauth') {
-    return 'XIASS 官方 OAuth 链接已生成，请在内嵌服务器浏览器完成授权'
-  }
-  return '该步骤已由人工处理，自动化将直接执行下一步'
-}
-
-async function completeFailedStepForManualContinuation(workflow) {
-  const failedIndex = workflow.failedStepKey
-    ? workflow.steps.findIndex((step) => step.key === workflow.failedStepKey && step.status === 'failed')
-    : workflow.steps.findIndex((step) => step.status === 'failed')
-  if (failedIndex < 0) throw new Error('当前工作流没有可继续的失败步骤')
-  const failed = workflow.steps[failedIndex]
-  const confirmationMessage = await confirmManualStepCompletion(workflow, failed)
-  failed.status = 'completed'
-  failed.message = confirmationMessage
-  if (failed.key === 'invite') {
-    workflow.inviteConfirmed = true
-    workflow.inviteConfirmedAt = Date.now()
-  }
-  workflow.resumeNextStepIndex = failedIndex + 1
-  workflow.failedStepKey = ''
 }
 
 async function resumeFineWorkflowFromNextNode(workflow) {
@@ -1559,12 +1605,10 @@ async function resumeFineWorkflowFromNextNode(workflow) {
   failedNode.status = 'completed'
   failedNode.message = '该节点已由人工处理，自动化从下一节点继续'
   workflow.failedNodeKey = ''
-  workflow.failedStepKey = ''
   workflow.error = ''
   workflow.status = 'running'
 
-  const current = managedBrowserPage
-  if (!current || current.isClosed()) throw new Error('服务器浏览器授权标签页不可用')
+  const current = await workflowBrowserPage(workflow)
   let nextKey = workflow.nodes[failedIndex + 1]?.key || 'import'
 
   try {
@@ -1610,13 +1654,13 @@ async function resumeFineWorkflowFromNextNode(workflow) {
     if (['signup', 'email', 'password'].includes(nextKey)) {
       setWorkflowNode(workflow, 'password', 'running', '正在生成并填入 13 位随机密码')
       workflow.generatedPassword = generateWorkflowPassword()
+      persistWorkflowState()
       await fillWorkflowPassword(current, workflow.generatedPassword)
       completeWorkflowNode(workflow, 'password', '13 位随机密码已生成并填入')
       completeWorkflowNode(workflow, 'mail', 'OpenAI 验证邮件已发送')
-      setWorkflowStep(workflow, 'oauth', 'completed', '官方注册页已提交，正在等待邮箱验证码')
-      setWorkflowStep(workflow, 'verify', 'waiting', '正在通过 Cloudflare 邮箱读取 OpenAI 验证码')
       setWorkflowNode(workflow, 'mailbox', 'waiting', '正在轮询本次临时邮箱')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (['mail', 'mailbox'].includes(nextKey)) {
@@ -1626,33 +1670,36 @@ async function resumeFineWorkflowFromNextNode(workflow) {
           || (await verificationInputs(current)).length > 0
       })
       completeWorkflowNode(workflow, 'mail', '已确认 OpenAI 验证邮件页面')
-      setWorkflowStep(workflow, 'oauth', 'completed', '已确认注册提交完成')
-      setWorkflowStep(workflow, 'verify', 'waiting', '正在通过 Cloudflare 邮箱读取 OpenAI 验证码')
       setWorkflowNode(workflow, 'mailbox', 'waiting', '正在轮询本次临时邮箱')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (nextKey === 'email_code') {
       setWorkflowNode(workflow, 'email_code', 'waiting', '等待 XIASS 将当前邮箱验证码填入 OpenAI')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (nextKey === 'phone') {
       await waitForPhonePage(current)
       completeWorkflowNode(workflow, 'email_code', '已确认邮箱验证码由人工提交')
       completeWorkflowNode(workflow, 'phone', '已进入 OpenAI 手机号验证页面')
-      setWorkflowNode(workflow, 'sms_confirm', 'waiting', '请在 XIASS 站内弹窗确认领取手机号')
+      setWorkflowNode(workflow, 'sms_confirm', 'waiting', '等待 XIASS Team 自动化领取手机号')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (nextKey === 'sms_confirm') {
-      setWorkflowNode(workflow, 'sms_confirm', 'waiting', '请在 XIASS 站内弹窗确认领取手机号')
+      setWorkflowNode(workflow, 'sms_confirm', 'waiting', '等待 XIASS Team 自动化领取手机号')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (nextKey === 'phone_submit') {
       setWorkflowNode(workflow, 'phone_submit', 'waiting', '等待 XIASS 将已确认的完整国际号码填入 OpenAI')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (nextKey === 'sms_poll') {
@@ -1660,12 +1707,14 @@ async function resumeFineWorkflowFromNextNode(workflow) {
       completeWorkflowNode(workflow, 'phone_submit', '已确认号码由人工提交')
       setWorkflowNode(workflow, 'sms_poll', 'waiting', '正在通过 XIASS SMS 服务轮询验证码')
       workflow.status = 'manual_required'
+      persistWorkflowState()
       return
     }
     if (['sms_code', 'profile_wait', 'profile'].includes(nextKey)) {
       if (nextKey === 'sms_code') {
         setWorkflowNode(workflow, 'sms_code', 'waiting', '等待 XIASS 将当前短信验证码填入 OpenAI')
         workflow.status = 'manual_required'
+        persistWorkflowState()
         return
       }
       setWorkflowNode(workflow, 'profile_wait', 'running', '等待 5 秒进入资料页面')
@@ -1682,7 +1731,6 @@ async function resumeFineWorkflowFromNextNode(workflow) {
     setWorkflowNode(workflow, 'callback', 'running', '正在读取浏览器地址栏中的 OAuth 回调')
     workflow.callbackURL = await captureWorkflowCallback(current, workflow)
     completeWorkflowNode(workflow, 'callback', 'OAuth 回调 code/state 已捕获并校验')
-    setWorkflowStep(workflow, 'verify', 'completed', '外部验证已完成，回调 URL 已校验')
     setWorkflowNode(workflow, 'import', 'waiting', '等待按已勾选配置导入 XIASS')
     workflow.currentNodeKey = 'import'
     workflow.status = 'callback_ready'
@@ -1704,11 +1752,14 @@ function redactWorkflowError(error) {
 
 function pruneWorkflows() {
   const now = Date.now()
+  let changed = false
   for (const [id, workflow] of workflows.entries()) {
     if (workflow.expiresAt > now) continue
     if (activeWorkflowID === id) activeWorkflowID = ''
     workflows.delete(id)
+    changed = true
   }
+  if (changed) persistWorkflowState()
 }
 
 function activeWorkflow() {
@@ -1717,6 +1768,7 @@ function activeWorkflow() {
   const workflow = workflows.get(activeWorkflowID)
   if (!workflow || !['running', 'manual_required', 'callback_ready', 'failed'].includes(workflow.status)) {
     activeWorkflowID = ''
+    persistWorkflowState()
     return undefined
   }
   return workflow
@@ -1724,14 +1776,8 @@ function activeWorkflow() {
 
 async function activeWorkflowStatus() {
   const workflow = activeWorkflow()
-  if (!workflow) return { active: false }
-  return { active: true, workflow: await workflowStatus(workflow.id) }
-}
-
-function waitForWorkflowCallback(workflow, message) {
-  setWorkflowStep(workflow, 'verify', 'waiting', message)
-  workflow.status = 'manual_required'
-  activeWorkflowID = workflow.id
+  if (!workflow) return { schema_version: workflowProtocolVersion, active: false }
+  return { schema_version: workflowProtocolVersion, active: true, workflow: await workflowStatus(workflow.id) }
 }
 
 function validateWorkflowCallbackURL(value, workflow) {
@@ -1758,12 +1804,10 @@ async function submitWorkflowCallback(id, value) {
   const workflow = workflows.get(String(id || '').trim())
   if (!workflow) throw new Error('工作流不存在或已过期')
   if (workflow.status === 'cancelled') throw new Error('当前工作流已停止，请重新开始')
-  if (!isWorkflowStepCompleted(workflow, 'invite')) throw new Error('临时邮箱邀请尚未完成，暂不能提交 OAuth 回调')
+  if (!workflow.inviteConfirmed) throw new Error('临时邮箱邀请尚未完成，暂不能提交 OAuth 回调')
 
   workflow.callbackURL = validateWorkflowCallbackURL(value, workflow)
   workflow.error = ''
-  setWorkflowStep(workflow, 'oauth', 'completed', '官方授权已由内嵌服务器浏览器完成')
-  setWorkflowStep(workflow, 'verify', 'completed', '已校验回调 URL 的 code 和 state')
   workflow.status = 'callback_ready'
   workflow.currentNodeKey = 'import'
   setWorkflowNode(workflow, 'callback', 'completed', 'OAuth 回调 code/state 已捕获并校验')
@@ -1778,26 +1822,13 @@ function restartableOAuthWorkflow(id) {
   if (!['manual_required', 'failed'].includes(workflow.status)) {
     throw new Error('当前工作流尚未进入可重新授权的状态')
   }
-  if (!isWorkflowStepCompleted(workflow, 'invite')) {
+  if (!workflow.inviteConfirmed) {
     throw new Error('临时邮箱邀请尚未完成，暂不能只重启 OAuth')
   }
   return workflow
 }
 
-function markWorkflowActionFailed(workflow, error) {
-  const message = redactWorkflowError(error)
-  workflow.status = 'failed'
-  workflow.error = message
-  const active = workflow.steps.find((step) => step.status === 'running')
-  const failedKey = active?.key || 'verify'
-  workflow.failedStepKey = failedKey
-  setWorkflowStep(workflow, failedKey, 'failed', message)
-  return message
-}
-
 function resetOAuthWorkflowSteps(workflow) {
-  setWorkflowStep(workflow, 'oauth', 'pending', '')
-  setWorkflowStep(workflow, 'verify', 'pending', '')
   const startIndex = workflow.nodes.findIndex((node) => node.key === 'oauth')
   for (let index = Math.max(0, startIndex); index < workflow.nodes.length; index += 1) {
     workflow.nodes[index].status = 'pending'
@@ -1807,6 +1838,7 @@ function resetOAuthWorkflowSteps(workflow) {
   workflow.generatedPassword = ''
   workflow.currentNodeKey = 'oauth'
   workflow.error = ''
+  persistWorkflowState()
 }
 
 async function restartOAuthWorkflow(id, value, oauthSessionIDValue) {
@@ -1819,153 +1851,8 @@ async function restartOAuthWorkflow(id, value, oauthSessionIDValue) {
   return scheduleWorkflowNodeAction(workflow, 'oauth', () => runOAuthRegistrationUntilMailbox(workflow))
 }
 
-// After an operator handles a failed stage, continue starts at the following
-// stage by design. It never refreshes, revalidates, or replays the failed
-// action. A later failure can be handled the same way, one stage at a time.
-async function resumeWorkflowFromNextStep(workflow) {
-  const startIndex = workflow.resumeNextStepIndex
-  if (!Number.isInteger(startIndex) || startIndex < 0 || startIndex > workflow.steps.length) {
-    throw new Error('继续位置无效，请重新开始工作流')
-  }
-  workflow.resumeRequested = false
-  workflow.resumeNextStepIndex = -1
-
-  for (let index = startIndex; index < workflow.steps.length; index += 1) {
-    const step = workflow.steps[index]
-    if (step.status === 'completed') continue
-
-    if (step.key === 'members') {
-      const message = await confirmManualStepCompletion(workflow, step)
-      setWorkflowStep(workflow, 'members', 'completed', message)
-      completeWorkflowNode(workflow, 'members', message)
-      continue
-    }
-    if (step.key === 'remove') {
-      if (workflow.seatAlreadyRemoved) {
-        setWorkflowStep(workflow, 'remove', 'completed', '成员席位已由人工腾出，跳过移除')
-        completeWorkflowNode(workflow, 'remove', '成员席位已由人工腾出，跳过移除')
-        continue
-      }
-      // If the operator also completed removal while recovering the previous
-      // Members step, recognize the live absence instead of submitting a
-      // duplicate destructive action.
-      const currentMembers = await listMembers({ forceRefresh: false, requireEmails: true })
-      if (!currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
-        setWorkflowStep(workflow, 'remove', 'completed', '已在实时成员列表确认成员已由人工移除')
-        completeWorkflowNode(workflow, 'remove', '已在实时成员列表确认成员已由人工移除')
-        continue
-      }
-      setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
-      await removeMember(workflow.seatEmail)
-      setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
-      completeWorkflowNode(workflow, 'remove', '成员已从工作区移除')
-      continue
-    }
-    if (step.key === 'invite') {
-      setWorkflowStep(workflow, 'invite', 'running', '正在邀请临时邮箱')
-      setWorkflowNode(workflow, 'invite', 'running', '正在原生邀请弹窗提交临时邮箱')
-      await inviteMember(workflow.inviteEmail)
-      completeWorkflowNode(workflow, 'invite', '已在原生页面提交邀请')
-      await confirmInviteNode(workflow)
-      continue
-    }
-    if (step.key === 'oauth') {
-      await runOAuthRegistrationUntilMailbox(workflow)
-      return
-    }
-    if (step.key === 'verify') {
-      await waitForWorkflowCallback(workflow, '完成授权后，请把完整回调 URL 粘贴到工作区')
-      return
-    }
-  }
-
-  await waitForWorkflowCallback(workflow, '等待授权回调地址')
-}
-
-async function executeSingleWorkflowStep(workflow, index) {
-  for (let previous = 0; previous < index; previous += 1) {
-    const step = workflow.steps[previous]
-    if (step.status === 'completed') continue
-    const message = await confirmManualStepCompletion(workflow, step)
-    setWorkflowStep(workflow, step.key, 'completed', message)
-    completeWorkflowNode(workflow, step.key, message)
-  }
-
-  const step = workflow.steps[index]
-  if (!step || step.status === 'completed') {
-    workflow.status = 'manual_required'
-    activeWorkflowID = workflow.id
-    return
-  }
-
-  if (step.key === 'members') {
-    const message = await confirmManualStepCompletion(workflow, step)
-    setWorkflowStep(workflow, 'members', 'completed', message)
-    completeWorkflowNode(workflow, 'members', message)
-  } else if (step.key === 'remove') {
-    if (workflow.seatAlreadyRemoved) {
-      setWorkflowStep(workflow, 'remove', 'completed', '成员席位已由人工腾出，跳过移除')
-      completeWorkflowNode(workflow, 'remove', '成员席位已由人工腾出，跳过移除')
-    } else {
-      const currentMembers = await listMembers({ forceRefresh: false, requireEmails: true })
-      if (!currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.seatEmail)) {
-        setWorkflowStep(workflow, 'remove', 'completed', '已在实时成员列表确认成员已由人工移除')
-        completeWorkflowNode(workflow, 'remove', '已在实时成员列表确认成员已由人工移除')
-      } else {
-        setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
-        await removeMember(workflow.seatEmail)
-        setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
-        completeWorkflowNode(workflow, 'remove', '成员已从工作区移除')
-      }
-    }
-  } else if (step.key === 'invite') {
-    setWorkflowStep(workflow, 'invite', 'running', '正在邀请临时邮箱')
-    setWorkflowNode(workflow, 'invite', 'running', '正在原生邀请弹窗提交临时邮箱')
-    await inviteMember(workflow.inviteEmail)
-    completeWorkflowNode(workflow, 'invite', '已在原生页面提交邀请')
-    await confirmInviteNode(workflow)
-  } else if (step.key === 'oauth') {
-    await runOAuthRegistrationUntilMailbox(workflow)
-    return
-  } else if (step.key === 'verify') {
-    await waitForWorkflowCallback(workflow, '完成授权后，请把完整回调 URL 粘贴到工作区')
-    return
-  }
-
-  workflow.status = 'manual_required'
-  workflow.error = ''
-  activeWorkflowID = workflow.id
-}
-
 async function executeWorkflow(workflow) {
   try {
-    if (workflow.resumeRequested) {
-      await resumeWorkflowFromNextStep(workflow)
-      return
-    }
-
-    const startIndex = workflowStepIndex(workflow.startStep || 'members')
-    if (startIndex > 0) {
-      if (workflow.runOnlyStep) {
-        await executeSingleWorkflowStep(workflow, startIndex)
-        return
-      }
-      // A manually completed prefix is accepted only after the live browser
-      // confirms every earlier stage. This allows starting at OAuth after an
-      // operator handled the member page without replaying destructive actions.
-      for (let index = 0; index < startIndex; index += 1) {
-        const step = workflow.steps[index]
-        if (step.status === 'completed') continue
-        const message = await confirmManualStepCompletion(workflow, step)
-        setWorkflowStep(workflow, step.key, 'completed', message)
-        completeWorkflowNode(workflow, step.key, message)
-      }
-      workflow.resumeNextStepIndex = startIndex
-      await resumeWorkflowFromNextStep(workflow)
-      return
-    }
-
-    setWorkflowStep(workflow, 'members', 'running', '正在读取成员管理页')
     setWorkflowNode(workflow, 'members', 'running', '正在刷新并读取实时成员页面')
     // A workflow reads the live managed tab and waits for real member rows. A
     // reload is reserved for an explicit refresh or a failed operation retry;
@@ -1982,42 +1869,28 @@ async function executeWorkflow(workflow) {
       if (unverified) {
         throw new Error('成员角色无法确认受保护状态，请在浏览器中核对后重新刷新成员列表')
       }
-      setWorkflowStep(workflow, 'members', 'completed', '已刷新成员页，确认仅剩受保护成员')
-      setWorkflowStep(workflow, 'remove', 'completed', '普通成员席位已由人工腾出，跳过移除')
       completeWorkflowNode(workflow, 'members', '已确认当前成员席位状态')
       completeWorkflowNode(workflow, 'remove', '普通成员席位已由人工腾出，未执行移除')
     } else if (selected) {
       assertRemovableMember(selected)
-      workflow.seatObserved = true
-      setWorkflowStep(workflow, 'members', 'completed', '已刷新并确认可替换的普通成员席位')
       completeWorkflowNode(workflow, 'members', '已读取并确认可替换的普通成员席位')
-      if (isWorkflowStepCompleted(workflow, 'remove')) {
-        throw new Error('已完成的移除步骤刷新后仍显示该成员，请重新确认成员状态后开始新的工作流')
-      }
-      setWorkflowStep(workflow, 'remove', 'running', '正在提交成员移除')
       setWorkflowNode(workflow, 'remove', 'running', '正在通过成员行菜单移除已选普通成员')
       await removeMember(workflow.seatEmail)
-      setWorkflowStep(workflow, 'remove', 'completed', '成员已从工作区移除')
       completeWorkflowNode(workflow, 'remove', '已从实时成员页面确认成员移除')
-    } else if (isWorkflowStepCompleted(workflow, 'remove')) {
-      setWorkflowStep(workflow, 'members', 'completed', '已刷新成员页，原成员仍保持已移除状态')
-      completeWorkflowNode(workflow, 'members', '已确认原成员不在实时列表中')
-      completeWorkflowNode(workflow, 'remove', '已确认成员席位保持腾出状态')
     } else {
       throw new Error('已选成员不在实时成员列表中，请刷新成员页确认后点击继续')
     }
 
-    setWorkflowStep(workflow, 'invite', 'running', '正在确认临时邮箱邀请状态')
     setWorkflowNode(workflow, 'invite', 'running', '正在原生 Invite member 弹窗提交临时邮箱')
     const currentMembers = await listMembers({ forceRefresh: false })
     const invitationAccepted = currentMembers.members.some((member) => normalizeEmail(member.email) === workflow.inviteEmail)
     if (invitationAccepted) {
-      completeInviteStep(workflow, '临时邮箱已出现在成员列表中')
+      completeInviteStep(workflow)
       completeInviteNodes(workflow, '无需重复提交邀请', '临时邮箱已出现在成员列表中')
     } else {
       const pendingSnapshot = await pendingInviteSnapshot({ forceRefresh: false, expectedEmail: workflow.inviteEmail, waitForExpectedEmail: true })
       if (pendingSnapshot.emails.has(normalizeEmail(workflow.inviteEmail))) {
-        completeInviteStep(workflow, '临时邮箱已出现在待处理邀请中')
+        completeInviteStep(workflow)
         completeInviteNodes(workflow, '无需重复提交邀请', '已在 Pending invites 精确匹配临时邮箱')
       } else if (workflow.seatAlreadyRemoved && pendingSnapshot.emails.size > 0) {
         throw new Error('当前工作区已有其他待处理邀请。为避免占用已腾出的唯一席位，请恢复对应临时邮箱或先在浏览器中取消旧邀请后重试')
@@ -2030,28 +1903,9 @@ async function executeWorkflow(workflow) {
 
     await runOAuthRegistrationUntilMailbox(workflow)
   } catch (error) {
-    const message = redactWorkflowError(error)
-    workflow.status = 'failed'
-    workflow.error = message
     const activeNode = workflow.nodes.find((node) => node.status === 'running')
-    if (activeNode) {
-      markWorkflowNodeFailed(workflow, activeNode.key, error)
-      return
-    }
-    const active = workflow.steps.find((step) => step.status === 'running')
-    const failedKey = active?.key || 'verify'
-    workflow.failedStepKey = failedKey
-    setWorkflowStep(workflow, failedKey, 'failed', message)
+    markWorkflowNodeFailed(workflow, activeNode?.key || workflow.currentNodeKey || 'members', error)
   }
-}
-
-function markSpecificWorkflowStepFailed(workflow, stepKey, error) {
-  const message = redactWorkflowError(error)
-  workflow.status = 'failed'
-  workflow.error = message
-  workflow.failedStepKey = stepKey
-  setWorkflowStep(workflow, stepKey, 'failed', message)
-  return message
 }
 
 function markWorkflowNodeFailed(workflow, nodeKey, error) {
@@ -2061,17 +1915,6 @@ function markWorkflowNodeFailed(workflow, nodeKey, error) {
   workflow.failedNodeKey = nodeKey
   workflow.currentNodeKey = nodeKey
   setWorkflowNode(workflow, nodeKey, 'failed', message)
-  const coarseKey = nodeKey === 'members'
-    ? 'members'
-    : nodeKey === 'remove'
-      ? 'remove'
-      : ['invite', 'invite_confirm'].includes(nodeKey)
-        ? 'invite'
-        : ['oauth', 'signup', 'email', 'password', 'mail'].includes(nodeKey)
-          ? 'oauth'
-          : 'verify'
-  workflow.failedStepKey = coarseKey
-  setWorkflowStep(workflow, coarseKey, 'failed', message)
   activeWorkflowID = workflow.id
   return message
 }
@@ -2095,14 +1938,13 @@ function scheduleWorkflowNodeAction(workflow, nodeKey, action) {
   workflow.status = 'running'
   workflow.error = ''
   workflow.failedNodeKey = ''
-  workflow.failedStepKey = ''
   setWorkflowNode(workflow, nodeKey, 'running', workflowNodeState(workflow, nodeKey)?.message || '正在执行')
   activeWorkflowID = workflow.id
   void runExclusive(async () => {
     try {
       await action()
     } catch (error) {
-      markWorkflowNodeFailed(workflow, nodeKey, error)
+      markWorkflowNodeFailed(workflow, workflowFailureNodeKey(workflow, nodeKey), error)
     }
   })
   return workflowSummary(workflow)
@@ -2140,31 +1982,8 @@ function completeWorkflowImport(id) {
   workflow.currentNodeKey = 'import'
   workflow.generatedPassword = ''
   if (activeWorkflowID === workflow.id) activeWorkflowID = ''
+  persistWorkflowState()
   return workflowSummary(workflow)
-}
-
-async function runWorkflowStep(id, stepKey) {
-  pruneWorkflows()
-  const workflow = workflows.get(String(id || '').trim())
-  if (!workflow) throw new Error('工作流不存在或已过期')
-  if (!workflowStepKeys.has(stepKey)) throw new Error('步骤无效')
-  if (workflow.status === 'running') throw new Error('当前工作流正在执行，请等待当前步骤完成')
-  if (workflow.status === 'cancelled') throw new Error('当前工作流已停止，请重新开始')
-
-  const index = workflowStepIndex(stepKey)
-  const selected = workflow.steps[index]
-  if (selected.status === 'completed') return workflowSummary(workflow)
-
-  workflow.status = 'running'
-  workflow.error = ''
-  workflow.failedStepKey = ''
-  try {
-    await executeSingleWorkflowStep(workflow, index)
-    return workflowSummary(workflow)
-  } catch (error) {
-    markSpecificWorkflowStepFailed(workflow, stepKey, error)
-    throw error
-  }
 }
 
 async function startWorkflow(payload) {
@@ -2177,14 +1996,12 @@ async function startWorkflow(payload) {
   if (payload?.confirmed !== true) throw new Error('需要确认移除成员和发送邀请后才能开始')
   const authURL = validateOpenAIAuthURL(payload?.auth_url)
   const oauthSessionID = validateOAuthSessionID(payload?.oauth_session_id)
-  const startStep = validateWorkflowStartStep(payload?.start_step)
   if (activeWorkflow()) throw new Error('已有 Team 子号工作流正在进行，请先完成或取消当前工作流')
 
   const workflow = createWorkflow(seatEmail, inviteEmail, authURL, oauthSessionID, seatAlreadyRemoved)
-  workflow.startStep = startStep
-  workflow.runOnlyStep = payload?.run_only_step === true
   workflows.set(workflow.id, workflow)
   activeWorkflowID = workflow.id
+  persistWorkflowState()
   // Return immediately so the UI can show the operation timeline while the
   // shared Chromium service serially performs the destructive actions.
   void runExclusive(() => executeWorkflow(workflow))
@@ -2203,33 +2020,48 @@ async function continueWorkflow(id) {
     workflow.status = 'running'
     workflow.error = ''
     activeWorkflowID = workflow.id
-    void runExclusive(() => resumeFineWorkflowFromNextNode(workflow))
+    void runExclusive(async () => {
+      if (await recoverWorkflowCallback(workflow)) return
+      await resumeFineWorkflowFromNextNode(workflow)
+    })
     return workflowSummary(workflow)
   }
+  throw new Error('当前工作流没有可继续的新版自动化节点，请重新开始')
+}
 
-  await completeFailedStepForManualContinuation(workflow)
-  workflow.status = 'running'
+async function recoverWorkflowCallback(workflow) {
+  const current = await workflowBrowserPage(workflow)
+  const callbackURL = await workflowCallbackURLFromPage(current, workflow)
+  if (!callbackURL) return false
+
+  const failedNode = workflowNodeState(workflow, workflow.failedNodeKey)
+  if (failedNode?.status === 'failed') {
+    completeWorkflowNode(workflow, failedNode.key, '该节点已完成，已从浏览器地址栏恢复 OAuth 回调')
+  }
+  workflow.callbackURL = validateWorkflowCallbackURL(callbackURL, workflow)
   workflow.error = ''
-  workflow.resumeRequested = true
-  activeWorkflowID = workflow.id
-  void runExclusive(() => executeWorkflow(workflow))
-  return workflowSummary(workflow)
+  workflow.failedNodeKey = ''
+  completeWorkflowNode(workflow, 'callback', 'OAuth 回调 code/state 已从浏览器地址栏捕获并校验')
+  setWorkflowNode(workflow, 'import', 'waiting', '等待按已勾选配置导入 XIASS')
+  workflow.currentNodeKey = 'import'
+  workflow.status = 'callback_ready'
+  persistWorkflowState()
+  return true
 }
 
 function workflowStatus(id) {
   pruneWorkflows()
   const workflow = workflows.get(String(id || '').trim())
   if (!workflow) throw new Error('工作流不存在或已过期')
-  if (workflow.status === 'manual_required') {
-    const verify = workflowStepState(workflow, 'verify')
-    setWorkflowStep(
-      workflow,
-      'verify',
-      'waiting',
-      verify?.message || '完成官方 OAuth 后，把地址栏中的完整回调 URL 粘贴到工作区'
-    )
-  }
   return workflowSummary(workflow)
+}
+
+function workflowSecret(id) {
+  pruneWorkflows()
+  const workflow = workflows.get(String(id || '').trim())
+  if (!workflow) throw new Error('工作流不存在或已过期')
+  if (!workflow.generatedPassword) throw new Error('当前工作流尚未生成登录密码')
+  return { email: workflow.inviteEmail, password: workflow.generatedPassword }
 }
 
 function cancelWorkflow(id) {
@@ -2239,17 +2071,13 @@ function cancelWorkflow(id) {
   if (workflow.status === 'running') throw new Error('当前步骤正在执行，暂不能取消')
   if (workflow.status === 'manual_required' || workflow.status === 'callback_ready' || workflow.status === 'failed') {
     workflow.status = 'cancelled'
-    const active = workflow.steps.find((step) => step.status === 'running' || step.status === 'failed')
-    if (active) {
-      setWorkflowStep(workflow, active.key, 'cancelled', '已停止自动化；已完成的成员操作不会自动回滚')
-    } else {
-      setWorkflowStep(workflow, 'verify', 'cancelled', '已停止自动检查，成员移除和邀请操作不会自动回滚')
-      const pendingNode = workflow.nodes.find((node) => ['waiting', 'pending'].includes(node.status))
-      if (pendingNode) setWorkflowNode(workflow, pendingNode.key, 'cancelled', '工作流已由管理员停止')
-    }
+    const activeNode = workflow.nodes.find((node) => ['running', 'waiting', 'failed'].includes(node.status))
+      || workflow.nodes.find((node) => node.status === 'pending')
+    if (activeNode) setWorkflowNode(workflow, activeNode.key, 'cancelled', '工作流已由管理员停止')
     workflow.generatedPassword = ''
   }
   if (activeWorkflowID === workflow.id) activeWorkflowID = ''
+  persistWorkflowState()
   return workflowSummary(workflow)
 }
 
@@ -2274,13 +2102,18 @@ async function readBody(req) {
 
 async function handle(req, res) {
   const path = normalizedPath(req)
-  if (req.method === 'GET' && path === '/healthz') return json(res, 200, { ok: true })
+  if (req.method === 'GET' && path === '/healthz') {
+    return json(res, 200, { ok: true, workflow_schema_version: workflowProtocolVersion })
+  }
   if (req.method === 'GET' && path === '/readyz') {
     try {
       const connected = await browser()
-      return json(res, connected.isConnected() ? 200 : 503, { ok: connected.isConnected() })
+      return json(res, connected.isConnected() ? 200 : 503, {
+        ok: connected.isConnected(),
+        workflow_schema_version: workflowProtocolVersion
+      })
     } catch {
-      return json(res, 503, { ok: false })
+      return json(res, 503, { ok: false, workflow_schema_version: workflowProtocolVersion })
     }
   }
   if (!authorized(req)) return json(res, 401, { error: 'automation service authentication required' })
@@ -2294,6 +2127,7 @@ async function handle(req, res) {
   }
 
   const workflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})$/)
+  const workflowSecretMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/secret$/)
   // Progress inspection is intentionally outside the serialized browser queue.
   // A remove/invite workflow can take several seconds; queuing this read behind
   // it would leave the XIASS page stuck at "running" until all browser actions
@@ -2320,10 +2154,6 @@ async function handle(req, res) {
         const body = await readBody(req)
         return inviteMember(String(body.email || '').trim())
       }
-      if (req.method === 'POST' && path === '/browser/navigate') {
-        const body = await readBody(req)
-        return navigatePersistentBrowser(body?.url)
-      }
       if (req.method === 'DELETE' && path === '/members') {
         const body = await readBody(req)
         return removeMember(String(body.email || '').trim())
@@ -2336,13 +2166,9 @@ async function handle(req, res) {
         const body = await readBody(req)
         return startWorkflow(body)
       }
+      if (workflowSecretMatch && req.method === 'GET') return workflowSecret(workflowSecretMatch[1])
       const continueWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/continue$/)
       if (continueWorkflowMatch && req.method === 'POST') return continueWorkflow(continueWorkflowMatch[1])
-      const runStepMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/run-step$/)
-      if (runStepMatch && req.method === 'POST') {
-        const body = await readBody(req)
-        return runWorkflowStep(runStepMatch[1], validateWorkflowStep(body?.step))
-      }
       const emailCodeWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/email-code$/)
       if (emailCodeWorkflowMatch && req.method === 'POST') {
         const body = await readBody(req)
@@ -2381,18 +2207,27 @@ async function handle(req, res) {
 }
 
 if (process.env.NODE_ENV !== 'test') {
+  restoreWorkflowState()
   http.createServer(handle).listen(port, '0.0.0.0', () => {
     console.log(`team-child-automation listening on ${port}`)
   })
 }
 
 export {
+  callbackURLFromNavigationEntries,
   completeWorkflowNode,
   createWorkflow,
+  decryptWorkflowState,
+  encryptWorkflowState,
+  fillVerificationCode,
   generateWorkflowPassword,
+  pendingInviteEmailsFromTexts,
   setWorkflowNode,
+  submitInviteDialog,
   validateOAuthSessionID,
   validateWorkflowCode,
+  workflowProtocolVersion,
   workflowNodeDefinitions,
+  workflowFailureNodeKey,
   workflowSummary
 }

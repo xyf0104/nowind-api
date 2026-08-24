@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TeamChildOAuthWorkspace from '../TeamChildOAuthWorkspace.vue'
+import i18n from '@/i18n'
 
 const PixlabSMSReceiverStub = {
   props: { active: { type: Boolean, default: false } },
@@ -9,20 +10,36 @@ const PixlabSMSReceiverStub = {
 
 const IconStub = { template: '<span />' }
 
+const nodeDefinitions = [
+  ['members', '读取成员席位'], ['remove', '移除已选成员'], ['invite', '提交成员邀请'],
+  ['invite_confirm', '确认 Pending invites'], ['oauth', '打开 XIASS 官方 OAuth'], ['signup', '选择 Sign up'],
+  ['email', '填入临时邮箱'], ['password', '创建 13 位随机密码'], ['mail', '提交并发送邮箱验证码'],
+  ['mailbox', 'Cloudflare 读取验证邮件'], ['email_code', '自动填入邮箱验证码'], ['phone', '进入手机号页面'],
+  ['sms_confirm', '确认领取手机号'], ['phone_submit', '填入号码并选择 Text message'], ['sms_poll', '轮询短信验证码'],
+  ['sms_code', '自动填入短信验证码'], ['profile_wait', '等待资料页 5 秒'], ['profile', '填写 black / 26'],
+  ['workspace_wait', '等待工作空间 10 秒'], ['workspace', '默认工作空间继续'], ['callback', '捕获 OAuth 回调'],
+  ['import', '按勾选配置导入 XIASS']
+] as const
+
 function workflow(overrides: Record<string, unknown> = {}) {
+  const currentNode = String(overrides.current_node || 'sms_confirm')
+  const currentIndex = nodeDefinitions.findIndex(([key]) => key === currentNode)
+  const workflowStatus = String(overrides.status || 'manual_required')
   return {
+    schema_version: 2,
     id: 'workflow-token-abcdefghijklmnop',
-    status: 'manual_required',
-    manual_required: true,
-    current_node: 'sms_confirm',
+    status: workflowStatus,
+    manual_required: workflowStatus === 'manual_required',
+    current_node: currentNode,
     expires_at: '2026-08-24T00:00:00.000Z',
-    steps: [
-      { key: 'members', number: 1, label: '读取成员席位', status: 'completed', message: '已完成' },
-      { key: 'remove', number: 2, label: '移除已选成员', status: 'completed', message: '已完成' },
-      { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed', message: '已完成' },
-      { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed', message: '授权页已打开' },
-      { key: 'verify', number: 5, label: '完成外部授权并提交回调', status: 'waiting', message: '正在等待验证码输入' }
-    ],
+    nodes: nodeDefinitions.map(([key, label], index) => ({
+      key,
+      number: index + 1,
+      label,
+      status: index < currentIndex ? 'completed' : index === currentIndex
+        ? workflowStatus === 'failed' ? 'failed' : 'waiting'
+        : 'pending'
+    })),
     ...overrides
   }
 }
@@ -36,6 +53,7 @@ describe('TeamChildOAuthWorkspace', () => {
         authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
       },
       global: {
+        plugins: [i18n],
         stubs: {
           Icon: IconStub,
           PixlabSMSReceiver: PixlabSMSReceiverStub
@@ -43,21 +61,56 @@ describe('TeamChildOAuthWorkspace', () => {
       }
     })
 
-    expect(wrapper.get('[data-testid="team-oauth-workspace"]').text()).toContain('成员授权工作区')
+    expect(wrapper.get('[data-testid="team-oauth-workspace"]').text()).not.toContain('成员授权工作区')
     expect(wrapper.get('[data-testid="team-oauth-current-node"]').text()).toContain('领取手机号')
     expect(wrapper.text()).toContain('已完成')
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
     expect(wrapper.find('[data-testid="team-oauth-manual-code"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('不会在此处展示或写入工作流记录')
-    const authLink = wrapper.get('[data-testid="team-open-auth"]')
-    expect(authLink.element.tagName).toBe('BUTTON')
-    expect(authLink.attributes('href')).toBeUndefined()
-    expect(authLink.text()).toContain('内嵌浏览器')
+    expect(wrapper.text()).toContain('生成的登录密码会加密保存')
     expect(wrapper.text()).toContain('上方只显示当前节点')
-    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').classes()).toContain('sticky')
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').classes()).toContain('relative')
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').classes()).not.toContain('sticky')
     expect(wrapper.get('[data-testid="team-oauth-operation-card"]').text()).toContain('XIASS 官方 OAuth PKCE 链接')
-    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').find('[data-testid="team-open-auth"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="team-oauth-operation-card"]').find('[data-testid="team-open-auth"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="team-open-auth"]').exists()).toBe(false)
+  })
+
+  it('keeps the generated login password masked until an explicit reveal', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ password_available: true }),
+        mailboxEmail: 'team-child@example.test'
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-child-password-value"]').text()).toBe('•••••••••••••')
+    await wrapper.get('[data-testid="team-child-password-panel"] button:last-child').trigger('click')
+    expect(wrapper.emitted('reveal-password')).toHaveLength(1)
+
+    await wrapper.setProps({ revealedPassword: 'Abc123456789!' })
+    expect(wrapper.get('[data-testid="team-child-password-value"]').text()).toBe('Abc123456789!')
+    expect(wrapper.get('[data-testid="team-child-password-panel"] button:last-child').attributes('aria-label')).toBe('隐藏登录密码')
+  })
+
+  it('keeps mailbox, password, history, and SMS tools in the side rail', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ password_available: true }),
+        mailboxEmail: 'team-child@example.test',
+        historyMailboxes: ['team-child@example.test', 'old@example.test'],
+        selectedMailboxEmail: 'team-child@example.test',
+        mailboxCode: '123456',
+        mailboxConfigured: true
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-oauth-side-actions"]').text()).toContain('邮箱与验证码')
+    expect(wrapper.get('[data-testid="team-sidebar-mailbox-code-value"]').text()).toBe('123456')
+    expect(wrapper.get('[data-testid="team-history-mailbox-select"]').text()).toContain('team-child@example.test')
+    await wrapper.get('[data-testid="team-open-mailbox"]').trigger('click')
+    await wrapper.get('[data-testid="team-sidebar-mailbox-code"]').exists()
+    expect(wrapper.emitted('open-mailbox')).toEqual([['team-child@example.test']])
   })
 
   it('shows callback state without activating the receiver for import', () => {
@@ -68,6 +121,7 @@ describe('TeamChildOAuthWorkspace', () => {
         callbackURL: 'http://localhost:1455/auth/callback?code=one&state=two'
       },
       global: {
+        plugins: [i18n],
         stubs: {
           Icon: IconStub,
           PixlabSMSReceiver: PixlabSMSReceiverStub
@@ -75,31 +129,9 @@ describe('TeamChildOAuthWorkspace', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('回调已就绪')
+    expect(wrapper.text()).toContain('已校验授权回调')
     expect(wrapper.text()).toContain('复制回调地址')
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
-  })
-
-  it('emits an in-app browser navigation request without opening a local window', async () => {
-    const open = vi.spyOn(window, 'open')
-    const wrapper = mount(TeamChildOAuthWorkspace, {
-      props: {
-        workflow: workflow(),
-        authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
-      },
-      global: {
-        stubs: {
-          Icon: IconStub,
-          PixlabSMSReceiver: PixlabSMSReceiverStub
-        }
-      }
-    })
-
-    await wrapper.get('[data-testid="team-open-auth"]').trigger('click')
-
-    expect(open).not.toHaveBeenCalled()
-    expect(wrapper.emitted('open-auth-in-browser')).toHaveLength(1)
-    open.mockRestore()
   })
 
   it('offers embedded-browser recovery and continuation for every failed node', async () => {
@@ -109,6 +141,7 @@ describe('TeamChildOAuthWorkspace', () => {
         authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
       },
       global: {
+        plugins: [i18n],
         stubs: {
           Icon: IconStub,
           PixlabSMSReceiver: PixlabSMSReceiverStub
@@ -116,11 +149,12 @@ describe('TeamChildOAuthWorkspace', () => {
       }
     })
 
-    await wrapper.get('[data-testid="team-open-browser-after-failure"]').trigger('click')
+    await wrapper.get('[data-testid="team-manual-browser"]').trigger('click')
     await wrapper.get('[data-testid="team-continue-after-failure"]').trigger('click')
 
-    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').find('[data-testid="team-open-browser-after-failure"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="team-oauth-operation-card"]').find('[data-testid="team-open-browser-after-failure"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').find('[data-testid="team-manual-browser"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="team-oauth-operation-card"]').find('[data-testid="team-manual-browser"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="team-oauth-side-actions"]').find('[data-testid="team-manual-browser"]').exists()).toBe(false)
     expect(wrapper.emitted('open-browser')).toHaveLength(1)
     expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
   })
@@ -131,6 +165,7 @@ describe('TeamChildOAuthWorkspace', () => {
         workflow: workflow({ status: 'failed', current_node: 'phone_submit', error: '当前手机号不可用或使用次数过多' })
       },
       global: {
+        plugins: [i18n],
         stubs: {
           Icon: IconStub,
           PixlabSMSReceiver: {

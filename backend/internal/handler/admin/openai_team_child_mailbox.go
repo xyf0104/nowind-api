@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,10 +34,13 @@ import (
 // address and a one-time local session identifier.
 const (
 	teamMailboxSessionTTL      = 20 * time.Minute
+	teamMailboxKnownTTL        = 180 * 24 * time.Hour
+	teamMailboxKnownLimit      = int64(50)
 	teamMailboxBodyLimit       = 512 * 1024
 	teamMailboxConfigBodyLimit = 256 * 1024
 	teamMailboxRedisKeyPrefix  = "xiass:team-child:mailbox:"
 	teamMailboxActiveKeyPrefix = "xiass:team-child:mailbox:active:"
+	teamMailboxKnownKeyPrefix  = "xiass:team-child:mailbox:known:"
 	teamMailboxLegacyScanLimit = 128
 	teamMailboxSequenceKey     = teamMailboxRedisKeyPrefix + "address-sequence"
 	teamMailboxSequenceStart   = int64(1000)
@@ -54,6 +58,7 @@ type openAITeamMailboxStore struct {
 	sequenceMu    sync.Mutex
 	sessions      map[string]openAITeamMailboxSession
 	activeByAdmin map[int64]string
+	knownByAdmin  map[int64]map[string]time.Time
 	client        *http.Client
 	redis         *redis.Client
 	now           func() time.Time
@@ -107,6 +112,14 @@ type openAITeamMailboxCodeResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+type openAITeamMailboxListResponse struct {
+	Emails []string `json:"emails"`
+}
+
+type openAITeamMailboxSelectRequest struct {
+	Email string `json:"email" binding:"required"`
+}
+
 var (
 	teamMailboxAddressRE            = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
 	teamMailboxSemanticCodeRE       = regexp.MustCompile(`(?is)(?:verification|verify|confirmation|one[\s-]*time|security\s+code|login\s+code|验证码|验证(?:码)?)[^0-9]{0,80}([0-9](?:[\s-]?[0-9]){3,7})`)
@@ -120,6 +133,7 @@ func newOpenAITeamMailboxStore() *openAITeamMailboxStore {
 	return &openAITeamMailboxStore{
 		sessions:      make(map[string]openAITeamMailboxSession),
 		activeByAdmin: make(map[int64]string),
+		knownByAdmin:  make(map[int64]map[string]time.Time),
 		client:        &http.Client{Timeout: 12 * time.Second},
 		now:           time.Now,
 	}
@@ -214,35 +228,119 @@ func (h *OpenAIOAuthHandler) CreateTeamChildMailbox(c *gin.Context) {
 		response.InternalError(c, "temporary mailbox address sequence is unavailable")
 		return
 	}
-	email, token, err := h.createTeamChildMailbox(c.Request.Context(), provider, requestedEmail)
+	mailbox, err := h.provisionTeamChildMailboxSession(c.Request.Context(), teamChildRequestOwnerID(c), provider, requestedEmail)
 	if err != nil {
-		response.InternalError(c, "temporary mailbox could not be created")
-		return
-	}
-
-	sessionID, err := newTeamMailboxSessionID()
-	if err != nil {
-		response.InternalError(c, "temporary mailbox session could not be created")
-		return
-	}
-	now := h.teamMailboxStore.now()
-	expiresAt := now.Add(teamMailboxSessionTTL)
-	session := openAITeamMailboxSession{
-		email: email, token: token, config: provider, expiresAt: expiresAt,
-	}
-	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
-		session.adminUserID = subject.UserID
-	}
-	if err := h.teamMailboxStore.create(c.Request.Context(), sessionID, session); err != nil {
 		response.InternalError(c, "temporary mailbox session could not be stored")
 		return
 	}
+	response.Success(c, mailbox)
+}
 
-	response.Success(c, openAITeamMailboxCreateResponse{
+// ListTeamChildMailboxes returns only addresses previously created or selected
+// by the current administrator. Provider JWTs and XIASS mailbox session IDs are
+// intentionally absent.
+// GET /api/v1/admin/openai/team-child/mailboxes
+func (h *OpenAIOAuthHandler) ListTeamChildMailboxes(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.teamMailboxStore == nil {
+		response.Success(c, openAITeamMailboxListResponse{Emails: []string{}})
+		return
+	}
+	emails, err := h.teamMailboxStore.known(c.Request.Context(), teamChildRequestOwnerID(c))
+	if err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "temporary mailbox service is temporarily unavailable")
+		return
+	}
+	response.Success(c, openAITeamMailboxListResponse{Emails: emails})
+}
+
+// SelectTeamChildMailbox reopens one server-owned Team mailbox by asking the
+// configured provider for a fresh scoped token and creating a new XIASS-only
+// session. The provider token never crosses this handler.
+// POST /api/v1/admin/openai/team-child/mailboxes/select
+func (h *OpenAIOAuthHandler) SelectTeamChildMailbox(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.teamMailboxStore == nil {
+		response.InternalError(c, "team child mailbox service is unavailable")
+		return
+	}
+	var req openAITeamMailboxSelectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请输入要重新打开的 Team 邮箱")
+		return
+	}
+	provider, err := loadTeamMailboxProviderConfig(c)
+	if err != nil {
+		response.BadRequest(c, "Team child mailbox is not configured")
+		return
+	}
+	email, err := validateSelectableTeamMailbox(req.Email, provider)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	mailbox, err := h.provisionTeamChildMailboxSession(c.Request.Context(), teamChildRequestOwnerID(c), provider, email)
+	if err != nil {
+		response.InternalError(c, "temporary mailbox could not be reopened")
+		return
+	}
+	response.Success(c, mailbox)
+}
+
+func validateSelectableTeamMailbox(raw string, provider teamMailboxProviderConfig) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(raw))
+	localPart, domain, ok := strings.Cut(email, "@")
+	configuredDomain, err := teamMailboxAddressDomain(provider)
+	if err != nil {
+		return "", errors.New("Team 邮箱域名配置无效")
+	}
+	if !ok || !strings.EqualFold(domain, configuredDomain) || !strings.HasPrefix(localPart, teamMailboxAddressPrefix) {
+		return "", errors.New("只能选择当前配置域名下由 XIASS 创建的 Team 邮箱")
+	}
+	numberText := strings.TrimPrefix(localPart, teamMailboxAddressPrefix)
+	number, err := strconv.ParseInt(numberText, 10, 64)
+	if err != nil || number < teamMailboxSequenceStart || fmt.Sprintf("%s%d", teamMailboxAddressPrefix, number) != localPart {
+		return "", errors.New("Team 邮箱必须使用 team 加数字的 XIASS 地址格式")
+	}
+	return localPart + "@" + configuredDomain, nil
+}
+
+func (h *OpenAIOAuthHandler) provisionTeamChildMailboxSession(ctx context.Context, ownerID int64, provider teamMailboxProviderConfig, requestedEmail string) (openAITeamMailboxCreateResponse, error) {
+	if h == nil || h.teamMailboxStore == nil || ownerID <= 0 {
+		return openAITeamMailboxCreateResponse{}, errors.New("temporary mailbox store is unavailable")
+	}
+	email, token, err := h.createTeamChildMailbox(ctx, provider, requestedEmail)
+	if err != nil {
+		return openAITeamMailboxCreateResponse{}, err
+	}
+	sessionID, err := newTeamMailboxSessionID()
+	if err != nil {
+		return openAITeamMailboxCreateResponse{}, err
+	}
+	expiresAt := h.teamMailboxStore.now().Add(teamMailboxSessionTTL)
+	session := openAITeamMailboxSession{
+		adminUserID: ownerID,
+		email:       strings.ToLower(strings.TrimSpace(email)),
+		token:       token,
+		config:      provider,
+		expiresAt:   expiresAt,
+	}
+	if err := h.teamMailboxStore.create(ctx, sessionID, session); err != nil {
+		return openAITeamMailboxCreateResponse{}, err
+	}
+	if err := h.teamMailboxStore.remember(ctx, ownerID, session.email); err != nil {
+		_ = h.teamMailboxStore.delete(ctx, sessionID, ownerID)
+		return openAITeamMailboxCreateResponse{}, err
+	}
+	return openAITeamMailboxCreateResponse{
 		SessionID: sessionID,
-		Email:     email,
+		Email:     session.email,
 		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
-	})
+	}, nil
 }
 
 // GetActiveTeamChildMailbox restores the current administrator's short-lived
@@ -546,6 +644,75 @@ func (s *openAITeamMailboxStore) create(ctx context.Context, sessionID string, s
 	return nil
 }
 
+func (s *openAITeamMailboxStore) remember(ctx context.Context, ownerID int64, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if s == nil || ownerID <= 0 || email == "" {
+		return errors.New("temporary mailbox address is invalid")
+	}
+	now := s.now()
+	if redisClient := s.redisClient(); redisClient != nil {
+		key := teamMailboxKnownKeyPrefix + strconv.FormatInt(ownerID, 10)
+		pipe := redisClient.TxPipeline()
+		pipe.ZAdd(ctx, key, redis.Z{Score: float64(now.Unix()), Member: email})
+		pipe.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(now.Add(-teamMailboxKnownTTL).Unix(), 10))
+		pipe.Expire(ctx, key, teamMailboxKnownTTL)
+		_, err := pipe.Exec(ctx)
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	known := s.knownByAdmin[ownerID]
+	if known == nil {
+		known = make(map[string]time.Time)
+		s.knownByAdmin[ownerID] = known
+	}
+	known[email] = now
+	for candidate, seenAt := range known {
+		if seenAt.Before(now.Add(-teamMailboxKnownTTL)) {
+			delete(known, candidate)
+		}
+	}
+	return nil
+}
+
+func (s *openAITeamMailboxStore) known(ctx context.Context, ownerID int64) ([]string, error) {
+	if s == nil || ownerID <= 0 {
+		return []string{}, nil
+	}
+	now := s.now()
+	if redisClient := s.redisClient(); redisClient != nil {
+		key := teamMailboxKnownKeyPrefix + strconv.FormatInt(ownerID, 10)
+		if err := redisClient.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(now.Add(-teamMailboxKnownTTL).Unix(), 10)).Err(); err != nil {
+			return nil, err
+		}
+		return redisClient.ZRevRange(ctx, key, 0, teamMailboxKnownLimit-1).Result()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	known := s.knownByAdmin[ownerID]
+	type mailboxSeen struct {
+		email string
+		at    time.Time
+	}
+	items := make([]mailboxSeen, 0, len(known))
+	for email, seenAt := range known {
+		if seenAt.Before(now.Add(-teamMailboxKnownTTL)) {
+			delete(known, email)
+			continue
+		}
+		items = append(items, mailboxSeen{email: email, at: seenAt})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].at.After(items[j].at) })
+	if int64(len(items)) > teamMailboxKnownLimit {
+		items = items[:teamMailboxKnownLimit]
+	}
+	emails := make([]string, 0, len(items))
+	for _, item := range items {
+		emails = append(emails, item.email)
+	}
+	return emails, nil
+}
+
 func (s *openAITeamMailboxStore) active(ctx context.Context, ownerID int64) (string, openAITeamMailboxSession, bool, error) {
 	if s == nil || ownerID <= 0 {
 		return "", openAITeamMailboxSession{}, false, nil
@@ -608,7 +775,7 @@ func (s *openAITeamMailboxStore) findActiveInRedis(ctx context.Context, redisCli
 			if scanned > teamMailboxLegacyScanLimit {
 				break
 			}
-			if strings.HasPrefix(key, teamMailboxActiveKeyPrefix) {
+			if strings.HasPrefix(key, teamMailboxActiveKeyPrefix) || strings.HasPrefix(key, teamMailboxKnownKeyPrefix) || key == teamMailboxSequenceKey {
 				continue
 			}
 			payload, err := redisClient.Get(ctx, key).Bytes()

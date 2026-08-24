@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -42,10 +43,56 @@ func setupTeamMailboxTestHandler(t *testing.T, provider http.HandlerFunc) (*Open
 	})
 	router.GET("/status", handler.TeamChildMailboxStatus)
 	router.POST("/mailboxes", handler.CreateTeamChildMailbox)
+	router.GET("/mailboxes", handler.ListTeamChildMailboxes)
+	router.POST("/mailboxes/select", handler.SelectTeamChildMailbox)
 	router.GET("/mailboxes/active", handler.GetActiveTeamChildMailbox)
 	router.GET("/mailboxes/:session_id/code", handler.PollTeamChildMailboxCode)
 	router.DELETE("/mailboxes/:session_id", handler.DeleteTeamChildMailboxSession)
 	return handler, router
+}
+
+func TestTeamChildMailboxCanListAndReopenKnownAddressWithoutExposingJWT(t *testing.T) {
+	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Name   string `json:"name"`
+			Domain string `json:"domain"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "example.test", payload.Domain)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"address":%q,"jwt":"mailbox-jwt-%s"}`, payload.Name+"@"+payload.Domain, payload.Name)))
+	})
+
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/mailboxes", nil))
+	require.Equal(t, http.StatusOK, createRec.Code)
+	require.NotContains(t, createRec.Body.String(), "mailbox-jwt")
+
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/mailboxes", nil))
+	require.Equal(t, http.StatusOK, listRec.Code)
+	require.Contains(t, listRec.Body.String(), "team1000@example.test")
+	require.NotContains(t, listRec.Body.String(), "mailbox-jwt")
+
+	selectRec := httptest.NewRecorder()
+	selectReq := httptest.NewRequest(http.MethodPost, "/mailboxes/select", strings.NewReader(`{"email":"team1000@example.test"}`))
+	selectReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(selectRec, selectReq)
+	require.Equal(t, http.StatusOK, selectRec.Code)
+	require.Contains(t, selectRec.Body.String(), "team1000@example.test")
+	require.NotContains(t, selectRec.Body.String(), "mailbox-jwt")
+}
+
+func TestSelectTeamChildMailboxRejectsForeignAndNonXIASSAddresses(t *testing.T) {
+	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("provider must not be called for an invalid selection")
+	})
+	for _, email := range []string{"someone@example.test", "team1000@foreign.test", "team0999@example.test", "team1x@example.test"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/mailboxes/select", strings.NewReader(fmt.Sprintf(`{"email":%q}`, email)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, email)
+	}
 }
 
 func TestTeamChildMailboxStatusIsDisabledWithoutProvider(t *testing.T) {

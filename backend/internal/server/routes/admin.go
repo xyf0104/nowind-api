@@ -46,7 +46,7 @@ func RegisterAdminRoutes(
 		registerAnnouncementRoutes(admin, h)
 
 		// OpenAI OAuth
-		registerOpenAIOAuthRoutes(admin, h)
+		registerOpenAIOAuthRoutes(admin, h, stepUpAuth)
 
 		// Gemini OAuth
 		registerGeminiOAuthRoutes(admin, h)
@@ -432,7 +432,7 @@ func registerAnnouncementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
 	openai := admin.Group("/openai")
 	{
 		openai.POST("/generate-auth-url", h.Admin.OpenAIOAuth.GenerateAuthURL)
@@ -444,7 +444,6 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.GET("/team-child/mailbox-status", h.Admin.OpenAIOAuth.TeamChildMailboxStatus)
 		openai.POST("/team-child/mailbox-config", h.Admin.OpenAIOAuth.ImportTeamChildMailboxConfig)
 		openai.POST("/team-child/browser-sessions", h.Admin.OpenAIOAuth.CreateTeamChildBrowserSession)
-		openai.POST("/team-child/browser/navigate", h.Admin.OpenAIOAuth.NavigateTeamChildBrowser)
 		openai.POST("/team-child/browser-control/heartbeat", h.Admin.OpenAIOAuth.HeartbeatTeamChildBrowserControl)
 		openai.DELETE("/team-child/browser-control", h.Admin.OpenAIOAuth.ReleaseTeamChildBrowserControl)
 		openai.GET("/team-child/members", h.Admin.OpenAIOAuth.ListTeamChildMembers)
@@ -457,20 +456,22 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/team-child/workflows", h.Admin.OpenAIOAuth.StartTeamChildWorkflow)
 		openai.GET("/team-child/workflows/active", h.Admin.OpenAIOAuth.GetActiveTeamChildWorkflow)
 		openai.GET("/team-child/workflows/:workflow_id", h.Admin.OpenAIOAuth.GetTeamChildWorkflow)
+		openai.GET("/team-child/workflows/:workflow_id/password", gin.HandlerFunc(stepUpAuth), h.Admin.OpenAIOAuth.RevealTeamChildWorkflowPassword)
 		openai.POST("/team-child/workflows/:workflow_id/continue", h.Admin.OpenAIOAuth.ContinueTeamChildWorkflow)
-		openai.POST("/team-child/workflows/:workflow_id/run-step", h.Admin.OpenAIOAuth.RunTeamChildWorkflowStep)
 		openai.POST("/team-child/workflows/:workflow_id/email-code", h.Admin.OpenAIOAuth.SubmitTeamChildWorkflowEmailCode)
 		openai.POST("/team-child/workflows/:workflow_id/phone", h.Admin.OpenAIOAuth.SubmitTeamChildWorkflowPhone)
 		openai.POST("/team-child/workflows/:workflow_id/sms-code", h.Admin.OpenAIOAuth.SubmitTeamChildWorkflowSMSCode)
-		openai.POST("/team-child/workflows/:workflow_id/code", h.Admin.OpenAIOAuth.RejectTeamChildWorkflowExternalValue)
 		openai.POST("/team-child/workflows/:workflow_id/complete", h.Admin.OpenAIOAuth.CompleteTeamChildWorkflow)
 		openai.POST("/team-child/workflows/:workflow_id/callback", h.Admin.OpenAIOAuth.SubmitTeamChildWorkflowCallback)
 		openai.POST("/team-child/workflows/:workflow_id/restart-oauth", h.Admin.OpenAIOAuth.RestartTeamChildWorkflowOAuth)
 		openai.DELETE("/team-child/workflows/:workflow_id", h.Admin.OpenAIOAuth.CancelTeamChildWorkflow)
 		openai.GET("/team-child/mailboxes/active", h.Admin.OpenAIOAuth.GetActiveTeamChildMailbox)
+		openai.GET("/team-child/mailboxes", h.Admin.OpenAIOAuth.ListTeamChildMailboxes)
+		openai.POST("/team-child/mailboxes/select", h.Admin.OpenAIOAuth.SelectTeamChildMailbox)
 		openai.POST("/team-child/mailboxes", h.Admin.OpenAIOAuth.CreateTeamChildMailbox)
 		openai.GET("/team-child/mailboxes/:session_id/code", h.Admin.OpenAIOAuth.PollTeamChildMailboxCode)
 		openai.DELETE("/team-child/mailboxes/:session_id", h.Admin.OpenAIOAuth.DeleteTeamChildMailboxSession)
+		openai.GET("/team-child/accounts/:account_id/password", gin.HandlerFunc(stepUpAuth), h.Admin.OpenAIOAuth.RevealTeamChildAccountPassword)
 		openai.GET("/accounts/:id/quota", h.Admin.OpenAIOAuth.QueryQuota)
 		openai.POST("/accounts/:id/quota/refresh", h.Admin.OpenAIOAuth.RefreshQuota)
 		openai.POST("/accounts/:id/reset-quota", h.Admin.OpenAIOAuth.ResetQuota)

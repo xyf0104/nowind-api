@@ -1,5 +1,11 @@
 package service
 
+const (
+	OpenAITeamChildPasswordCredentialKey = "xiass_team_child_password_encrypted"
+	OpenAITeamChildExtraKey              = "xiass_team_child"
+	OpenAITeamChildEmailExtraKey         = "xiass_team_child_email"
+)
+
 // SensitiveCredentialKeys 列出 Account.Credentials JSON map 中绝不允许返回到前端的子键。
 // dto 层做响应脱敏、service 层做更新合并都引用此清单——新增凭证类型时务必同步。
 var SensitiveCredentialKeys = []string{
@@ -10,6 +16,10 @@ var SensitiveCredentialKeys = []string{
 	// 云服务凭据
 	"aws_secret_access_key", "aws_session_token",
 	"service_account_json", "service_account", "private_key",
+	// XIASS Team-child login credential. This stores ciphertext, but revealing
+	// it would still create an offline password oracle and is never needed by
+	// ordinary account DTOs, edits, exports, or scheduler snapshots.
+	OpenAITeamChildPasswordCredentialKey,
 }
 
 var sensitiveCredentialKeySet = func() map[string]struct{} {

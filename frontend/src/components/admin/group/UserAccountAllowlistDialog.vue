@@ -359,6 +359,13 @@ function accountConcurrencyClass(account: UserGroupAccountAllowlistCandidate): s
 function handleSave() {
   if (saveDisabled.value) return
   const selected = new Set(selectedAccountIds.value)
+  // Keeping every currently available account selected is the default
+  // scheduler behavior. Do not persist a snapshot that would exclude future
+  // accounts added to this group; only an actual subset is an allowlist.
+  if (selectedAvailableCount.value === availableAccountIds.value.length && selectedUnavailableCount.value === 0) {
+    emit('restore')
+    return
+  }
   emit('save', props.candidates.map((account) => account.id).filter((id) => selected.has(id)))
 }
 

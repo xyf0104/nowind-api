@@ -1,87 +1,94 @@
 <template>
   <div
     data-testid="team-oauth-workspace"
-    class="team-oauth-workspace min-w-0 space-y-3"
+    class="team-oauth-workspace mx-auto w-full min-w-0 max-w-[1120px] space-y-4"
     aria-live="polite"
   >
-    <section data-testid="team-oauth-progress-card" class="team-oauth-progress-card sticky top-3 z-20 overflow-hidden rounded-lg border border-primary-200 bg-white/95 shadow-lg backdrop-blur dark:border-primary-900/70 dark:bg-dark-900/95">
-      <header class="flex min-w-0 flex-col gap-3 border-b border-primary-100 bg-primary-50/60 px-4 py-3 dark:border-primary-900/60 dark:bg-primary-950/20 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex min-w-0 items-start gap-3">
-        <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-100 text-primary-700 dark:bg-primary-950/60 dark:text-primary-300">
-          <Icon name="key" size="md" :stroke-width="2" />
-        </span>
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <h2 class="whitespace-nowrap text-base font-semibold text-gray-900 dark:text-gray-100">成员授权工作区</h2>
-            <span class="whitespace-nowrap rounded-md border border-primary-200 bg-white px-2 py-0.5 text-[11px] font-medium text-primary-700 dark:border-primary-800 dark:bg-dark-800 dark:text-primary-300">XIASS PKCE</span>
-          </div>
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">当前授权会话：{{ mailboxEmail || '等待临时邮箱' }}</p>
-        </div>
-      </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium" :class="statusClass">
-          <span class="h-1.5 w-1.5 rounded-full" :class="statusDotClass"></span>
-          {{ statusLabel }}
-        </span>
-      </div>
-      </header>
-
-      <div class="bg-gray-50/80 px-4 py-3 dark:bg-dark-950/35">
-      <div class="flex items-center justify-between gap-3 text-xs">
-        <span class="font-medium text-gray-600 dark:text-gray-300">自动化进度</span>
-        <span class="font-mono font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ completedCount }} / {{ workflowNodes.length }}</span>
-      </div>
-      <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700">
-        <div class="h-full rounded-full bg-primary-500 transition-[width] duration-300" :style="{ width: progressPercent + '%' }"></div>
-      </div>
-
-      <div class="mt-3 grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(180px,0.55fr)]">
-        <div
-          data-testid="team-oauth-current-node"
-          class="team-oauth-current-node min-w-0 rounded-md border px-3 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-none"
-          :class="currentNodeClass"
-        >
-          <div class="flex min-w-0 items-start gap-3">
-            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold" :class="currentNodeIconClass">
-              <Icon v-if="currentNode?.status === 'completed'" name="check" size="sm" :stroke-width="2.5" />
-              <Icon v-else-if="currentNode?.status === 'running'" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
-              <Icon v-else-if="currentNode?.status === 'failed'" name="exclamationTriangle" size="sm" :stroke-width="2" />
-              <span v-else>{{ currentNode?.number || '-' }}</span>
-            </span>
-            <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                <span>{{ currentNode?.status === 'failed' ? '需要处理' : currentNode?.status === 'waiting' ? '等待当前节点' : '当前节点' }}</span>
-                <span v-if="currentNode">第 {{ currentNode.number }} 步</span>
+    <div class="team-oauth-layout">
+      <div class="team-oauth-main-column min-w-0">
+    <section data-testid="team-oauth-progress-card" class="team-oauth-deck relative z-20 overflow-visible">
+      <div class="team-oauth-step-stack" data-testid="team-oauth-step-stack">
+        <TransitionGroup name="team-step-card" tag="div" class="team-oauth-step-stack-inner">
+          <article
+            v-for="(node, stackIndex) in visibleStackNodes"
+            :key="node.key"
+            :data-testid="stackIndex === 0 ? 'team-oauth-current-node' : stackIndex === 1 ? 'team-oauth-next-node' : `team-oauth-step-${node.number}`"
+            class="team-oauth-step-card min-w-0 overflow-hidden rounded-lg border shadow-[0_12px_28px_rgba(15,23,42,0.12)] transition-transform duration-200 ease-out dark:shadow-none"
+            :class="[cardClass(node, stackIndex), stackIndex === 0 ? 'team-oauth-step-card-active' : '']"
+            :style="{ '--stack-index': stackIndex }"
+          >
+            <div v-if="stackIndex === 0" class="flex h-full min-w-0 flex-col items-center justify-center gap-2 px-4 py-5 pb-7 text-center sm:px-5">
+              <div class="flex min-w-0 max-w-[38rem] flex-col items-center">
+                <div class="flex min-w-0 flex-wrap items-center justify-center gap-3 text-xs font-medium text-cyan-100">
+                  <span>{{ cardStatusLabel(node, stackIndex) }}</span>
+                  <span v-if="mailboxEmail" class="max-w-[16rem] truncate">{{ mailboxEmail }}</span>
+                </div>
+                <h3 class="mt-1 max-w-full truncate text-lg font-semibold text-white">{{ displayNodeLabel(node) }}</h3>
+                <p class="mt-1 line-clamp-2 text-sm leading-6 text-cyan-50/90">{{ node.message || cardMessage(node, stackIndex) }}</p>
               </div>
-              <h3 class="mt-0.5 truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{{ currentNodeLabel }}</h3>
-              <p class="mt-1 line-clamp-2 text-xs leading-5 text-gray-600 dark:text-gray-300">{{ currentNode?.message || currentNodeFallbackMessage }}</p>
             </div>
-          </div>
-        </div>
-
-        <div v-if="nextNode" data-testid="team-oauth-next-node" class="min-w-0 rounded-md border border-gray-200 bg-white px-3 py-3 dark:border-dark-600 dark:bg-dark-800">
-          <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">下一项</div>
-          <div class="mt-1 flex min-w-0 items-center gap-2">
-            <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-gray-300 text-[11px] font-semibold text-gray-500 dark:border-dark-500 dark:text-gray-400">{{ nextNode.number }}</span>
-            <span class="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{{ displayNodeLabel(nextNode) }}</span>
-          </div>
-        </div>
+            <div class="absolute inset-x-0 bottom-0 h-2 bg-gray-100 dark:bg-dark-700" aria-hidden="true">
+              <div class="h-full rounded-r-full transition-[width] duration-500" :class="node.status === 'failed' ? 'bg-red-500' : 'bg-emerald-500'" :style="{ width: `${cardProgress(node, stackIndex)}%` }"></div>
+            </div>
+          </article>
+        </TransitionGroup>
       </div>
 
-      <div v-if="recentCompleted.length" class="mt-2 flex min-w-0 items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
-        <Icon name="check" size="xs" class="shrink-0 text-green-600 dark:text-green-400" :stroke-width="2.5" />
-        <span class="shrink-0">已完成</span>
-        <span class="min-w-0 truncate">{{ recentCompleted.map(displayNodeLabel).join('、') }}</span>
-      </div>
+      <div class="team-oauth-progress-summary mt-3 flex min-h-12 items-center justify-center gap-3 px-3 text-center text-xs font-medium leading-5 text-gray-500 dark:text-gray-400">
+        <div class="flex shrink-0 items-center gap-1" aria-label="工作流完成进度">
+          <span
+            v-for="index in workflowNodes.length"
+            :key="`progress-dot-${index}`"
+            class="h-2.5 w-2.5 rounded-[3px] border transition-colors duration-300"
+            :class="index <= completedCount ? 'border-emerald-400 bg-emerald-500' : 'border-gray-300 bg-gray-200 dark:border-dark-500 dark:bg-dark-700'"
+            aria-hidden="true"
+          ></span>
+        </div>
+        <div class="flex items-center gap-2 whitespace-nowrap">
+          <span>已完成{{ completedCount }}项</span>
+          <span class="text-gray-400 dark:text-gray-500">{{ completedCount }}/{{ workflowNodes.length }}（总步数）</span>
+        </div>
       </div>
     </section>
 
-    <section data-testid="team-oauth-operation-card" class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-900">
-      <div class="grid min-w-0 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(240px,280px)]">
-      <div class="min-w-0">
+    <section data-testid="team-oauth-operation-card" class="team-oauth-operation-card overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-900">
+      <header class="flex min-w-0 flex-col gap-3 border-b border-gray-200 px-4 py-3.5 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+        <div class="min-w-0">
+          <h3 class="whitespace-nowrap text-sm font-semibold text-gray-900 dark:text-gray-100">实际操作面板</h3>
+          <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">服务器自动执行当前步骤；页面结构变化时可手动接入处理后继续。</p>
+        </div>
+        <div class="team-oauth-operation-actions">
+          <button v-if="showOneClick" type="button" data-testid="team-one-click-authorize" class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap" :disabled="oneClickDisabled" @click="emit('one-click')">
+            <Icon name="play" size="sm" :stroke-width="2" />
+            <span>{{ oneClickLabel }}</span>
+          </button>
+          <button type="button" data-testid="team-manual-browser" class="btn btn-secondary flex items-center justify-center gap-2 whitespace-nowrap" @click="emit('open-browser')">
+            <Icon name="server" size="sm" :stroke-width="2" />
+            <span>手动接入</span>
+          </button>
+        </div>
+      </header>
+      <TeamChildBrowserWorkspace
+        v-if="browserVisible"
+        class="team-oauth-inline-browser"
+        :configured="browserConfigured"
+        :embed-url="browserEmbedUrl"
+        :loading="browserLoading"
+        :error="browserError"
+        :mailbox-email="mailboxEmail"
+        :members-ready="true"
+        :control-conflict="browserControlConflict"
+        @reload="emit('reload-browser')"
+        @copy-mailbox="emit('copy-mailbox', mailboxEmail)"
+        @open-modular="emit('open-modular')"
+        @force-take-over="emit('force-take-over')"
+      />
+      <template v-else>
+      <div class="team-oauth-operation-body min-w-0 p-4">
+      <div class="team-oauth-operation-content min-w-0">
         <div class="mt-4 flex items-start gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs leading-5 text-gray-600 dark:border-dark-600 dark:bg-dark-900/40 dark:text-gray-300">
           <Icon name="shield" size="sm" class="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" :stroke-width="2" />
-          <p>成员移除、邀请和 Pending invites 会先在当前服务器页面确认；后续 OAuth、邮箱验证码、手机号、短信和回调继续使用同一工作流。密码、验证码和浏览器凭据不会在此处展示或写入工作流记录。</p>
+          <p>成员移除、邀请和 Pending invites 会先在当前服务器页面确认；后续 OAuth、邮箱验证码、手机号、短信和回调继续使用同一工作流。验证码和浏览器凭据不会写入工作流记录；生成的登录密码会加密保存，并仅在管理员二次验证后显示。</p>
         </div>
 
         <div v-if="authUrl" class="mt-3 rounded-md border border-primary-200 bg-primary-50/40 p-3 dark:border-primary-900/60 dark:bg-primary-950/15">
@@ -100,18 +107,7 @@
           <span>{{ workflow.error }}</span>
         </div>
 
-        <div v-if="(authUrl && !workflow.nodes?.length) || showReauthorize || workflow.status === 'failed'" class="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            v-if="authUrl && !workflow.nodes?.length"
-            type="button"
-            class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
-            title="在 XIASS 服务器内嵌浏览器的当前标签页打开官方 OAuth 授权页"
-            data-testid="team-open-auth"
-            @click="emit('open-auth-in-browser')"
-          >
-            <Icon name="server" size="sm" :stroke-width="2" />
-            <span>在内嵌浏览器打开授权</span>
-          </button>
+        <div v-if="showReauthorize || workflow.status === 'failed'" class="mt-3 flex flex-wrap items-center gap-2">
           <button
             v-if="showReauthorize"
             type="button"
@@ -123,10 +119,6 @@
             <Icon name="key" size="sm" :stroke-width="2" />
             <span>重新授权</span>
           </button>
-          <button v-if="workflow.status === 'failed'" type="button" data-testid="team-open-browser-after-failure" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap !px-2.5 !py-1.5 text-xs" @click="emit('open-browser')">
-            <Icon name="server" size="xs" :stroke-width="2" />
-            <span>打开内嵌浏览器</span>
-          </button>
           <button v-if="workflow.status === 'failed' && !replacementRequired" type="button" data-testid="team-continue-after-failure" class="btn btn-primary flex items-center gap-2 whitespace-nowrap !px-2.5 !py-1.5 text-xs" @click="emit('continue-workflow')">
             <Icon name="refresh" size="xs" :stroke-width="2" />
             <span>继续自动化</span>
@@ -134,21 +126,10 @@
         </div>
 
         <div v-if="receiverActive" class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-          已进入手机号验证阶段。请在右侧接码模块领取并选择短信；如果官方提示号码不可用，右侧会停在换号操作，确认后只重新提交新号码，不重复点击旧号码。
+          已进入手机号验证阶段。右侧会自动领取号码；号码被拒或等待两分钟仍未收到验证码时，自动更换并覆盖旧号码继续，不会重复提交原号码。
         </div>
       </div>
 
-      <div class="min-w-0 border-t border-gray-200 pt-4 dark:border-dark-700 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
-        <PixlabSMSReceiver
-          :active="receiverActive"
-          :replacement-required="replacementRequired"
-          :submission-key="workflow.current_node || ''"
-          :auto-submit="true"
-          @phone-ready="emit('phone-ready', $event)"
-          @code-received="emit('sms-code-received', $event)"
-          @session-cancelled="emit('session-cancelled')"
-        />
-      </div>
       </div>
 
       <footer v-if="callbackURL" class="flex flex-col gap-2 border-t border-green-200 bg-green-50/70 px-4 py-3 dark:border-green-900/60 dark:bg-green-950/20 sm:flex-row sm:items-center sm:justify-between">
@@ -161,13 +142,150 @@
           <span>复制回调地址</span>
         </button>
       </footer>
+      </template>
     </section>
+      </div>
+
+      <aside data-testid="team-oauth-side-actions" class="team-oauth-side-column" aria-label="授权与接码操作">
+        <section class="team-oauth-side-module" aria-labelledby="team-mailbox-tools-title">
+          <div class="team-oauth-side-module-heading">
+            <span class="team-oauth-side-module-icon" aria-hidden="true">
+              <Icon name="mail" size="sm" :stroke-width="2" />
+            </span>
+            <h3 id="team-mailbox-tools-title">邮箱与验证码</h3>
+          </div>
+
+          <label class="team-oauth-side-label" for="team-history-mailbox">历史邮箱</label>
+          <Select
+            id="team-history-mailbox"
+            data-testid="team-history-mailbox-select"
+            class="team-oauth-mailbox-select"
+            :model-value="selectedMailboxValue"
+            :options="historyMailboxOptions"
+            :disabled="mailboxSelecting || historyMailboxes.length === 0"
+            placeholder="请选择历史邮箱"
+            searchable
+            search-placeholder="搜索邮箱..."
+            empty-text="暂无历史邮箱"
+            aria-label="历史邮箱"
+            @update:model-value="emit('select-mailbox', String($event ?? ''))"
+          />
+
+          <button
+            type="button"
+            class="team-oauth-mailbox-value w-full text-left"
+            :disabled="!mailboxActionEmail"
+            :title="mailboxActionEmail ? '点击邮箱框复制' : '尚未创建邮箱'"
+            @click="mailboxActionEmail && emit('copy-mailbox', mailboxActionEmail)"
+          >
+            <span class="min-w-0 flex-1">
+              <span class="team-oauth-side-label">当前邮箱</span>
+              <code class="mt-1 block truncate">{{ mailboxActionEmail || '尚未创建' }}</code>
+            </span>
+            <Icon name="copy" size="xs" class="shrink-0 opacity-60" :stroke-width="2" aria-hidden="true" />
+          </button>
+
+          <div
+            data-testid="team-sidebar-mailbox-code"
+            class="team-oauth-mailbox-value"
+            :class="mailboxCode ? 'cursor-copy' : ''"
+            :title="mailboxCode ? '点击验证码框复制' : undefined"
+            role="button"
+            :tabindex="mailboxCode ? 0 : -1"
+            @click="mailboxCode && emit('copy-mailbox-code', mailboxCode)"
+            @keydown.enter.prevent="mailboxCode && emit('copy-mailbox-code', mailboxCode)"
+            @keydown.space.prevent="mailboxCode && emit('copy-mailbox-code', mailboxCode)"
+          >
+            <div class="min-w-0 flex-1">
+              <span class="team-oauth-side-label">邮箱验证码</span>
+              <code data-testid="team-sidebar-mailbox-code-value" class="mt-1 block truncate">{{ mailboxCode || (mailboxCodeLoading ? '等待验证码' : '等待邮件') }}</code>
+            </div>
+            <button
+              type="button"
+              class="team-oauth-icon-button"
+              title="立即检查邮箱"
+              aria-label="立即检查邮箱"
+              :disabled="!mailboxEmail || mailboxCodeLoading"
+              @click.stop="emit('poll-mailbox')"
+            >
+              <Icon name="refresh" size="xs" :class="mailboxCodeLoading ? 'animate-spin' : ''" :stroke-width="2" />
+            </button>
+          </div>
+
+          <div class="team-oauth-mailbox-actions">
+            <button
+              type="button"
+              data-testid="team-create-mailbox"
+              class="btn btn-secondary flex min-w-0 items-center justify-center gap-1.5 whitespace-nowrap !px-2 !py-1.5 text-xs"
+              :disabled="createMailboxDisabled || !mailboxConfigured"
+              title="创建新的 Team 临时邮箱并开始轮询"
+              @click="emit('create-mailbox')"
+            >
+              <Icon name="mail" size="xs" :stroke-width="2" />
+              <span>新建邮箱</span>
+            </button>
+            <button
+              type="button"
+              data-testid="team-open-mailbox"
+              class="btn btn-secondary flex min-w-0 items-center justify-center gap-1.5 whitespace-nowrap !px-2 !py-1.5 text-xs"
+              :disabled="mailboxActionsDisabled || mailboxSelecting || !mailboxActionEmail"
+              title="打开选中的历史邮箱并重新轮询验证码"
+              @click="mailboxActionEmail && emit('open-mailbox', mailboxActionEmail)"
+            >
+              <Icon name="refresh" size="xs" :class="mailboxSelecting ? 'animate-spin' : ''" :stroke-width="2" />
+              <span>{{ mailboxSelecting ? '打开中' : '接收验证码' }}</span>
+            </button>
+          </div>
+
+          <button type="button" data-testid="team-open-history" class="team-oauth-history-link" @click="emit('open-history')">
+            <span>历史账号、状态与额度</span>
+            <Icon name="arrowRight" size="xs" :stroke-width="2" />
+          </button>
+        </section>
+
+        <template v-if="workflow.password_available">
+          <section data-testid="team-child-password-panel" class="team-oauth-side-module" aria-labelledby="team-password-tools-title">
+            <div class="team-oauth-side-module-heading">
+              <span class="team-oauth-side-module-icon" aria-hidden="true">
+                <Icon name="key" size="sm" :stroke-width="2" />
+              </span>
+              <h3 id="team-password-tools-title">本次登录密码</h3>
+            </div>
+            <div class="team-oauth-password-row">
+              <code data-testid="team-child-password-value" class="min-w-0 flex-1 truncate font-mono text-xs text-gray-900 dark:text-gray-100">{{ revealedPassword || '•••••••••••••' }}</code>
+              <button v-if="revealedPassword" type="button" class="team-oauth-icon-button" title="复制登录密码" aria-label="复制登录密码" @click="emit('copy-password')">
+                <Icon name="copy" size="xs" :stroke-width="2" />
+              </button>
+              <button type="button" class="team-oauth-icon-button" :title="revealedPassword ? '隐藏登录密码' : '查看登录密码'" :aria-label="revealedPassword ? '隐藏登录密码' : '查看登录密码'" :disabled="passwordLoading" @click="revealedPassword ? emit('clear-password') : emit('reveal-password')">
+                <Icon :name="passwordLoading ? 'refresh' : revealedPassword ? 'eyeOff' : 'eye'" size="xs" :class="passwordLoading ? 'animate-spin' : ''" :stroke-width="2" />
+              </button>
+            </div>
+          </section>
+        </template>
+
+        <div class="team-oauth-sms-module">
+          <PixlabSMSReceiver
+            :active="receiverActive"
+            :replacement-required="replacementRequired"
+            :submission-key="workflow.current_node || ''"
+            :auto-submit="true"
+            :automation-mode="true"
+            :automation-replace-after-ms="120000"
+            @phone-ready="emit('phone-ready', $event)"
+            @code-received="emit('sms-code-received', $event)"
+            @session-cancelled="emit('session-cancelled')"
+          />
+        </div>
+      </aside>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Icon } from '@/components/icons'
+import Select, { type SelectOption } from '@/components/common/Select.vue'
+import TeamChildBrowserWorkspace from '@/components/admin/account/TeamChildBrowserWorkspace.vue'
 import PixlabSMSReceiver from '@/components/account/PixlabSMSReceiver.vue'
 import type { TeamChildWorkflow, TeamChildWorkflowNode } from '@/api/admin/teamChild'
 
@@ -177,23 +295,74 @@ const props = withDefaults(defineProps<{
   callbackURL?: string
   authUrl?: string
   showReauthorize?: boolean
+  revealedPassword?: string
+  passwordLoading?: boolean
+  showOneClick?: boolean
+  oneClickDisabled?: boolean
+  oneClickLabel?: string
+  historyMailboxes?: string[]
+  selectedMailboxEmail?: string
+  mailboxCode?: string
+  mailboxCodeLoading?: boolean
+  mailboxSelecting?: boolean
+  mailboxConfigured?: boolean
+  mailboxActionsDisabled?: boolean
+  createMailboxDisabled?: boolean
+  browserVisible?: boolean
+  browserConfigured?: boolean
+  browserEmbedUrl?: string
+  browserLoading?: boolean
+  browserError?: string
+  browserControlConflict?: boolean
 }>(), {
   mailboxEmail: '',
   callbackURL: '',
   authUrl: '',
-  showReauthorize: false
+  showReauthorize: false,
+  revealedPassword: '',
+  passwordLoading: false,
+  showOneClick: false,
+  oneClickDisabled: false,
+  oneClickLabel: '一键授权',
+  historyMailboxes: () => [],
+  selectedMailboxEmail: '',
+  mailboxCode: '',
+  mailboxCodeLoading: false,
+  mailboxSelecting: false,
+  mailboxConfigured: false,
+  mailboxActionsDisabled: false,
+  createMailboxDisabled: false,
+  browserVisible: false,
+  browserConfigured: false,
+  browserEmbedUrl: '',
+  browserLoading: false,
+  browserError: '',
+  browserControlConflict: false
 })
 
 const emit = defineEmits<{
   'session-cancelled': []
   reauthorize: []
-  'open-auth-in-browser': []
+  'one-click': []
   'copy-auth': []
   'copy-callback': []
   'open-browser': []
   'continue-workflow': []
+  'reveal-password': []
+  'clear-password': []
+  'copy-password': []
   'phone-ready': [phone: string]
   'sms-code-received': [code: string]
+  'select-mailbox': [email: string]
+  'create-mailbox': []
+  'open-mailbox': [email: string]
+  'poll-mailbox': []
+  'copy-mailbox': [email: string]
+  'copy-mailbox-code': [code: string]
+  'open-history': [],
+  'reload-browser': [],
+  'open-modular': [],
+  'force-take-over': []
 }>()
 
 const receiverNodes = new Set(['sms_confirm', 'phone_submit', 'sms_poll', 'sms_code'])
@@ -202,52 +371,11 @@ const receiverActive = computed(() => !['callback_ready', 'completed', 'cancelle
 const replacementRequired = computed(() => props.workflow.status === 'failed'
   && props.workflow.current_node === 'phone_submit'
   && /未进入短信验证码页面|手机号.*(?:不可用|次数过多)|phone.*(?:invalid|unavailable|too many)|verification.*page/i.test(props.workflow.error || ''))
+const selectedMailboxValue = computed(() => props.selectedMailboxEmail || props.mailboxEmail || props.historyMailboxes[0] || '')
+const mailboxActionEmail = computed(() => selectedMailboxValue.value || props.mailboxEmail)
+const historyMailboxOptions = computed<SelectOption[]>(() => props.historyMailboxes.map((email) => ({ value: email, label: email })))
 
-const statusLabel = computed(() => {
-  if (props.workflow.status === 'callback_ready') return '回调已就绪'
-  if (props.workflow.status === 'completed') return '已导入 XIASS'
-  if (props.workflow.status === 'failed') return '需要处理'
-  if (props.workflow.status === 'manual_required') return '等待当前页面'
-  return '执行中'
-})
-
-const statusClass = computed(() => {
-  if (['callback_ready', 'completed'].includes(props.workflow.status)) return 'bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-300'
-  if (props.workflow.status === 'failed') return 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-300'
-  if (props.workflow.status === 'manual_required') return 'bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-  return 'bg-primary-100 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300'
-})
-
-const statusDotClass = computed(() => {
-  if (['callback_ready', 'completed'].includes(props.workflow.status)) return 'bg-green-500'
-  if (props.workflow.status === 'failed') return 'bg-red-500'
-  if (props.workflow.status === 'manual_required') return 'bg-amber-500'
-  return 'bg-primary-500'
-})
-
-const legacyNodeLabels: Partial<Record<TeamChildWorkflowNode['key'], string>> = {
-  sms_confirm: '确认领取手机号',
-  phone_submit: '填入号码并选择 Text message',
-  sms_poll: '轮询短信验证码',
-  sms_code: '自动填入短信验证码',
-  callback: '捕获 OAuth 回调',
-  import: '按勾选配置导入 XIASS'
-}
-const workflowNodes = computed<TeamChildWorkflowNode[]>(() => {
-  if (props.workflow.nodes?.length) return props.workflow.nodes
-  const nodes = props.workflow.steps.map((step) => ({ ...step, key: step.key as TeamChildWorkflowNode['key'] }))
-  const currentKey = props.workflow.current_node
-  if (currentKey && !nodes.some((node) => node.key === currentKey)) {
-    nodes.push({
-      key: currentKey,
-      number: nodes.length + 1,
-      label: legacyNodeLabels[currentKey] || currentKey,
-      status: props.workflow.status === 'failed' ? 'failed' : props.workflow.status === 'manual_required' ? 'waiting' : 'running',
-      ...(props.workflow.error ? { message: props.workflow.error } : {})
-    })
-  }
-  return nodes
-})
+const workflowNodes = computed<TeamChildWorkflowNode[]>(() => props.workflow.nodes)
 const currentNode = computed(() => {
   const reported = props.workflow.current_node
     ? workflowNodes.value.find((node) => node.key === props.workflow.current_node)
@@ -261,46 +389,522 @@ const currentNode = computed(() => {
 })
 const currentNodeIndex = computed(() => Math.max(0, workflowNodes.value.findIndex((node) => node.key === currentNode.value?.key)))
 const completedCount = computed(() => workflowNodes.value.filter((node) => node.status === 'completed').length)
-const progressPercent = computed(() => workflowNodes.value.length ? Math.round((completedCount.value / workflowNodes.value.length) * 100) : 0)
-const recentCompleted = computed(() => workflowNodes.value.filter((node) => node.status === 'completed').slice(-3))
-const nextNode = computed(() => workflowNodes.value.slice(currentNodeIndex.value + 1).find((node) => node.status !== 'completed'))
-const currentNodeLabel = computed(() => currentNode.value ? displayNodeLabel(currentNode.value) : '等待工作流开始')
-const currentNodeFallbackMessage = computed(() => {
-  if (!currentNode.value) return '等待工作流状态同步。'
-  if (currentNode.value.key === 'sms_confirm') return '请在右侧接码模块确认领取手机号。'
-  if (currentNode.value.key === 'sms_poll') return '正在等待 XIASS SMS 服务返回验证码。'
-  if (currentNode.value.key === 'import') return '回调已就绪，等待按已勾选配置导入。'
+const visibleStackNodes = computed(() => workflowNodes.value.slice(currentNodeIndex.value, currentNodeIndex.value + 3))
+
+function cardStatusLabel(node: TeamChildWorkflowNode, stackIndex: number): string {
+  if (node.status === 'failed') return '需要处理'
+  if (node.status === 'completed') return '已完成'
+  if (stackIndex === 0) return node.status === 'waiting' ? '等待当前节点' : '当前节点'
+  return '下一项'
+}
+
+function cardMessage(node: TeamChildWorkflowNode, stackIndex: number): string {
+  if (stackIndex > 0) return '完成上一步后自动进入。'
+  if (node.key === 'sms_confirm') return '正在通过 XIASS SMS 服务自动领取手机号。'
+  if (node.key === 'sms_poll') return '正在等待 XIASS SMS 服务返回验证码，最长等待 2 分钟。'
+  if (node.key === 'import') return '回调已就绪，等待按已勾选配置导入。'
   return '正在等待服务器自动化状态。'
-})
-const currentNodeClass = computed(() => {
-  if (currentNode.value?.status === 'failed') return 'border-red-300 bg-red-50/80 dark:border-red-900/70 dark:bg-red-950/25'
-  if (currentNode.value?.status === 'completed') return 'border-green-300 bg-green-50/80 dark:border-green-900/70 dark:bg-green-950/25'
-  return 'border-primary-300 bg-primary-50/80 dark:border-primary-900/70 dark:bg-primary-950/25'
-})
-const currentNodeIconClass = computed(() => {
-  if (currentNode.value?.status === 'failed') return 'border-red-400 bg-red-100 text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300'
-  if (currentNode.value?.status === 'completed') return 'border-green-500 bg-green-500 text-white'
-  return 'border-primary-400 bg-primary-100 text-primary-700 dark:border-primary-800 dark:bg-primary-950/60 dark:text-primary-300'
-})
+}
+
+function cardProgress(node: TeamChildWorkflowNode, stackIndex: number): number {
+  if (node.status === 'completed') return 100
+  if (node.status === 'failed') return 64
+  if (stackIndex === 0) return 48
+  return 0
+}
+
+function cardClass(node: TeamChildWorkflowNode, stackIndex: number): string {
+  if (node.status === 'failed') return 'team-oauth-card-error border-red-300 dark:border-red-900/70'
+  if (node.status === 'completed') return 'team-oauth-card-complete border-emerald-200 dark:border-emerald-900/70'
+  if (stackIndex === 0) return 'team-oauth-card-current border-primary-300 dark:border-primary-900/70'
+  return 'team-oauth-card-pending border-gray-200 dark:border-dark-600'
+}
 
 function displayNodeLabel(node: { key: string; label: string }) {
   if (node.key === 'members') return '读取并确认成员席位'
   if (node.key === 'remove') return '移除普通成员'
   if (node.key === 'invite') return '邀请并确认 Pending invites'
   if (node.key === 'invite_confirm') return '确认 Pending invites'
+  if (node.key === 'sms_confirm') return '自动领取手机号'
   return node.label
 }
 
 </script>
 
 <style scoped>
-.team-oauth-stage {
-  min-height: 4.5rem;
+.team-oauth-workspace {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1120px;
+}
+
+.team-oauth-layout {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) clamp(16rem, 23vw, 18rem);
+  gap: 1.25rem;
+  align-items: stretch;
+}
+
+.team-oauth-layout > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.team-oauth-main-column {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.team-oauth-side-column {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.1rem;
+  border: 1px solid rgb(229 231 235);
+  border-radius: 18px;
+  background: rgb(255 255 255);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+}
+
+:global(.dark .team-oauth-side-column) {
+  border-color: rgb(55 65 81);
+  background: rgb(17 24 39);
+}
+
+.team-oauth-deck,
+.team-oauth-operation-card {
+  width: 100%;
+}
+
+.team-oauth-operation-card {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.team-oauth-inline-browser {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.team-oauth-inline-browser :deep(.team-child-browser-workspace) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.team-oauth-inline-browser :deep(.team-child-browser-frame) {
+  min-height: 0;
+  height: auto;
+  width: 100%;
+  max-height: none;
+  flex: 1 1 auto;
+  aspect-ratio: auto;
+}
+
+.team-oauth-operation-body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.team-oauth-operation-content {
+  width: 100%;
+  max-width: 52rem;
+  margin-inline: auto;
+}
+
+.team-oauth-operation-actions {
+  display: flex;
+  min-width: 0;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.team-oauth-operation-actions .btn {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.team-oauth-operation-card,
+.team-oauth-step-card {
+  border-radius: 18px !important;
+}
+
+.team-oauth-mailbox-actions :deep(.btn) {
+  border-radius: 11px;
+}
+
+.team-oauth-side-module {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.65rem;
+  border: 1px solid rgb(229 231 235);
+  border-radius: 14px;
+  background: rgb(249 250 251);
+  padding: 0.8rem;
+}
+
+:global(.dark .team-oauth-side-module) {
+  border-color: rgb(75 85 99);
+  background: rgb(20 34 53 / 0.72);
+}
+
+.team-oauth-side-module-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  color: rgb(17 24 39);
+}
+
+.team-oauth-side-module-heading h3 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.team-oauth-side-module-icon {
+  display: inline-flex;
+  height: 1.75rem;
+  width: 1.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgb(14 165 233 / 0.12);
+  color: rgb(2 132 199);
+}
+
+:global(.dark .team-oauth-side-module-heading) {
+  color: rgb(243 244 246);
+}
+
+:global(.dark .team-oauth-side-module-icon) {
+  background: rgb(8 145 178 / 0.2);
+  color: rgb(103 232 249);
+}
+
+.team-oauth-side-label {
+  display: block;
+  color: rgb(107 114 128);
+  font-size: 0.68rem;
+  line-height: 1rem;
+}
+
+:global(.dark .team-oauth-side-label) {
+  color: rgb(156 163 175);
+}
+
+.team-oauth-mailbox-value,
+.team-oauth-password-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid rgb(229 231 235);
+  border-radius: 11px;
+  background: rgb(249 250 251);
+  padding: 0.55rem 0.6rem;
+}
+
+.team-oauth-mailbox-value > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.team-oauth-mailbox-value code {
+  min-width: 0;
+  color: rgb(17 24 39);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.1rem;
+}
+
+.team-oauth-password-row {
+  background: rgb(243 244 246);
+}
+
+:global(.dark .team-oauth-mailbox-value),
+:global(.dark .team-oauth-password-row) {
+  border-color: rgb(55 65 81);
+  background: rgb(31 41 55 / 0.68);
+}
+
+:global(.dark .team-oauth-mailbox-value code) {
+  color: rgb(229 231 235);
+}
+
+.team-oauth-icon-button {
+  display: inline-flex;
+  height: 1.8rem;
+  width: 1.8rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(209 213 219);
+  border-radius: 10px;
+  color: rgb(75 85 99);
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.team-oauth-icon-button:hover:not(:disabled) {
+  border-color: rgb(14 165 233);
+  background: rgb(224 242 254);
+  color: rgb(3 105 161);
+}
+
+.team-oauth-icon-button:focus-visible {
+  outline: 2px solid rgb(14 165 233);
+  outline-offset: 2px;
+}
+
+.team-oauth-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+:global(.dark .team-oauth-icon-button) {
+  border-color: rgb(75 85 99);
+  color: rgb(209 213 219);
+}
+
+:global(.dark .team-oauth-icon-button:hover:not(:disabled)) {
+  border-color: rgb(34 211 238);
+  background: rgb(8 145 178 / 0.2);
+  color: rgb(165 243 252);
+}
+
+.team-oauth-mailbox-actions {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.team-oauth-history-link {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: rgb(2 132 199);
+  font-size: 0.7rem;
+  text-align: left;
+  transition: color 160ms ease;
+}
+
+.team-oauth-history-link:hover {
+  color: rgb(3 105 161);
+}
+
+.team-oauth-history-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:global(.dark .team-oauth-history-link) {
+  color: rgb(103 232 249);
+}
+
+:global(.dark .team-oauth-history-link:hover) {
+  color: rgb(165 243 252);
+}
+
+.team-oauth-sms-module {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  align-items: center;
+  border: 1px solid rgb(229 231 235);
+  border-radius: 14px;
+  background: rgb(249 250 251);
+  padding: 0.8rem;
+}
+
+.team-oauth-sms-module :deep(section) {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:global(.dark .team-oauth-sms-module) {
+  border-color: rgb(75 85 99);
+  background: rgb(20 34 53 / 0.72);
+}
+
+.team-oauth-step-stack {
+  position: relative;
+  width: 100%;
+  min-height: 12rem;
+  overflow: visible;
+  isolation: isolate;
+}
+
+.team-oauth-step-stack-inner {
+  position: relative;
+  min-height: 12rem;
+  width: 100%;
+  overflow: visible;
+}
+
+.team-oauth-step-card {
+  position: absolute;
+  inset: 0;
+  z-index: calc(30 - var(--stack-index));
+  left: calc((2 - var(--stack-index)) * 7%);
+  right: auto;
+  width: 86%;
+  transform: translate3d(0, calc(var(--stack-index) * 9px), 0) scale(calc(1 - var(--stack-index) * 0.018));
+  transform-origin: top center;
+  pointer-events: auto;
+  border-color: rgb(103 232 249 / 0.52) !important;
+  background-color: #034a68;
+  background-image: url('@/assets/team-child-workflow-card.jpg');
+  background-position: center;
+  background-size: cover;
+  color: white;
+  box-shadow: 0 16px 36px rgb(2 28 47 / 0.24), inset 0 0 0 1px rgb(165 243 252 / 0.12);
+}
+
+.team-oauth-step-card-active {
+  cursor: default;
+}
+
+.team-oauth-step-card-active:hover {
+  transform: translate3d(0, 0, 0) scale(1.012);
+}
+
+.team-oauth-step-card:not(.team-oauth-step-card-active):hover {
+  transform: translate3d(0, calc(var(--stack-index) * 9px), 0) scale(1.01);
+}
+
+.team-oauth-card-pending {
+  background-position: 45% center;
+  filter: saturate(0.88) brightness(0.8);
+}
+
+.team-oauth-card-complete {
+  border-color: rgb(110 231 183 / 0.7) !important;
+}
+
+.team-oauth-card-error {
+  border-color: rgb(252 165 165 / 0.85) !important;
+}
+
+.team-oauth-step-card > :last-child {
+  background: rgb(4 36 57 / 0.74);
+}
+
+.team-step-card-enter-active,
+.team-step-card-leave-active,
+.team-step-card-move {
+  transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
+}
+
+.team-step-card-leave-active {
+  z-index: 40;
+}
+
+.team-step-card-leave-to {
+  opacity: 0;
+  transform: translate3d(-112%, 16px, 0) rotate(-3deg) !important;
+}
+
+.team-step-card-enter-from {
+  opacity: 0;
+  transform: translate3d(18%, 12px, 0) scale(0.98);
+}
+
+@media (max-width: 1023px) {
+  .team-oauth-workspace {
+    width: 100%;
+    max-width: none;
+  }
+
+  .team-oauth-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .team-oauth-side-column {
+    min-height: auto;
+  }
+
+  .team-oauth-operation-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .team-oauth-operation-actions .btn {
+    flex: 1 1 0;
+  }
+
+  .team-oauth-sms-module {
+    width: 100%;
+    max-width: 100%;
+    margin-inline: 0;
+  }
 }
 
 @media (max-width: 639px) {
-  .team-oauth-stage {
-    min-height: 4.25rem;
+  .team-oauth-step-stack,
+  .team-oauth-step-stack-inner {
+    min-height: 12.5rem;
+  }
+
+  .team-oauth-operation-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .team-oauth-step-card {
+    left: 0;
+    width: 100%;
+  }
+
+  .team-oauth-operation-actions .btn {
+    width: 100%;
+  }
+
+  .team-oauth-inline-browser :deep(.team-child-browser-frame) {
+    min-height: 280px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-oauth-step-card,
+  .team-step-card-enter-active,
+  .team-step-card-leave-active,
+  .team-step-card-move {
+    transition-duration: 1ms !important;
   }
 }
 </style>

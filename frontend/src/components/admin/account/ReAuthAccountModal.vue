@@ -48,6 +48,25 @@
         </div>
       </div>
 
+      <div v-if="isTeamChildAccount" class="rounded-lg border border-primary-200 bg-primary-50/50 p-4 dark:border-primary-900/60 dark:bg-primary-950/15">
+        <div class="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Team 子号登录信息</div>
+            <div class="mt-1 truncate text-xs text-gray-600 dark:text-gray-300" :title="teamChildEmail">{{ teamChildEmail }}</div>
+            <code class="mt-1 block truncate font-mono text-sm text-gray-900 dark:text-gray-100">{{ revealedTeamPassword || '•••••••••••••' }}</code>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <button v-if="revealedTeamPassword" type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" title="复制登录密码" aria-label="复制登录密码" @click="copyTeamPassword">
+              <Icon name="copy" size="sm" />
+            </button>
+            <button type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" :disabled="teamPasswordLoading" @click="revealedTeamPassword ? clearTeamPassword() : revealTeamPassword()">
+              <Icon :name="teamPasswordLoading ? 'refresh' : revealedTeamPassword ? 'eyeOff' : 'eye'" size="sm" :class="teamPasswordLoading ? 'animate-spin' : ''" />
+              <span>{{ teamPasswordLoading ? '验证中' : revealedTeamPassword ? '隐藏密码' : '查看保存密码' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Add Method Selection (Claude only) -->
       <fieldset v-if="isAnthropic" class="border-0 p-0">
         <legend class="input-label">{{ t('admin.accounts.oauth.authMethod') }}</legend>
@@ -181,6 +200,7 @@
       </div>
     </template>
   </BaseDialog>
+  <TotpStepUpDialog :controller="teamPasswordStepUp" />
 </template>
 
 <script setup lang="ts">
@@ -188,6 +208,7 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import { teamChildAPI } from '@/api/admin/teamChild'
 import {
   useAccountOAuth,
   type AddMethod,
@@ -197,10 +218,12 @@ import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import { useGrokOAuth } from '@/composables/useGrokOAuth'
+import { isStepUpBlocked, isStepUpCancelled, stepUpBlockReason, useStepUp } from '@/composables/useStepUp'
 import type { Account } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import OAuthAuthorizationFlow from '@/components/account/OAuthAuthorizationFlow.vue'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 
 // Type for exposed OAuthAuthorizationFlow component
 // Note: defineExpose automatically unwraps refs, so we use the unwrapped types
@@ -233,6 +256,7 @@ const openaiOAuth = useOpenAIOAuth()
 const geminiOAuth = useGeminiOAuth()
 const antigravityOAuth = useAntigravityOAuth()
 const grokOAuth = useGrokOAuth()
+const teamPasswordStepUp = useStepUp()
 
 // Refs
 const oauthFlowRef = ref<OAuthFlowExposed | null>(null)
@@ -240,6 +264,8 @@ const oauthFlowRef = ref<OAuthFlowExposed | null>(null)
 // State
 const addMethod = ref<AddMethod>('oauth')
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('code_assist')
+const revealedTeamPassword = ref('')
+const teamPasswordLoading = ref(false)
 
 // Computed - check platform
 const isOpenAI = computed(() => props.account?.platform === 'openai')
@@ -248,6 +274,14 @@ const isGemini = computed(() => props.account?.platform === 'gemini')
 const isAnthropic = computed(() => props.account?.platform === 'anthropic')
 const isAntigravity = computed(() => props.account?.platform === 'antigravity')
 const isGrok = computed(() => props.account?.platform === 'grok')
+const teamChildEmail = computed(() => {
+  const value = (props.account?.extra as Record<string, unknown> | undefined)?.xiass_team_child_email
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+})
+const isTeamChildAccount = computed(() => isOpenAI.value
+  && (props.account?.extra as Record<string, unknown> | undefined)?.xiass_team_child === true
+  && Boolean(teamChildEmail.value)
+  && props.account?.credentials_status?.has_xiass_team_child_password_encrypted === true)
 
 // Computed - current OAuth state based on platform
 const currentAuthUrl = computed(() => {
@@ -329,10 +363,45 @@ const resetState = () => {
   antigravityOAuth.resetState()
   grokOAuth.resetState()
   oauthFlowRef.value?.reset()
+  clearTeamPassword()
 }
 
 const handleClose = () => {
+	clearTeamPassword()
   emit('close')
+}
+
+function clearTeamPassword() {
+  revealedTeamPassword.value = ''
+}
+
+async function copyTeamPassword() {
+  if (!revealedTeamPassword.value) return
+  try {
+    await navigator.clipboard.writeText(revealedTeamPassword.value)
+    appStore.showSuccess('登录密码已复制')
+  } catch {
+    appStore.showError('复制失败，请手动复制')
+  }
+}
+
+async function revealTeamPassword() {
+  if (!props.account || !isTeamChildAccount.value || teamPasswordLoading.value) return
+  teamPasswordLoading.value = true
+  try {
+    const secret = await teamPasswordStepUp.run(() => teamChildAPI.revealTeamChildAccountPassword(props.account!.id))
+    if (secret.email.trim().toLowerCase() !== teamChildEmail.value) throw new Error('保存的 Team 邮箱不一致')
+    revealedTeamPassword.value = secret.password
+  } catch (error) {
+    if (isStepUpCancelled(error)) return
+    if (isStepUpBlocked(error)) {
+      appStore.showError(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? '请使用管理员网页登录会话查看密码' : '请先为当前管理员启用 TOTP 二次验证')
+      return
+    }
+    appStore.showError('无法查看保存的 Team 登录密码')
+  } finally {
+    teamPasswordLoading.value = false
+  }
 }
 
 const handleGenerateUrl = async () => {

@@ -26,8 +26,7 @@ type teamChildWorkflowStartRequest struct {
 	AuthURL            string `json:"auth_url" binding:"required"`
 	OAuthSessionID     string `json:"oauth_session_id" binding:"required"`
 	SeatAlreadyRemoved bool   `json:"seat_already_removed"`
-	StartStep          string `json:"start_step"`
-	RunOnlyStep        bool   `json:"run_only_step"`
+	MembersAlreadyInvited bool `json:"members_already_invited"`
 	Confirmed          bool   `json:"confirmed"`
 }
 
@@ -49,7 +48,6 @@ type teamChildWorkflowPhoneRequest struct {
 }
 
 var (
-	teamChildWorkflowStartPattern   = regexp.MustCompile(`^(members|remove|invite|oauth|verify)?$`)
 	teamChildWorkflowEmailPattern   = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 	teamChildWorkflowEmbeddedEmail  = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
 	teamChildWorkflowSessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
@@ -87,7 +85,6 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 	req.InviteEmail = normalizeTeamChildWorkflowEmail(req.InviteEmail)
 	req.AuthURL = strings.TrimSpace(req.AuthURL)
 	req.OAuthSessionID = strings.TrimSpace(req.OAuthSessionID)
-	req.StartStep = strings.TrimSpace(strings.ToLower(req.StartStep))
 	if req.InviteEmail == "" || !validTeamChildWorkflowEmail(req.InviteEmail) {
 		response.BadRequest(c, "临时邮箱格式无效")
 		return
@@ -100,7 +97,12 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 		response.BadRequest(c, "请先确认成员操作并发送邀请")
 		return
 	}
-	if req.SeatAlreadyRemoved {
+	if req.MembersAlreadyInvited {
+		if req.SeatAlreadyRemoved || req.SeatEmail != "" {
+			response.BadRequest(c, "已完成邀请的 OAuth 接入不能携带待移除成员")
+			return
+		}
+	} else if req.SeatAlreadyRemoved {
 		if req.SeatEmail != "" {
 			response.BadRequest(c, "人工腾位工作流不能携带待移除成员")
 			return
@@ -117,10 +119,6 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 		response.Forbidden(c, "受保护的管理员账号不可替换")
 		return
 	}
-	if !teamChildWorkflowStartPattern.MatchString(req.StartStep) {
-		response.BadRequest(c, "工作流起始步骤无效")
-		return
-	}
 	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -130,31 +128,6 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows", req)
-}
-
-// RunTeamChildWorkflowStep executes one selected unfinished workflow stage.
-// The automation service rechecks all earlier stages against the live browser
-// state before it performs the requested stage.
-// POST /api/v1/admin/openai/team-child/workflows/:workflow_id/run-step
-func (h *OpenAIOAuthHandler) RunTeamChildWorkflowStep(c *gin.Context) {
-	workflowID := strings.TrimSpace(c.Param("workflow_id"))
-	if !validTeamChildWorkflowID(workflowID) {
-		response.BadRequest(c, "工作流 ID 无效")
-		return
-	}
-	var req struct {
-		Step string `json:"step" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "步骤无效")
-		return
-	}
-	req.Step = strings.TrimSpace(strings.ToLower(req.Step))
-	if !teamChildWorkflowStartPattern.MatchString(req.Step) || req.Step == "" {
-		response.BadRequest(c, "步骤无效")
-		return
-	}
-	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/run-step", req)
 }
 
 // GetTeamChildWorkflow returns only a short-lived progress snapshot. A callback
@@ -259,16 +232,6 @@ func (h *OpenAIOAuthHandler) CompleteTeamChildWorkflow(c *gin.Context) {
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/complete", nil)
-}
-
-// RejectTeamChildWorkflowExternalValue keeps the ambiguous legacy code route
-// diagnosable without guessing whether a value is an email or SMS code.
-func (h *OpenAIOAuthHandler) RejectTeamChildWorkflowExternalValue(c *gin.Context) {
-	if !validTeamChildWorkflowID(strings.TrimSpace(c.Param("workflow_id"))) {
-		response.BadRequest(c, "工作流 ID 无效")
-		return
-	}
-	response.BadRequest(c, "旧版外部验证码接口已停用，请刷新页面后使用当前自动化工作流")
 }
 
 func validTeamChildWorkflowRequestID(c *gin.Context) (string, bool) {

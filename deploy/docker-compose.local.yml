@@ -291,12 +291,14 @@ services:
       - TEAM_CHILD_AUTOMATION_TOKEN=${TEAM_CHILD_AUTOMATION_TOKEN:-}
       - TEAM_CHILD_PROTECTED_MEMBER_EMAILS=${TEAM_CHILD_PROTECTED_MEMBER_EMAILS:-}
       - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./team_child_automation_data:/app/data:Z
     depends_on:
       team-child-browser:
         condition: service_started
     network_mode: "service:team-child-browser"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/readyz').then(async (response) => process.exit(response.ok && response.headers.get('x-xiass-team-child-protocol') === '2' && (await response.json()).workflow_schema_version === 2 ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
       timeout: 4s
       retries: 24

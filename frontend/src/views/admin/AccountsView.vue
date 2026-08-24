@@ -18,6 +18,7 @@
           >
             <template #beforeCreate>
               <button
+                v-if="teamChildCreationEnabled"
                 type="button"
                 class="btn flex items-center gap-2"
                 :class="teamChildNeedsReauth ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300 dark:hover:bg-red-950/40' : 'btn-primary'"
@@ -675,6 +676,7 @@ const selTypes = computed<AccountType[]>(() => {
   return [...types]
 })
 const showCreate = ref(false)
+const teamChildCreationEnabled = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
 const showImportData = ref(false)
@@ -2482,9 +2484,14 @@ onMounted(async () => {
   load()
   loadUpstreamBillingProbeGlobalState()
   try {
-    const [p, g] = await Promise.all([adminAPI.proxies.getAll(), adminAPI.groups.getAll()])
-    proxies.value = p
-    groups.value = g
+    const [p, g, settings] = await Promise.allSettled([
+      adminAPI.proxies.getAll(),
+      adminAPI.groups.getAll(),
+      adminAPI.settings.getSettings()
+    ])
+    if (p.status === 'fulfilled') proxies.value = p.value
+    if (g.status === 'fulfilled') groups.value = g.value
+    if (settings.status === 'fulfilled') teamChildCreationEnabled.value = settings.value.team_child_creation_enabled === true
   } catch (error) {
     console.error('Failed to load proxies/groups:', error)
   }

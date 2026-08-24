@@ -102,12 +102,19 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	}
 	adminSvc.accounts = []service.Account{
 		{
-			ID:          21,
-			Name:        "account",
-			Platform:    service.PlatformOpenAI,
-			Type:        service.AccountTypeOAuth,
-			Credentials: map[string]any{"token": "secret"},
-			Extra:       map[string]any{"note": "x"},
+			ID:       21,
+			Name:     "account",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Credentials: map[string]any{
+				"token": "secret",
+				service.OpenAITeamChildPasswordCredentialKey: "encrypted-password",
+			},
+			Extra: map[string]any{
+				"note":                               "x",
+				service.OpenAITeamChildExtraKey:      true,
+				service.OpenAITeamChildEmailExtraKey: "team1003@example.test",
+			},
 			ProxyID:     &proxyID,
 			Concurrency: 3,
 			Priority:    50,
@@ -132,6 +139,9 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	require.Equal(t, "pass", resp.Data.Proxies[0].Password)
 	require.Len(t, resp.Data.Accounts, 1)
 	require.Equal(t, "secret", resp.Data.Accounts[0].Credentials["token"])
+	require.NotContains(t, resp.Data.Accounts[0].Credentials, service.OpenAITeamChildPasswordCredentialKey)
+	require.NotContains(t, resp.Data.Accounts[0].Extra, service.OpenAITeamChildExtraKey)
+	require.NotContains(t, resp.Data.Accounts[0].Extra, service.OpenAITeamChildEmailExtraKey)
 }
 
 func TestExportDataWithoutProxies(t *testing.T) {
@@ -296,10 +306,17 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 			},
 			"accounts": []map[string]any{
 				{
-					"name":        "acc",
-					"platform":    service.PlatformOpenAI,
-					"type":        service.AccountTypeOAuth,
-					"credentials": map[string]any{"token": "x"},
+					"name":     "acc",
+					"platform": service.PlatformOpenAI,
+					"type":     service.AccountTypeOAuth,
+					"credentials": map[string]any{
+						"token": "x",
+						service.OpenAITeamChildPasswordCredentialKey: "copied-ciphertext",
+					},
+					"extra": map[string]any{
+						service.OpenAITeamChildExtraKey:      true,
+						service.OpenAITeamChildEmailExtraKey: "team1003@example.test",
+					},
 					"proxy_key":   "socks5|1.2.3.4|1080|u|p",
 					"concurrency": 3,
 					"priority":    50,
@@ -319,4 +336,7 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdProxies, 0)
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
+	require.NotContains(t, adminSvc.createdAccounts[0].Credentials, service.OpenAITeamChildPasswordCredentialKey)
+	require.NotContains(t, adminSvc.createdAccounts[0].Extra, service.OpenAITeamChildExtraKey)
+	require.NotContains(t, adminSvc.createdAccounts[0].Extra, service.OpenAITeamChildEmailExtraKey)
 }

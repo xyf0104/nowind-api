@@ -25,15 +25,19 @@ export interface TeamChildBrowserControl {
   released?: boolean
 }
 
-export interface TeamChildBrowserNavigationResult {
-  ok?: boolean
-  url?: string
-}
-
 export interface TeamChildMailbox {
   session_id: string
   email: string
   expires_at: string
+}
+
+export interface TeamChildMailboxList {
+  emails: string[]
+}
+
+export interface TeamChildLoginSecret {
+  email: string
+  password: string
 }
 
 export interface TeamChildMailboxCode {
@@ -61,6 +65,8 @@ export interface TeamChildCreateAccountRequest {
   group_ids: number[]
   /** Marks the imported account for the Team-child 401 reminder. */
   team_child?: boolean
+  /** Binds the encrypted generated password to this exact protocol-2 import. */
+  workflow_id: string
 }
 
 export interface TeamChildMember {
@@ -94,13 +100,7 @@ export interface TeamChildMembersResult {
 
 export type TeamChildWorkflowStatus = 'running' | 'manual_required' | 'callback_ready' | 'completed' | 'failed' | 'cancelled'
 
-export interface TeamChildWorkflowStep {
-  key: 'members' | 'remove' | 'invite' | 'oauth' | 'verify'
-  number: number
-  label: string
-  status: 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
-  message?: string
-}
+export type TeamChildWorkflowNodeStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 
 export type TeamChildWorkflowNodeKey =
   | 'members' | 'remove' | 'invite' | 'invite_confirm' | 'oauth' | 'signup' | 'email' | 'password'
@@ -112,11 +112,12 @@ export interface TeamChildWorkflowNode {
   key: TeamChildWorkflowNodeKey
   number: number
   label: string
-  status: TeamChildWorkflowStep['status']
+  status: TeamChildWorkflowNodeStatus
   message?: string
 }
 
 export interface TeamChildWorkflow {
+  schema_version: 2
   id: string
   status: TeamChildWorkflowStatus
   expires_at: string
@@ -126,11 +127,12 @@ export interface TeamChildWorkflow {
   current_node?: TeamChildWorkflowNodeKey | ''
   callback_url?: string
   error?: string
-  steps: TeamChildWorkflowStep[]
-  nodes?: TeamChildWorkflowNode[]
+  password_available?: boolean
+  nodes: TeamChildWorkflowNode[]
 }
 
 export interface ActiveTeamChildWorkflowResult {
+  schema_version: 2
   active: boolean
   workflow?: TeamChildWorkflow
 }
@@ -142,13 +144,27 @@ export interface StartTeamChildWorkflowRequest {
   auth_url: string
   oauth_session_id: string
   seat_already_removed: boolean
-  start_step?: TeamChildWorkflowStepKey
-  run_only_step?: boolean
   /** Must be set only after the XIASS in-page destructive-action dialog. */
   confirmed: true
 }
 
-export type TeamChildWorkflowStepKey = TeamChildWorkflowStep['key']
+const currentWorkflowNodeOrder: TeamChildWorkflowNodeKey[] = [
+  'members', 'remove', 'invite', 'invite_confirm', 'oauth', 'signup', 'email', 'password',
+  'mail', 'mailbox', 'email_code', 'phone', 'sms_confirm', 'phone_submit',
+  'sms_poll', 'sms_code', 'profile_wait', 'profile', 'workspace_wait',
+  'workspace', 'callback', 'import'
+]
+
+function requireCurrentTeamChildWorkflow(workflow: TeamChildWorkflow): TeamChildWorkflow {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : []
+  const current = workflow?.schema_version === 2
+    && nodes.length === currentWorkflowNodeOrder.length
+    && nodes.every((node, index) => node?.key === currentWorkflowNodeOrder[index])
+  if (!current) {
+    throw new Error('Team 自动化运行组件版本不匹配，请完成运行组件更新后重试')
+  }
+  return workflow
+}
 
 export async function getMailboxStatus(): Promise<TeamChildMailboxStatus> {
   const { data } = await apiClient.get<TeamChildMailboxStatus>('/admin/openai/team-child/mailbox-status')
@@ -157,6 +173,16 @@ export async function getMailboxStatus(): Promise<TeamChildMailboxStatus> {
 
 export async function createMailbox(): Promise<TeamChildMailbox> {
   const { data } = await apiClient.post<TeamChildMailbox>('/admin/openai/team-child/mailboxes')
+  return data
+}
+
+export async function listMailboxes(): Promise<string[]> {
+  const { data } = await apiClient.get<TeamChildMailboxList>('/admin/openai/team-child/mailboxes')
+  return Array.isArray(data.emails) ? data.emails : []
+}
+
+export async function selectMailbox(email: string): Promise<TeamChildMailbox> {
+  const { data } = await apiClient.post<TeamChildMailbox>('/admin/openai/team-child/mailboxes/select', { email })
   return data
 }
 
@@ -180,15 +206,6 @@ export async function createBrowserSession(payload: TeamChildBrowserSessionReque
   const { data } = await apiClient.post<TeamChildBrowserSession>(
     '/admin/openai/team-child/browser-sessions',
     payload
-  )
-  return data
-}
-
-/** Navigate the already-mounted server Chromium tab without opening a local tab. */
-export async function navigateTeamChildBrowser(url: string): Promise<TeamChildBrowserNavigationResult> {
-  const { data } = await apiClient.post<TeamChildBrowserNavigationResult>(
-    '/admin/openai/team-child/browser/navigate',
-    { url }
   )
   return data
 }
@@ -239,30 +256,25 @@ export async function removeTeamChildMember(email: string): Promise<TeamChildMem
 
 export async function startTeamChildWorkflow(payload: StartTeamChildWorkflowRequest): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>('/admin/openai/team-child/workflows', payload)
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function getTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.get<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}`)
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function getActiveTeamChildWorkflow(): Promise<TeamChildWorkflow | null> {
   const { data } = await apiClient.get<ActiveTeamChildWorkflowResult>('/admin/openai/team-child/workflows/active')
-  return data.active && data.workflow ? data.workflow : null
+  if (data.schema_version !== 2) {
+    throw new Error('Team 自动化运行组件版本不匹配，请完成运行组件更新后重试')
+  }
+  return data.active && data.workflow ? requireCurrentTeamChildWorkflow(data.workflow) : null
 }
 
 export async function continueTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/continue`)
-  return data
-}
-
-export async function runTeamChildWorkflowStep(workflowID: string, step: TeamChildWorkflowStepKey): Promise<TeamChildWorkflow> {
-  const { data } = await apiClient.post<TeamChildWorkflow>(
-    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/run-step`,
-    { step }
-  )
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function submitTeamChildWorkflowCallback(workflowID: string, callbackURL: string): Promise<TeamChildWorkflow> {
@@ -270,7 +282,7 @@ export async function submitTeamChildWorkflowCallback(workflowID: string, callba
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/callback`,
     { callback_url: callbackURL }
   )
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function restartTeamChildWorkflowOAuth(workflowID: string, authURL: string, oauthSessionID: string): Promise<TeamChildWorkflow> {
@@ -278,7 +290,7 @@ export async function restartTeamChildWorkflowOAuth(workflowID: string, authURL:
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/restart-oauth`,
     { auth_url: authURL, oauth_session_id: oauthSessionID }
   )
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function submitTeamChildWorkflowEmailCode(workflowID: string, code: string): Promise<TeamChildWorkflow> {
@@ -286,7 +298,7 @@ export async function submitTeamChildWorkflowEmailCode(workflowID: string, code:
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/email-code`,
     { code }
   )
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function submitTeamChildWorkflowPhone(workflowID: string, phone: string): Promise<TeamChildWorkflow> {
@@ -294,7 +306,7 @@ export async function submitTeamChildWorkflowPhone(workflowID: string, phone: st
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/phone`,
     { phone }
   )
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function submitTeamChildWorkflowSMSCode(workflowID: string, code: string): Promise<TeamChildWorkflow> {
@@ -302,19 +314,33 @@ export async function submitTeamChildWorkflowSMSCode(workflowID: string, code: s
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/sms-code`,
     { code }
   )
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function completeTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/complete`
   )
+  return requireCurrentTeamChildWorkflow(data)
+}
+
+export async function revealTeamChildWorkflowPassword(workflowID: string): Promise<TeamChildLoginSecret> {
+  const { data } = await apiClient.get<TeamChildLoginSecret>(
+    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/password`
+  )
+  return data
+}
+
+export async function revealTeamChildAccountPassword(accountID: number): Promise<TeamChildLoginSecret> {
+  const { data } = await apiClient.get<TeamChildLoginSecret>(
+    `/admin/openai/team-child/accounts/${encodeURIComponent(String(accountID))}/password`
+  )
   return data
 }
 
 export async function cancelTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.delete<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}`)
-  return data
+  return requireCurrentTeamChildWorkflow(data)
 }
 
 export async function pollMailboxCode(sessionId: string): Promise<TeamChildMailboxCode> {
@@ -336,7 +362,6 @@ export async function createOpenAIAccountFromOAuth(payload: TeamChildCreateAccou
 export const teamChildAPI = {
   getMailboxStatus,
   createBrowserSession,
-  navigateTeamChildBrowser,
   heartbeatTeamChildBrowserControl,
   releaseTeamChildBrowserControl,
   listTeamChildMembers,
@@ -349,7 +374,6 @@ export const teamChildAPI = {
   getTeamChildWorkflow,
   getActiveTeamChildWorkflow,
   continueTeamChildWorkflow,
-  runTeamChildWorkflowStep,
   submitTeamChildWorkflowCallback,
   restartTeamChildWorkflowOAuth,
   submitTeamChildWorkflowEmailCode,
@@ -358,10 +382,14 @@ export const teamChildAPI = {
   completeTeamChildWorkflow,
   cancelTeamChildWorkflow,
   createMailbox,
+  listMailboxes,
+  selectMailbox,
   getActiveMailbox,
   importMailboxConfig,
   pollMailboxCode,
   deleteMailboxSession,
+  revealTeamChildWorkflowPassword,
+  revealTeamChildAccountPassword,
   createOpenAIAccountFromOAuth
 }
 

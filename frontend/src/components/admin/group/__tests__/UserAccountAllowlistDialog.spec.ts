@@ -69,9 +69,19 @@ describe('UserAccountAllowlistDialog', () => {
     expect((wrapper.get('[data-test="allowlist-account-102"]').element as HTMLInputElement).checked).toBe(true)
 
     await wrapper.get('[data-test="allowlist-account-101"]').trigger('change')
+    await wrapper.get('[data-test="allowlist-account-102"]').trigger('change')
     await wrapper.get('[data-test="allowlist-save"]').trigger('click')
 
-    expect(wrapper.emitted('save')).toEqual([[[101, 102]]])
+    expect(wrapper.emitted('save')).toEqual([[[101]]])
+  })
+
+  it('does not freeze future group accounts when all available accounts remain selected', async () => {
+    const wrapper = mountDialog([101, 102], true)
+
+    await wrapper.get('[data-test="allowlist-save"]').trigger('click')
+
+    expect(wrapper.emitted('restore')).toHaveLength(1)
+    expect(wrapper.emitted('save')).toBeUndefined()
   })
 
   it('preserves selected unavailable accounts while blocking new unavailable selections', async () => {

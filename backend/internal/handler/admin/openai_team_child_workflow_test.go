@@ -14,6 +14,11 @@ import (
 const testTeamChildAuthURL = "https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state"
 const testTeamChildOAuthSessionID = "oauth-session-abcdefghijklmnop"
 
+func setCurrentTeamChildWorkflowProtocol(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(teamChildWorkflowProtocolHeader, teamChildWorkflowProtocolVersion)
+}
+
 func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	called := false
@@ -36,7 +41,6 @@ func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T)
 		`{"seat_email":"member@example.test","invite_email":"member@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`,
 		`{"invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","confirmed":true}`,
 		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","seat_already_removed":true,"confirmed":true}`,
-		`{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","start_step":"invalid","confirmed":true}`,
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
@@ -47,49 +51,6 @@ func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T)
 	require.False(t, called)
 }
 
-func TestTeamChildWorkflowRunStepValidatesAndForwards(t *testing.T) {
-	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
-	var receivedMethod string
-	var receivedPath string
-	var receivedBody map[string]any
-	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedMethod = r.Method
-		receivedPath = r.URL.Path
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"manual_required","steps":[]}`))
-	}))
-	t.Cleanup(automation.Close)
-	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
-
-	gin.SetMode(gin.TestMode)
-	handler := &OpenAIOAuthHandler{}
-	router := gin.New()
-	router.Use(teamChildAdminTestMiddleware("admin"))
-	router.POST("/workflows/:workflow_id/run-step", handler.RunTeamChildWorkflowStep)
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/workflows/abcdefghijklmnoP/run-step", strings.NewReader(`{"step":"oauth"}`))
-	request.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(recorder, request)
-
-	require.Equal(t, http.StatusOK, recorder.Code)
-	require.Equal(t, http.MethodPost, receivedMethod)
-	require.Equal(t, "/workflows/abcdefghijklmnoP/run-step", receivedPath)
-	require.Equal(t, "oauth", receivedBody["step"])
-
-	for _, payload := range []string{`{}`, `{"step":""}`, `{"step":"invalid"}`} {
-		recorder = httptest.NewRecorder()
-		request = httptest.NewRequest(http.MethodPost, "/workflows/abcdefghijklmnoP/run-step", strings.NewReader(payload))
-		request.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(recorder, request)
-		require.Equal(t, http.StatusBadRequest, recorder.Code)
-	}
-	recorder = httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/workflows/too-short/run-step", strings.NewReader(`{"step":"oauth"}`)))
-	require.Equal(t, http.StatusBadRequest, recorder.Code)
-}
-
 func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	var receivedToken string
@@ -97,12 +58,16 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	var receivedPath string
 	var receivedBody map[string]any
 	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setCurrentTeamChildWorkflowProtocol(w)
+		if r.URL.Path == "/healthz" {
+			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version":2}`))
+			return
+		}
 		receivedToken = r.Header.Get("X-XIASS-Team-Child-Token")
 		receivedMethod = r.Method
 		receivedPath = r.URL.Path
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"running","steps":[]}`))
+		_, _ = w.Write([]byte(`{"schema_version":2,"id":"abcdefghijklmnoP","status":"running","nodes":[]}`))
 	}))
 	t.Cleanup(automation.Close)
 	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
@@ -113,7 +78,7 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	router.Use(teamChildAdminTestMiddleware("admin"))
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
-	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `","start_step":"oauth","run_only_step":true,"confirmed":true}`
+	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `","confirmed":true}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -127,18 +92,54 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	require.Equal(t, "new@example.test", receivedBody["invite_email"])
 	require.Equal(t, testTeamChildOAuthSessionID, receivedBody["oauth_session_id"])
 	require.Equal(t, false, receivedBody["seat_already_removed"])
-	require.Equal(t, "oauth", receivedBody["start_step"])
-	require.Equal(t, true, receivedBody["run_only_step"])
+	_, hasStartStep := receivedBody["start_step"]
+	_, hasRunOnlyStep := receivedBody["run_only_step"]
+	require.False(t, hasStartStep)
+	require.False(t, hasRunOnlyStep)
 	require.Equal(t, true, receivedBody["confirmed"])
+}
+
+func TestTeamChildWorkflowRejectsLegacyAutomationBeforeStarting(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	workflowStarted := false
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/workflows" {
+			workflowStarted = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/workflows", handler.StartTeamChildWorkflow)
+
+	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `","confirmed":true}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusBadGateway, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "运行组件版本不匹配")
+	require.False(t, workflowStarted)
 }
 
 func TestTeamChildWorkflowAllowsConfirmedManualSeatRelease(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	var receivedBody map[string]any
 	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setCurrentTeamChildWorkflowProtocol(w)
+		if r.URL.Path == "/healthz" {
+			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version":2}`))
+			return
+		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"running","steps":[]}`))
+		_, _ = w.Write([]byte(`{"schema_version":2,"id":"abcdefghijklmnoP","status":"running","nodes":[]}`))
 	}))
 	t.Cleanup(automation.Close)
 	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
@@ -195,8 +196,8 @@ func TestTeamChildWorkflowContinueValidatesIDAndForwards(t *testing.T) {
 	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedMethod = r.Method
 		receivedPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"id\":\"abcdefghijklmnoP\",\"status\":\"running\",\"steps\":[]}"))
+		setCurrentTeamChildWorkflowProtocol(w)
+		_, _ = w.Write([]byte("{\"schema_version\":2,\"id\":\"abcdefghijklmnoP\",\"status\":\"running\",\"nodes\":[]}"))
 	}))
 	t.Cleanup(automation.Close)
 	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
@@ -223,8 +224,8 @@ func TestTeamChildWorkflowStatusAndCancelValidateIDAndForward(t *testing.T) {
 	var requests []string
 	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"manual_required","steps":[]}`))
+		setCurrentTeamChildWorkflowProtocol(w)
+		_, _ = w.Write([]byte(`{"schema_version":2,"id":"abcdefghijklmnoP","status":"manual_required","nodes":[]}`))
 	}))
 	t.Cleanup(automation.Close)
 	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
@@ -268,8 +269,8 @@ func TestTeamChildWorkflowCallbackAndRestartForward(t *testing.T) {
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&request.body))
 		}
 		requests = append(requests, request)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"manual_required","steps":[]}`))
+		setCurrentTeamChildWorkflowProtocol(w)
+		_, _ = w.Write([]byte(`{"schema_version":2,"id":"abcdefghijklmnoP","status":"manual_required","nodes":[]}`))
 	}))
 	t.Cleanup(automation.Close)
 	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
@@ -331,8 +332,8 @@ func TestTeamChildWorkflowAutomationInputsUseDistinctValidatedRoutes(t *testing.
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&entry.body))
 		}
 		received = append(received, entry)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"running","steps":[],"nodes":[]}`))
+		setCurrentTeamChildWorkflowProtocol(w)
+		_, _ = w.Write([]byte(`{"schema_version":2,"id":"abcdefghijklmnoP","status":"running","nodes":[]}`))
 	}))
 	t.Cleanup(automation.Close)
 	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
@@ -388,34 +389,6 @@ func TestTeamChildWorkflowAutomationInputsUseDistinctValidatedRoutes(t *testing.
 		require.Equal(t, http.StatusBadRequest, recorder.Code, test.path)
 	}
 	require.Len(t, received, 4)
-}
-
-func TestTeamChildWorkflowLegacyExternalValueRoutesRejectPayload(t *testing.T) {
-	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
-	called := false
-	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(automation.Close)
-	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
-
-	gin.SetMode(gin.TestMode)
-	handler := &OpenAIOAuthHandler{}
-	router := gin.New()
-	router.Use(teamChildAdminTestMiddleware("admin"))
-	router.POST("/workflows/:workflow_id/phone", handler.RejectTeamChildWorkflowExternalValue)
-	router.POST("/workflows/:workflow_id/code", handler.RejectTeamChildWorkflowExternalValue)
-
-	for _, path := range []string{"/workflows/abcdefghijklmnoP/phone", "/workflows/abcdefghijklmnoP/code"} {
-		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{\"phone\":\"+15551234567\",\"code\":\"123456\"}"))
-		request.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(recorder, request)
-		require.Equal(t, http.StatusBadRequest, recorder.Code)
-		require.Contains(t, recorder.Body.String(), "旧版外部验证码接口已停用")
-	}
-	require.False(t, called)
 }
 
 func TestValidateTeamChildWorkflowAuthURL(t *testing.T) {

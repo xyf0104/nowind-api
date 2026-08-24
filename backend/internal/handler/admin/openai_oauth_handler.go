@@ -23,10 +23,20 @@ import (
 type OpenAIOAuthHandler struct {
 	openaiOAuthService *service.OpenAIOAuthService
 	adminService       service.AdminService
+	secretEncryptor    service.SecretEncryptor
 	quotaService       openAIQuotaService
 	rateLimitService   openAIAccountStateRecoverer
 	teamMailboxStore   *openAITeamMailboxStore
 	teamBrowserStore   *openAITeamBrowserStore
+}
+
+// ConfigureTeamChildSecrets attaches the application encryption boundary used
+// for Team-child login passwords. Keeping it out of the constructor preserves
+// the focused handler tests and makes a missing production wiring fail closed.
+func (h *OpenAIOAuthHandler) ConfigureTeamChildSecrets(encryptor service.SecretEncryptor) {
+	if h != nil {
+		h.secretEncryptor = encryptor
+	}
 }
 
 type openAIQuotaService interface {
@@ -428,13 +438,39 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Priority    int     `json:"priority"`
 		GroupIDs    []int64 `json:"group_ids"`
 		TeamChild   bool    `json:"team_child"`
+		WorkflowID  string  `json:"workflow_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	// Exchange code for tokens
+	var teamSecret *openAITeamChildWorkflowSecret
+	var encryptedTeamPassword string
+	if req.TeamChild {
+		req.WorkflowID = strings.TrimSpace(req.WorkflowID)
+		if !validTeamChildWorkflowID(req.WorkflowID) {
+			response.BadRequest(c, "Team 子号工作流 ID 无效")
+			return
+		}
+		if h.secretEncryptor == nil {
+			response.InternalError(c, "Team 子号密码加密服务不可用")
+			return
+		}
+		var err error
+		teamSecret, err = h.fetchTeamChildWorkflowSecret(c.Request.Context(), req.WorkflowID)
+		if err != nil {
+			response.Error(c, http.StatusConflict, "无法读取当前 Team 子号工作流密码，请确认自动化工作流仍有效")
+			return
+		}
+		encryptedTeamPassword, err = h.secretEncryptor.Encrypt(teamSecret.Password)
+		if err != nil {
+			response.InternalError(c, "Team 子号密码加密失败")
+			return
+		}
+	}
+
+	// Exchange code for tokens only after the workflow secret has been secured.
 	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
 		SessionID:   req.SessionID,
 		Code:        req.Code,
@@ -449,6 +485,13 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 
 	// Build credentials from token info
 	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if teamSecret != nil {
+		if !strings.EqualFold(strings.TrimSpace(tokenInfo.Email), teamSecret.Email) {
+			response.BadRequest(c, "OAuth 登录邮箱与当前 Team 子号工作流邮箱不一致")
+			return
+		}
+		credentials[service.OpenAITeamChildPasswordCredentialKey] = encryptedTeamPassword
+	}
 
 	platform := oauthPlatformFromPath(c)
 
@@ -463,7 +506,10 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 
 	var extra map[string]any
 	if req.TeamChild {
-		extra = map[string]any{"xiass_team_child": true}
+		extra = map[string]any{
+			service.OpenAITeamChildExtraKey:      true,
+			service.OpenAITeamChildEmailExtraKey: teamSecret.Email,
+		}
 	}
 
 	// Create account

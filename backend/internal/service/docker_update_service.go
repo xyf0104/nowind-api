@@ -29,6 +29,7 @@ const (
 	defaultUpdaterImage        = "ghcr.io/xyf0104/xiass-updater:latest"
 	updaterContainerName       = "xiass-api-updater"
 	updaterBackupDir           = "/root/xiass-backups"
+	teamChildBrowserEnabledEnv = "TEAM_CHILD_BROWSER_ENABLED"
 )
 
 // IsRunningInContainer selects the updater without changing existing Docker
@@ -76,19 +77,52 @@ func (s *DockerUpdateService) PerformUpdate(ctx context.Context) error {
 		return ErrNoUpdateAvailable
 	}
 
-	// New installations use a host-side orchestrator so Compose files, the
-	// browser profile, and the automation image are updated together. The
-	// fallback keeps older installations that do not yet have the updater image
-	// on the original Watchtower path.
-	if started, launchErr := s.launchHostUpdater(ctx); started {
+	return performDockerContainerUpdate(
+		ctx,
+		teamChildBrowserEnabled(),
+		s.launchHostUpdater,
+		s.performWatchtowerUpdate,
+	)
+}
+
+type hostUpdaterLauncher func(context.Context) (bool, error)
+type watchtowerUpdater func(context.Context) error
+
+func performDockerContainerUpdate(
+	ctx context.Context,
+	teamBrowserEnabled bool,
+	launchHostUpdater hostUpdaterLauncher,
+	performWatchtowerUpdate watchtowerUpdater,
+) error {
+	started, launchErr := launchHostUpdater(ctx)
+	if started {
 		return nil
-	} else if launchErr != nil {
-		// Continue to the compatibility path below. The detailed error is not
-		// returned because Watchtower may still be able to update the app.
-		_ = launchErr
 	}
 
-	return s.performWatchtowerUpdate(ctx)
+	// A Team-enabled installation must update its Compose files, main app,
+	// browser runtime, and automation image as one host-orchestrated operation.
+	// Falling back to the app-only Watchtower target creates an incompatible
+	// new frontend backed by an old workflow service. Keep the existing stack
+	// untouched and surface the launch error instead.
+	if teamBrowserEnabled {
+		if launchErr != nil {
+			return fmt.Errorf("failed to start XIASS host updater; existing containers were not changed: %w", launchErr)
+		}
+		return fmt.Errorf("failed to start XIASS host updater; existing containers were not changed")
+	}
+
+	// Historical lightweight installations without the Team browser retain the
+	// original app-only compatibility path.
+	return performWatchtowerUpdate(ctx)
+}
+
+func teamChildBrowserEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(teamChildBrowserEnabledEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *DockerUpdateService) performWatchtowerUpdate(ctx context.Context) error {
@@ -135,6 +169,13 @@ type dockerUpdateContainerCreateRequest struct {
 		Binds       []string `json:"Binds"`
 		NetworkMode string   `json:"NetworkMode"`
 	} `json:"HostConfig"`
+}
+
+type dockerPullProgress struct {
+	Error       string `json:"error"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
 }
 
 func newDockerUpdateClient() *dockerUpdateClient {
@@ -270,10 +311,16 @@ func (s *DockerUpdateService) launchHostUpdaterWithClient(ctx context.Context, c
 	if err != nil {
 		return false, err
 	}
-	_, _ = io.Copy(io.Discard, pullResp.Body)
-	_ = pullResp.Body.Close()
+	pullStreamErr := readDockerPullProgress(pullResp.Body)
+	closeErr := pullResp.Body.Close()
 	if pullResp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("updater image pull returned status %d", pullResp.StatusCode)
+	}
+	if pullStreamErr != nil {
+		return false, fmt.Errorf("updater image pull failed: %w", pullStreamErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("updater image pull response close failed: %w", closeErr)
 	}
 
 	create := dockerUpdateContainerCreateRequest{
@@ -306,6 +353,26 @@ func (s *DockerUpdateService) launchHostUpdaterWithClient(ctx context.Context, c
 		return false, err
 	}
 	return true, nil
+}
+
+func readDockerPullProgress(body io.Reader) error {
+	decoder := json.NewDecoder(body)
+	for {
+		var progress dockerPullProgress
+		if err := decoder.Decode(&progress); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("invalid Docker pull response: %w", err)
+		}
+		detail := strings.TrimSpace(progress.ErrorDetail.Message)
+		if detail == "" {
+			detail = strings.TrimSpace(progress.Error)
+		}
+		if detail != "" {
+			return fmt.Errorf("%s", detail)
+		}
+	}
 }
 
 func newWatchtowerUpdateRequest(ctx context.Context) (*http.Request, error) {

@@ -211,8 +211,8 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			Notes:              acc.Notes,
 			Platform:           acc.Platform,
 			Type:               acc.Type,
-			Credentials:        acc.Credentials,
-			Extra:              acc.Extra,
+			Credentials:        exportableAccountCredentials(acc.Credentials),
+			Extra:              exportableAccountExtra(acc.Extra),
 			ProxyKey:           proxyKey,
 			Concurrency:        acc.Concurrency,
 			Priority:           acc.Priority,
@@ -408,6 +408,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
+		// Team-child login metadata is bound to a successful state-matched XIASS
+		// OAuth workflow. Generic imports must not copy encrypted passwords or
+		// forge that marker onto another account.
+		item.Credentials = exportableAccountCredentials(item.Credentials)
+		item.Extra = exportableAccountExtra(item.Extra)
 		if err := validateDataAccount(item); err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, DataImportError{
@@ -489,6 +494,34 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	}
 
 	return result, nil
+}
+
+func exportableAccountCredentials(credentials map[string]any) map[string]any {
+	if credentials == nil {
+		return nil
+	}
+	out := make(map[string]any, len(credentials))
+	for key, value := range credentials {
+		if key == service.OpenAITeamChildPasswordCredentialKey {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func exportableAccountExtra(extra map[string]any) map[string]any {
+	if extra == nil {
+		return nil
+	}
+	out := make(map[string]any, len(extra))
+	for key, value := range extra {
+		if key == service.OpenAITeamChildExtraKey || key == service.OpenAITeamChildEmailExtraKey {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, error) {
