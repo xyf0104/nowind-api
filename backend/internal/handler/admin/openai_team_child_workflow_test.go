@@ -249,7 +249,7 @@ func TestTeamChildWorkflowStatusAndCancelValidateIDAndForward(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
 
-func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
+func TestTeamChildWorkflowCallbackAndRestartForward(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	var requests []struct {
 		method string
@@ -276,16 +276,14 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 	handler := &OpenAIOAuthHandler{}
 	router := gin.New()
 	router.Use(teamChildAdminTestMiddleware("admin"))
-	router.POST("/workflows/:workflow_id/phone", handler.SubmitTeamChildWorkflowPhone)
-	router.POST("/workflows/:workflow_id/code", handler.SubmitTeamChildWorkflowCode)
+	router.POST("/workflows/:workflow_id/callback", handler.SubmitTeamChildWorkflowCallback)
 	router.POST("/workflows/:workflow_id/restart-oauth", handler.RestartTeamChildWorkflowOAuth)
 
 	for _, test := range []struct {
 		path    string
 		payload string
 	}{
-		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"+57 315 1855041"}`},
-		{path: "/workflows/abcdefghijklmnoP/code", payload: `{"code":"123456"}`},
+		{path: "/workflows/abcdefghijklmnoP/callback", payload: `{"callback_url":"http://localhost:1455/auth/callback?code=callback-code&state=callback-state"}`},
 		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"` + testTeamChildAuthURL + `"}`},
 	} {
 		recorder := httptest.NewRecorder()
@@ -295,20 +293,17 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 		require.Equal(t, http.StatusOK, recorder.Code)
 	}
 
-	require.Len(t, requests, 3)
-	require.Equal(t, "/workflows/abcdefghijklmnoP/phone", requests[0].path)
-	require.Equal(t, "+573151855041", requests[0].body["phone"])
-	require.Equal(t, "/workflows/abcdefghijklmnoP/code", requests[1].path)
-	require.Equal(t, "123456", requests[1].body["code"])
-	require.Equal(t, "/workflows/abcdefghijklmnoP/restart-oauth", requests[2].path)
-	require.Equal(t, testTeamChildAuthURL, requests[2].body["auth_url"])
+	require.Len(t, requests, 2)
+	require.Equal(t, "/workflows/abcdefghijklmnoP/callback", requests[0].path)
+	require.Equal(t, "http://localhost:1455/auth/callback?code=callback-code&state=callback-state", requests[0].body["callback_url"])
+	require.Equal(t, "/workflows/abcdefghijklmnoP/restart-oauth", requests[1].path)
+	require.Equal(t, testTeamChildAuthURL, requests[1].body["auth_url"])
 
 	for _, test := range []struct {
 		path    string
 		payload string
 	}{
-		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"123"}`},
-		{path: "/workflows/abcdefghijklmnoP/code", payload: `{"code":"abc"}`},
+		{path: "/workflows/abcdefghijklmnoP/callback", payload: `{"callback_url":"http://localhost:1455/auth/callback?code=only-code"}`},
 		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"https://example.test/authorize"}`},
 	} {
 		recorder := httptest.NewRecorder()
@@ -317,7 +312,35 @@ func TestTeamChildWorkflowSMSActionsValidateAndForward(t *testing.T) {
 		router.ServeHTTP(recorder, request)
 		require.Equal(t, http.StatusBadRequest, recorder.Code)
 	}
-	require.Len(t, requests, 3)
+	require.Len(t, requests, 2)
+}
+
+func TestTeamChildWorkflowLegacyExternalValueRoutesRejectPayload(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	called := false
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/workflows/:workflow_id/phone", handler.RejectTeamChildWorkflowExternalValue)
+	router.POST("/workflows/:workflow_id/code", handler.RejectTeamChildWorkflowExternalValue)
+
+	for _, path := range []string{"/workflows/abcdefghijklmnoP/phone", "/workflows/abcdefghijklmnoP/code"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{\"phone\":\"+15551234567\",\"code\":\"123456\"}"))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		require.Contains(t, recorder.Body.String(), "不接收或转发")
+	}
+	require.False(t, called)
 }
 
 func TestValidateTeamChildWorkflowAuthURL(t *testing.T) {
@@ -337,26 +360,6 @@ func TestValidateTeamChildWorkflowAuthURL(t *testing.T) {
 		"not a URL",
 	} {
 		require.Error(t, validateTeamChildWorkflowAuthURL(raw))
-	}
-}
-
-func TestNormalizeTeamChildWorkflowPhoneRequiresFullInternationalNumber(t *testing.T) {
-	for _, test := range []struct {
-		input    string
-		expected string
-	}{
-		{input: "+57 315 1855041", expected: "+573151855041"},
-		{input: "+57-315-1855041", expected: "+573151855041"},
-		{input: "+573151855041", expected: "+573151855041"},
-	} {
-		actual, err := normalizeTeamChildWorkflowPhone(test.input)
-		require.NoError(t, err)
-		require.Equal(t, test.expected, actual)
-	}
-
-	for _, input := range []string{"3151855041", "+", "+00 3151855041", "+57 ext 3151855041"} {
-		_, err := normalizeTeamChildWorkflowPhone(input)
-		require.Error(t, err, input)
 	}
 }
 

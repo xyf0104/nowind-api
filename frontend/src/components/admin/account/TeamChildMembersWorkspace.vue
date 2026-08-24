@@ -7,7 +7,7 @@
         </span>
         <div class="min-w-0">
           <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">成员自动化工作区</h2>
-          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">使用已登录浏览器的实时成员数据；需要外部人工处理时再接管浏览器。</p>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">成员、邀请和 Pending invites 均以服务器端实时页面结果为准；外部 OAuth 在官方页面完成。</p>
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2 whitespace-nowrap">
@@ -16,8 +16,7 @@
         <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" :disabled="loading" title="刷新成员信息" aria-label="刷新成员信息" @click="emit('refresh')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
         </button>
-        <button type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>手动接管</span></button>
-        <button type="button" class="btn btn-primary flex items-center gap-2 whitespace-nowrap" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后打开授权页' : '确认替换已选普通成员并打开授权页') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
+        <button type="button" class="btn btn-primary flex items-center gap-2 whitespace-nowrap" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后准备授权链接' : '确认替换已选普通成员并准备授权链接') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
           <Icon :name="workflowBusy ? 'refresh' : 'play'" size="sm" :class="workflowBusy ? 'animate-spin' : ''" :stroke-width="2" />
           <span>{{ workflowBusy ? '正在执行' : '一键授权' }}</span>
         </button>
@@ -39,7 +38,7 @@
             <Icon name="refresh" size="sm" :class="workflowContinuing ? 'animate-spin' : ''" :stroke-width="2" />
             <span>{{ workflowContinuing ? '正在继续' : '继续自动化' }}</span>
           </button>
-          <button v-else-if="workflow.status === 'manual_required'" type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>处理外部页面</span></button>
+          <span v-else-if="workflow.status === 'manual_required'" class="text-xs text-amber-700 dark:text-amber-300">请在官方授权页完成当前外部步骤，再粘贴回调 URL</span>
         </div>
       </div>
       <ol class="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
@@ -95,8 +94,7 @@
       </div>
     </div>
     <div v-else class="flex flex-1 flex-col items-center justify-center px-4 py-12 text-center text-sm text-gray-500 dark:text-gray-400">
-      <p>{{ ready ? '当前没有可显示的成员。点击刷新重新读取成员页面。' : '尚未读取到已登录工作区。先刷新成员；需要人工处理登录页面时再手动接管浏览器。' }}</p>
-      <button v-if="!ready" type="button" class="btn btn-secondary mt-4 inline-flex items-center gap-2 whitespace-nowrap" @click="emit('open-browser')"><Icon name="globe" size="sm" :stroke-width="2" /><span>打开手动浏览器</span></button>
+      <p>{{ ready ? '当前没有可显示的成员。点击刷新重新读取成员页面。' : '尚未读取到已登录工作区。请先完成服务器端 ChatGPT 管理员登录，再刷新成员列表。' }}</p>
     </div>
 
     <BaseDialog :show="inviteOpen" title="邀请成员" width="normal" @close="inviteOpen = false">

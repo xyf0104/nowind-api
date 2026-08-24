@@ -22,16 +22,17 @@
           <span class="h-1.5 w-1.5 rounded-full" :class="statusDotClass"></span>
           {{ statusLabel }}
         </span>
-        <button
-          v-if="canOpenBrowser"
-          type="button"
+        <a
+          v-if="authUrl"
+          :href="authUrl"
+          target="_blank"
+          rel="noopener noreferrer"
           class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
-          title="仅在官方页面需要人工接管时打开服务器浏览器"
-          @click="emit('open-browser')"
+          title="在当前设备的官方浏览器中打开 OAuth 授权页"
         >
-          <Icon name="globe" size="sm" :stroke-width="2" />
-          <span>打开官方页面</span>
-        </button>
+          <Icon name="externalLink" size="sm" :stroke-width="2" />
+          <span>打开官方授权页</span>
+        </a>
       </div>
     </header>
 
@@ -53,7 +54,18 @@
 
         <div class="mt-4 flex items-start gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs leading-5 text-gray-600 dark:border-dark-600 dark:bg-dark-900/40 dark:text-gray-300">
           <Icon name="shield" size="sm" class="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" :stroke-width="2" />
-          <p>外部账号的登录、注册和身份验证仍在官方页面完成；XIASS 只转发当前动作所需的手机号或一次性验证码，并在内存中识别回调。</p>
+          <p>外部账号的登录、注册和身份验证仍在官方页面完成。当前工作区只保存本次授权会话状态；外部密码、邮箱验证码和短信验证码不会由 Team 页面自动提交。</p>
+        </div>
+
+        <div v-if="authUrl" class="mt-3 rounded-md border border-primary-200 bg-primary-50/40 p-3 dark:border-primary-900/60 dark:bg-primary-950/15">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-xs font-medium text-primary-800 dark:text-primary-200">XIASS 官方 OAuth PKCE 链接</span>
+            <button type="button" class="btn btn-secondary flex h-8 w-8 items-center justify-center p-0" title="复制官方授权链接" aria-label="复制官方授权链接" @click="emit('copy-auth')">
+              <Icon name="copy" size="sm" :stroke-width="2" />
+            </button>
+          </div>
+          <code class="mt-2 block max-h-16 overflow-auto break-all rounded-md border border-primary-100 bg-white px-2.5 py-2 text-[11px] leading-4 text-gray-700 dark:border-primary-900/50 dark:bg-dark-900 dark:text-gray-300">{{ authUrl }}</code>
+          <p class="mt-2 text-xs leading-5 text-primary-700 dark:text-primary-300">授权完成后，把浏览器地址栏中的完整回调 URL 粘贴到下方“导入 XIASS”区域。</p>
         </div>
 
         <div v-if="workflow.error" class="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300">
@@ -61,34 +73,14 @@
           <span>{{ workflow.error }}</span>
         </div>
 
-        <div v-if="canSubmitManualCode" class="mt-4 flex flex-col gap-2 sm:flex-row sm:items-end">
-          <label class="min-w-0 flex-1">
-            <span class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">一次性验证码</span>
-            <input
-              v-model="manualCode"
-              data-testid="team-oauth-manual-code"
-              inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength="8"
-              class="input w-full font-mono tracking-[0.16em]"
-              placeholder="输入当前页面要求的验证码"
-              @keyup.enter="submitManualCode"
-            />
-          </label>
-          <button type="button" class="btn btn-secondary flex items-center justify-center gap-2 whitespace-nowrap" :disabled="!validManualCode || busy" @click="submitManualCode">
-            <Icon v-if="busy" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
-            <Icon v-else name="arrowRight" size="sm" :stroke-width="2" />
-            <span>提交验证码</span>
-          </button>
+        <div v-if="receiverActive" class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+          请在官方授权页完成当前外部验证。右侧接码模块只提供经过确认领取的号码和验证码供你查看、复制；完成后将回调 URL 粘贴到下方导入区域。
         </div>
       </div>
 
       <div class="min-w-0 border-t border-gray-200 pt-4 dark:border-dark-700 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
         <PixlabSMSReceiver
           :active="receiverActive"
-          :replacement-required="workflow.phone_rejected === true"
-          @phone-ready="emit('phone-ready', $event)"
-          @code-received="emit('code-received', $event)"
           @session-cancelled="emit('session-cancelled')"
         />
       </div>
@@ -97,7 +89,7 @@
     <footer v-if="callbackURL" class="flex flex-col gap-2 border-t border-green-200 bg-green-50/70 px-4 py-3 dark:border-green-900/60 dark:bg-green-950/20 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex min-w-0 items-center gap-2 text-xs text-green-800 dark:text-green-200">
         <Icon name="check" size="sm" class="shrink-0" :stroke-width="2.5" />
-        <span class="truncate">已捕获授权回调</span>
+        <span class="truncate">已校验授权回调</span>
       </div>
       <button type="button" class="btn btn-secondary flex items-center justify-center gap-2 whitespace-nowrap" @click="emit('copy-callback')">
         <Icon name="clipboard" size="sm" :stroke-width="2" />
@@ -108,7 +100,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { Icon } from '@/components/icons'
 import PixlabSMSReceiver from '@/components/account/PixlabSMSReceiver.vue'
 import type { TeamChildWorkflow, TeamChildWorkflowStep } from '@/api/admin/teamChild'
@@ -117,30 +109,22 @@ const props = withDefaults(defineProps<{
   workflow: TeamChildWorkflow
   mailboxEmail?: string
   callbackURL?: string
-  busy?: boolean
+  authUrl?: string
 }>(), {
   mailboxEmail: '',
   callbackURL: '',
-  busy: false
+  authUrl: ''
 })
 
 const emit = defineEmits<{
-  'phone-ready': [phone: string]
-  'code-received': [code: string]
   'session-cancelled': []
-  'open-browser': []
+  'copy-auth': []
   'copy-callback': []
 }>()
-
-const manualCode = ref('')
 
 const oauthStep = computed(() => props.workflow.steps.find((step) => step.key === 'oauth'))
 const verifyStep = computed(() => props.workflow.steps.find((step) => step.key === 'verify'))
 const receiverActive = computed(() => ['manual_required', 'failed'].includes(props.workflow.status) && oauthStep.value?.status === 'completed')
-const canOpenBrowser = computed(() => receiverActive.value || props.workflow.status === 'running')
-const canSubmitManualCode = computed(() => receiverActive.value && /验证码|code|短信|邮箱/.test(verifyStep.value?.message || ''))
-const validManualCode = computed(() => /^\d{4,8}$/.test(manualCode.value.trim()))
-const busy = computed(() => props.busy || props.workflow.status === 'running')
 
 const statusLabel = computed(() => {
   if (props.workflow.status === 'callback_ready') return '回调已就绪'
@@ -164,10 +148,10 @@ const statusDotClass = computed(() => {
 })
 
 const stages = computed(() => [
-  stage('oauth', 1, '官方授权页', props.workflow.steps.find((step) => step.key === 'oauth'), '已使用 XIASS 原生 PKCE 会话打开'),
+  stage('oauth', 1, '官方授权页', props.workflow.steps.find((step) => step.key === 'oauth'), '已生成 XIASS 原生 PKCE 会话'),
   stage('external', 2, '当前外部页面', props.workflow.steps.find((step) => step.key === 'verify'), props.workflow.status === 'manual_required' ? (props.workflow.steps.find((step) => step.key === 'verify')?.message || '等待页面状态') : '等待授权页'),
   stage('verification', 3, '验证动作', props.workflow.steps.find((step) => step.key === 'verify'), verificationMessage()),
-  stage('callback', 4, '回调与导入', props.workflow.status === 'callback_ready' ? { key: 'verify', number: 5, label: '回调', status: 'completed', message: '回调地址已识别' } : undefined, props.callbackURL ? '可在下方导入 XIASS' : '等待回调地址')
+  stage('callback', 4, '回调与导入', props.workflow.status === 'callback_ready' ? { key: 'verify', number: 5, label: '回调', status: 'completed', message: '回调地址已校验' } : undefined, props.callbackURL ? '可在下方导入 XIASS' : '等待回调地址')
 ])
 
 function stage(key: string, number: number, label: string, source: TeamChildWorkflowStep | undefined, fallback: string) {
@@ -176,8 +160,8 @@ function stage(key: string, number: number, label: string, source: TeamChildWork
 
 function verificationMessage() {
   const message = verifyStep.value?.message || ''
-  if (/手机号/.test(message)) return '手机号动作可在右侧接码模块确认后提交'
-  if (/验证码|code|短信|邮箱/.test(message)) return '验证码可由接码模块提供，或在此临时输入'
+  if (/手机号/.test(message)) return '手机号可在右侧接码模块查看并复制到官方页面'
+  if (/验证码|code|短信|邮箱/.test(message)) return '验证码可在右侧接码模块查看并复制到官方页面'
   return '根据官方页面提示完成当前验证'
 }
 
@@ -197,10 +181,4 @@ function stageIconClass(key: string) {
   return 'border-gray-300 text-gray-400 dark:border-dark-600 dark:text-gray-500'
 }
 
-function submitManualCode() {
-  const code = manualCode.value.trim()
-  if (!/^\d{4,8}$/.test(code) || busy.value) return
-  manualCode.value = ''
-  emit('code-received', code)
-}
 </script>

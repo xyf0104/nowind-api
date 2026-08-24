@@ -105,6 +105,10 @@
       </button>
     </div>
 
+    <p v-if="!autoSubmit" class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+      当前工作区只显示可复制的手机号和验证码；不会自动提交到外部页面。
+    </p>
+
     <div
       v-if="!needsManualStart && sessionExpiresAt"
       class="mt-2 flex items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50/70 px-3 py-2 text-xs dark:border-blue-900/80 dark:bg-blue-950/30"
@@ -239,9 +243,12 @@ import SMSReceiverActionDialog from '@/components/sms/SMSReceiverActionDialog.vu
 const props = withDefaults(defineProps<{
   active?: boolean
   replacementRequired?: boolean
+  /** Keep the legacy OAuth receiver behavior enabled by default. */
+  autoSubmit?: boolean
 }>(), {
   active: false,
-  replacementRequired: false
+  replacementRequired: false,
+  autoSubmit: true
 })
 
 const emit = defineEmits<{
@@ -312,7 +319,7 @@ async function requestPhone(): Promise<void> {
   isStartingPhone.value = true
   hasManuallyStarted.value = true
   const started = await begin()
-  if (started && receiver.phoneForCopy.value) emit('phone-ready', receiver.phoneForCopy.value)
+  if (started && receiver.phoneForCopy.value && props.autoSubmit) emit('phone-ready', receiver.phoneForCopy.value)
   if (!started || ['expired', 'unavailable'].includes(receiver.phase.value)) {
     hasManuallyStarted.value = false
   }
@@ -346,7 +353,7 @@ async function changeNumber(): Promise<void> {
     lastEmittedCode.value = ''
     const outcome = await receiver.changeNumber()
     replacementPromptHandled.value = outcome === 'waiting' && Boolean(receiver.phoneForCopy.value)
-    if (outcome === 'waiting' && receiver.phoneForCopy.value) emit('phone-ready', receiver.phoneForCopy.value)
+    if (outcome === 'waiting' && receiver.phoneForCopy.value && props.autoSubmit) emit('phone-ready', receiver.phoneForCopy.value)
   } catch (error) {
     replacementPromptHandled.value = false
     showError(error)
@@ -476,6 +483,7 @@ watch(
 )
 
 watch(code, (value) => {
+  if (!props.autoSubmit) return
   const normalized = value.trim()
   if (!normalized || normalized === '--') {
     lastEmittedCode.value = ''

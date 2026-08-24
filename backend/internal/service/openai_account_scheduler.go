@@ -1501,6 +1501,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	if len(filtered) == 0 {
+		if recovered, ok := s.service.recoverSchedulableAccountsFromDatabase(ctx, req.GroupID, req.Platform, "advanced_selection_candidates_exhausted"); ok {
+			recoveryCtx := withOpenAIAccountSelectionRecovery(ctx, recovered)
+			return s.selectByLoadBalance(recoveryCtx, req)
+		}
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, filterStats.summary(""))
 	}
 

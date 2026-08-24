@@ -1030,6 +1030,21 @@ func (s *GatewayService) listSchedulableAccountsFromDatabase(ctx context.Context
 	if s.accountRepo == nil {
 		return nil, false, errors.New("account repository is not configured")
 	}
+	if s.schedulerSnapshot != nil {
+		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccountsFromDatabase(ctx, groupID, platform, hasForcePlatform)
+		if err != nil {
+			return nil, useMixed, err
+		}
+		accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
+		accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
+		if err != nil {
+			return nil, useMixed, err
+		}
+		if strings.EqualFold(platform, PlatformGrok) {
+			accounts = s.filterGrokFreeQuotaAccountsForGateway(ctx, accounts)
+		}
+		return accounts, useMixed, nil
+	}
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {
 		platforms := []string{platform, PlatformAntigravity}

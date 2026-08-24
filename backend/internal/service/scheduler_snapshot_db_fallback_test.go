@@ -2,20 +2,34 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/stretchr/testify/require"
 )
 
 // emptySchedulerSnapshotCache is intentionally empty: it models a ready
 // bucket whose asynchronous rebuild has not published the current account yet.
 type emptySchedulerSnapshotCache struct {
-	accounts map[int64]*Account
+	accounts         map[int64]*Account
+	snapshotAccounts []*Account
 }
 
 func (c *emptySchedulerSnapshotCache) GetSnapshot(context.Context, SchedulerBucket) ([]*Account, bool, error) {
-	return []*Account{}, true, nil
+	if len(c.snapshotAccounts) == 0 {
+		return []*Account{}, true, nil
+	}
+	out := make([]*Account, 0, len(c.snapshotAccounts))
+	for _, account := range c.snapshotAccounts {
+		if account == nil {
+			continue
+		}
+		cloned := *account
+		out = append(out, &cloned)
+	}
+	return out, true, nil
 }
 
 func (c *emptySchedulerSnapshotCache) CaptureBucketWriteToken(context.Context, SchedulerBucket) (SchedulerBucketWriteToken, error) {
@@ -133,11 +147,21 @@ func TestGatewayListSchedulableAccountsFallsBackWhenSnapshotIsEmpty(t *testing.T
 	account := fallbackTestAccount(41, PlatformAnthropic)
 	repo := &snapshotFallbackAccountRepo{accounts: []Account{account}}
 	cache := &emptySchedulerSnapshotCache{accounts: map[int64]*Account{account.ID: &account}}
-	snapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
+		RunMode: config.RunModeStandard,
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: true},
+		},
+	})
 	svc := &GatewayService{
 		accountRepo:       repo,
 		schedulerSnapshot: snapshot,
-		cfg:               &config.Config{RunMode: config.RunModeStandard},
+		cfg: &config.Config{
+			RunMode: config.RunModeStandard,
+			Gateway: config.GatewayConfig{
+				Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: true},
+			},
+		},
 	}
 
 	accounts, mixed, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformAnthropic, false)
@@ -153,10 +177,19 @@ func TestOpenAIListSchedulableAccountsFallsBackWhenSnapshotIsEmpty(t *testing.T)
 	account := fallbackTestAccount(42, PlatformOpenAI)
 	repo := &snapshotFallbackAccountRepo{accounts: []Account{account}}
 	cache := &emptySchedulerSnapshotCache{accounts: map[int64]*Account{account.ID: &account}}
-	snapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: true},
+		},
+	})
 	svc := &OpenAIGatewayService{
 		accountRepo:       repo,
 		schedulerSnapshot: snapshot,
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: true},
+			},
+		},
 	}
 
 	accounts, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformOpenAI)
@@ -165,5 +198,114 @@ func TestOpenAIListSchedulableAccountsFallsBackWhenSnapshotIsEmpty(t *testing.T)
 	}
 	if len(accounts) != 1 || accounts[0].ID != account.ID {
 		t.Fatalf("expected repository fallback account, accounts=%+v", accounts)
+	}
+}
+
+func TestOpenAISelectionRecoversWhenFailoverExhaustsPartialSnapshot(t *testing.T) {
+	primary := fallbackTestAccount(44, PlatformOpenAI)
+	backup := fallbackTestAccount(45, PlatformOpenAI)
+	repo := &snapshotFallbackAccountRepo{accounts: []Account{primary, backup}}
+	cache := &emptySchedulerSnapshotCache{
+		accounts:         map[int64]*Account{primary.ID: &primary, backup.ID: &backup},
+		snapshotAccounts: []*Account{&primary},
+	}
+	cfg := &config.Config{
+		RunMode: config.RunModeStandard,
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: true},
+		},
+	}
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc := &OpenAIGatewayService{
+		accountRepo:       repo,
+		schedulerSnapshot: snapshot,
+		cfg:               cfg,
+	}
+
+	selected, err := svc.SelectAccountForModelWithExclusions(
+		context.Background(),
+		nil,
+		"",
+		"",
+		map[int64]struct{}{primary.ID: {}},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, backup.ID, selected.ID,
+		"a stale partial snapshot must not turn failover into a false 503")
+}
+
+func TestOpenAIAdvancedSchedulerRecoversWhenFailoverExhaustsPartialSnapshot(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	primary := fallbackTestAccount(46, PlatformOpenAI)
+	backup := fallbackTestAccount(47, PlatformOpenAI)
+	repo := &snapshotFallbackAccountRepo{accounts: []Account{primary, backup}}
+	cache := &emptySchedulerSnapshotCache{
+		accounts:         map[int64]*Account{primary.ID: &primary, backup.ID: &backup},
+		snapshotAccounts: []*Account{&primary},
+	}
+	cfg := &config.Config{
+		RunMode: config.RunModeStandard,
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: true},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		schedulerSnapshot:  NewSchedulerSnapshotService(cache, nil, repo, nil, cfg),
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: nil,
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		context.Background(),
+		nil,
+		"",
+		"",
+		"",
+		map[int64]struct{}{primary.ID: {}},
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, backup.ID, selection.Account.ID,
+		"the advanced scheduler must recover the authoritative pool before returning 503")
+}
+
+func TestSchedulerSnapshotDatabaseFallbackHonorsConfigurationAndRateLimit(t *testing.T) {
+	account := fallbackTestAccount(43, PlatformOpenAI)
+	repo := &snapshotFallbackAccountRepo{accounts: []Account{account}}
+	cache := &emptySchedulerSnapshotCache{accounts: map[int64]*Account{account.ID: &account}}
+
+	disabled := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{DbFallbackEnabled: false},
+		},
+	})
+	_, _, err := disabled.ListSchedulableAccountsFromDatabase(context.Background(), nil, PlatformOpenAI, false)
+	if !errors.Is(err, ErrSchedulerCacheNotReady) {
+		t.Fatalf("expected disabled fallback to fail closed, got %v", err)
+	}
+
+	limited := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{
+				DbFallbackEnabled: true,
+				DbFallbackMaxQPS:  1,
+			},
+		},
+	})
+	accounts, _, err := limited.ListSchedulableAccountsFromDatabase(context.Background(), nil, PlatformOpenAI, false)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("expected first bounded fallback to succeed, accounts=%+v err=%v", accounts, err)
+	}
+	_, _, err = limited.ListSchedulableAccountsFromDatabase(context.Background(), nil, PlatformOpenAI, false)
+	if !errors.Is(err, ErrSchedulerFallbackLimited) {
+		t.Fatalf("expected second fallback to be rate limited, got %v", err)
 	}
 }

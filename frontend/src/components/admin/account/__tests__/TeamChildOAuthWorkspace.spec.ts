@@ -20,18 +20,19 @@ function workflow(overrides: Record<string, unknown> = {}) {
       { key: 'remove', number: 2, label: '移除已选成员', status: 'completed', message: '已完成' },
       { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed', message: '已完成' },
       { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed', message: '授权页已打开' },
-      { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'waiting', message: '正在等待验证码输入' }
+      { key: 'verify', number: 5, label: '完成外部授权并提交回调', status: 'waiting', message: '正在等待验证码输入' }
     ],
     ...overrides
   }
 }
 
 describe('TeamChildOAuthWorkspace', () => {
-  it('keeps the external verification state in the modular workspace and submits a temporary code', async () => {
+  it('keeps external verification in the modular workspace without auto-submitting a code', async () => {
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {
         workflow: workflow(),
-        mailboxEmail: 'team-child@example.test'
+        mailboxEmail: 'team-child@example.test',
+        authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
       },
       global: {
         stubs: {
@@ -43,13 +44,9 @@ describe('TeamChildOAuthWorkspace', () => {
 
     expect(wrapper.get('[data-testid="team-oauth-workspace"]').text()).toContain('官方 OAuth 验证')
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
-
-    const codeInput = wrapper.get('[data-testid="team-oauth-manual-code"]')
-    await codeInput.setValue('123456')
-    await codeInput.trigger('keyup.enter')
-
-    expect(wrapper.emitted('code-received')).toEqual([['123456']])
-    expect((codeInput.element as HTMLInputElement).value).toBe('')
+    expect(wrapper.find('[data-testid="team-oauth-manual-code"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('不会由 Team 页面自动提交')
+    expect(wrapper.find('a[href^="https://auth.openai.com/oauth/authorize"]').exists()).toBe(true)
   })
 
   it('shows callback state without activating the receiver for import', () => {

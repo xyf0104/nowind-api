@@ -271,6 +271,31 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	return accounts, useMixed, nil
 }
 
+// ListSchedulableAccountsFromDatabase performs the bounded, read-only fallback
+// used when a published snapshot is empty. Keeping the fallback here makes the
+// scheduler's DB-fallback enablement, QPS limit, timeout, and run-mode rules
+// identical for cache misses and stale empty snapshots.
+func (s *SchedulerSnapshotService) ListSchedulableAccountsFromDatabase(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, false, ErrSchedulerCacheNotReady
+	}
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	bucket := s.bucketFor(groupID, platform, s.resolveMode(platform, hasForcePlatform))
+	if err := s.guardFallback(ctx); err != nil {
+		return nil, useMixed, err
+	}
+	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
+	defer cancel()
+	accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+	if err != nil {
+		return nil, useMixed, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, useMixed, ctxErr
+	}
+	return accounts, useMixed, nil
+}
+
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
 	if accountID <= 0 {
 		return nil, nil

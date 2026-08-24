@@ -100,8 +100,6 @@ export interface TeamChildWorkflow {
   status: TeamChildWorkflowStatus
   expires_at: string
   manual_required: boolean
-  /** The active OAuth page rejected the current phone; confirm a replacement in XIASS SMS. */
-  phone_rejected?: boolean
   callback_url?: string
   error?: string
   steps: TeamChildWorkflowStep[]
@@ -232,18 +230,10 @@ export async function runTeamChildWorkflowStep(workflowID: string, step: TeamChi
   return data
 }
 
-export async function submitTeamChildWorkflowPhone(workflowID: string, phone: string): Promise<TeamChildWorkflow> {
+export async function submitTeamChildWorkflowCallback(workflowID: string, callbackURL: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(
-    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/phone`,
-    { phone }
-  )
-  return data
-}
-
-export async function submitTeamChildWorkflowCode(workflowID: string, code: string): Promise<TeamChildWorkflow> {
-  const { data } = await apiClient.post<TeamChildWorkflow>(
-    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/code`,
-    { code }
+    `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/callback`,
+    { callback_url: callbackURL }
   )
   return data
 }
@@ -293,8 +283,7 @@ export const teamChildAPI = {
   getActiveTeamChildWorkflow,
   continueTeamChildWorkflow,
   runTeamChildWorkflowStep,
-  submitTeamChildWorkflowPhone,
-  submitTeamChildWorkflowCode,
+  submitTeamChildWorkflowCallback,
   restartTeamChildWorkflowOAuth,
   cancelTeamChildWorkflow,
   createMailbox,

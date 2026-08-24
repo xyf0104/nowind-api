@@ -23,8 +23,7 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
     runTeamChildWorkflowStep: vi.fn(),
     getTeamChildWorkflow: vi.fn(),
     continueTeamChildWorkflow: vi.fn(),
-    submitTeamChildWorkflowPhone: vi.fn(),
-    submitTeamChildWorkflowCode: vi.fn(),
+    submitTeamChildWorkflowCallback: vi.fn(),
     restartTeamChildWorkflowOAuth: vi.fn(),
     cancelTeamChildWorkflow: vi.fn(),
     createOpenAIAccountFromOAuth: vi.fn()
@@ -175,7 +174,7 @@ describe('TeamChildCreationView', () => {
         { key: 'remove', number: 2, label: '移除已选成员', status: 'completed' },
         { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed' },
         { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' },
-        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'waiting' }
+        { key: 'verify', number: 5, label: '完成外部授权并提交回调', status: 'waiting' }
       ]
     })
     teamChildAPI.getTeamChildWorkflow.mockResolvedValue({
@@ -195,21 +194,15 @@ describe('TeamChildCreationView', () => {
         { key: 'remove', number: 2, label: '移除已选成员', status: 'completed' },
         { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed' },
         { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' },
-        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'waiting' }
+        { key: 'verify', number: 5, label: '完成外部授权并提交回调', status: 'waiting' }
       ]
     })
-    teamChildAPI.submitTeamChildWorkflowPhone.mockResolvedValue({
+    teamChildAPI.submitTeamChildWorkflowCallback.mockResolvedValue({
       id: 'workflow-token-abcdefghijklmnop',
-      status: 'manual_required',
-      manual_required: true,
+      status: 'callback_ready',
+      manual_required: false,
       expires_at: '2026-08-22T12:30:00.000Z',
-      steps: []
-    })
-    teamChildAPI.submitTeamChildWorkflowCode.mockResolvedValue({
-      id: 'workflow-token-abcdefghijklmnop',
-      status: 'manual_required',
-      manual_required: true,
-      expires_at: '2026-08-22T12:30:00.000Z',
+      callback_url: 'http://localhost:1455/auth/callback?code=callback-code&state=team-state',
       steps: []
     })
     teamChildAPI.restartTeamChildWorkflowOAuth.mockResolvedValue({
@@ -254,7 +247,7 @@ describe('TeamChildCreationView', () => {
       steps: [
         { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'completed' },
         { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' },
-        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'waiting' }
+        { key: 'verify', number: 5, label: '完成外部授权并提交回调', status: 'waiting' }
       ]
     })
 
@@ -309,6 +302,34 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
+  it('submits a pasted callback only after the workflow state is present', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    const callback = 'http://localhost:1455/auth/callback?code=callback-code&state=team-state'
+    await wrapper.get('textarea[placeholder^="https://"]')
+      .setValue(callback)
+    await flushPromises()
+    const confirmCallback = wrapper.findAll('button').find((button) => button.text().includes('确认回调状态'))
+    expect(confirmCallback).toBeDefined()
+    await confirmCallback!.trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.submitTeamChildWorkflowCallback).toHaveBeenCalledWith(
+      'workflow-token-abcdefghijklmnop',
+      callback
+    )
+    wrapper.unmount()
+  })
+
   it('runs a selected unfinished workflow step only after in-page confirmation', async () => {
     teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce({
       id: 'workflow-token-abcdefghijklmnop',
@@ -320,7 +341,7 @@ describe('TeamChildCreationView', () => {
         { key: 'remove', number: 2, label: '移除已选成员', status: 'completed' },
         { key: 'invite', number: 3, label: '邀请临时邮箱', status: 'pending' },
         { key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'pending' },
-        { key: 'verify', number: 5, label: '完成外部验证并捕获回调', status: 'pending' }
+        { key: 'verify', number: 5, label: '完成外部授权并提交回调', status: 'pending' }
       ]
     })
     const wrapper = mountView()
@@ -437,7 +458,7 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
-  it('forwards confirmed SMS events to the active OAuth workflow', async () => {
+  it('keeps SMS receiver values outside the Team workflow submission API', async () => {
     const wrapper = mountView()
     await flushPromises()
     const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
@@ -448,12 +469,7 @@ describe('TeamChildCreationView', () => {
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
-    await wrapper.get('[data-testid="sms-phone-ready"]').trigger('click')
-    await wrapper.get('[data-testid="sms-code-received"]').trigger('click')
-    await flushPromises()
-
-    expect(teamChildAPI.submitTeamChildWorkflowPhone).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop', '+14155550123')
-    expect(teamChildAPI.submitTeamChildWorkflowCode).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop', '123456')
+    expect(teamChildAPI.submitTeamChildWorkflowCallback).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

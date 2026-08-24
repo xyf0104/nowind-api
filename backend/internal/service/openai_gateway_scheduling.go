@@ -685,6 +685,15 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
 	selected, compactBlocked := s.selectBestAccount(ctx, groupID, platform, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+	if selected == nil {
+		// A non-empty scheduler snapshot can still be stale or incomplete. This
+		// is especially visible during failover: the failed account is excluded
+		// on the second pass, so a partial snapshot otherwise turns into a false
+		// 503 without ever consulting the authoritative account pool.
+		if recovered, ok := s.recoverSchedulableAccountsFromDatabase(ctx, groupID, platform, "legacy_selection_exhausted"); ok {
+			selected, compactBlocked = s.selectBestAccount(ctx, groupID, platform, recovered, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+		}
+	}
 
 	if selected == nil {
 		return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked, "")
@@ -1038,6 +1047,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	if len(candidates) == 0 {
+		if recovered, ok := s.recoverSchedulableAccountsFromDatabase(ctx, groupID, platform, "legacy_load_candidates_exhausted"); ok {
+			recoveryCtx := withOpenAIAccountSelectionRecovery(ctx, recovered)
+			return s.selectAccountWithLoadAwareness(recoveryCtx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
+		}
 		return nil, ErrNoAvailableAccounts
 	}
 	// ============ Layer 3: Load-aware selection ============
@@ -1245,6 +1258,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
+	if accounts, ok := openAIAccountSelectionOverride(ctx); ok {
+		return accounts, nil
+	}
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
 		if err != nil {
@@ -1278,9 +1294,74 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	return s.listSchedulableAccountsFromDatabase(ctx, groupID, platform)
 }
 
+// openAIAccountSelectionContextKey carries one bounded, request-local recovery
+// pass. It lets the advanced scheduler retry with the authoritative DB pool
+// without changing the normal snapshot hot path or allowing recursive retries.
+type openAIAccountSelectionContextKey struct{}
+
+func withOpenAIAccountSelectionRecovery(ctx context.Context, accounts []Account) context.Context {
+	ctx = context.WithValue(ctx, openAIAccountSelectionContextKey{}, true)
+	return context.WithValue(ctx, openAIAccountSelectionAccountsContextKey{}, accounts)
+}
+
+type openAIAccountSelectionAccountsContextKey struct{}
+
+func openAIAccountSelectionRecoveryAttempted(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	attempted, _ := ctx.Value(openAIAccountSelectionContextKey{}).(bool)
+	return attempted
+}
+
+func openAIAccountSelectionOverride(ctx context.Context) ([]Account, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	accounts, ok := ctx.Value(openAIAccountSelectionAccountsContextKey{}).([]Account)
+	return accounts, ok
+}
+
+func (s *OpenAIGatewayService) recoverSchedulableAccountsFromDatabase(ctx context.Context, groupID *int64, platform, reason string) ([]Account, bool) {
+	if s == nil || s.schedulerSnapshot == nil || s.accountRepo == nil || openAIAccountSelectionRecoveryAttempted(ctx) {
+		return nil, false
+	}
+
+	accounts, err := s.listSchedulableAccountsFromDatabase(ctx, groupID, platform)
+	if err != nil {
+		slog.Debug("openai_account_scheduling_snapshot_recovery_failed",
+			"group_id", derefGroupID(groupID),
+			"platform", platform,
+			"reason", reason,
+			"error", err)
+		return nil, false
+	}
+	if len(accounts) == 0 {
+		return nil, false
+	}
+
+	slog.Warn("openai_account_scheduling_snapshot_recovered",
+		"group_id", derefGroupID(groupID),
+		"platform", platform,
+		"reason", reason,
+		"count", len(accounts))
+	return accounts, true
+}
+
 func (s *OpenAIGatewayService) listSchedulableAccountsFromDatabase(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
 	if s.accountRepo == nil {
 		return nil, errors.New("account repository is not configured")
+	}
+	if s.schedulerSnapshot != nil {
+		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccountsFromDatabase(ctx, groupID, platform, false)
+		if err != nil {
+			return nil, err
+		}
+		accounts, err = s.filterAccountCandidates(ctx, groupID, accounts)
+		if err != nil {
+			return nil, err
+		}
+		return accounts, nil
 	}
 	var accounts []Account
 	var err error

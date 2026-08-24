@@ -17,7 +17,6 @@ const browserConnectRetryDelay = boundedDuration(process.env.BROWSER_CONNECT_RET
 const workflowTTL = boundedDuration(process.env.WORKFLOW_TTL_MS, 45 * 60 * 1000, 5 * 60 * 1000, 2 * 60 * 60 * 1000)
 const memberRefreshAttempts = 3
 const inviteAttempts = 3
-const workflowPhonePattern = /^\+[1-9][0-9]{7,14}$/
 const officialOpenAIClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const officialOpenAIRedirectURI = 'http://localhost:1455/auth/callback'
 const officialOpenAIScope = 'openid profile email offline_access'
@@ -32,10 +31,9 @@ let browserPromise
 let operation = Promise.resolve()
 let activeWorkflowID = ''
 const workflows = new Map()
-// All automated Team/OAuth navigation stays in one dedicated browser tab.
-// Route changes (Members -> Pending invites -> OAuth) are serialized by the
-// operation queue, so a second tab only creates stale SPA state and confuses
-// the operator watching the server browser.
+// All automated Team member navigation stays in one dedicated browser tab.
+// Route changes (Members -> Pending invites) are serialized by the operation
+// queue; official OAuth is handed off through the displayed PKCE URL.
 let managedBrowserPage
 
 function json(res, status, payload) {
@@ -945,15 +943,6 @@ function validateOpenAIAuthURL(value) {
   return parsed.toString()
 }
 
-function isOAuthCallbackURL(value) {
-  try {
-    const parsed = new URL(String(value || ''))
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.searchParams.get('code')?.trim()) && Boolean(parsed.searchParams.get('state')?.trim())
-  } catch {
-    return false
-  }
-}
-
 function workflowStep(key, number, label) {
   return { key, number, label, status: 'pending', message: '' }
 }
@@ -979,15 +968,13 @@ function createWorkflow(seatEmail, inviteEmail, authURL, seatAlreadyRemoved) {
     seatObserved: false,
     inviteConfirmed: false,
     inviteConfirmedAt: 0,
-    phoneRejected: false,
-    oauthPage: undefined,
     callbackURL: '',
     steps: [
       workflowStep('members', 1, seatAlreadyRemoved ? '确认已腾出席位' : '读取成员席位'),
       workflowStep('remove', 2, seatAlreadyRemoved ? '跳过成员移除' : '移除已选成员'),
       workflowStep('invite', 3, '邀请临时邮箱'),
-      workflowStep('oauth', 4, '打开 OpenAI 授权页'),
-      workflowStep('verify', 5, '完成外部验证并捕获回调')
+      workflowStep('oauth', 4, '准备 OpenAI 授权链接'),
+      workflowStep('verify', 5, '完成外部授权并提交回调')
     ]
   }
 }
@@ -1019,12 +1006,11 @@ function workflowSummary(workflow) {
     expires_at: new Date(workflow.expiresAt).toISOString(),
     manual_required: workflow.status === 'manual_required',
     seat_already_removed: Boolean(workflow.seatAlreadyRemoved),
-    phone_rejected: Boolean(workflow.phoneRejected),
     steps: workflow.steps.map(({ key, number, label, status, message }) => ({ key, number, label, status, ...(message ? { message } : {}) }))
   }
   if (workflow.error) summary.error = workflow.error
   // The callback is deliberately held only in process memory. It is returned
-  // to the authenticated XIASS admin caller after the browser has reached it,
+  // to the authenticated XIASS admin caller after the operator pastes it,
   // so the existing state-validated import endpoint can consume it.
   if (workflow.status === 'callback_ready' && workflow.callbackURL) summary.callback_url = workflow.callbackURL
   return summary
@@ -1095,8 +1081,8 @@ async function confirmManualStepCompletion(workflow, step) {
     return '临时邮箱已在 Pending invites 中确认'
   }
 
-  if (step.key === 'oauth' && (!workflow.oauthPage || workflow.oauthPage.isClosed())) {
-    throw new Error('OAuth 页面尚未打开，请先在浏览器中打开授权页后再继续')
+  if (step.key === 'oauth') {
+    return 'XIASS 官方 OAuth 链接已生成，请在外部浏览器完成授权'
   }
   return '该步骤已由人工处理，自动化将直接执行下一步'
 }
@@ -1154,146 +1140,45 @@ async function activeWorkflowStatus() {
   return { active: true, workflow: await workflowStatus(workflow.id) }
 }
 
-async function openOAuthAuthorizationPage(authURL) {
-  const connected = await browser()
-  const context = connected.contexts()[0]
-  if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
-  // Continue in the same automation tab after the invite is confirmed. This
-  // keeps the server browser easy to watch and avoids leaving stale Members or
-  // OAuth tabs behind after a retry or a page refresh.
-  const oauthPage = reusableTeamPage(context, { allowNonMembers: true }) || await context.newPage()
-  managedBrowserPage = oauthPage
-  await oauthPage.goto(authURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
-  return oauthPage
-}
-
-async function isVisible(locator) {
-  try {
-    return await locator.first().isVisible({ timeout: 400 })
-  } catch {
-    return false
-  }
-}
-
-async function phoneRejectedOnPage(oauthPage) {
-  if (!oauthPage || oauthPage.isClosed()) return false
-  const pattern = /(phone\s*(?:number)?|手机号|电话号码|telephone).{0,100}(?:unavailable|not available|already used|used too many|too many times|already been used|cannot be used|use another|不可用|已使用|次数过多|被使用|请使用其他)|(unavailable|not available|already used|used too many|too many times|already been used|cannot be used|use another|不可用|已使用|次数过多|被使用|请使用其他).{0,100}(phone\s*(?:number)?|手机号|电话号码|telephone)/i
-  const candidates = [
-    oauthPage.getByRole('alert'),
-    oauthPage.locator('[aria-live="assertive"], [aria-live="polite"]'),
-    oauthPage.getByText(pattern)
-  ]
-  for (const candidate of candidates) {
-    const count = await candidate.count().catch(() => 0)
-    for (let index = 0; index < count; index += 1) {
-      const item = candidate.nth(index)
-      if (!(await item.isVisible().catch(() => false))) continue
-      const text = (await item.innerText().catch(() => '')).replace(/\s+/g, ' ')
-      if (pattern.test(text)) return true
-    }
-  }
-  // Some hosted builds put the validation message in a plain, visible form
-  // section without an alert role. Reading visible body text here is limited
-  // to detection and is never copied into workflow state or logs.
-  const body = (await oauthPage.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ')
-  return pattern.test(body)
-}
-
-// Only inspect semantic controls that are already visible to the person using
-// the browser. We intentionally do not extract page text, form values, email
-// codes, phone numbers, or credentials into workflow state or logs.
-async function describeOAuthNextStep(oauthPage) {
-  if (!oauthPage || oauthPage.isClosed()) return '授权标签已关闭；请接管浏览器后重新开始授权。'
-  if (await isVisible(oauthPage.getByRole('button', { name: /^sign\s*up$/i }))) {
-    return '授权页已打开，检测到 Sign up；请在当前浏览器标签页点击 Sign up 后继续。'
-  }
-  if (await isVisible(oauthPage.getByRole('button', { name: /use another account|使用其他账号/i }))) {
-    return '已打开登录页，请在服务器浏览器中选择“使用其他账号”。'
-  }
-  if (await phoneRejectedOnPage(oauthPage)) {
-    return '当前手机号已被使用；请在接码模块确认换号，系统会把新完整国际号码填入授权页后继续。'
-  }
-  if (await isVisible(oauthPage.locator('input[autocomplete="one-time-code"], input[name*="code" i], input[id*="code" i]'))) {
-    return '正在等待验证码输入；邮箱和短信验证码仍由现有确认式接码流程提供。'
-  }
-  if (await isVisible(oauthPage.locator('input[type="tel"], input[autocomplete="tel"], input[name*="phone" i]'))) {
-    return '页面正在请求手机号；请在接码服务中明确确认领取号码后再填写。'
-  }
-  if (await isVisible(oauthPage.locator('input[type="email"], input[autocomplete="email"]'))) {
-    return '页面正在请求邮箱；请使用当前工作流中的临时邮箱。'
-  }
-  if (await isVisible(oauthPage.locator('input[type="password"][autocomplete*="new-password" i]'))) {
-    return '检测到首次设置密码页面；请在内置浏览器中创建并保存该账号的唯一密码。'
-  }
-  if (await isVisible(oauthPage.locator('input[type="password"][autocomplete*="current-password" i]'))) {
-    return '检测到已有密码登录页面；请在内置浏览器中输入该账号原有密码。'
-  }
-  if (await isVisible(oauthPage.locator('input[type="password"], input[autocomplete="new-password"]'))) {
-    return '页面正在请求密码；请在服务器浏览器中完成该外部账号步骤。'
-  }
-  if (await isVisible(oauthPage.locator('input[autocomplete="name"], input[name*="name" i], input[name*="age" i]'))) {
-    return '页面正在请求资料信息；请在服务器浏览器中按外部页面要求完成。'
-  }
-  if (await isVisible(oauthPage.getByRole('button', { name: /continue|next|继续|下一步/i }))) {
-    return '外部页面等待人工确认；请核对当前内容后在服务器浏览器中继续。'
-  }
-  return '外部授权页面等待人工处理；完成后系统会自动识别回调地址。'
-}
-
-async function waitForWorkflowCallback(workflow, message) {
-  const currentURL = workflow.oauthPage && !workflow.oauthPage.isClosed() ? workflow.oauthPage.url() : ''
-  if (isOAuthCallbackURL(currentURL)) {
-    workflow.callbackURL = currentURL
-    workflow.status = 'callback_ready'
-    workflow.phoneRejected = false
-    setWorkflowStep(workflow, 'verify', 'completed', '已识别授权回调地址')
-    if (activeWorkflowID === workflow.id) activeWorkflowID = ''
-    return
-  }
+function waitForWorkflowCallback(workflow, message) {
   setWorkflowStep(workflow, 'verify', 'waiting', message)
   workflow.status = 'manual_required'
+  activeWorkflowID = workflow.id
 }
 
-function normalizeWorkflowPhone(value) {
+function validateWorkflowCallbackURL(value, workflow) {
   const raw = String(value || '').trim()
-  if (!raw) throw new Error('手机号格式无效')
-  let phone = ''
-  for (const character of raw) {
-    if (/[0-9]/.test(character)) {
-      phone += character
-      continue
-    }
-    if (character === '+' && phone.length === 0) {
-      phone += character
-      continue
-    }
-    if (/[-().\s]/.test(character)) continue
-    throw new Error('手机号格式无效')
+  if (!raw || raw.length > 8192) throw new Error('回调 URL 无效')
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new Error('回调 URL 无效')
   }
-  if (!workflowPhonePattern.test(phone)) throw new Error('手机号格式无效')
-  return phone
+  const code = parsed.searchParams.get('code')?.trim() || ''
+  const state = parsed.searchParams.get('state')?.trim() || ''
+  const expectedState = new URL(workflow.authURL).searchParams.get('state')?.trim() || ''
+  if (!code || !state || !expectedState || state !== expectedState) {
+    throw new Error('回调 state 与当前 XIASS OAuth 会话不匹配')
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('回调 URL 协议无效')
+  return parsed.toString()
 }
 
-function validateWorkflowCode(value) {
-  const code = String(value || '').trim()
-  if (!/^[0-9]{4,8}$/.test(code)) throw new Error('验证码格式无效')
-  return code
-}
-
-function interactiveOAuthWorkflow(id) {
+async function submitWorkflowCallback(id, value) {
   pruneWorkflows()
   const workflow = workflows.get(String(id || '').trim())
   if (!workflow) throw new Error('工作流不存在或已过期')
-  if (!['manual_required', 'failed'].includes(workflow.status)) {
-    throw new Error('当前工作流尚未进入可操作的 OAuth 步骤')
-  }
-  if (!isWorkflowStepCompleted(workflow, 'oauth')) {
-    throw new Error('OAuth 页面尚未打开，暂不能填写验证信息')
-  }
-  if (!workflow.oauthPage || workflow.oauthPage.isClosed()) {
-    throw new Error('OAuth 页面已关闭，请重新打开授权页')
-  }
-  return workflow
+  if (workflow.status === 'cancelled') throw new Error('当前工作流已停止，请重新开始')
+  if (!isWorkflowStepCompleted(workflow, 'invite')) throw new Error('临时邮箱邀请尚未完成，暂不能提交 OAuth 回调')
+
+  workflow.callbackURL = validateWorkflowCallbackURL(value, workflow)
+  workflow.error = ''
+  setWorkflowStep(workflow, 'oauth', 'completed', '官方授权已由外部浏览器完成')
+  setWorkflowStep(workflow, 'verify', 'completed', '已校验回调 URL 的 code 和 state')
+  workflow.status = 'callback_ready'
+  if (activeWorkflowID === workflow.id) activeWorkflowID = ''
+  return workflowSummary(workflow)
 }
 
 function restartableOAuthWorkflow(id) {
@@ -1309,135 +1194,6 @@ function restartableOAuthWorkflow(id) {
   return workflow
 }
 
-async function firstVisibleOAuthInput(page, selectors) {
-  for (const selector of selectors) {
-    const candidates = page.locator(selector)
-    const count = await candidates.count()
-    for (let index = 0; index < count; index += 1) {
-      const candidate = candidates.nth(index)
-      if (await candidate.isVisible().catch(() => false)) return candidate
-    }
-  }
-  return null
-}
-
-async function firstVisibleOAuthPhoneInput(page) {
-  const candidates = page.locator('input')
-  const count = await candidates.count()
-  let selected
-  let selectedScore = -Infinity
-  for (let index = 0; index < count; index += 1) {
-    const candidate = candidates.nth(index)
-    if (!(await candidate.isVisible().catch(() => false))) continue
-    const type = (await candidate.getAttribute('type') || 'text').toLowerCase()
-    if (['hidden', 'email', 'password', 'search', 'submit', 'button', 'checkbox', 'radio', 'file'].includes(type)) continue
-    const autocomplete = (await candidate.getAttribute('autocomplete') || '').toLowerCase()
-    const metadata = [
-      autocomplete,
-      await candidate.getAttribute('name'),
-      await candidate.getAttribute('id'),
-      await candidate.getAttribute('aria-label'),
-      await candidate.getAttribute('placeholder')
-    ].filter(Boolean).join(' ').toLowerCase()
-    let score = 0
-    if (autocomplete === 'tel' || autocomplete === 'tel-national' || autocomplete === 'tel-local') score += 8
-    if (/tel|phone|telephone|mobile|number/.test(metadata)) score += 5
-    if (/country|dial|calling|region|prefix|verification|one-time|otp|code/.test(metadata)) score -= 10
-    if (type === 'tel') score += 4
-    if (score <= 0) continue
-    if (score > selectedScore) {
-      selected = candidate
-      selectedScore = score
-    }
-  }
-  return selected || null
-}
-
-async function firstVisibleOAuthContinue(page) {
-  const patterns = [
-    /^(continue|next|继续|下一步)$/i,
-    /^(verify|确认|验证)$/i
-  ]
-  for (const pattern of patterns) {
-    const buttons = page.getByRole('button', { name: pattern })
-    const count = await buttons.count()
-    for (let index = 0; index < count; index += 1) {
-      const button = buttons.nth(index)
-      if (!(await button.isVisible().catch(() => false))) continue
-      if (await button.isDisabled().catch(() => true)) continue
-      return button
-    }
-  }
-
-  const submitControls = page.locator('button[type="submit"], input[type="submit"]')
-  const count = await submitControls.count()
-  for (let index = 0; index < count; index += 1) {
-    const control = submitControls.nth(index)
-    if (await control.isVisible().catch(() => false) && !(await control.isDisabled().catch(() => true))) return control
-  }
-  return null
-}
-
-async function selectWorkflowSMSMethod(page) {
-  // OpenAI has rendered this choice both as a native radio and as a labelled
-  // custom control. Select SMS only when an explicit text-message option is
-  // present; some supported flows omit the choice entirely.
-  const radios = page.locator('input[type="radio"]')
-  const radioCount = await radios.count()
-  for (let index = 0; index < radioCount; index += 1) {
-    const radio = radios.nth(index)
-    if (!(await radio.isVisible().catch(() => false))) continue
-    const metadata = [
-      await radio.getAttribute('value'),
-      await radio.getAttribute('name'),
-      await radio.getAttribute('id'),
-      await radio.getAttribute('aria-label')
-    ].filter(Boolean).join(' ').toLowerCase()
-    if (!/(^|[^a-z])(sms|text message|text)([^a-z]|$)|短信/.test(metadata)) continue
-    if (!(await radio.isChecked().catch(() => false))) await radio.check().catch(() => radio.click())
-    return true
-  }
-
-  const labelledRadio = page.getByRole('radio', { name: /text message|sms|短信/i })
-  const labelledCount = await labelledRadio.count()
-  for (let index = 0; index < labelledCount; index += 1) {
-    const radio = labelledRadio.nth(index)
-    if (!(await radio.isVisible().catch(() => false))) continue
-    if (!(await radio.isChecked().catch(() => false))) await radio.click()
-    return true
-  }
-
-  return false
-}
-
-async function submitOAuthField(workflow, value, selectors, fieldLabel) {
-  const input = await firstVisibleOAuthInput(workflow.oauthPage, selectors)
-  if (!input) throw new Error(`授权页中找不到可见的${fieldLabel}输入框`)
-  await input.fill(value)
-  const continueButton = await firstVisibleOAuthContinue(workflow.oauthPage)
-  if (!continueButton) throw new Error(`授权页中找不到可用的${fieldLabel}继续按钮`)
-  await continueButton.click()
-  await sleep(800)
-}
-
-async function updateWorkflowAfterOAuthAction(workflow, message) {
-  const currentURL = workflow.oauthPage && !workflow.oauthPage.isClosed() ? workflow.oauthPage.url() : ''
-  if (isOAuthCallbackURL(currentURL)) {
-    workflow.callbackURL = currentURL
-    workflow.status = 'callback_ready'
-    workflow.phoneRejected = false
-    setWorkflowStep(workflow, 'verify', 'completed', '已识别授权回调地址')
-    if (activeWorkflowID === workflow.id) activeWorkflowID = ''
-    return
-  }
-  workflow.status = 'manual_required'
-  workflow.error = ''
-  workflow.phoneRejected = await phoneRejectedOnPage(workflow.oauthPage)
-  if (workflow.phoneRejected) message = '当前手机号已被使用；请在接码模块确认换号，系统会把新完整国际号码填入授权页后继续。'
-  setWorkflowStep(workflow, 'verify', 'waiting', message)
-  activeWorkflowID = workflow.id
-}
-
 function markWorkflowActionFailed(workflow, error) {
   const message = redactWorkflowError(error)
   workflow.status = 'failed'
@@ -1449,61 +1205,11 @@ function markWorkflowActionFailed(workflow, error) {
   return message
 }
 
-async function submitWorkflowPhone(id, value) {
-  const workflow = interactiveOAuthWorkflow(id)
-  const phone = normalizeWorkflowPhone(value)
-  workflow.status = 'running'
-  workflow.error = ''
-  workflow.phoneRejected = false
-  try {
-    const input = await firstVisibleOAuthPhoneInput(workflow.oauthPage)
-    if (!input) throw new Error('授权页中找不到可见的手机号输入框')
-    // Keep the full international number intact. The hosted OpenAI page selects
-    // its country/region from the leading `+` code after the single fill.
-    await input.click()
-    await input.fill(phone)
-    // Blur once so masked/controlled inputs commit the parsed country before
-    // the page's Continue handler reads the field.
-    await input.press('Tab').catch(() => undefined)
-    await selectWorkflowSMSMethod(workflow.oauthPage)
-    const continueButton = await firstVisibleOAuthContinue(workflow.oauthPage)
-    if (!continueButton) throw new Error('授权页中找不到可用的手机号继续按钮')
-    await continueButton.click()
-    await sleep(800)
-    await updateWorkflowAfterOAuthAction(workflow, '手机号已更新，请继续完成当前授权步骤；收到验证码后将自动填写。')
-    return workflowSummary(workflow)
-  } catch (error) {
-    markWorkflowActionFailed(workflow, error)
-    throw error
-  }
-}
-
-async function submitWorkflowCode(id, value) {
-  const workflow = interactiveOAuthWorkflow(id)
-  const code = validateWorkflowCode(value)
-  workflow.status = 'running'
-  workflow.error = ''
-  try {
-    await submitOAuthField(workflow, code, [
-      'input[autocomplete="one-time-code"]',
-      'input[name*="code" i]',
-      'input[id*="code" i]',
-      'input[inputmode="numeric"]'
-    ], '验证码')
-    await updateWorkflowAfterOAuthAction(workflow, '验证码已提交，请等待授权页面进入下一步；系统会继续识别回调地址。')
-    return workflowSummary(workflow)
-  } catch (error) {
-    markWorkflowActionFailed(workflow, error)
-    throw error
-  }
-}
-
 function resetOAuthWorkflowSteps(workflow) {
   setWorkflowStep(workflow, 'oauth', 'pending', '')
   setWorkflowStep(workflow, 'verify', 'pending', '')
   workflow.callbackURL = ''
   workflow.error = ''
-  workflow.phoneRejected = false
 }
 
 async function restartOAuthWorkflow(id, value) {
@@ -1512,12 +1218,9 @@ async function restartOAuthWorkflow(id, value) {
   workflow.status = 'running'
   resetOAuthWorkflowSteps(workflow)
   try {
-    if (workflow.oauthPage && !workflow.oauthPage.isClosed()) await workflow.oauthPage.close().catch(() => undefined)
     workflow.authURL = authURL
-    setWorkflowStep(workflow, 'oauth', 'running', '正在重新打开 OpenAI 授权页')
-    workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页重新打开，等待外部验证')
-    await waitForWorkflowCallback(workflow, '已重新打开授权页，请完成登录和验证；系统会自动识别回调地址')
+    setWorkflowStep(workflow, 'oauth', 'completed', '已生成新的 XIASS 官方 OAuth 链接，请在外部浏览器完成授权')
+    await waitForWorkflowCallback(workflow, '完成外部授权后，请把完整回调 URL 粘贴到工作区')
     return workflowSummary(workflow)
   } catch (error) {
     markWorkflowActionFailed(workflow, error)
@@ -1570,13 +1273,11 @@ async function resumeWorkflowFromNextStep(workflow) {
       continue
     }
     if (step.key === 'oauth') {
-      setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
-      workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页打开')
+      setWorkflowStep(workflow, 'oauth', 'completed', '官方 OAuth 链接已准备好，请在外部浏览器完成授权')
       continue
     }
     if (step.key === 'verify') {
-      await waitForWorkflowCallback(workflow, '请在内置浏览器完成外部验证；系统会自动识别回调地址')
+      await waitForWorkflowCallback(workflow, '完成外部授权后，请把完整回调 URL 粘贴到工作区')
       return
     }
   }
@@ -1620,11 +1321,9 @@ async function executeSingleWorkflowStep(workflow, index) {
     await inviteMember(workflow.inviteEmail)
     completeInviteStep(workflow, '邀请已发送并出现在待处理邀请中')
   } else if (step.key === 'oauth') {
-    setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
-    workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-    setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页打开')
+    setWorkflowStep(workflow, 'oauth', 'completed', '官方 OAuth 链接已准备好，请在外部浏览器完成授权')
   } else if (step.key === 'verify') {
-    await waitForWorkflowCallback(workflow, '请在内置浏览器完成外部验证；系统会自动识别回调地址')
+    await waitForWorkflowCallback(workflow, '完成外部授权后，请把完整回调 URL 粘贴到工作区')
     return
   }
 
@@ -1632,7 +1331,7 @@ async function executeSingleWorkflowStep(workflow, index) {
   workflow.error = ''
   activeWorkflowID = workflow.id
   if (step.key === 'oauth') {
-    setWorkflowStep(workflow, 'verify', 'waiting', '授权页已打开，请完成外部验证；完成后可单独执行回调检查')
+    setWorkflowStep(workflow, 'verify', 'waiting', '官方 OAuth 链接已准备，请完成外部授权后粘贴回调 URL')
   }
 }
 
@@ -1714,12 +1413,10 @@ async function executeWorkflow(workflow) {
       }
     }
 
-    if (!isWorkflowStepCompleted(workflow, 'oauth') || !workflow.oauthPage || workflow.oauthPage.isClosed()) {
-      setWorkflowStep(workflow, 'oauth', 'running', '正在打开授权页')
-      workflow.oauthPage = await openOAuthAuthorizationPage(workflow.authURL)
-      setWorkflowStep(workflow, 'oauth', 'completed', '授权页已在当前受控浏览器标签页打开')
+    if (!isWorkflowStepCompleted(workflow, 'oauth')) {
+      setWorkflowStep(workflow, 'oauth', 'completed', '官方 OAuth 链接已准备好，请在外部浏览器完成授权')
     }
-    setWorkflowStep(workflow, 'verify', 'waiting', '请在需要时接管浏览器，完成外部验证；系统会自动识别回调地址')
+    setWorkflowStep(workflow, 'verify', 'waiting', '请在官方浏览器完成外部授权，然后把完整回调 URL 粘贴到工作区')
     workflow.status = 'manual_required'
   } catch (error) {
     const message = redactWorkflowError(error)
@@ -1805,25 +1502,18 @@ async function continueWorkflow(id) {
   return workflowSummary(workflow)
 }
 
-async function workflowStatus(id) {
+function workflowStatus(id) {
   pruneWorkflows()
   const workflow = workflows.get(String(id || '').trim())
   if (!workflow) throw new Error('工作流不存在或已过期')
-  if (workflow.status === 'manual_required' && workflow.oauthPage && !workflow.oauthPage.isClosed()) {
-    const currentURL = workflow.oauthPage.url()
-    if (isOAuthCallbackURL(currentURL)) {
-      workflow.callbackURL = currentURL
-      workflow.status = 'callback_ready'
-      workflow.phoneRejected = false
-      setWorkflowStep(workflow, 'verify', 'completed', '已识别授权回调地址')
-      if (activeWorkflowID === workflow.id) activeWorkflowID = ''
-    } else {
-      workflow.phoneRejected = await phoneRejectedOnPage(workflow.oauthPage)
-      setWorkflowStep(workflow, 'verify', 'waiting', await describeOAuthNextStep(workflow.oauthPage))
-    }
-  } else if (workflow.status === 'manual_required') {
-    workflow.phoneRejected = false
-    setWorkflowStep(workflow, 'verify', 'waiting', await describeOAuthNextStep(workflow.oauthPage))
+  if (workflow.status === 'manual_required') {
+    const verify = workflowStepState(workflow, 'verify')
+    setWorkflowStep(
+      workflow,
+      'verify',
+      'waiting',
+      verify?.message || '完成官方 OAuth 后，把地址栏中的完整回调 URL 粘贴到工作区'
+    )
   }
   return workflowSummary(workflow)
 }
@@ -1932,15 +1622,10 @@ async function handle(req, res) {
         const body = await readBody(req)
         return runWorkflowStep(runStepMatch[1], validateWorkflowStep(body?.step))
       }
-      const phoneWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/phone$/)
-      if (phoneWorkflowMatch && req.method === 'POST') {
+      const callbackWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/callback$/)
+      if (callbackWorkflowMatch && req.method === 'POST') {
         const body = await readBody(req)
-        return submitWorkflowPhone(phoneWorkflowMatch[1], body?.phone)
-      }
-      const codeWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/code$/)
-      if (codeWorkflowMatch && req.method === 'POST') {
-        const body = await readBody(req)
-        return submitWorkflowCode(codeWorkflowMatch[1], body?.code)
+        return submitWorkflowCallback(callbackWorkflowMatch[1], body?.callback_url)
       }
       const restartOAuthWorkflowMatch = path.match(/^\/workflows\/([A-Za-z0-9_-]{16,128})\/restart-oauth$/)
       if (restartOAuthWorkflowMatch && req.method === 'POST') {

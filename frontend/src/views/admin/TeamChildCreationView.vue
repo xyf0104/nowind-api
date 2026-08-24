@@ -108,21 +108,30 @@
             v-if="oauthWorkspaceVisible && teamWorkflow"
             :workflow="teamWorkflow"
             :mailbox-email="mailbox?.email || ''"
+            :auth-url="authUrl || ''"
             :callback-url="callbackURL"
-            :busy="workflowBusy"
-            @phone-ready="submitWorkflowPhone"
-            @code-received="submitWorkflowCode"
             @session-cancelled="restartWorkflowOAuth"
-            @open-browser="openBrowserWorkspace"
+            @copy-auth="copyText(authUrl || '')"
             @copy-callback="copyText(callbackURL)"
           />
 
-          <div v-if="callbackURL || createdAccount" class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <div v-if="teamWorkflow || callbackURL || createdAccount" class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">导入 XIASS</h2>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">回调地址已由工作流识别，也可以在这里手动修正后导入。</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">完成官方授权后，把地址栏中的完整回调 URL 粘贴到这里；工作流只在内存中校验 code/state，确认无误后再导入。</p>
             <label class="mt-4 mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">完整回调 URL</label>
             <textarea v-model="callbackURL" rows="3" class="input w-full resize-none font-mono text-xs" placeholder="https://.../callback?code=...&state=..."></textarea>
             <p v-if="parsedCallbackError" class="mt-2 text-xs text-red-600 dark:text-red-400">{{ parsedCallbackError }}</p>
+            <button
+              v-if="teamWorkflow && teamWorkflow.status !== 'callback_ready'"
+              type="button"
+              class="btn btn-secondary mt-3 flex items-center gap-2 whitespace-nowrap"
+              :disabled="!canConfirmCallback || callbackConfirming"
+              @click="confirmWorkflowCallback"
+            >
+              <Icon v-if="callbackConfirming" name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
+              <Icon v-else name="check" size="sm" :stroke-width="2" />
+              <span>{{ callbackConfirming ? '正在校验回调...' : '确认回调状态' }}</span>
+            </button>
             <div class="mt-4"><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">账号名称</label><input v-model="accountName" class="input w-full" :placeholder="mailbox?.email || 'OpenAI OAuth Account'" /></div>
             <div class="mt-4"><GroupSelector v-model="selectedGroupIDs" :groups="groups" platform="openai" /></div>
             <div class="mt-4 grid gap-4 sm:grid-cols-2"><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">并发数</label><input value="10" readonly class="input w-full bg-gray-50 dark:bg-dark-900" /></div><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">优先级</label><input value="1" readonly class="input w-full bg-gray-50 dark:bg-dark-900" /></div></div>
@@ -178,7 +187,7 @@
       :show="workflowConfirmOpen"
       :title="workflowConfirmationTitle"
       :message="workflowConfirmationMessage"
-      :confirm-text="workflowStartStep === 'oauth' ? '打开授权页' : manualSeatReady ? '邀请并授权' : '移除并邀请'"
+      :confirm-text="workflowStartStep === 'oauth' ? '准备授权' : manualSeatReady ? '邀请并授权' : '移除并邀请'"
       cancel-text="取消"
       :danger="workflowStartStep !== 'oauth'"
       @confirm="startConfirmedWorkflow"
@@ -270,6 +279,7 @@ const workflowStepToRun = ref<TeamChildWorkflowStepKey | null>(null)
 const workflowStepRunning = ref(false)
 const workflowStarting = ref(false)
 const workflowContinuing = ref(false)
+const callbackConfirming = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let workflowPollTimer: ReturnType<typeof setTimeout> | null = null
 let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
@@ -277,7 +287,7 @@ let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
 const steps: Array<{ key: StepKey; label: string; description: string }> = [
   { key: 'mailbox', label: '生成临时邮箱', description: '由服务器端邮箱服务创建并保管访问令牌。' },
   { key: 'replace', label: '确认 Team 席位', description: '确认后替换选中的普通成员；若普通席位已人工腾出，会跳过移除并仅发送邀请。' },
-  { key: 'verify', label: '完成 OpenAI 授权', description: '授权页会在服务器浏览器的新标签中打开，回调自动识别。' },
+  { key: 'verify', label: '完成 OpenAI 授权', description: '展示 XIASS 官方 PKCE 链接；完成官方授权后粘贴完整回调并校验。' },
   { key: 'import', label: '导入 XIASS', description: '使用固定并发数 10、优先级 1 创建一个 OpenAI OAuth 账号。' }
 ]
 
@@ -339,7 +349,7 @@ const workflowConfirmationMessage = computed(() => {
   if (!mailbox.value?.email) return '当前缺少临时邮箱。'
   if (workflowStartStep.value === 'oauth') return workflowRunOnlyStep.value
     ? '已由实时页面确认成员席位和 Pending invites 状态。只执行 OAuth 步骤并停在外部验证，不会重复移除成员或发送邀请。'
-    : '已由实时页面确认成员席位和 Pending invites 状态。将从 OAuth 步骤打开 XIASS 官方 OpenAI 授权页，不会重复移除成员或发送邀请。'
+    : '已由实时页面确认成员席位和 Pending invites 状态。将准备 XIASS 官方 OpenAI 授权链接，不会重复移除成员或发送邀请。'
   if (workflowStartStep.value === 'remove') return manualSeatReady.value
     ? workflowRunOnlyStep.value
       ? '普通成员席位已经由人工腾出，本次只确认并跳过移除步骤。'
@@ -347,9 +357,9 @@ const workflowConfirmationMessage = computed(() => {
     : workflowRunOnlyStep.value
       ? `将从实时成员页面处理已选普通成员 ${selectedMemberEmail.value}，只执行当前成员席位步骤。`
       : `将从实时成员页面处理已选普通成员 ${selectedMemberEmail.value}，完成后继续邀请和授权。`
-  if (manualSeatReady.value) return `已实时确认普通成员席位已由人工腾出，当前仅剩受保护成员。将不移除任何成员，直接向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。`
+  if (manualSeatReady.value) return `已实时确认普通成员席位已由人工腾出，当前仅剩受保护成员。将不移除任何成员，直接向 ${mailbox.value.email} 发送邀请，并准备官方 OAuth 链接。`
   if (!selectedMemberEmail.value) return '当前缺少待替换成员。'
-  return `将从 ChatGPT 工作区移除 ${selectedMemberEmail.value}，随后向 ${mailbox.value.email} 发送邀请，并在服务器浏览器的新标签中打开授权页。已完成的外部操作不会自动回滚。`
+  return `将从 ChatGPT 工作区移除 ${selectedMemberEmail.value}，随后向 ${mailbox.value.email} 发送邀请，并准备官方 OAuth 链接。已完成的外部操作不会自动回滚。`
 })
 const workflowStepConfirmationTitle = computed(() => {
   if (workflowStepToRun.value === 'remove') return '执行成员移除步骤'
@@ -362,11 +372,12 @@ const workflowStepConfirmationMessage = computed(() => {
   const key = workflowStepToRun.value
   if (key === 'remove') return '会先刷新实时成员页面；如果目标成员已由人工移除，系统只确认状态，不会重复提交移除。'
   if (key === 'invite') return '会先精确检查 Members 和 Pending invites 中的当前临时邮箱；已存在时只确认成功，不会重复发送邀请。'
-  if (key === 'oauth') return '会复用当前 XIASS 官方 OpenAI OAuth 会话，打开授权页并继续后续等待，不会重新生成第二条授权链接。'
-  if (key === 'verify') return '会读取当前授权页的回调地址；未完成时保持等待，完成后才返回可导入的回调。'
+  if (key === 'oauth') return '会复用当前 XIASS 官方 OpenAI OAuth 会话并展示授权链接，不会重新生成第二条授权链接。'
+  if (key === 'verify') return '等待粘贴完整回调 URL，并校验当前会话的 code/state；校验通过后才可导入。'
   return '会刷新实时成员页面并确认当前工作区状态，然后继续未完成的步骤。'
 })
 const canImport = computed(() => Boolean(parsedCallback.value) && !parsedCallbackError.value && Boolean(mailbox.value) && Boolean(oauthSessionID.value) && !importing.value)
+const canConfirmCallback = computed(() => Boolean(teamWorkflow.value) && Boolean(parsedCallback.value) && !parsedCallbackError.value && !callbackConfirming.value)
 
 function assertOfficialOAuthSession(auth: { auth_url: string; session_id: string }) {
   const parsed = new URL(auth.auth_url)
@@ -726,7 +737,7 @@ async function confirmWorkflowStep() {
       callbackURL.value = teamWorkflow.value.callback_url
       status.value = 'callback'
       clearWorkflowPoll()
-      appStore.showSuccess('已识别授权回调地址，可以导入 XIASS')
+      appStore.showSuccess('已校验授权回调地址，可以导入 XIASS')
     } else {
       status.value = teamWorkflow.value.status === 'manual_required' ? 'waiting' : 'workflow'
       scheduleWorkflowPoll(500)
@@ -756,48 +767,6 @@ async function continueWorkflow() {
   }
 }
 
-async function submitWorkflowPhone(phone: string) {
-  const workflow = teamWorkflow.value
-  if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
-  try {
-    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowPhone(workflow.id, phone)
-    status.value = teamWorkflow.value.status === 'callback_ready' ? 'callback' : 'waiting'
-    if (teamWorkflow.value.status === 'callback_ready' && teamWorkflow.value.callback_url) {
-      callbackURL.value = teamWorkflow.value.callback_url
-      clearWorkflowPoll()
-      appStore.showSuccess('手机号已更新，授权回调已就绪')
-      return
-    }
-    appStore.showInfo('新手机号已填入授权页面，将继续当前步骤')
-    scheduleWorkflowPoll(900)
-  } catch (error) {
-    status.value = 'error'
-    errorMessage.value = extractApiErrorMessage(error, '新手机号未能填入授权页面，请在浏览器中手动完成当前步骤')
-    await syncWorkflowAfterActionError()
-  }
-}
-
-async function submitWorkflowCode(code: string) {
-  const workflow = teamWorkflow.value
-  if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
-  try {
-    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowCode(workflow.id, code)
-    status.value = teamWorkflow.value.status === 'callback_ready' ? 'callback' : 'waiting'
-    if (teamWorkflow.value.status === 'callback_ready' && teamWorkflow.value.callback_url) {
-      callbackURL.value = teamWorkflow.value.callback_url
-      clearWorkflowPoll()
-      appStore.showSuccess('验证码已提交，授权回调已就绪')
-      return
-    }
-    appStore.showInfo('验证码已填入授权页面，将继续当前步骤')
-    scheduleWorkflowPoll(900)
-  } catch (error) {
-    status.value = 'error'
-    errorMessage.value = extractApiErrorMessage(error, '验证码未能填入授权页面，请在浏览器中手动完成当前步骤')
-    await syncWorkflowAfterActionError()
-  }
-}
-
 async function restartWorkflowOAuth() {
   const workflow = teamWorkflow.value
   if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
@@ -809,11 +778,11 @@ async function restartWorkflowOAuth() {
     callbackURL.value = ''
     status.value = 'workflow'
     errorMessage.value = ''
-    appStore.showInfo('已取消旧手机号，正在重新打开授权步骤')
+    appStore.showInfo('已取消当前接码会话，新的官方 OAuth 链接已准备')
     scheduleWorkflowPoll(900)
   } catch (error) {
     status.value = 'error'
-    errorMessage.value = extractApiErrorMessage(error, '取消号码后未能重新打开授权步骤，请手动接管浏览器')
+    errorMessage.value = extractApiErrorMessage(error, '重置 OAuth 步骤失败，请重新生成官方授权链接')
   }
 }
 
@@ -845,7 +814,7 @@ async function pollWorkflow() {
       callbackURL.value = workflow.callback_url
       status.value = 'callback'
       clearWorkflowPoll()
-      appStore.showSuccess('已识别授权回调地址，可以导入 XIASS')
+      appStore.showSuccess('已校验授权回调地址，可以导入 XIASS')
       return
     }
     if (workflow.status === 'manual_required') {
@@ -854,7 +823,7 @@ async function pollWorkflow() {
     }
     if (workflow.status === 'failed') {
       status.value = 'error'
-      errorMessage.value = workflow.error || '成员替换或授权页打开未完成'
+      errorMessage.value = workflow.error || '成员替换或 OAuth 授权交接未完成'
       clearWorkflowPoll()
       return
     }
@@ -933,11 +902,38 @@ async function importAccount() {
   if (!mailbox.value || !oauthSessionID.value || !parsedCallback.value || parsedCallbackError.value || importing.value) return
   errorMessage.value = ''; status.value = 'importing'
   try {
+    if (teamWorkflow.value && teamWorkflow.value.status !== 'callback_ready') {
+      const confirmed = await confirmWorkflowCallback()
+      if (!confirmed) {
+        status.value = 'error'
+        return
+      }
+    }
     createdAccount.value = await teamChildAPI.createOpenAIAccountFromOAuth({ session_id: oauthSessionID.value, code: parsedCallback.value.code, state: parsedCallback.value.state, name: accountName.value.trim() || mailbox.value.email, concurrency: 10, priority: 1, group_ids: selectedGroupIDs.value })
     status.value = 'completed'
     if (pollTimer) clearTimeout(pollTimer)
     await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '导入失败') }
+}
+
+async function confirmWorkflowCallback(): Promise<boolean> {
+  const workflow = teamWorkflow.value
+  const callback = callbackURL.value.trim()
+  if (!workflow || !callback || !parsedCallback.value || parsedCallbackError.value || callbackConfirming.value) return false
+  callbackConfirming.value = true
+  try {
+    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowCallback(workflow.id, callback)
+    callbackURL.value = teamWorkflow.value.callback_url || callback
+    status.value = 'callback'
+    clearWorkflowPoll()
+    appStore.showSuccess('回调 state 已校验，可以导入 XIASS')
+    return true
+  } catch (error) {
+    errorMessage.value = extractApiErrorMessage(error, '回调校验失败，请确认使用当前 OAuth 会话的完整 URL')
+    return false
+  } finally {
+    callbackConfirming.value = false
+  }
 }
 async function resetFlow() {
   if (pollTimer) clearTimeout(pollTimer)
