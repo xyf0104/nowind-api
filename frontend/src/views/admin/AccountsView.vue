@@ -19,10 +19,13 @@
             <template #beforeCreate>
               <button
                 type="button"
-                class="btn btn-primary flex items-center gap-2"
+                class="btn flex items-center gap-2"
+                :class="teamChildNeedsReauth ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300 dark:hover:bg-red-950/40' : 'btn-primary'"
+                :title="teamChildNeedsReauth ? '最新 Team 子号检测到 401，需要重新授权' : '创建 Team 子号'"
+                data-testid="create-team-child"
                 @click="openTeamChildCreation"
               >
-                <Icon name="userPlus" size="sm" :stroke-width="2" />
+                <Icon :name="teamChildNeedsReauth ? 'exclamationTriangle' : 'userPlus'" size="sm" :stroke-width="2" />
                 <span>创建 Team 子号</span>
               </button>
             </template>
@@ -764,6 +767,9 @@ const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
 const pendingTodayStatsRefresh = ref(false)
 const usageManualRefreshToken = ref(0)
+const REALTIME_CONCURRENCY_POLL_INTERVAL_MS = 5000
+let realtimeConcurrencyTimer: ReturnType<typeof setInterval> | null = null
+let realtimeConcurrencyFetching = false
 
 const buildDefaultTodayStats = (): WindowStats => ({
   requests: 0,
@@ -1008,6 +1014,38 @@ const activeConcurrencyGroupLabel = computed(() => {
   return groups.value.find(group => group.id === groupID)?.name || `#${groupID}`
 })
 
+const isTeamChildAccount = (account: Account) => {
+  const extra = account.extra as Record<string, unknown> | undefined
+  if (extra?.xiass_team_child === true) return true
+  const email = accountDisplayEmail(account)
+  return /^(?:team\d+)@/i.test(email) || /^(?:team\d+)@/i.test(account.name)
+}
+
+const latestTeamChildAccount = computed(() => {
+  const candidates = accounts.value.filter(isTeamChildAccount)
+  return candidates.reduce<Account | null>((latest, candidate) => {
+    if (!latest) return candidate
+    const latestTime = Date.parse(latest.created_at) || 0
+    const candidateTime = Date.parse(candidate.created_at) || 0
+    if (candidateTime !== latestTime) return candidateTime > latestTime ? candidate : latest
+    return candidate.id > latest.id ? candidate : latest
+  }, null)
+})
+
+const teamChildNeedsReauth = computed(() => {
+  const account = latestTeamChildAccount.value
+  if (!account) return false
+  const extra = account.extra as Record<string, unknown> | undefined
+  const errorText = [
+    account.error_message || '',
+    typeof extra?.error === 'string' ? extra.error : '',
+    typeof extra?.error_code === 'string' ? extra.error_code : ''
+  ].join(' ')
+  return extra?.needs_reauth === true
+    || extra?.error_code === 'unauthenticated'
+    || /\b401\b|unauthori[sz]ed|token\s*(?:expired|invalid|失效|过期)/i.test(errorText)
+})
+
 const {
   selectedSet,
   selectedIds: selIds,
@@ -1091,6 +1129,7 @@ const load = async () => {
   pendingTodayStatsRefresh.value = false
   await baseLoad()
   await refreshTodayStatsBatch()
+  await refreshRealtimeConcurrency()
 }
 
 const reload = async () => {
@@ -1175,6 +1214,7 @@ watch(loading, (isLoading, wasLoading) => {
       console.error('Failed to refresh account today stats after table load:', error)
     })
   }
+  if (wasLoading && !isLoading) void refreshRealtimeConcurrency()
 })
 
 watch(upstreamBillingNow, () => {
@@ -1233,6 +1273,78 @@ const syncAccountRefs = (nextAccount: Account) => {
   if (tempUnschedAcc.value?.id === nextAccount.id) tempUnschedAcc.value = nextAccount
   if (deletingAcc.value?.id === nextAccount.id) deletingAcc.value = nextAccount
   if (menu.acc?.id === nextAccount.id) menu.acc = nextAccount
+}
+
+// Account rows are loaded from the database, while current concurrency lives
+// in Redis. Poll the dedicated real-time snapshot so a capacity badge can
+// change without reloading the whole account table or relying on its ETag.
+const refreshRealtimeConcurrency = async () => {
+  if (
+    realtimeConcurrencyFetching ||
+    accounts.value.length === 0 ||
+    (typeof document !== 'undefined' && document.hidden) ||
+    isAnyModalOpen.value ||
+    menu.show ||
+    showAccountToolsDropdown.value ||
+    showAutoRefreshDropdown.value
+  ) return
+
+  const getConcurrencyStats = adminAPI.ops?.getConcurrencyStats
+  if (typeof getConcurrencyStats !== 'function') return
+
+  const rawGroupID = params.active_concurrency_group || params.group
+  const parsedGroupID = Number(rawGroupID)
+  const groupID = Number.isInteger(parsedGroupID) && parsedGroupID > 0 ? parsedGroupID : undefined
+  const platform = typeof params.platform === 'string' ? params.platform : undefined
+
+  realtimeConcurrencyFetching = true
+  try {
+    const snapshot = await getConcurrencyStats(platform || undefined, groupID)
+    if (!snapshot.enabled) return
+
+    const liveAccounts = snapshot.account ?? {}
+    let changed = false
+    const nextRows = accounts.value.map((row) => {
+      const live = liveAccounts[String(row.id)]
+      if (!live) return row
+
+      const current = Number(live.current_in_use)
+      if (!Number.isFinite(current)) return row
+      const nextCurrent = Math.max(0, Math.trunc(current))
+      const nextGroupCurrent = groupID ? nextCurrent : row.group_current_concurrency
+      if (row.current_concurrency === nextCurrent && row.group_current_concurrency === nextGroupCurrent) return row
+
+      changed = true
+      const nextRow = {
+        ...row,
+        current_concurrency: nextCurrent,
+        ...(groupID ? { group_current_concurrency: nextCurrent } : {})
+      }
+      syncAccountRefs(nextRow)
+      return nextRow
+    })
+
+    if (changed) accounts.value = nextRows
+  } catch {
+    // Keep the last known value during a transient 502/503/429. The next
+    // interval retries without forcing a full table reload.
+  } finally {
+    realtimeConcurrencyFetching = false
+  }
+}
+
+const startRealtimeConcurrencyPolling = () => {
+  if (realtimeConcurrencyTimer) return
+  void refreshRealtimeConcurrency()
+  realtimeConcurrencyTimer = setInterval(() => {
+    void refreshRealtimeConcurrency()
+  }, REALTIME_CONCURRENCY_POLL_INTERVAL_MS)
+}
+
+const stopRealtimeConcurrencyPolling = () => {
+  if (!realtimeConcurrencyTimer) return
+  clearInterval(realtimeConcurrencyTimer)
+  realtimeConcurrencyTimer = null
 }
 
 const mergeAccountsIncrementally = (nextRows: Account[]) => {
@@ -2386,9 +2498,11 @@ onMounted(async () => {
   } else {
     pauseAutoRefresh()
   }
+  startRealtimeConcurrencyPolling()
 })
 
 onUnmounted(() => {
+  stopRealtimeConcurrencyPolling()
   window.removeEventListener('scroll', handleScroll, true)
   window.removeEventListener('resize', handleViewportResize)
   document.removeEventListener('click', handleClickOutside)

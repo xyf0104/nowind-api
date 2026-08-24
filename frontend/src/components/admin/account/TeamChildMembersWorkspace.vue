@@ -1,74 +1,37 @@
 <template>
-  <section class="flex min-h-[540px] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800 xl:min-h-[calc(100vh-10.5rem)]">
+  <section class="team-child-members-workspace flex min-h-[540px] min-w-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800 2xl:min-h-[calc(100vh-10.5rem)]">
     <header class="flex flex-col gap-3 border-b border-gray-200 px-4 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex min-w-0 items-center gap-3">
         <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-400">
           <Icon name="users" size="md" :stroke-width="2" />
         </span>
         <div class="min-w-0">
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">成员自动化工作区</h2>
-          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">成员、邀请和 Pending invites 均以服务器端实时页面结果为准；外部 OAuth 在官方页面完成。</p>
+          <h2 class="whitespace-nowrap text-base font-semibold text-gray-900 dark:text-gray-100">成员自动化工作区</h2>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">成员、邀请和 OAuth 节点均以服务器端实时页面结果为准；未知页面可随时打开内嵌浏览器接管。</p>
         </div>
       </div>
-      <div class="flex flex-wrap items-center gap-2 whitespace-nowrap">
+      <div class="team-child-members-actions grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end">
         <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="ready ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'"><span class="h-1.5 w-1.5 rounded-full" :class="ready ? 'bg-green-500' : 'bg-amber-500'"></span>{{ ready ? '已登录' : '等待识别' }}</span>
         <button
           type="button"
-          class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
+          class="btn btn-secondary flex min-w-0 items-center justify-center gap-2 whitespace-nowrap"
           :disabled="browserLoading || !browserConfigured"
-          :title="browserConfigured ? '打开服务器浏览器，处理 Pending invites 或登录页面' : '服务器浏览器尚未配置'"
+          :title="browserConfigured ? '打开 XIASS 内嵌服务器浏览器，处理 Pending invites 或登录页面' : '服务器浏览器尚未配置'"
           @click="emit('open-browser')"
         >
           <Icon name="server" size="sm" :class="browserLoading ? 'animate-spin' : ''" :stroke-width="2" />
-          <span>打开服务器浏览器</span>
+          <span class="truncate">打开内嵌浏览器</span>
         </button>
-        <button type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" :disabled="loading" @click="emit('inspect')"><Icon name="mail" size="sm" :stroke-width="2" /><span>识别席位邮箱</span></button>
+        <button type="button" class="btn btn-secondary flex min-w-0 items-center justify-center gap-2 whitespace-nowrap" :disabled="loading" @click="emit('inspect')"><Icon name="mail" size="sm" :stroke-width="2" /><span class="truncate">识别席位邮箱</span></button>
         <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" :disabled="loading" title="刷新成员信息" aria-label="刷新成员信息" @click="emit('refresh')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
         </button>
-        <button type="button" class="btn btn-primary flex items-center gap-2 whitespace-nowrap" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后准备授权链接' : '确认替换已选普通成员并准备授权链接') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
+        <button type="button" class="btn btn-primary col-span-2 flex min-w-0 items-center justify-center gap-2 whitespace-nowrap sm:col-span-1" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后准备授权链接' : '确认替换已选普通成员并准备授权链接') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
           <Icon :name="workflowBusy ? 'refresh' : 'play'" size="sm" :class="workflowBusy ? 'animate-spin' : ''" :stroke-width="2" />
           <span>{{ workflowBusy ? '正在执行' : '一键授权' }}</span>
         </button>
       </div>
     </header>
-
-    <section v-if="workflow" class="border-b border-gray-200 bg-gray-50 px-4 py-4 dark:border-dark-700 dark:bg-dark-900/35">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">当前工作流</h3>
-            <span class="rounded-md px-2 py-0.5 text-xs font-medium" :class="workflowStatusClass">{{ workflowStatusLabel }}</span>
-          </div>
-          <p v-if="workflow.error" class="mt-1 text-xs leading-5 text-red-700 dark:text-red-300">{{ workflow.error }}</p>
-          <p v-else class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">步骤会以当前浏览器页面的实时结果为准，不复用旧成员缓存。</p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2 whitespace-nowrap">
-          <button v-if="workflow.status === 'failed'" type="button" class="btn btn-primary flex items-center gap-2 whitespace-nowrap" :disabled="workflowContinuing || loading" @click="emit('continue-workflow')">
-            <Icon name="refresh" size="sm" :class="workflowContinuing ? 'animate-spin' : ''" :stroke-width="2" />
-            <span>{{ workflowContinuing ? '正在继续' : '继续自动化' }}</span>
-          </button>
-          <span v-else-if="workflow.status === 'manual_required'" class="text-xs text-amber-700 dark:text-amber-300">请在官方授权页完成当前外部步骤，再粘贴回调 URL</span>
-        </div>
-      </div>
-      <ol class="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        <li
-          v-for="step in workflow.steps"
-          :key="step.key"
-          class="min-w-0 border-l-2 px-3 py-1.5"
-          :class="[workflowStepClass(step.status), canRunWorkflowStep(step) ? 'cursor-pointer hover:bg-primary-50/70 dark:hover:bg-primary-950/20' : '']"
-          :role="canRunWorkflowStep(step) ? 'button' : undefined"
-          :tabindex="canRunWorkflowStep(step) ? 0 : undefined"
-          :aria-label="canRunWorkflowStep(step) ? `执行第 ${step.number} 步：${step.label}` : undefined"
-          @click="canRunWorkflowStep(step) && emit('run-step', step.key)"
-          @keydown.enter="canRunWorkflowStep(step) && emit('run-step', step.key)"
-        >
-          <div class="flex items-center gap-2"><span class="text-xs font-semibold tabular-nums">{{ step.number }}</span><span class="truncate text-xs font-medium text-gray-800 dark:text-gray-100">{{ step.label }}</span></div>
-          <p v-if="step.message" class="mt-1 line-clamp-2 text-xs leading-4 text-gray-500 dark:text-gray-400">{{ step.message }}</p>
-          <span v-if="canRunWorkflowStep(step)" class="mt-1 inline-block text-[11px] font-medium text-primary-600 dark:text-primary-400">点击执行</span>
-        </li>
-      </ol>
-    </section>
 
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3 dark:border-dark-700 dark:bg-dark-900/35">
       <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><Icon name="users" size="sm" :stroke-width="2" /><span>{{ members.length }} 位成员<span v-if="pendingInvites">，{{ pendingInvites }} 个待处理邀请</span></span></div>
@@ -88,8 +51,8 @@
 
     <div v-if="error" class="m-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300"><Icon name="exclamationTriangle" size="sm" class="mt-0.5 flex-shrink-0" :stroke-width="2" /><span>{{ error }}</span></div>
 
-    <div v-if="members.length" class="flex-1 divide-y divide-gray-100 dark:divide-dark-700">
-      <div v-for="member in members" :key="member.email || member.id" class="flex flex-col gap-3 px-4 py-4 transition-colors sm:flex-row sm:items-center sm:justify-between" :class="memberRowClass(member)">
+    <div v-if="members.length" class="min-w-0 flex-1 divide-y divide-gray-100 dark:divide-dark-700">
+      <div v-for="member in members" :key="member.email || member.id" class="team-child-member-row flex min-h-[74px] flex-col gap-3 px-4 py-4 transition-colors sm:flex-row sm:items-center sm:justify-between" :class="memberRowClass(member)">
         <div class="flex min-w-0 items-center gap-3">
           <input v-if="canManageMember(member)" :id="'team-member-' + member.id" type="radio" name="team-child-member" class="h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600" :checked="selectedEmail === member.email" :aria-label="'选择 ' + member.email" @change="emit('select', member.email)" />
           <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold" :class="isProtectedMember(member) ? 'bg-gray-200 text-gray-500 dark:bg-dark-700 dark:text-gray-400' : 'bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-400'">{{ initials(member.name || member.email) }}</span>
@@ -122,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { Icon } from '@/components/icons'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -155,14 +118,6 @@ const editRole = ref('member')
 const editingMember = ref<TeamChildMember | null>(null)
 const removingMember = ref<TeamChildMember | null>(null)
 
-const workflowStatusLabel = computed(() => ({ running: '正在执行', manual_required: '等待外部处理', callback_ready: '已获取回调', failed: '需要继续', cancelled: '已停止' })[props.workflow?.status || 'running'])
-const workflowStatusClass = computed(() => {
-  if (props.workflow?.status === 'failed') return 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-300'
-  if (props.workflow?.status === 'callback_ready') return 'bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-300'
-  if (props.workflow?.status === 'manual_required') return 'bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-  return 'bg-primary-50 text-primary-700 dark:bg-primary-950/30 dark:text-primary-300'
-})
-
 function initials(value: string) { return value.trim().slice(0, 1).toUpperCase() || '?' }
 function normalizedRole(role: string) {
   const value = role.trim().toLowerCase()
@@ -193,19 +148,6 @@ function memberRowClass(member: TeamChildMember) {
   if (isProtectedMember(member)) return 'bg-gray-50/80 dark:bg-dark-900/20'
   return props.selectedEmail === member.email ? 'bg-primary-50/70 dark:bg-primary-950/15' : ''
 }
-function workflowStepClass(status: TeamChildWorkflowStep['status']) {
-  if (status === 'completed') return 'border-green-500 bg-green-50/70 dark:bg-green-950/10'
-  if (status === 'failed') return 'border-red-500 bg-red-50/70 dark:bg-red-950/10'
-  if (status === 'running') return 'border-primary-500 bg-primary-50/70 dark:bg-primary-950/10'
-  if (status === 'waiting') return 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/10'
-  if (status === 'cancelled') return 'border-gray-300 bg-gray-100/70 dark:border-dark-600 dark:bg-dark-900/30'
-  return 'border-gray-300 dark:border-dark-600'
-}
-function canRunWorkflowStep(step: TeamChildWorkflowStep) {
-  return Boolean(props.workflow)
-    && !props.workflowBusy
-    && ['pending', 'waiting', 'failed'].includes(step.status)
-}
 function openEdit(member: TeamChildMember) {
   if (!canManageMember(member)) return
   editingMember.value = member
@@ -222,3 +164,29 @@ function submitInvite() { const email = inviteEmail.value.trim(); if (!email) re
 function submitEdit() { if (!editingMember.value || !canManageMember(editingMember.value)) return; emit('edit', editingMember.value.email, editRole.value); editOpen.value = false }
 function submitRemove() { if (!removingMember.value || !canManageMember(removingMember.value)) return; emit('remove', removingMember.value.email); removeOpen.value = false }
 </script>
+
+<style scoped>
+.team-child-members-workspace {
+  min-height: 540px;
+}
+
+.team-child-members-actions > .btn {
+  min-height: 2.25rem;
+}
+
+@media (max-width: 639px) {
+  .team-child-members-workspace {
+    min-height: 480px;
+  }
+
+  .team-child-members-actions > .btn {
+    width: 100%;
+  }
+}
+
+@media (min-width: 1280px) {
+  .team-child-members-workspace {
+    height: min(720px, calc(100dvh - 12rem));
+  }
+}
+</style>

@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.44-0ea5e9" alt="当前版本 v1.1.44" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.45-0ea5e9" alt="当前版本 v1.1.45" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,7 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.44
+> 当前版本：v1.1.45
+
+v1.1.45 将 Team 子号创建贯通为 22 个可恢复节点：服务器浏览器实时识别和移除普通成员，在 ChatGPT 原生 Invite member 页面填写本次临时邮箱，并分别从 Members 与 Pending invites 精确确认邀请；后续复用 XIASS 原生 OpenAI PKCE 会话，完成 Sign up、13 位随机密码、Cloudflare 邮箱验证码、XIASS 站内确认接码、完整国际手机号、短信验证码、资料、默认工作空间、回调校验与按已选分组/并发/优先级自动导入。随机密码仅保存在自动化进程内存，验证码不进入工作流摘要。任一节点失败后可打开 XIASS 内嵌浏览器人工接管，确认完成后从下一节点继续；手机号被拒绝时只进入一次站内换号确认并覆盖旧号码。管理页使用独立的顶部悬浮进度卡，实际授权、接码、错误恢复与导入控件仍保留在下方工作卡；Team 子号导入标记、401 重新授权入口、实时并发防缓存和多设备浏览器租约恢复同步完善。
 
 v1.1.44 收敛 Team 子号的官方 OAuth 交接：成员读取、移除、邀请和 Pending invites 继续由服务器端实时核验；OAuth 只复用 XIASS 原生 OpenAI PKCE 链接，外部验证完成后由管理员粘贴完整回调 URL，系统校验 code/state 后再导入。Team 工作流不再接收或转发外部密码、手机号和验证码，独立 OAuth 接码流程保持不变。调度器增加有界的候选耗尽数据库恢复：快照只残留失败账号时，故障转移会重新读取权威账号池并继续按原优先级、模型能力和并发规则选择，避免误报 503；异步重建短暂延迟也继续使用只读回源兜底。
 

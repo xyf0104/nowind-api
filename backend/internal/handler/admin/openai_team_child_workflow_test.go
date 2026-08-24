@@ -12,6 +12,7 @@ import (
 )
 
 const testTeamChildAuthURL = "https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state"
+const testTeamChildOAuthSessionID = "oauth-session-abcdefghijklmnop"
 
 func TestTeamChildWorkflowStartRequiresConfirmedSupportedOpenAIURL(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
@@ -112,7 +113,7 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	router.Use(teamChildAdminTestMiddleware("admin"))
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
-	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","start_step":"oauth","run_only_step":true,"confirmed":true}`
+	payload := `{"seat_email":"member@example.test","invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `","start_step":"oauth","run_only_step":true,"confirmed":true}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -124,6 +125,7 @@ func TestTeamChildWorkflowProxyPreservesOnlyConfirmedWorkflowRequest(t *testing.
 	require.Equal(t, "/workflows", receivedPath)
 	require.Equal(t, "member@example.test", receivedBody["seat_email"])
 	require.Equal(t, "new@example.test", receivedBody["invite_email"])
+	require.Equal(t, testTeamChildOAuthSessionID, receivedBody["oauth_session_id"])
 	require.Equal(t, false, receivedBody["seat_already_removed"])
 	require.Equal(t, "oauth", receivedBody["start_step"])
 	require.Equal(t, true, receivedBody["run_only_step"])
@@ -147,7 +149,7 @@ func TestTeamChildWorkflowAllowsConfirmedManualSeatRelease(t *testing.T) {
 	router.Use(teamChildAdminTestMiddleware("admin"))
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
-	payload := `{"invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","seat_already_removed":true,"confirmed":true}`
+	payload := `{"invite_email":"new@example.test","auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `","seat_already_removed":true,"confirmed":true}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -178,7 +180,7 @@ func TestTeamChildWorkflowRejectsProtectedReplacementSeat(t *testing.T) {
 	router.POST("/workflows", handler.StartTeamChildWorkflow)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(`{"seat_email":"protected-admin@example.test","invite_email":"new@example.test","auth_url":"`+testTeamChildAuthURL+`","confirmed":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(`{"seat_email":"protected-admin@example.test","invite_email":"new@example.test","auth_url":"`+testTeamChildAuthURL+`","oauth_session_id":"`+testTeamChildOAuthSessionID+`","confirmed":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
 
@@ -284,7 +286,7 @@ func TestTeamChildWorkflowCallbackAndRestartForward(t *testing.T) {
 		payload string
 	}{
 		{path: "/workflows/abcdefghijklmnoP/callback", payload: `{"callback_url":"http://localhost:1455/auth/callback?code=callback-code&state=callback-state"}`},
-		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"` + testTeamChildAuthURL + `"}`},
+		{path: "/workflows/abcdefghijklmnoP/restart-oauth", payload: `{"auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `"}`},
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.payload))
@@ -298,6 +300,7 @@ func TestTeamChildWorkflowCallbackAndRestartForward(t *testing.T) {
 	require.Equal(t, "http://localhost:1455/auth/callback?code=callback-code&state=callback-state", requests[0].body["callback_url"])
 	require.Equal(t, "/workflows/abcdefghijklmnoP/restart-oauth", requests[1].path)
 	require.Equal(t, testTeamChildAuthURL, requests[1].body["auth_url"])
+	require.Equal(t, testTeamChildOAuthSessionID, requests[1].body["oauth_session_id"])
 
 	for _, test := range []struct {
 		path    string
@@ -313,6 +316,78 @@ func TestTeamChildWorkflowCallbackAndRestartForward(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, recorder.Code)
 	}
 	require.Len(t, requests, 2)
+}
+
+func TestTeamChildWorkflowAutomationInputsUseDistinctValidatedRoutes(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	type receivedRequest struct {
+		path string
+		body map[string]any
+	}
+	var received []receivedRequest
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entry := receivedRequest{path: r.URL.Path}
+		if r.ContentLength != 0 {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&entry.body))
+		}
+		received = append(received, entry)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"abcdefghijklmnoP","status":"running","steps":[],"nodes":[]}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/workflows/:workflow_id/email-code", handler.SubmitTeamChildWorkflowEmailCode)
+	router.POST("/workflows/:workflow_id/phone", handler.SubmitTeamChildWorkflowPhone)
+	router.POST("/workflows/:workflow_id/sms-code", handler.SubmitTeamChildWorkflowSMSCode)
+	router.POST("/workflows/:workflow_id/complete", handler.CompleteTeamChildWorkflow)
+
+	for _, test := range []struct {
+		path    string
+		payload string
+	}{
+		{path: "/workflows/abcdefghijklmnoP/email-code", payload: `{"code":"123456"}`},
+		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"+1 (415) 555-0123"}`},
+		{path: "/workflows/abcdefghijklmnoP/sms-code", payload: `{"code":"654321"}`},
+		{path: "/workflows/abcdefghijklmnoP/complete", payload: ``},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.payload))
+		if test.payload != "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code, test.path)
+	}
+
+	require.Len(t, received, 4)
+	require.Equal(t, "/workflows/abcdefghijklmnoP/email-code", received[0].path)
+	require.Equal(t, "123456", received[0].body["code"])
+	require.Equal(t, "/workflows/abcdefghijklmnoP/phone", received[1].path)
+	require.Equal(t, "+14155550123", received[1].body["phone"])
+	require.Equal(t, "/workflows/abcdefghijklmnoP/sms-code", received[2].path)
+	require.Equal(t, "654321", received[2].body["code"])
+	require.Equal(t, "/workflows/abcdefghijklmnoP/complete", received[3].path)
+
+	for _, test := range []struct {
+		path    string
+		payload string
+	}{
+		{path: "/workflows/abcdefghijklmnoP/email-code", payload: `{"code":"not-code"}`},
+		{path: "/workflows/abcdefghijklmnoP/phone", payload: `{"phone":"4155550123"}`},
+		{path: "/workflows/abcdefghijklmnoP/sms-code", payload: `{"code":"12"}`},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.payload))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusBadRequest, recorder.Code, test.path)
+	}
+	require.Len(t, received, 4)
 }
 
 func TestTeamChildWorkflowLegacyExternalValueRoutesRejectPayload(t *testing.T) {
@@ -338,7 +413,7 @@ func TestTeamChildWorkflowLegacyExternalValueRoutesRejectPayload(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(recorder, request)
 		require.Equal(t, http.StatusBadRequest, recorder.Code)
-		require.Contains(t, recorder.Body.String(), "不接收或转发")
+		require.Contains(t, recorder.Body.String(), "旧版外部验证码接口已停用")
 	}
 	require.False(t, called)
 }

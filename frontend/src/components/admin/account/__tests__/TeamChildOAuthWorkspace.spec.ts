@@ -14,6 +14,7 @@ function workflow(overrides: Record<string, unknown> = {}) {
     id: 'workflow-token-abcdefghijklmnop',
     status: 'manual_required',
     manual_required: true,
+    current_node: 'sms_confirm',
     expires_at: '2026-08-24T00:00:00.000Z',
     steps: [
       { key: 'members', number: 1, label: '读取成员席位', status: 'completed', message: '已完成' },
@@ -27,7 +28,7 @@ function workflow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('TeamChildOAuthWorkspace', () => {
-  it('keeps external verification in the modular workspace without auto-submitting a code', async () => {
+  it('activates the confirmed SMS receiver only at the phone node', async () => {
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {
         workflow: workflow(),
@@ -42,14 +43,21 @@ describe('TeamChildOAuthWorkspace', () => {
       }
     })
 
-    expect(wrapper.get('[data-testid="team-oauth-workspace"]').text()).toContain('官方 OAuth 验证')
+    expect(wrapper.get('[data-testid="team-oauth-workspace"]').text()).toContain('成员授权工作区')
+    expect(wrapper.get('[data-testid="team-oauth-current-node"]').text()).toContain('领取手机号')
+    expect(wrapper.text()).toContain('已完成')
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
     expect(wrapper.find('[data-testid="team-oauth-manual-code"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('不会由 Team 页面自动提交')
+    expect(wrapper.text()).toContain('不会在此处展示或写入工作流记录')
     const authLink = wrapper.get('[data-testid="team-open-auth"]')
-    expect(authLink.attributes('href')).toBe('https://auth.openai.com/oauth/authorize?state=test-state')
-    expect(authLink.attributes('target')).toBe('xiass-openai-oauth')
-    expect(wrapper.text()).toContain('手动选择 Sign up')
+    expect(authLink.element.tagName).toBe('BUTTON')
+    expect(authLink.attributes('href')).toBeUndefined()
+    expect(authLink.text()).toContain('内嵌浏览器')
+    expect(wrapper.text()).toContain('上方只显示当前节点')
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').classes()).toContain('sticky')
+    expect(wrapper.get('[data-testid="team-oauth-operation-card"]').text()).toContain('XIASS 官方 OAuth PKCE 链接')
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').find('[data-testid="team-open-auth"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="team-oauth-operation-card"]').find('[data-testid="team-open-auth"]').exists()).toBe(true)
   })
 
   it('shows callback state without activating the receiver for import', () => {
@@ -72,13 +80,8 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
   })
 
-  it('reuses one named official-auth window without submitting external fields', async () => {
-    const authWindow = {
-      opener: window,
-      location: { href: '' },
-      focus: vi.fn()
-    }
-    const open = vi.spyOn(window, 'open').mockReturnValue(authWindow as unknown as Window)
+  it('emits an in-app browser navigation request without opening a local window', async () => {
+    const open = vi.spyOn(window, 'open')
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {
         workflow: workflow(),
@@ -94,10 +97,51 @@ describe('TeamChildOAuthWorkspace', () => {
 
     await wrapper.get('[data-testid="team-open-auth"]').trigger('click')
 
-    expect(open).toHaveBeenCalledWith('', 'xiass-openai-oauth')
-    expect(authWindow.opener).toBeNull()
-    expect(authWindow.location.href).toBe('https://auth.openai.com/oauth/authorize?state=test-state')
-    expect(authWindow.focus).toHaveBeenCalledOnce()
+    expect(open).not.toHaveBeenCalled()
+    expect(wrapper.emitted('open-auth-in-browser')).toHaveLength(1)
     open.mockRestore()
+  })
+
+  it('offers embedded-browser recovery and continuation for every failed node', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ status: 'failed', current_node: 'profile', error: '资料页字段变化' }),
+        authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
+      },
+      global: {
+        stubs: {
+          Icon: IconStub,
+          PixlabSMSReceiver: PixlabSMSReceiverStub
+        }
+      }
+    })
+
+    await wrapper.get('[data-testid="team-open-browser-after-failure"]').trigger('click')
+    await wrapper.get('[data-testid="team-continue-after-failure"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').find('[data-testid="team-open-browser-after-failure"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="team-oauth-operation-card"]').find('[data-testid="team-open-browser-after-failure"]').exists()).toBe(true)
+    expect(wrapper.emitted('open-browser')).toHaveLength(1)
+    expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
+  })
+
+  it('routes a rejected phone directly to one confirmed replacement instead of generic continuation', () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ status: 'failed', current_node: 'phone_submit', error: '当前手机号不可用或使用次数过多' })
+      },
+      global: {
+        stubs: {
+          Icon: IconStub,
+          PixlabSMSReceiver: {
+            props: ['active', 'replacementRequired'],
+            template: '<div data-testid="team-sms-receiver" :data-replacement-required="String(replacementRequired)" />'
+          }
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-replacement-required')).toBe('true')
+    expect(wrapper.find('[data-testid="team-continue-after-failure"]').exists()).toBe(false)
   })
 })

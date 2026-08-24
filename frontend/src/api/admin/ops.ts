@@ -339,7 +339,12 @@ export interface OpsUserConcurrencyStatsResponse {
 }
 
 export async function getConcurrencyStats(platform?: string, groupId?: number | null): Promise<OpsConcurrencyStatsResponse> {
-  const params: Record<string, any> = {}
+  const params: Record<string, any> = {
+    // Some reverse proxies still key a cached GET only by the URL and ignore
+    // request cache headers. Keep this live snapshot URL-unique as a second
+    // line of defense; the backend also returns no-store response headers.
+    _ts: Date.now()
+  }
   if (platform) {
     params.platform = platform
   }
@@ -347,7 +352,13 @@ export async function getConcurrencyStats(platform?: string, groupId?: number | 
     params.group_id = groupId
   }
 
-  const { data } = await apiClient.get<OpsConcurrencyStatsResponse>('/admin/ops/concurrency', { params })
+  const { data } = await apiClient.get<OpsConcurrencyStatsResponse>('/admin/ops/concurrency', {
+    params,
+    headers: {
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache'
+    }
+  })
   return data
 }
 

@@ -1,12 +1,12 @@
 <template>
-  <section class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+  <section class="team-child-browser-workspace min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
     <header class="flex flex-col gap-3 border-b border-gray-200 px-4 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex min-w-0 items-center gap-3">
         <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-400">
           <Icon name="server" size="md" :stroke-width="2" />
         </span>
         <div class="min-w-0">
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">服务器浏览器</h2>
+          <h2 class="whitespace-nowrap text-base font-semibold text-gray-900 dark:text-gray-100">服务器浏览器</h2>
           <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">仅在需要人工处理登录或未知页面时打开，平时请使用成员自动化工作区。</p>
         </div>
       </div>
@@ -58,7 +58,7 @@
       </button>
     </div>
 
-    <div data-testid="team-browser-frame" class="relative aspect-video min-h-[320px] w-full overflow-hidden bg-gray-100 dark:bg-dark-900 sm:min-h-[400px] xl:min-h-[500px]">
+    <div data-testid="team-browser-frame" class="team-child-browser-frame relative min-h-[360px] w-full overflow-hidden bg-gray-100 dark:bg-dark-900">
       <iframe
         v-if="embedUrl"
         :key="embedUrl"
@@ -86,7 +86,7 @@
         <span class="mb-3 flex h-11 w-11 items-center justify-center rounded-md bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400">
           <Icon name="exclamationTriangle" size="md" :stroke-width="2" />
         </span>
-        <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">浏览器工作区不可用</p>
+        <p class="whitespace-nowrap text-sm font-semibold text-gray-800 dark:text-gray-100">浏览器工作区不可用</p>
         <p class="mt-1 max-w-sm text-xs leading-5 text-gray-500 dark:text-gray-400">{{ error }}</p>
         <button type="button" class="btn btn-secondary mt-4 flex items-center gap-2 whitespace-nowrap" :disabled="loading" @click="$emit('reload')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
@@ -158,3 +158,25 @@ const browserDotClass = computed(() => {
   return 'bg-green-500'
 })
 </script>
+
+<style scoped>
+.team-child-browser-frame {
+  aspect-ratio: 16 / 10;
+  height: min(720px, calc(100dvh - 16rem));
+  max-height: 720px;
+  min-height: 360px;
+}
+
+.team-child-browser-frame iframe {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+@media (max-width: 639px) {
+  .team-child-browser-frame {
+    height: min(420px, 58dvh);
+    max-height: none;
+  }
+}
+</style>

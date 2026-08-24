@@ -212,7 +212,30 @@ describe('PixlabSMSReceiver', () => {
     await flushPromises()
 
     expect(receiverMocks.changeNumber).toHaveBeenCalledTimes(1)
+    // The mounted confirmed session is replayed once for recovery, then the
+    // confirmed replacement is emitted once more to overwrite that number.
+    expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060'], ['+27749433060']])
+  })
+
+  it('replays an existing confirmed number when manual recovery advances to the submit node', async () => {
+    receiverState.hasActiveSession = true
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: true, submissionKey: 'sms_confirm' },
+      global: {
+        stubs: {
+          BaseDialog: true,
+          Icon: true,
+          SMSReceiverActionDialog: SMSReceiverActionDialogStub,
+        },
+      },
+    })
+
+    await flushPromises()
     expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060']])
+
+    await wrapper.setProps({ submissionKey: 'phone_submit' })
+    await flushPromises()
+    expect(wrapper.emitted('phone-ready')).toEqual([['+27749433060'], ['+27749433060']])
   })
 
   it('emits cancellation only after a confirmed cancellation completes', async () => {

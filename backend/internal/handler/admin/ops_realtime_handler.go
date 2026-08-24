@@ -16,6 +16,11 @@ import (
 // GetConcurrencyStats returns real-time concurrency usage aggregated by platform/group/account.
 // GET /api/v1/admin/ops/concurrency
 func (h *OpsHandler) GetConcurrencyStats(c *gin.Context) {
+	// Concurrency is a live Redis snapshot. Do not let a browser, reverse
+	// proxy, or CDN reuse a previous response while the account table polls it.
+	c.Header("Cache-Control", "private, no-store, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
 		return
@@ -71,6 +76,9 @@ func (h *OpsHandler) GetConcurrencyStats(c *gin.Context) {
 // GetUserConcurrencyStats returns real-time concurrency usage for all active users.
 // GET /api/v1/admin/ops/user-concurrency
 func (h *OpsHandler) GetUserConcurrencyStats(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
 		return

@@ -67,7 +67,7 @@ describe('TeamChildMembersWorkspace', () => {
       global
     })
 
-    const browserButton = wrapper.get('button[title="打开服务器浏览器，处理 Pending invites 或登录页面"]')
+    const browserButton = wrapper.get('button[title="打开 XIASS 内嵌服务器浏览器，处理 Pending invites 或登录页面"]')
     await browserButton.trigger('click')
 
     expect(wrapper.emitted('open-browser')).toHaveLength(1)
@@ -108,7 +108,7 @@ describe('TeamChildMembersWorkspace', () => {
     expect(wrapper.find('[aria-label="选择 protected@example.test"]').exists()).toBe(false)
   })
 
-  it('exposes a continuation action only for an interrupted workflow', async () => {
+  it('does not duplicate workflow progress inside the member operation card', () => {
     const wrapper = mount(TeamChildMembersWorkspace, {
       props: {
         members: [member],
@@ -124,10 +124,8 @@ describe('TeamChildMembersWorkspace', () => {
       global
     })
 
-    const continueButton = wrapper.findAll('button').find((button) => button.text().includes('继续自动化'))
-    expect(continueButton).toBeDefined()
-    await continueButton!.trigger('click')
-    expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('当前工作流')
+    expect(wrapper.text()).not.toContain('继续自动化')
   })
 
   it('defaults invitations to the active temporary mailbox and exposes a replaceable selection', async () => {

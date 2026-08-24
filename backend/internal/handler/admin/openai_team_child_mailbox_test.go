@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,10 @@ func setupTeamMailboxTestHandler(t *testing.T, provider http.HandlerFunc) (*Open
 	t.Setenv("TEAM_CHILD_MAIL_API_BASE", server.URL)
 	t.Setenv("TEAM_CHILD_MAIL_AUTH_MODE", "x-api-key")
 	t.Setenv("TEAM_CHILD_MAIL_API_KEY", "provider-api-key")
+	t.Setenv("TEAM_CHILD_MAIL_DOMAIN", "example.test")
 	t.Setenv("TEAM_CHILD_MAIL_CREATE_PATH", "/api/new_address")
 	t.Setenv("TEAM_CHILD_MAIL_MESSAGES_PATH", "/api/mails")
+	t.Setenv(teamMailboxSequenceFileEnv, filepath.Join(t.TempDir(), "team-child-mail-sequence"))
 
 	gin.SetMode(gin.TestMode)
 	handler := &OpenAIOAuthHandler{teamMailboxStore: newOpenAITeamMailboxStore()}
@@ -77,7 +80,7 @@ func TestCreateTeamChildMailboxKeepsProviderTokenServerSide(t *testing.T) {
 		require.Equal(t, "/api/new_address", r.URL.Path)
 		require.Equal(t, "provider-api-key", r.Header.Get("X-API-Key"))
 		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		_, _ = w.Write([]byte(`{"address":"one@example.test","jwt":"mailbox-jwt-secret"}`))
+		_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
 	})
 
 	rec := httptest.NewRecorder()
@@ -89,12 +92,12 @@ func TestCreateTeamChildMailboxKeepsProviderTokenServerSide(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 	require.NotEmpty(t, response.Data.SessionID)
-	require.Equal(t, "one@example.test", response.Data.Email)
+	require.Equal(t, "team1000@example.test", response.Data.Email)
 }
 
 func TestActiveTeamChildMailboxRestoresOnlyCurrentAdministratorHandle(t *testing.T) {
 	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"address":"one@example.test","jwt":"mailbox-jwt-secret"}`))
+		_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
 	})
 
 	createRec := httptest.NewRecorder()
@@ -130,10 +133,10 @@ func TestCreateTeamChildMailboxUsesAdminWorkerPayload(t *testing.T) {
 			Domain       string `json:"domain"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		require.Len(t, payload.Name, 10)
-		require.True(t, payload.EnablePrefix)
+		require.Equal(t, "team1000", payload.Name)
+		require.False(t, payload.EnablePrefix)
 		require.Equal(t, "example.test", payload.Domain)
-		_, _ = w.Write([]byte(`{"address":"one@example.test","jwt":"mailbox-jwt-secret"}`))
+		_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
 	})
 	t.Setenv("TEAM_CHILD_MAIL_CREATE_PATH", "/admin/new_address")
 
@@ -142,17 +145,37 @@ func TestCreateTeamChildMailboxUsesAdminWorkerPayload(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestTeamChildMailboxAddressSequencePersistsAndIncrements(t *testing.T) {
+	sequencePath := filepath.Join(t.TempDir(), "team-child-mail-sequence")
+	t.Setenv(teamMailboxSequenceFileEnv, sequencePath)
+	config := teamMailboxProviderConfig{domain: "example.test"}
+	first := &OpenAIOAuthHandler{teamMailboxStore: newOpenAITeamMailboxStore()}
+	second := &OpenAIOAuthHandler{teamMailboxStore: newOpenAITeamMailboxStore()}
+
+	address, err := first.nextTeamChildMailboxAddress(t.Context(), config)
+	require.NoError(t, err)
+	require.Equal(t, "team1000@example.test", address)
+	address, err = first.nextTeamChildMailboxAddress(t.Context(), config)
+	require.NoError(t, err)
+	require.Equal(t, "team1001@example.test", address)
+
+	// A new handler instance continues from the persisted server-side counter.
+	address, err = second.nextTeamChildMailboxAddress(t.Context(), config)
+	require.NoError(t, err)
+	require.Equal(t, "team1002@example.test", address)
+}
+
 func TestTeamChildMailboxPollUsesMailboxJWTAndExtractsReadableVerificationCode(t *testing.T) {
 	handler, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/new_address":
-			_, _ = w.Write([]byte(`{"address":"one@example.test","jwt":"mailbox-jwt-secret"}`))
+			_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
 		case "/api/mails":
 			require.Equal(t, teamMailboxProviderUserAgent, r.Header.Get("User-Agent"))
 			require.Equal(t, "Bearer mailbox-jwt-secret", r.Header.Get("Authorization"))
 			require.Equal(t, "", r.Header.Get("X-API-Key"))
 			require.Equal(t, "20", r.URL.Query().Get("limit"))
-			_, _ = w.Write([]byte(`{"messages":[{"id":"m-1","to":[{"address":"one@example.test"}],"subject":"OpenAI verification code: 418204"}]}`))
+			_, _ = w.Write([]byte(`{"messages":[{"id":"m-1","to":[{"address":"team1000@example.test"}],"subject":"OpenAI verification code: 418204"}]}`))
 		default:
 			t.Fatalf("unexpected request to %s", r.URL.Path)
 		}
@@ -200,9 +223,9 @@ func TestTeamChildMailboxPollSupportsNestedMessagesAndRecipientAliases(t *testin
 	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/new_address":
-			_, _ = w.Write([]byte(`{"address":"nested@example.test","jwt":"mailbox-jwt-secret"}`))
+			_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
 		case "/api/mails":
-			_, _ = w.Write([]byte(`{"data":{"items":[{"id":"nested-1","recipient_email":"nested@example.test","body":{"html":"<p>Your security code is <strong>4 182 04</strong></p>"}}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"items":[{"id":"nested-1","recipient_email":"team1000@example.test","body":{"html":"<p>Your security code is <strong>4 182 04</strong></p>"}}]}}`))
 		default:
 			t.Fatalf("unexpected request to %s", r.URL.Path)
 		}
@@ -409,4 +432,15 @@ func TestTeamChildMailboxRedisStoreRecoversLegacyActiveSession(t *testing.T) {
 	indexedID, err := client.Get(t.Context(), teamMailboxActiveKeyPrefix+"42").Result()
 	require.NoError(t, err)
 	require.Equal(t, "legacy-session", indexedID)
+}
+
+func TestTeamChildMailboxSequenceRejectsMissingDomainBeforeAllocating(t *testing.T) {
+	sequencePath := filepath.Join(t.TempDir(), "team-child-mail-sequence")
+	t.Setenv(teamMailboxSequenceFileEnv, sequencePath)
+	handler := &OpenAIOAuthHandler{teamMailboxStore: newOpenAITeamMailboxStore()}
+
+	_, err := handler.nextTeamChildMailboxAddress(t.Context(), teamMailboxProviderConfig{})
+	require.ErrorContains(t, err, "TEAM_CHILD_MAIL_DOMAIN")
+	_, readErr := os.ReadFile(sequencePath)
+	require.ErrorIs(t, readErr, os.ErrNotExist)
 }

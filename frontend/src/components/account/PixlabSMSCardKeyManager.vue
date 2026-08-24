@@ -213,15 +213,15 @@ function canMoveCardKey(cardKeyID: number, direction: -1 | 1): boolean {
 }
 
 function updateStatus(status: smsReceiverAPI.SMSReceiverQueueStatus): void {
-  queuedCount.value = status.queued_count
-  activeCount.value = status.active_count
+  queuedCount.value = Number.isFinite(status?.queued_count) ? status.queued_count : 0
+  activeCount.value = Number.isFinite(status?.active_count) ? status.active_count : 0
 }
 
 async function loadCardKeys(showFeedback = false): Promise<void> {
   loading.value = true
   try {
     const result = await smsReceiverAPI.listCardKeys()
-    cardKeys.value = result.card_keys
+    cardKeys.value = Array.isArray(result?.card_keys) ? result.card_keys : []
     updateStatus(result)
     if (showFeedback) appStore.showSuccess('接码卡密队列已刷新。')
   } catch (error) {

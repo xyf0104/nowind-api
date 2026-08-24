@@ -1,18 +1,18 @@
 <template>
-  <div class="mx-auto max-w-[1600px] space-y-6 p-4 md:p-6">
-    <header class="flex flex-col gap-3 border-b border-gray-200 pb-5 dark:border-dark-700 sm:flex-row sm:items-end sm:justify-between">
+  <div class="team-child-page mx-auto w-full max-w-[1680px] min-w-0 space-y-5 p-3 sm:space-y-6 sm:p-4 md:p-6">
+    <header class="flex min-w-0 flex-col gap-3 border-b border-gray-200 pb-5 dark:border-dark-700 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <div class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary-600 dark:text-primary-400">
           <Icon name="users" size="sm" :stroke-width="2" />
           <span>管理员工作流</span>
         </div>
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Team 子号创建</h1>
+        <h1 class="whitespace-nowrap text-2xl font-semibold text-gray-900 dark:text-gray-100">Team 子号创建</h1>
         <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
           一次处理一个账号。邮箱由 XIASS 服务端托管，流程状态、接码动作和回调导入集中在当前工作区。
         </p>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-2">
-        <div class="flex items-center gap-2 text-sm" :class="statusTone.text">
+        <div class="flex min-w-[6.5rem] items-center gap-2 whitespace-nowrap text-sm" :class="statusTone.text">
           <Icon :name="statusTone.icon" size="sm" :class="status === 'creating' || status === 'polling' ? 'animate-spin' : ''" :stroke-width="2" />
           <span>{{ statusLabel }}</span>
         </div>
@@ -30,10 +30,29 @@
       <span>{{ errorMessage }}</span>
     </div>
 
-    <div class="grid gap-6 xl:grid-cols-[minmax(280px,0.42fr)_minmax(0,1.58fr)]">
-      <div class="space-y-5">
+    <div class="team-child-layout grid min-w-0 gap-5 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
+      <TeamChildOAuthWorkspace
+        v-if="oauthWorkspaceVisible && teamWorkflow"
+        class="xl:col-span-2"
+        :workflow="teamWorkflow"
+        :mailbox-email="mailbox?.email || ''"
+        :auth-url="authUrl || ''"
+        :callback-url="callbackURL"
+        :show-reauthorize="workflowNeedsReauth"
+        @session-cancelled="restartWorkflowOAuth"
+        @reauthorize="restartWorkflowOAuth"
+        @open-auth-in-browser="openOfficialAuthInBrowser"
+        @open-browser="openBrowserWorkspace"
+        @continue-workflow="continueWorkflow"
+        @copy-auth="copyText(authUrl || '')"
+        @copy-callback="copyText(callbackURL)"
+        @phone-ready="submitWorkflowPhone"
+        @sms-code-received="submitWorkflowSMSCode"
+      />
+
+      <div class="min-w-0 space-y-5">
         <section class="space-y-5">
-        <div class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+        <div class="team-child-panel rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
           <div class="mb-5 flex items-start justify-between gap-4">
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">流程状态</h2>
@@ -45,7 +64,7 @@
             </button>
           </div>
 
-          <ol class="space-y-4">
+          <ol v-if="!teamWorkflow" class="space-y-4">
             <li v-for="(item, index) in steps" :key="item.key" class="flex gap-3">
               <div class="flex flex-col items-center">
                 <div class="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border text-xs font-semibold" :class="stepClass(item.key)">
@@ -74,20 +93,20 @@
             </li>
           </ol>
 
-          <div class="mt-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-900/40">
+          <div class="team-child-mailbox-panel mt-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="flex items-center justify-between gap-3">
               <span class="text-xs font-medium text-gray-500 dark:text-gray-400">当前邮箱</span>
               <span v-if="mailbox?.expires_at" class="text-xs text-gray-400 dark:text-gray-500">有效期至 {{ formatTime(mailbox.expires_at) }}</span>
             </div>
-            <div class="mt-1 flex flex-wrap items-center gap-2">
-              <code v-if="mailbox?.email" class="break-all text-sm font-semibold text-gray-900 dark:text-gray-100">{{ mailbox.email }}</code>
+            <div class="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+              <code v-if="mailbox?.email" class="min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100" :title="mailbox.email">{{ mailbox.email }}</code>
               <span v-else class="text-sm text-gray-400 dark:text-gray-500">点击“获取临时邮箱”后生成</span>
               <button v-if="mailbox?.email" type="button" class="btn btn-secondary p-2" title="复制邮箱" @click="copyText(mailbox.email)"><Icon name="copy" size="sm" :stroke-width="2" /></button>
             </div>
-            <div class="mt-3 flex items-end gap-2">
+            <div class="mt-3 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
               <div class="min-w-0 flex-1">
                 <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">邮箱验证码</label>
-                <input :value="mailboxCode || ''" readonly class="input h-9 w-44 max-w-full cursor-copy font-mono text-sm tracking-[0.16em]" :class="mailboxCode ? 'text-center' : ''" :title="mailboxCode ? '点击验证码复制' : undefined" :aria-label="mailboxCode ? '邮箱验证码，点击复制' : '邮箱验证码'" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" @click="mailboxCode && copyText(mailboxCode)" />
+                <input :value="mailboxCode || ''" readonly class="team-child-code-input input h-9 w-44 cursor-copy font-mono text-sm tracking-[0.16em]" :class="mailboxCode ? 'text-center' : ''" :title="mailboxCode ? '点击验证码复制' : undefined" :aria-label="mailboxCode ? '邮箱验证码，点击复制' : '邮箱验证码'" :placeholder="mailboxCodeLoading ? '正在检查...' : '等待邮件到达'" @click="mailboxCode && copyText(mailboxCode)" />
               </div>
               <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" title="立即检查邮箱" aria-label="立即检查邮箱" :disabled="!mailbox || mailboxCodeLoading || Boolean(mailboxCode)" @click="pollMailbox"><Icon name="refresh" size="sm" :class="mailboxCodeLoading ? 'animate-spin' : ''" :stroke-width="2" /></button>
             </div>
@@ -104,20 +123,9 @@
       </section>
 
         <section v-if="teamWorkflow || callbackURL || createdAccount" class="space-y-5">
-          <TeamChildOAuthWorkspace
-            v-if="oauthWorkspaceVisible && teamWorkflow"
-            :workflow="teamWorkflow"
-            :mailbox-email="mailbox?.email || ''"
-            :auth-url="authUrl || ''"
-            :callback-url="callbackURL"
-            @session-cancelled="restartWorkflowOAuth"
-            @copy-auth="copyText(authUrl || '')"
-            @copy-callback="copyText(callbackURL)"
-          />
-
           <div v-if="teamWorkflow || callbackURL || createdAccount" class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">导入 XIASS</h2>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">完成官方授权后，把地址栏中的完整回调 URL 粘贴到这里；工作流只在内存中校验 code/state，确认无误后再导入。</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">自动化会从服务器浏览器捕获并校验回调；若页面结构变化，可在这里粘贴完整回调 URL 进行人工兜底。</p>
             <label class="mt-4 mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">完整回调 URL</label>
             <textarea v-model="callbackURL" rows="3" class="input w-full resize-none font-mono text-xs" placeholder="https://.../callback?code=...&state=..."></textarea>
             <p v-if="parsedCallbackError" class="mt-2 text-xs text-red-600 dark:text-red-400">{{ parsedCallbackError }}</p>
@@ -134,7 +142,7 @@
             </button>
             <div class="mt-4"><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">账号名称</label><input v-model="accountName" class="input w-full" :placeholder="mailbox?.email || 'OpenAI OAuth Account'" /></div>
             <div class="mt-4"><GroupSelector v-model="selectedGroupIDs" :groups="groups" platform="openai" /></div>
-            <div class="mt-4 grid gap-4 sm:grid-cols-2"><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">并发数</label><input value="10" readonly class="input w-full bg-gray-50 dark:bg-dark-900" /></div><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">优先级</label><input value="1" readonly class="input w-full bg-gray-50 dark:bg-dark-900" /></div></div>
+            <div class="mt-4 grid gap-4 sm:grid-cols-2"><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">并发数</label><input v-model.number="accountConcurrency" type="number" min="1" max="1000" class="input w-full" /></div><div><label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">优先级</label><input v-model.number="accountPriority" type="number" min="1" max="999" class="input w-full" /></div></div>
             <button v-if="!createdAccount" type="button" class="btn btn-primary mt-5 flex w-full items-center justify-center gap-2 whitespace-nowrap" :disabled="!canImport || importing" @click="importAccount"><Icon v-if="importing" name="refresh" size="sm" class="animate-spin" :stroke-width="2" /><Icon v-else name="upload" size="sm" :stroke-width="2" /><span>{{ importing ? '正在导入...' : '校验并导入' }}</span></button>
             <div v-else class="mt-5 flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-4 dark:border-green-900/60 dark:bg-green-950/20"><Icon name="check" size="md" class="mt-0.5 text-green-600 dark:text-green-400" :stroke-width="2.5" /><div class="min-w-0"><div class="font-semibold text-green-800 dark:text-green-200">已导入 XIASS</div><div class="mt-1 break-all text-sm text-green-700 dark:text-green-300">{{ createdAccount.name || mailbox?.email }}</div><router-link to="/admin/accounts" class="mt-3 inline-flex items-center gap-1 text-sm font-medium text-green-700 hover:underline dark:text-green-300">前往账号管理 <Icon name="arrowRight" size="sm" :stroke-width="2" /></router-link></div></div>
           </div>
@@ -218,7 +226,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Icon } from '@/components/icons'
 import TeamChildBrowserWorkspace from '@/components/admin/account/TeamChildBrowserWorkspace.vue'
 import TeamChildOAuthWorkspace from '@/components/admin/account/TeamChildOAuthWorkspace.vue'
@@ -247,6 +255,7 @@ const browserVisible = ref(false)
 const browserControllerID = ref('')
 const browserControlConflict = ref(false)
 const browserTakeOverConfirmOpen = ref(false)
+const browserHeartbeatFailures = ref(0)
 const membersReady = ref(false)
 const membersLoading = ref(false)
 const membersError = ref('')
@@ -270,6 +279,8 @@ const callbackURL = ref('')
 const accountName = ref('')
 const groups = ref<AdminGroup[]>([])
 const selectedGroupIDs = ref<number[]>([])
+const accountConcurrency = ref(10)
+const accountPriority = ref(1)
 const errorMessage = ref('')
 const createdAccount = ref<{ id?: number; name?: string; [key: string]: unknown } | null>(null)
 const teamWorkflow = ref<TeamChildWorkflow | null>(null)
@@ -282,6 +293,12 @@ const workflowStepRunning = ref(false)
 const workflowStarting = ref(false)
 const workflowContinuing = ref(false)
 const callbackConfirming = ref(false)
+const emailCodeSubmitting = ref(false)
+const phoneSubmitting = ref(false)
+const smsCodeSubmitting = ref(false)
+const lastSubmittedEmailCode = ref('')
+const lastSubmittedPhone = ref('')
+const lastSubmittedSMSCode = ref('')
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let workflowPollTimer: ReturnType<typeof setTimeout> | null = null
 let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
@@ -289,8 +306,8 @@ let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
 const steps: Array<{ key: StepKey; label: string; description: string }> = [
   { key: 'mailbox', label: '生成临时邮箱', description: '由服务器端邮箱服务创建并保管访问令牌。' },
   { key: 'replace', label: '确认 Team 席位', description: '确认后替换选中的普通成员；若普通席位已人工腾出，会跳过移除并仅发送邀请。' },
-  { key: 'verify', label: '完成 OpenAI 授权', description: '展示 XIASS 官方 PKCE 链接；完成官方授权后粘贴完整回调并校验。' },
-  { key: 'import', label: '导入 XIASS', description: '使用固定并发数 10、优先级 1 创建一个 OpenAI OAuth 账号。' }
+  { key: 'verify', label: '完成 OpenAI 授权', description: '使用 XIASS 官方 PKCE 链路，自动完成邮箱、手机号、资料和工作空间节点。' },
+  { key: 'import', label: '导入 XIASS', description: '按当前勾选的分组、并发和优先级创建 OpenAI OAuth 账号。' }
 ]
 
 const busy = computed(() => ['creating', 'polling', 'workflow', 'importing'].includes(status.value) || workflowStarting.value || workflowContinuing.value)
@@ -299,7 +316,7 @@ const busy = computed(() => ['creating', 'polling', 'workflow', 'importing'].inc
 const workflowActionBusy = computed(() => ['creating', 'workflow', 'importing'].includes(status.value) || workflowStarting.value || workflowContinuing.value)
 const isStarted = computed(() => Boolean(mailbox.value))
 const importing = computed(() => status.value === 'importing')
-const statusLabel = computed(() => ({ idle: '未开始', creating: '创建中', ready: '等待授权', workflow: '正在替换成员', waiting: '等待外部验证', polling: '检查邮箱', received: '已收到验证码', callback: '已获取回调', importing: '正在导入', completed: '已完成', error: '需要处理' })[status.value])
+const statusLabel = computed(() => ({ idle: '未开始', creating: '创建中', ready: '等待授权', workflow: '自动化执行中', waiting: '等待当前节点', polling: '检查邮箱', received: '已收到验证码', callback: '已获取回调', importing: '正在导入', completed: '已完成', error: '需要处理' })[status.value])
 const statusTone = computed(() => {
   if (status.value === 'error') return { text: 'text-red-600 dark:text-red-400', icon: 'exclamationTriangle' as const }
   if (status.value === 'completed' || status.value === 'received' || status.value === 'callback') return { text: 'text-green-600 dark:text-green-400', icon: 'check' as const }
@@ -339,10 +356,13 @@ function isProtectedMember(member: TeamChildMember) {
 const selectedReplaceableMember = computed(() => members.value.find((member) => normalizeTeamChildEmail(member.email) === normalizeTeamChildEmail(selectedMemberEmail.value)))
 const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || workflowStepRunning.value || teamWorkflow.value?.status === 'running')
 const oauthWorkspaceVisible = computed(() => {
+  return Boolean(teamWorkflow.value)
+})
+const workflowNeedsReauth = computed(() => {
   const workflow = teamWorkflow.value
-  if (!workflow) return false
-  if (['manual_required', 'callback_ready'].includes(workflow.status)) return true
-  return workflow.steps.some((step) => step.key === 'oauth' && ['running', 'completed'].includes(step.status))
+  if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return false
+  const messages = [workflow.error || '', ...workflow.steps.map((step) => step.message || '')].join(' ')
+  return /\b401\b|unauthori[sz]ed|token\s*(?:已|已被)?(?:失效|过期)|重新授权/i.test(messages)
 })
 const manualSeatReady = computed(() => membersReady.value && members.value.length > 0 && !members.value.some((member) => isReplaceableMember(member)) && members.value.every(isProtectedMember))
 const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value?.status || ''))
@@ -380,6 +400,8 @@ const workflowStepConfirmationMessage = computed(() => {
 })
 const canImport = computed(() => Boolean(parsedCallback.value) && !parsedCallbackError.value && Boolean(mailbox.value) && Boolean(oauthSessionID.value) && !importing.value)
 const canConfirmCallback = computed(() => Boolean(teamWorkflow.value) && Boolean(parsedCallback.value) && !parsedCallbackError.value && !callbackConfirming.value)
+const normalizedConcurrency = computed(() => Math.min(1000, Math.max(1, Math.trunc(Number(accountConcurrency.value) || 10))))
+const normalizedPriority = computed(() => Math.min(999, Math.max(1, Math.trunc(Number(accountPriority.value) || 1))))
 
 function assertOfficialOAuthSession(auth: { auth_url: string; session_id: string }) {
   const parsed = new URL(auth.auth_url)
@@ -471,33 +493,60 @@ function clearBrowserHeartbeat() {
 function scheduleBrowserHeartbeat() {
   clearBrowserHeartbeat()
   if (!browserVisible.value || !browserControllerID.value) return
-  browserHeartbeatTimer = setTimeout(() => void heartbeatBrowserControl(), 45000)
+  const retryDelay = browserHeartbeatFailures.value > 0
+    ? Math.min(15_000, 2_500 * (2 ** Math.min(browserHeartbeatFailures.value - 1, 2)))
+    : 45_000
+  browserHeartbeatTimer = setTimeout(() => void heartbeatBrowserControl(), retryDelay)
 }
 async function heartbeatBrowserControl() {
   if (!browserVisible.value || !browserControllerID.value) return
   try {
     await teamChildAPI.heartbeatTeamChildBrowserControl(browserControllerID.value)
+    browserHeartbeatFailures.value = 0
     scheduleBrowserHeartbeat()
   } catch (error) {
-    clearBrowserHeartbeat()
-    browserEmbedURL.value = ''
-    browserControlConflict.value = extractApiErrorCode(error) === 'TEAM_CHILD_BROWSER_CONTROL_LOST'
-    browserError.value = browserControlConflict.value
-      ? '浏览器控制权已由其他设备接管。请返回自动化工作区，或在确认后重新接管。'
-      : extractApiErrorMessage(error, '浏览器控制续期失败，请重新接管后再操作。')
+    const errorCode = extractApiErrorCode(error)
+    if (errorCode === 'TEAM_CHILD_BROWSER_CONTROL_LOST' || errorCode === 'TEAM_CHILD_BROWSER_CONTROLLED') {
+      clearBrowserHeartbeat()
+      browserEmbedURL.value = ''
+      browserControlConflict.value = true
+      browserError.value = '浏览器控制权已由其他设备接管。请返回自动化工作区，或在确认后重新接管。'
+      return
+    }
+
+    // A single timeout/502 must not tear down the visible iframe. Retry the
+    // lease quickly while keeping the current Chromium page available for
+    // copying and manual recovery.
+    browserHeartbeatFailures.value += 1
+    if (browserHeartbeatFailures.value < 4) {
+      scheduleBrowserHeartbeat()
+      return
+    }
+    // Keep the iframe visible even after repeated transient failures. The
+    // explicit reload action remains available, while silently retrying the
+    // lease avoids replacing a usable page with a full-screen reconnect mask.
+    browserError.value = ''
+    scheduleBrowserHeartbeat()
   }
 }
 async function releaseBrowserControl() {
   clearBrowserHeartbeat()
+  browserHeartbeatFailures.value = 0
   const controllerID = browserControllerID.value
   browserControllerID.value = ''
   if (controllerID) await teamChildAPI.releaseTeamChildBrowserControl(controllerID).catch(() => undefined)
 }
-async function reloadBrowserWorkspace(takeOver = false) {
-  if (!browserConfigured.value || browserLoading.value) return
+async function reloadBrowserWorkspace(takeOver = false): Promise<boolean> {
+  if (!browserConfigured.value) return false
+  // Keep the mounted iframe and its persistent Chromium tab stable when a
+  // second action targets the already-open workspace. An explicit reload or
+  // takeover is the only path that mints a new viewer session.
+  if (!takeOver && browserEmbedURL.value && browserControllerID.value) return true
+  if (browserLoading.value) return false
   browserLoading.value = true
   browserError.value = ''
   browserControlConflict.value = false
+  browserHeartbeatFailures.value = 0
   try {
     const session = await teamChildAPI.createBrowserSession({
       ...(browserControllerID.value ? { controller_id: browserControllerID.value } : {}),
@@ -506,11 +555,13 @@ async function reloadBrowserWorkspace(takeOver = false) {
     browserEmbedURL.value = session.embed_url
     browserControllerID.value = session.controller_id
     scheduleBrowserHeartbeat()
+    return true
   } catch (error) {
     browserControlConflict.value = extractApiErrorCode(error) === 'TEAM_CHILD_BROWSER_CONTROLLED'
     browserError.value = browserControlConflict.value
       ? '已有设备正在手动查看服务器浏览器。需要继续时，请明确确认接管。'
       : extractApiErrorMessage(error, '无法连接服务器浏览器，请检查部署状态。')
+    return false
   } finally {
     browserLoading.value = false
   }
@@ -518,6 +569,32 @@ async function reloadBrowserWorkspace(takeOver = false) {
 async function openBrowserWorkspace() {
   browserVisible.value = true
   await reloadBrowserWorkspace()
+}
+
+async function openOfficialAuthInBrowser() {
+  const rawURL = authUrl.value.trim()
+  if (!rawURL) {
+    appStore.showError('当前还没有可用的 XIASS 官方授权链接')
+    return
+  }
+  if (!browserConfigured.value) {
+    appStore.showError('服务器浏览器尚未配置，无法在内嵌浏览器打开授权页')
+    return
+  }
+
+  browserVisible.value = true
+  const connected = await reloadBrowserWorkspace()
+  if (!connected) return
+
+  browserLoading.value = true
+  try {
+    await teamChildAPI.navigateTeamChildBrowser(rawURL)
+    appStore.showSuccess('官方授权页已在 XIASS 内嵌浏览器当前标签页打开')
+  } catch (error) {
+    browserError.value = extractApiErrorMessage(error, '无法在服务器浏览器打开官方授权页')
+  } finally {
+    browserLoading.value = false
+  }
 }
 async function confirmBrowserTakeOver() {
   browserTakeOverConfirmOpen.value = false
@@ -693,6 +770,7 @@ async function startConfirmedWorkflow(startStep: TeamChildWorkflowStepKey = work
       ...(seatAlreadyRemoved ? {} : { seat_email: normalizeTeamChildEmail(selectedMemberEmail.value) }),
       invite_email: normalizeTeamChildEmail(mailbox.value.email),
       auth_url: authUrl.value,
+      oauth_session_id: oauthSessionID.value,
       seat_already_removed: seatAlreadyRemoved,
       start_step: startStep,
       ...(workflowRunOnlyStep.value ? { run_only_step: true } : {}),
@@ -774,13 +852,21 @@ async function restartWorkflowOAuth() {
   if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return
   clearWorkflowPoll()
   try {
+    const activeMailbox = await teamChildAPI.getActiveMailbox()
+    const reusedMailbox = activeMailbox || mailbox.value
+    if (!reusedMailbox) throw new Error('当前临时邮箱已过期，请先重新获取临时邮箱')
+    if (activeMailbox) mailbox.value = activeMailbox
+    accountName.value = reusedMailbox.email
+    mailboxCode.value = ''
+    mailboxCodeError.value = ''
+    schedulePoll(250)
     const auth = await generateFreshOAuthSession()
     if (!auth) throw new Error('未生成 XIASS 官方 OpenAI 授权链接')
-    teamWorkflow.value = await teamChildAPI.restartTeamChildWorkflowOAuth(workflow.id, auth.auth_url)
+    teamWorkflow.value = await teamChildAPI.restartTeamChildWorkflowOAuth(workflow.id, auth.auth_url, auth.session_id)
     callbackURL.value = ''
     status.value = 'workflow'
     errorMessage.value = ''
-    appStore.showInfo('已取消当前接码会话，新的官方 OAuth 链接已准备')
+    appStore.showInfo(`已复用临时邮箱 ${reusedMailbox.email}，新的官方 OAuth 链接已准备`)
     scheduleWorkflowPoll(900)
   } catch (error) {
     status.value = 'error'
@@ -816,12 +902,14 @@ async function pollWorkflow() {
       callbackURL.value = workflow.callback_url
       status.value = 'callback'
       clearWorkflowPoll()
-      appStore.showSuccess('已校验授权回调地址，可以导入 XIASS')
+      appStore.showSuccess('已自动捕获并校验授权回调，正在导入 XIASS')
+      await importAccount()
       return
     }
     if (workflow.status === 'manual_required') {
       if (status.value !== 'received') status.value = 'waiting'
       if (!mailboxCode.value && !mailboxCodeLoading.value) schedulePoll()
+      await maybeSubmitMailboxCode()
     }
     if (workflow.status === 'failed') {
       status.value = 'error'
@@ -840,18 +928,18 @@ async function startFlow() {
   if (busy.value || !mailboxConfigured.value) return
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
-  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; status.value = 'creating'
+  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'creating'
   try {
     mailbox.value = await teamChildAPI.createMailbox()
     accountName.value = mailbox.value.email
     schedulePoll(250)
-    await generateFreshOAuthSession()
+    if (!teamWorkflow.value) await generateFreshOAuthSession()
     status.value = 'ready'
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '流程启动失败') }
 }
 
 async function restoreActiveMailbox() {
-  if (!mailboxConfigured.value || mailbox.value || busy.value) return
+  if (!mailboxConfigured.value || mailbox.value) return
   try {
     const restored = await teamChildAPI.getActiveMailbox()
     if (!restored) return
@@ -859,8 +947,12 @@ async function restoreActiveMailbox() {
     accountName.value = restored.email
     mailboxCodeError.value = ''
     schedulePoll(250)
-    await generateFreshOAuthSession()
-    status.value = 'ready'
+    if (!teamWorkflow.value) {
+      await generateFreshOAuthSession()
+      status.value = 'ready'
+    } else if (teamWorkflow.value.status === 'callback_ready') {
+      await importAccount()
+    }
     appStore.showInfo('已恢复当前临时邮箱，可以继续成员邀请和授权')
   } catch {
     // A missing or expired mailbox is normal after its short server-side TTL.
@@ -882,6 +974,7 @@ async function pollMailbox() {
       mailboxCode.value = result.code
       status.value = 'received'
       if (pollTimer) clearTimeout(pollTimer)
+      void maybeSubmitMailboxCode()
     } else {
       if (status.value === 'polling') status.value = 'waiting'
       schedulePoll()
@@ -900,6 +993,65 @@ async function pollMailbox() {
     }
   } finally { mailboxCodeLoading.value = false }
 }
+
+async function maybeSubmitMailboxCode() {
+  const workflow = teamWorkflow.value
+  const code = mailboxCode.value.trim()
+  if (!workflow || !['mailbox', 'email_code'].includes(workflow.current_node || '') || !code || emailCodeSubmitting.value || lastSubmittedEmailCode.value === code) return
+  emailCodeSubmitting.value = true
+  lastSubmittedEmailCode.value = code
+  try {
+    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowEmailCode(workflow.id, code)
+    status.value = 'workflow'
+    scheduleWorkflowPoll(400)
+  } catch (error) {
+    lastSubmittedEmailCode.value = ''
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '邮箱验证码自动填入失败')
+    await syncWorkflowAfterActionError()
+  } finally {
+    emailCodeSubmitting.value = false
+  }
+}
+
+async function submitWorkflowPhone(phone: string) {
+  const workflow = teamWorkflow.value
+  const normalized = phone.replace(/[\s()-]/g, '')
+  if (!workflow || !['sms_confirm', 'phone_submit'].includes(workflow.current_node || '') || phoneSubmitting.value || lastSubmittedPhone.value === normalized) return
+  phoneSubmitting.value = true
+  lastSubmittedPhone.value = normalized
+  try {
+    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowPhone(workflow.id, normalized)
+    status.value = 'workflow'
+    scheduleWorkflowPoll(400)
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '手机号自动填入失败')
+    await syncWorkflowAfterActionError()
+  } finally {
+    phoneSubmitting.value = false
+  }
+}
+
+async function submitWorkflowSMSCode(code: string) {
+  const workflow = teamWorkflow.value
+  const normalized = code.replace(/\s+/g, '')
+  if (!workflow || !['sms_poll', 'sms_code'].includes(workflow.current_node || '') || smsCodeSubmitting.value || lastSubmittedSMSCode.value === normalized) return
+  smsCodeSubmitting.value = true
+  lastSubmittedSMSCode.value = normalized
+  try {
+    teamWorkflow.value = await teamChildAPI.submitTeamChildWorkflowSMSCode(workflow.id, normalized)
+    status.value = 'workflow'
+    scheduleWorkflowPoll(400)
+  } catch (error) {
+    lastSubmittedSMSCode.value = ''
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '短信验证码自动填入失败')
+    await syncWorkflowAfterActionError()
+  } finally {
+    smsCodeSubmitting.value = false
+  }
+}
 async function importAccount() {
   if (!mailbox.value || !oauthSessionID.value || !parsedCallback.value || parsedCallbackError.value || importing.value) return
   errorMessage.value = ''; status.value = 'importing'
@@ -911,7 +1063,10 @@ async function importAccount() {
         return
       }
     }
-    createdAccount.value = await teamChildAPI.createOpenAIAccountFromOAuth({ session_id: oauthSessionID.value, code: parsedCallback.value.code, state: parsedCallback.value.state, name: accountName.value.trim() || mailbox.value.email, concurrency: 10, priority: 1, group_ids: selectedGroupIDs.value })
+    createdAccount.value = await teamChildAPI.createOpenAIAccountFromOAuth({ session_id: oauthSessionID.value, code: parsedCallback.value.code, state: parsedCallback.value.state, name: accountName.value.trim() || mailbox.value.email, concurrency: normalizedConcurrency.value, priority: normalizedPriority.value, group_ids: selectedGroupIDs.value, team_child: true })
+    if (teamWorkflow.value) {
+      teamWorkflow.value = await teamChildAPI.completeTeamChildWorkflow(teamWorkflow.value.id).catch(() => teamWorkflow.value!)
+    }
     status.value = 'completed'
     if (pollTimer) clearTimeout(pollTimer)
     await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
@@ -940,9 +1095,9 @@ async function confirmWorkflowCallback(): Promise<boolean> {
 async function resetFlow() {
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
-  if (teamWorkflow.value && ['manual_required', 'failed'].includes(teamWorkflow.value.status)) await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id).catch(() => undefined)
+  if (teamWorkflow.value && ['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value.status)) await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id).catch(() => undefined)
   if (mailbox.value) await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
-  mailbox.value = null; mailboxCode.value = ''; mailboxCodeError.value = ''; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; accountName.value = ''; selectedGroupIDs.value = []; createdAccount.value = null; errorMessage.value = ''; status.value = 'idle'
+  mailbox.value = null; mailboxCode.value = ''; mailboxCodeError.value = ''; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; accountName.value = ''; selectedGroupIDs.value = []; accountConcurrency.value = 10; accountPriority.value = 1; createdAccount.value = null; errorMessage.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'idle'
 }
 
 async function restoreActiveWorkflow() {
@@ -951,9 +1106,16 @@ async function restoreActiveWorkflow() {
     const restored = await teamChildAPI.getActiveTeamChildWorkflow()
     if (!restored) return
     teamWorkflow.value = restored
+    if (restored.oauth_session_id) oauthSessionID.value = restored.oauth_session_id
+    if (restored.oauth_state) oauthState.value = restored.oauth_state
     if (restored.status === 'callback_ready' && restored.callback_url) {
       callbackURL.value = restored.callback_url
       status.value = 'callback'
+      await importAccount()
+      return
+    }
+    if (restored.status === 'completed') {
+      status.value = 'completed'
       return
     }
     if (restored.status === 'failed') {
@@ -976,13 +1138,80 @@ onMounted(async () => {
   mailboxConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.configured)
   browserConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.browser_configured)
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
-  await restoreActiveMailbox()
   await restoreActiveWorkflow()
+  await restoreActiveMailbox()
   if (browserConfigured.value) await loadMembers()
 })
+
+watch(
+  [() => teamWorkflow.value?.current_node, mailboxCode],
+  () => { void maybeSubmitMailboxCode() }
+)
 onBeforeUnmount(() => {
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
   void releaseBrowserControl()
 })
 </script>
+
+<style scoped>
+.team-child-page {
+  overflow-x: clip;
+}
+
+.team-child-layout {
+  align-items: stretch;
+}
+
+.team-child-layout > * {
+  min-width: 0;
+}
+
+.team-child-code-input {
+  width: 9.5rem;
+  min-width: 9.5rem;
+  max-width: 100%;
+}
+
+.team-child-panel,
+.team-child-mailbox-panel {
+  contain: layout;
+}
+
+.team-child-page :deep(.btn),
+.team-child-page :deep(button),
+.team-child-page :deep(h1),
+.team-child-page :deep(h2),
+.team-child-page :deep(h3) {
+  text-wrap: nowrap;
+}
+
+.team-child-page :deep(.input),
+.team-child-page :deep(textarea),
+.team-child-page :deep(code) {
+  min-width: 0;
+}
+
+.team-child-page :deep(textarea),
+.team-child-page :deep(code) {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 639px) {
+  .team-child-page :deep(.btn) {
+    max-width: 100%;
+  }
+
+  .team-child-code-input {
+    width: 8.5rem;
+    min-width: 8.5rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .team-child-layout :deep(.team-child-members-workspace),
+  .team-child-layout :deep(.team-child-browser-workspace) {
+    min-height: min(720px, calc(100dvh - 12rem));
+  }
+}
+</style>

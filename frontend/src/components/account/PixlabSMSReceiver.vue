@@ -243,11 +243,14 @@ import SMSReceiverActionDialog from '@/components/sms/SMSReceiverActionDialog.vu
 const props = withDefaults(defineProps<{
   active?: boolean
   replacementRequired?: boolean
+  /** Re-evaluate an existing confirmed session when the parent moves nodes. */
+  submissionKey?: string
   /** Keep the legacy OAuth receiver behavior enabled by default. */
   autoSubmit?: boolean
 }>(), {
   active: false,
   replacementRequired: false,
+  submissionKey: '',
   autoSubmit: true
 })
 
@@ -291,6 +294,7 @@ const hasManuallyStarted = ref(false)
 const isStartingPhone = ref(false)
 const confirmationAction = ref<'claim' | 'cancel' | 'change' | null>(null)
 const lastEmittedCode = ref('')
+const lastEmittedPhoneSignature = ref('')
 const replacementPromptHandled = ref(false)
 const needsManualStart = computed(() => !hasManuallyStarted.value && !hasActiveSession.value)
 const replacementRequired = computed(() => props.replacementRequired && hasActiveSession.value && !replacementPromptHandled.value)
@@ -319,7 +323,7 @@ async function requestPhone(): Promise<void> {
   isStartingPhone.value = true
   hasManuallyStarted.value = true
   const started = await begin()
-  if (started && receiver.phoneForCopy.value && props.autoSubmit) emit('phone-ready', receiver.phoneForCopy.value)
+  if (started) emitPhoneIfReady(true)
   if (!started || ['expired', 'unavailable'].includes(receiver.phase.value)) {
     hasManuallyStarted.value = false
   }
@@ -351,13 +355,23 @@ async function changeNumber(): Promise<void> {
     // A replacement starts a new SMS session. Clear the local display before
     // the server response so an old code cannot be mistaken for the new one.
     lastEmittedCode.value = ''
+    lastEmittedPhoneSignature.value = ''
     const outcome = await receiver.changeNumber()
     replacementPromptHandled.value = outcome === 'waiting' && Boolean(receiver.phoneForCopy.value)
-    if (outcome === 'waiting' && receiver.phoneForCopy.value && props.autoSubmit) emit('phone-ready', receiver.phoneForCopy.value)
+    if (outcome === 'waiting') emitPhoneIfReady(true)
   } catch (error) {
     replacementPromptHandled.value = false
     showError(error)
   }
+}
+
+function emitPhoneIfReady(confirmedNow = false): void {
+  const phone = receiver.phoneForCopy.value.trim()
+  if (!props.autoSubmit || !props.active || (!confirmedNow && !hasActiveSession.value) || !phone) return
+  const signature = `${props.submissionKey}:${phone}`
+  if (signature === lastEmittedPhoneSignature.value) return
+  lastEmittedPhoneSignature.value = signature
+  emit('phone-ready', phone)
 }
 
 function requestChangeConfirmation(): void {
@@ -480,6 +494,12 @@ watch(
   (required) => {
     if (!required) replacementPromptHandled.value = false
   },
+)
+
+watch(
+  [() => props.active, () => props.submissionKey, phoneForCopy, hasActiveSession],
+  () => { emitPhoneIfReady() },
+  { immediate: true }
 )
 
 watch(code, (value) => {

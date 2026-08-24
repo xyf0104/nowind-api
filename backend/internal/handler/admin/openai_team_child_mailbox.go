@@ -38,6 +38,11 @@ const (
 	teamMailboxRedisKeyPrefix  = "xiass:team-child:mailbox:"
 	teamMailboxActiveKeyPrefix = "xiass:team-child:mailbox:active:"
 	teamMailboxLegacyScanLimit = 128
+	teamMailboxSequenceKey     = teamMailboxRedisKeyPrefix + "address-sequence"
+	teamMailboxSequenceStart   = int64(1000)
+	teamMailboxSequenceFileEnv = "TEAM_CHILD_MAIL_SEQUENCE_FILE"
+	teamMailboxSequenceFile    = "/app/data/team-child-mail-sequence"
+	teamMailboxAddressPrefix   = "team"
 	// The mailbox Worker blocks non-browser client signatures with Cloudflare
 	// error 1010. Keep this on the server-side provider client only; it is not
 	// exposed to the browser or copied into user-facing request metadata.
@@ -46,6 +51,7 @@ const (
 
 type openAITeamMailboxStore struct {
 	mu            sync.Mutex
+	sequenceMu    sync.Mutex
 	sessions      map[string]openAITeamMailboxSession
 	activeByAdmin map[int64]string
 	client        *http.Client
@@ -203,7 +209,12 @@ func (h *OpenAIOAuthHandler) CreateTeamChildMailbox(c *gin.Context) {
 		return
 	}
 
-	email, token, err := h.createTeamChildMailbox(c.Request.Context(), provider)
+	requestedEmail, err := h.nextTeamChildMailboxAddress(c.Request.Context(), provider)
+	if err != nil {
+		response.InternalError(c, "temporary mailbox address sequence is unavailable")
+		return
+	}
+	email, token, err := h.createTeamChildMailbox(c.Request.Context(), provider, requestedEmail)
 	if err != nil {
 		response.InternalError(c, "temporary mailbox could not be created")
 		return
@@ -780,20 +791,18 @@ func decodePersistedTeamMailboxSession(payload []byte) (openAITeamMailboxSession
 	}, nil
 }
 
-func (h *OpenAIOAuthHandler) createTeamChildMailbox(ctx context.Context, config teamMailboxProviderConfig) (string, string, error) {
-	payload := map[string]any{}
-	if strings.EqualFold(strings.TrimRight(config.createPath, "/"), "/admin/new_address") {
-		name, err := newTeamMailboxAddressName()
-		if err != nil {
-			return "", "", err
-		}
-		// cloudflare_temp_email's administrator endpoint requires both fields;
-		// its public /api/new_address endpoint accepts an empty object instead.
-		payload["name"] = name
-		payload["enablePrefix"] = true
+func (h *OpenAIOAuthHandler) createTeamChildMailbox(ctx context.Context, config teamMailboxProviderConfig, requestedEmail string) (string, string, error) {
+	localPart, domain, ok := strings.Cut(strings.TrimSpace(requestedEmail), "@")
+	if !ok || localPart == "" || domain == "" {
+		return "", "", errors.New("requested mailbox address is invalid")
 	}
-	if config.domain != "" {
-		payload["domain"] = config.domain
+	// Both the public and administrator Cloudflare mailbox endpoints accept a
+	// requested name. Disable the provider's global prefix so the address stays
+	// exactly in the server-owned team1000, team1001, ... sequence.
+	payload := map[string]any{
+		"name":         localPart,
+		"domain":       domain,
+		"enablePrefix": false,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -830,19 +839,85 @@ func (h *OpenAIOAuthHandler) createTeamChildMailbox(ctx context.Context, config 
 	if !teamMailboxAddressRE.MatchString(email) || token == "" {
 		return "", "", fmt.Errorf("mailbox create response is incomplete")
 	}
+	parsedEmail := strings.ToLower(strings.TrimSpace(email))
+	if parsedEmail != strings.ToLower(strings.TrimSpace(requestedEmail)) {
+		return "", "", fmt.Errorf("mailbox provider returned %q instead of requested address %q", email, requestedEmail)
+	}
 	return email, token, nil
 }
 
-func newTeamMailboxAddressName() (string, error) {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	buf := make([]byte, 10)
-	if _, err := rand.Read(buf); err != nil {
+func (h *OpenAIOAuthHandler) nextTeamChildMailboxAddress(ctx context.Context, config teamMailboxProviderConfig) (string, error) {
+	if h == nil || h.teamMailboxStore == nil {
+		return "", errors.New("temporary mailbox store is unavailable")
+	}
+	domain, err := teamMailboxAddressDomain(config)
+	if err != nil {
 		return "", err
 	}
-	for i := range buf {
-		buf[i] = alphabet[int(buf[i])%len(alphabet)]
+	store := h.teamMailboxStore
+	if redisClient := store.redisClient(); redisClient != nil {
+		// Initialize and increment in one Redis script so two administrators (or
+		// two application instances) cannot receive the same address.
+		const script = `
+			local current = redis.call('GET', KEYS[1])
+			if not current then
+				redis.call('SET', KEYS[1], ARGV[1])
+			elseif tonumber(current) < tonumber(ARGV[1]) then
+				redis.call('SET', KEYS[1], ARGV[1])
+			end
+			return redis.call('INCR', KEYS[1])
+		`
+		number, err := redis.NewScript(script).Run(ctx, redisClient, []string{teamMailboxSequenceKey}, teamMailboxSequenceStart-1).Int64()
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s%d@%s", teamMailboxAddressPrefix, number, domain), nil
 	}
-	return string(buf), nil
+
+	store.sequenceMu.Lock()
+	defer store.sequenceMu.Unlock()
+	filePath := strings.TrimSpace(os.Getenv(teamMailboxSequenceFileEnv))
+	if filePath == "" {
+		filePath = teamMailboxSequenceFile
+	}
+	current := teamMailboxSequenceStart - 1
+	if body, err := os.ReadFile(filePath); err == nil {
+		value, parseErr := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+		if parseErr != nil || value < teamMailboxSequenceStart-1 {
+			return "", errors.New("temporary mailbox sequence file is invalid")
+		}
+		current = value
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	next := current + 1
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
+		return "", err
+	}
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(strconv.FormatInt(next, 10)+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	return fmt.Sprintf("%s%d@%s", teamMailboxAddressPrefix, next, domain), nil
+}
+
+func teamMailboxAddressDomain(config teamMailboxProviderConfig) (string, error) {
+	// The sequence must be derived from the administrator-imported provider
+	// domain. Keeping this explicit avoids embedding a maintainer domain in the
+	// release and prevents an address from being displayed before the provider
+	// can actually create that exact mailbox.
+	domain := strings.ToLower(strings.TrimSpace(config.domain))
+	if domain == "" {
+		return "", errors.New("TEAM_CHILD_MAIL_DOMAIN is required for sequential mailbox addresses")
+	}
+	if match := teamMailboxAddressRE.FindString("x@" + domain); !strings.EqualFold(match, "x@"+domain) {
+		return "", errors.New("TEAM_CHILD_MAIL_DOMAIN is invalid")
+	}
+	return domain, nil
 }
 
 func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, session openAITeamMailboxSession) (string, error) {

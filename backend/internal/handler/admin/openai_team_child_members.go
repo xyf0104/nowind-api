@@ -50,6 +50,10 @@ type teamChildMemberRemoveRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
+type teamChildBrowserNavigateRequest struct {
+	URL string `json:"url" binding:"required"`
+}
+
 // teamChildProtectedMemberEmails is an instance-local deny list for the Team
 // workspace owner/admin identity. The browser automation independently treats
 // every upstream owner/admin row as protected; this value also protects a
@@ -148,6 +152,24 @@ func teamChildAutomationErrorMessage(body []byte) string {
 // persistent Chromium profile and whether ChatGPT members are currently ready.
 func (h *OpenAIOAuthHandler) TeamChildMemberAutomationStatus(c *gin.Context) {
 	h.teamChildMemberAutomationRequest(c, http.MethodGet, "/members", nil)
+}
+
+// NavigateTeamChildBrowser moves the existing persistent Chromium tab to the
+// XIASS-generated official OpenAI PKCE page. The URL is validated here and
+// again by the automation service; arbitrary destinations are never proxied
+// through this admin action.
+func (h *OpenAIOAuthHandler) NavigateTeamChildBrowser(c *gin.Context) {
+	var req teamChildBrowserNavigateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "授权链接无效")
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if err := validateTeamChildWorkflowAuthURL(req.URL); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/browser/navigate", req)
 }
 
 func (h *OpenAIOAuthHandler) ListTeamChildMembers(c *gin.Context) {

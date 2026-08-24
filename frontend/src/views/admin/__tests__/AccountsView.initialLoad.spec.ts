@@ -9,14 +9,16 @@ const {
   getBatchTodayStats,
   getUpstreamBillingProbeSettings,
   getAllProxies,
-  getAllGroups
+  getAllGroups,
+  getConcurrencyStats
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
   getBatchTodayStats: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
-  getAllGroups: vi.fn()
+  getAllGroups: vi.fn(),
+  getConcurrencyStats: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -31,6 +33,7 @@ vi.mock('@/api/admin', () => ({
       batchRefresh: vi.fn(),
       toggleSchedulable: vi.fn()
     },
+    ops: { getConcurrencyStats },
     proxies: { getAll: getAllProxies },
     groups: { getAll: getAllGroups }
   }
@@ -160,6 +163,7 @@ describe('admin AccountsView initial data synchronization', () => {
     getUpstreamBillingProbeSettings.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
+    getConcurrencyStats.mockReset()
 
     listAccounts.mockImplementation(async (_page: number, _pageSize: number, filters: { lite?: string }) => (
       paginated(filters?.lite === '1' ? liteAccount : completeAccount)
@@ -173,6 +177,7 @@ describe('admin AccountsView initial data synchronization', () => {
     getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: true, interval_minutes: 30 })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([{ id: 7, name: 'ChatGPT Team' }])
+    getConcurrencyStats.mockResolvedValue({ enabled: true, account: {} })
   })
 
   it('uses the complete account payload on first navigation, manual refresh, and a later revisit', async () => {
@@ -205,5 +210,28 @@ describe('admin AccountsView initial data synchronization', () => {
     expect(tableAccount(secondVisit)).toMatchObject(completeAccount)
     expect(getBatchTodayStats).toHaveBeenLastCalledWith([224])
     secondVisit.unmount()
+  })
+
+  it('updates the visible concurrency badge from the realtime snapshot without reloading the table', async () => {
+    getConcurrencyStats.mockResolvedValue({
+      enabled: true,
+      account: {
+        '224': {
+          account_id: 224,
+          current_in_use: 4,
+          max_capacity: 10,
+          load_percentage: 40,
+          waiting_in_queue: 0
+        }
+      }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(tableAccount(wrapper)).toMatchObject({ current_concurrency: 4 })
+    expect(listAccounts).toHaveBeenCalledTimes(1)
+    expect(getConcurrencyStats).toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

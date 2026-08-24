@@ -19,7 +19,7 @@ describe('TeamChildBrowserWorkspace', () => {
     })
 
     expect(wrapper.get('iframe').attributes('src')).toBe('/api/v1/team-child-browser/?ticket=one-time-ticket')
-    expect(wrapper.get('[data-testid="team-browser-frame"]').classes()).toContain('aspect-video')
+    expect(wrapper.get('[data-testid="team-browser-frame"]').classes()).toContain('team-child-browser-frame')
     expect(wrapper.get('[data-testid="team-browser-frame"]').classes()).toContain('overflow-hidden')
     expect(wrapper.text()).toContain('邀请成员邮箱')
     expect(wrapper.text()).toContain('team-child@example.test')

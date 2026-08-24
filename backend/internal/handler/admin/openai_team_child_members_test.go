@@ -116,6 +116,41 @@ func TestTeamChildMemberAutomationInspectRouteIsForwarded(t *testing.T) {
 	require.Equal(t, "/members/inspect", receivedPath)
 }
 
+func TestTeamChildBrowserNavigationForwardsOnlyValidatedOfficialOAuthURL(t *testing.T) {
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+	var receivedBody map[string]any
+	var receivedPath string
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"url":"https://auth.openai.com/log-in"}`))
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+
+	gin.SetMode(gin.TestMode)
+	handler := &OpenAIOAuthHandler{}
+	router := gin.New()
+	router.Use(teamChildAdminTestMiddleware("admin"))
+	router.POST("/browser/navigate", handler.NavigateTeamChildBrowser)
+
+	request := httptest.NewRequest(http.MethodPost, "/browser/navigate", strings.NewReader(`{"url":"`+testTeamChildAuthURL+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "/browser/navigate", receivedPath)
+	require.Equal(t, testTeamChildAuthURL, receivedBody["url"])
+
+	request = httptest.NewRequest(http.MethodPost, "/browser/navigate", strings.NewReader(`{"url":"https://example.test/authorize"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+}
+
 func TestTeamChildMemberInviteNormalizesTemporaryMailboxBeforeForwarding(t *testing.T) {
 	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
 	var receivedBody map[string]any

@@ -13,11 +13,10 @@ import (
 )
 
 // Team child workflow requests are deliberately narrow. The backend accepts
-// only an OpenAI authorization URL produced by its existing OAuth endpoint;
-// mailbox access tokens, passwords, and browser cookies never cross this
-// proxy. External credentials and verification codes stay on the official
-// page; the only value accepted after that handoff is a user-pasted callback
-// URL containing the current OAuth code/state pair.
+// only an OpenAI authorization URL/session produced by its existing OAuth
+// endpoint. Browser cookies and generated passwords never cross this proxy;
+// mailbox/SMS values are forwarded only to the active short-lived workflow and
+// are never persisted by this handler.
 type teamChildWorkflowStartRequest struct {
 	// Temporary mailbox domains are validated with the same normalized rule as
 	// the browser automation, so both workflow entry points accept the same
@@ -25,6 +24,7 @@ type teamChildWorkflowStartRequest struct {
 	SeatEmail          string `json:"seat_email"`
 	InviteEmail        string `json:"invite_email" binding:"required"`
 	AuthURL            string `json:"auth_url" binding:"required"`
+	OAuthSessionID     string `json:"oauth_session_id" binding:"required"`
 	SeatAlreadyRemoved bool   `json:"seat_already_removed"`
 	StartStep          string `json:"start_step"`
 	RunOnlyStep        bool   `json:"run_only_step"`
@@ -36,13 +36,25 @@ type teamChildWorkflowCallbackRequest struct {
 }
 
 type teamChildWorkflowRestartOAuthRequest struct {
-	AuthURL string `json:"auth_url" binding:"required"`
+	AuthURL        string `json:"auth_url" binding:"required"`
+	OAuthSessionID string `json:"oauth_session_id" binding:"required"`
+}
+
+type teamChildWorkflowCodeRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+type teamChildWorkflowPhoneRequest struct {
+	Phone string `json:"phone" binding:"required"`
 }
 
 var (
-	teamChildWorkflowStartPattern  = regexp.MustCompile(`^(members|remove|invite|oauth|verify)?$`)
-	teamChildWorkflowEmailPattern  = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-	teamChildWorkflowEmbeddedEmail = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	teamChildWorkflowStartPattern   = regexp.MustCompile(`^(members|remove|invite|oauth|verify)?$`)
+	teamChildWorkflowEmailPattern   = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	teamChildWorkflowEmbeddedEmail  = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	teamChildWorkflowSessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+	teamChildWorkflowCodePattern    = regexp.MustCompile(`^[0-9]{4,10}$`)
+	teamChildWorkflowPhonePattern   = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 )
 
 func normalizeTeamChildWorkflowEmail(value string) string {
@@ -74,6 +86,7 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 	req.SeatEmail = normalizeTeamChildWorkflowEmail(req.SeatEmail)
 	req.InviteEmail = normalizeTeamChildWorkflowEmail(req.InviteEmail)
 	req.AuthURL = strings.TrimSpace(req.AuthURL)
+	req.OAuthSessionID = strings.TrimSpace(req.OAuthSessionID)
 	req.StartStep = strings.TrimSpace(strings.ToLower(req.StartStep))
 	if req.InviteEmail == "" || !validTeamChildWorkflowEmail(req.InviteEmail) {
 		response.BadRequest(c, "临时邮箱格式无效")
@@ -110,6 +123,10 @@ func (h *OpenAIOAuthHandler) StartTeamChildWorkflow(c *gin.Context) {
 	}
 	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+	if !teamChildWorkflowSessionPattern.MatchString(req.OAuthSessionID) {
+		response.BadRequest(c, "XIASS OAuth 会话无效")
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows", req)
@@ -174,15 +191,93 @@ func (h *OpenAIOAuthHandler) ContinueTeamChildWorkflow(c *gin.Context) {
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/continue", nil)
 }
 
-// RejectTeamChildWorkflowExternalValue keeps the legacy Team endpoints
-// diagnosable for older frontends without accepting or forwarding their
-// external phone/code payloads.
+// SubmitTeamChildWorkflowEmailCode forwards a code read by the active XIASS
+// mailbox session to the matching short-lived browser workflow.
+func (h *OpenAIOAuthHandler) SubmitTeamChildWorkflowEmailCode(c *gin.Context) {
+	workflowID, ok := validTeamChildWorkflowRequestID(c)
+	if !ok {
+		return
+	}
+	var req teamChildWorkflowCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "邮箱验证码无效")
+		return
+	}
+	req.Code = strings.ReplaceAll(strings.TrimSpace(req.Code), " ", "")
+	if !teamChildWorkflowCodePattern.MatchString(req.Code) {
+		response.BadRequest(c, "邮箱验证码无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/email-code", req)
+}
+
+// SubmitTeamChildWorkflowPhone is called only after PixlabSMSReceiver's XIASS
+// in-page confirmation has successfully redeemed a number.
+func (h *OpenAIOAuthHandler) SubmitTeamChildWorkflowPhone(c *gin.Context) {
+	workflowID, ok := validTeamChildWorkflowRequestID(c)
+	if !ok {
+		return
+	}
+	var req teamChildWorkflowPhoneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "手机号无效")
+		return
+	}
+	req.Phone = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(strings.TrimSpace(req.Phone))
+	if !teamChildWorkflowPhonePattern.MatchString(req.Phone) {
+		response.BadRequest(c, "手机号必须是完整国际格式")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/phone", req)
+}
+
+// SubmitTeamChildWorkflowSMSCode forwards only the code returned by the active
+// confirmed SMS receiver session.
+func (h *OpenAIOAuthHandler) SubmitTeamChildWorkflowSMSCode(c *gin.Context) {
+	workflowID, ok := validTeamChildWorkflowRequestID(c)
+	if !ok {
+		return
+	}
+	var req teamChildWorkflowCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "短信验证码无效")
+		return
+	}
+	req.Code = strings.ReplaceAll(strings.TrimSpace(req.Code), " ", "")
+	if !teamChildWorkflowCodePattern.MatchString(req.Code) {
+		response.BadRequest(c, "短信验证码无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/sms-code", req)
+}
+
+// CompleteTeamChildWorkflow marks the final node complete only after the
+// existing XIASS OAuth account import endpoint has returned successfully.
+func (h *OpenAIOAuthHandler) CompleteTeamChildWorkflow(c *gin.Context) {
+	workflowID, ok := validTeamChildWorkflowRequestID(c)
+	if !ok {
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/complete", nil)
+}
+
+// RejectTeamChildWorkflowExternalValue keeps the ambiguous legacy code route
+// diagnosable without guessing whether a value is an email or SMS code.
 func (h *OpenAIOAuthHandler) RejectTeamChildWorkflowExternalValue(c *gin.Context) {
 	if !validTeamChildWorkflowID(strings.TrimSpace(c.Param("workflow_id"))) {
 		response.BadRequest(c, "工作流 ID 无效")
 		return
 	}
-	response.BadRequest(c, "手机号和验证码请在官方 OAuth 页面完成；Team 工作流不接收或转发外部验证值")
+	response.BadRequest(c, "旧版外部验证码接口已停用，请刷新页面后使用当前自动化工作流")
+}
+
+func validTeamChildWorkflowRequestID(c *gin.Context) (string, bool) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return "", false
+	}
+	return workflowID, true
 }
 
 // SubmitTeamChildWorkflowCallback records a callback URL pasted by the
@@ -229,8 +324,13 @@ func (h *OpenAIOAuthHandler) RestartTeamChildWorkflowOAuth(c *gin.Context) {
 		return
 	}
 	req.AuthURL = strings.TrimSpace(req.AuthURL)
+	req.OAuthSessionID = strings.TrimSpace(req.OAuthSessionID)
 	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+	if !teamChildWorkflowSessionPattern.MatchString(req.OAuthSessionID) {
+		response.BadRequest(c, "XIASS OAuth 会话无效")
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/restart-oauth", req)

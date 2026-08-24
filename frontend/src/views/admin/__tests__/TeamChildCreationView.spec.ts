@@ -11,6 +11,7 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
     deleteMailboxSession: vi.fn(),
     importMailboxConfig: vi.fn(),
     createBrowserSession: vi.fn(),
+    navigateTeamChildBrowser: vi.fn(),
     heartbeatTeamChildBrowserControl: vi.fn(),
     releaseTeamChildBrowserControl: vi.fn(),
     listTeamChildMembers: vi.fn(),
@@ -25,6 +26,10 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
     continueTeamChildWorkflow: vi.fn(),
     submitTeamChildWorkflowCallback: vi.fn(),
     restartTeamChildWorkflowOAuth: vi.fn(),
+    submitTeamChildWorkflowEmailCode: vi.fn(),
+    submitTeamChildWorkflowPhone: vi.fn(),
+    submitTeamChildWorkflowSMSCode: vi.fn(),
+    completeTeamChildWorkflow: vi.fn(),
     cancelTeamChildWorkflow: vi.fn(),
     createOpenAIAccountFromOAuth: vi.fn()
   },
@@ -91,7 +96,11 @@ const PixlabSMSReceiverStub = {
 }
 
 const BrowserWorkspaceStub = {
-  template: '<button type="button" data-testid="team-browser-workspace" @click="$emit(\'open-modular\')" />'
+  props: {
+    embedUrl: { type: String, default: '' },
+    error: { type: String, default: '' }
+  },
+  template: '<button type="button" data-testid="team-browser-workspace" :data-embed-url="embedUrl" :data-error="error" @click="$emit(\'open-modular\')" />'
 }
 
 const MembersWorkspaceStub = {
@@ -168,6 +177,7 @@ describe('TeamChildCreationView', () => {
       id: 'workflow-token-abcdefghijklmnop',
       status: 'manual_required',
       manual_required: true,
+      current_node: 'sms_confirm',
       expires_at: '2026-08-22T12:30:00.000Z',
       steps: [
         { key: 'members', number: 1, label: '读取成员席位', status: 'completed' },
@@ -212,6 +222,22 @@ describe('TeamChildCreationView', () => {
       expires_at: '2026-08-22T12:30:00.000Z',
       steps: []
     })
+    teamChildAPI.submitTeamChildWorkflowEmailCode.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop', status: 'running', manual_required: false,
+      expires_at: '2026-08-22T12:30:00.000Z', current_node: 'email_code', steps: []
+    })
+    teamChildAPI.submitTeamChildWorkflowPhone.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop', status: 'running', manual_required: false,
+      expires_at: '2026-08-22T12:30:00.000Z', current_node: 'phone_submit', steps: []
+    })
+    teamChildAPI.submitTeamChildWorkflowSMSCode.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop', status: 'running', manual_required: false,
+      expires_at: '2026-08-22T12:30:00.000Z', current_node: 'sms_code', steps: []
+    })
+    teamChildAPI.completeTeamChildWorkflow.mockResolvedValue({
+      id: 'workflow-token-abcdefghijklmnop', status: 'completed', manual_required: false,
+      expires_at: '2026-08-22T12:30:00.000Z', current_node: 'import', steps: []
+    })
   })
 
   afterEach(() => {
@@ -238,6 +264,26 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.releaseTeamChildBrowserControl).toHaveBeenCalledWith('controller-token-abcdefghijklmnop')
   })
 
+  it('keeps the embedded browser mounted after a transient heartbeat failure', async () => {
+    vi.useFakeTimers()
+    teamChildAPI.heartbeatTeamChildBrowserControl.mockRejectedValue({ status: 502, message: 'temporary gateway error' })
+    const wrapper = mountView()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-members-workspace"]').trigger('click')
+    await flushPromises()
+    const browser = wrapper.get('[data-testid="team-browser-workspace"]')
+    expect(browser.attributes('data-embed-url')).toBe('/browser?ticket=test')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    expect(teamChildAPI.heartbeatTeamChildBrowserControl).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="team-browser-workspace"]').attributes('data-embed-url')).toBe('/browser?ticket=test')
+    expect(wrapper.get('[data-testid="team-browser-workspace"]').attributes('data-error')).toBe('')
+    wrapper.unmount()
+  })
+
   it('restores an active workflow after the page is reopened', async () => {
     teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue({
       id: 'workflow-token-abcdefghijklmnop',
@@ -255,7 +301,7 @@ describe('TeamChildCreationView', () => {
     await flushPromises()
 
     expect(teamChildAPI.getActiveTeamChildWorkflow).toHaveBeenCalledTimes(1)
-    expect(wrapper.text()).toContain('等待外部验证')
+    expect(wrapper.text()).toContain('等待当前节点')
     wrapper.unmount()
   })
 
@@ -293,12 +339,34 @@ describe('TeamChildCreationView', () => {
       seat_email: 'member@example.test',
       invite_email: 'team-child@example.test',
       auth_url: testAuthURL,
+      oauth_session_id: 'oauth-session',
       seat_already_removed: false,
       start_step: 'members',
       confirmed: true
     })
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
 
+    wrapper.unmount()
+  })
+
+  it('opens the official OAuth URL in the existing server browser tab', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-open-auth"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.createBrowserSession).toHaveBeenCalledWith({})
+    expect(teamChildAPI.navigateTeamChildBrowser).toHaveBeenCalledWith(testAuthURL)
+    expect(appStore.showSuccess).toHaveBeenCalledWith('官方授权页已在 XIASS 内嵌浏览器当前标签页打开')
     wrapper.unmount()
   })
 
@@ -382,6 +450,7 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
       invite_email: 'team-child@example.test',
       auth_url: testAuthURL,
+      oauth_session_id: 'oauth-session',
       seat_already_removed: true,
       start_step: 'oauth',
       run_only_step: true,
@@ -435,6 +504,7 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.startTeamChildWorkflow).toHaveBeenCalledWith({
       invite_email: 'team-child@example.test',
       auth_url: testAuthURL,
+      oauth_session_id: 'oauth-session',
       seat_already_removed: true,
       start_step: 'members',
       confirmed: true
@@ -458,7 +528,7 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
-  it('keeps SMS receiver values outside the Team workflow submission API', async () => {
+  it('forwards a confirmed SMS receiver number only at the matching workflow node', async () => {
     const wrapper = mountView()
     await flushPromises()
     const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
@@ -469,7 +539,68 @@ describe('TeamChildCreationView', () => {
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
-    expect(teamChildAPI.submitTeamChildWorkflowCallback).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="sms-phone-ready"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.submitTeamChildWorkflowPhone).toHaveBeenCalledWith(
+      'workflow-token-abcdefghijklmnop',
+      '+14155550123'
+    )
+    expect(teamChildAPI.submitTeamChildWorkflowSMSCode).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('forwards a Cloudflare mailbox code only while the mailbox node is waiting', async () => {
+    teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce({
+      id: 'workflow-token-abcdefghijklmnop', status: 'manual_required', manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z', current_node: 'mailbox',
+      steps: [{ key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' }],
+      nodes: [{ key: 'mailbox', number: 9, label: 'Cloudflare 读取验证邮件', status: 'waiting' }]
+    })
+    teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'received', code: '123456' })
+    const wrapper = mountView()
+    await flushPromises()
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('button[aria-label="立即检查邮箱"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.submitTeamChildWorkflowEmailCode).toHaveBeenCalledWith(
+      'workflow-token-abcdefghijklmnop',
+      '123456'
+    )
+    expect(teamChildAPI.submitTeamChildWorkflowSMSCode).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('forwards an SMS code only while the SMS polling node is waiting', async () => {
+    teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce({
+      id: 'workflow-token-abcdefghijklmnop', status: 'manual_required', manual_required: true,
+      expires_at: '2026-08-22T12:30:00.000Z', current_node: 'sms_poll',
+      steps: [{ key: 'oauth', number: 4, label: '打开 OpenAI 授权页', status: 'completed' }],
+      nodes: [{ key: 'sms_poll', number: 14, label: '轮询短信验证码', status: 'waiting' }]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
+    await mailboxButton!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
+    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="sms-code-received"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.submitTeamChildWorkflowSMSCode).toHaveBeenCalledWith(
+      'workflow-token-abcdefghijklmnop',
+      '123456'
+    )
+    expect(teamChildAPI.submitTeamChildWorkflowEmailCode).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -493,7 +624,8 @@ describe('TeamChildCreationView', () => {
     expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(2)
     expect(teamChildAPI.restartTeamChildWorkflowOAuth).toHaveBeenCalledWith(
       'workflow-token-abcdefghijklmnop',
-      freshTestAuthURL
+      freshTestAuthURL,
+      'oauth-session-fresh'
     )
     expect(teamChildAPI.cancelTeamChildWorkflow).not.toHaveBeenCalled()
     wrapper.unmount()
