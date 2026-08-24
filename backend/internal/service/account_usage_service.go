@@ -2024,10 +2024,6 @@ func parseOpenAIWeeklyEstimateValue(value any) (float64, bool) {
 	return parsed, !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
 }
 
-func validOpenAIWeeklyEstimate(estimate float64) bool {
-	return !math.IsNaN(estimate) && !math.IsInf(estimate, 0) && estimate > 0
-}
-
 func validOpenAIWeeklyEstimateValue(estimate float64) bool {
 	return !math.IsNaN(estimate) && !math.IsInf(estimate, 0) && estimate >= 0
 }

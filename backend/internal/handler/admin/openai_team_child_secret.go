@@ -38,7 +38,7 @@ func (h *OpenAIOAuthHandler) fetchTeamChildWorkflowSecret(ctx context.Context, w
 	}
 	serviceToken := strings.TrimSpace(teamChildAutomationServiceToken())
 	if serviceToken == "" {
-		return nil, fmt.Errorf("Team-child automation token is unavailable")
+		return nil, fmt.Errorf("team-child automation token is unavailable")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, config.baseURL+"/workflows/"+url.PathEscape(workflowID)+"/secret", nil)
 	if err != nil {
@@ -49,19 +49,19 @@ func (h *OpenAIOAuthHandler) fetchTeamChildWorkflowSecret(ctx context.Context, w
 	if err != nil {
 		return nil, err
 	}
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(result.Body, teamChildSecretBodyLimit+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(body) > teamChildSecretBodyLimit {
-		return nil, fmt.Errorf("Team-child secret response is too large")
+		return nil, fmt.Errorf("team-child secret response is too large")
 	}
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("Team-child secret request returned HTTP %d", result.StatusCode)
+		return nil, fmt.Errorf("team-child secret request returned HTTP %d", result.StatusCode)
 	}
 	if result.Header.Get(teamChildWorkflowProtocolHeader) != teamChildWorkflowProtocolVersion {
-		return nil, fmt.Errorf("Team-child workflow protocol mismatch")
+		return nil, fmt.Errorf("team-child workflow protocol mismatch")
 	}
 	var secret openAITeamChildWorkflowSecret
 	if err := json.Unmarshal(body, &secret); err != nil {
@@ -69,7 +69,7 @@ func (h *OpenAIOAuthHandler) fetchTeamChildWorkflowSecret(ctx context.Context, w
 	}
 	secret.Email = normalizeTeamChildWorkflowEmail(secret.Email)
 	if !validTeamChildWorkflowEmail(secret.Email) || len(secret.Password) < 8 || len(secret.Password) > 256 {
-		return nil, fmt.Errorf("Team-child workflow secret is invalid")
+		return nil, fmt.Errorf("team-child workflow secret is invalid")
 	}
 	return &secret, nil
 }

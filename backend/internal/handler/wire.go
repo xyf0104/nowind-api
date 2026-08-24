@@ -3,11 +3,11 @@ package handler
 import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/redisclient"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/google/wire"
-	"github.com/redis/go-redis/v9"
 )
 
 // ProvideAdminHandlers creates the AdminHandlers struct
@@ -191,7 +191,7 @@ func ProvideOpenAIOAuthHandler(
 	adminService service.AdminService,
 	quotaService *service.OpenAIQuotaService,
 	rateLimitService *service.RateLimitService,
-	redisClient *redis.Client,
+	redisClient *redisclient.Client,
 	secretEncryptor service.SecretEncryptor,
 ) *admin.OpenAIOAuthHandler {
 	h := admin.NewOpenAIOAuthHandler(openaiOAuthService, adminService, quotaService, rateLimitService)

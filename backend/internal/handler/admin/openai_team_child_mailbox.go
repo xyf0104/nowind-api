@@ -22,11 +22,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/redisclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
 // The team-child mailbox helpers deliberately keep provider credentials and the
@@ -60,7 +60,7 @@ type openAITeamMailboxStore struct {
 	activeByAdmin map[int64]string
 	knownByAdmin  map[int64]map[string]time.Time
 	client        *http.Client
-	redis         *redis.Client
+	redis         *redisclient.Client
 	now           func() time.Time
 }
 
@@ -139,7 +139,7 @@ func newOpenAITeamMailboxStore() *openAITeamMailboxStore {
 	}
 }
 
-func (s *openAITeamMailboxStore) configureRedis(redisClient *redis.Client) {
+func (s *openAITeamMailboxStore) configureRedis(redisClient *redisclient.Client) {
 	if s == nil {
 		return
 	}
@@ -178,7 +178,7 @@ func (h *OpenAIOAuthHandler) ImportTeamChildMailboxConfig(c *gin.Context) {
 		response.BadRequest(c, "请上传 Cloudflare config.json 或 XIASS 邮箱配置文件")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	body, err := io.ReadAll(io.LimitReader(file, teamMailboxConfigBodyLimit+1))
 	if err != nil || len(body) > teamMailboxConfigBodyLimit {
 		response.BadRequest(c, "配置文件过大，最大支持 256 KB")
@@ -296,7 +296,7 @@ func validateSelectableTeamMailbox(raw string, provider teamMailboxProviderConfi
 	localPart, domain, ok := strings.Cut(email, "@")
 	configuredDomain, err := teamMailboxAddressDomain(provider)
 	if err != nil {
-		return "", errors.New("Team 邮箱域名配置无效")
+		return "", errors.New("team 邮箱域名配置无效")
 	}
 	if !ok || !strings.EqualFold(domain, configuredDomain) || !strings.HasPrefix(localPart, teamMailboxAddressPrefix) {
 		return "", errors.New("只能选择当前配置域名下由 XIASS 创建的 Team 邮箱")
@@ -304,7 +304,7 @@ func validateSelectableTeamMailbox(raw string, provider teamMailboxProviderConfi
 	numberText := strings.TrimPrefix(localPart, teamMailboxAddressPrefix)
 	number, err := strconv.ParseInt(numberText, 10, 64)
 	if err != nil || number < teamMailboxSequenceStart || fmt.Sprintf("%s%d", teamMailboxAddressPrefix, number) != localPart {
-		return "", errors.New("Team 邮箱必须使用 team 加数字的 XIASS 地址格式")
+		return "", errors.New("team 邮箱必须使用 team 加数字的 XIASS 地址格式")
 	}
 	return localPart + "@" + configuredDomain, nil
 }
@@ -601,7 +601,7 @@ func (s *openAITeamMailboxStore) pruneLocked(now time.Time) {
 	}
 }
 
-func (s *openAITeamMailboxStore) redisClient() *redis.Client {
+func (s *openAITeamMailboxStore) redisClient() *redisclient.Client {
 	if s == nil {
 		return nil
 	}
@@ -653,7 +653,7 @@ func (s *openAITeamMailboxStore) remember(ctx context.Context, ownerID int64, em
 	if redisClient := s.redisClient(); redisClient != nil {
 		key := teamMailboxKnownKeyPrefix + strconv.FormatInt(ownerID, 10)
 		pipe := redisClient.TxPipeline()
-		pipe.ZAdd(ctx, key, redis.Z{Score: float64(now.Unix()), Member: email})
+		pipe.ZAdd(ctx, key, redisclient.Z{Score: float64(now.Unix()), Member: email})
 		pipe.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(now.Add(-teamMailboxKnownTTL).Unix(), 10))
 		pipe.Expire(ctx, key, teamMailboxKnownTTL)
 		_, err := pipe.Exec(ctx)
@@ -721,7 +721,7 @@ func (s *openAITeamMailboxStore) active(ctx context.Context, ownerID int64) (str
 	if redisClient := s.redisClient(); redisClient != nil {
 		indexKey := teamMailboxActiveKeyPrefix + strconv.FormatInt(ownerID, 10)
 		sessionID, err := redisClient.Get(ctx, indexKey).Result()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			// Sessions created before the active-session index was introduced are
 			// still recoverable through a bounded, read-only prefix scan.
 			return s.findActiveInRedis(ctx, redisClient, ownerID, now)
@@ -730,7 +730,7 @@ func (s *openAITeamMailboxStore) active(ctx context.Context, ownerID int64) (str
 			return "", openAITeamMailboxSession{}, false, err
 		}
 		payload, err := redisClient.Get(ctx, teamMailboxRedisKeyPrefix+sessionID).Bytes()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			_ = redisClient.Del(ctx, indexKey).Err()
 			return s.findActiveInRedis(ctx, redisClient, ownerID, now)
 		}
@@ -757,7 +757,7 @@ func (s *openAITeamMailboxStore) active(ctx context.Context, ownerID int64) (str
 	return sessionID, session, true, nil
 }
 
-func (s *openAITeamMailboxStore) findActiveInRedis(ctx context.Context, redisClient *redis.Client, ownerID int64, now time.Time) (string, openAITeamMailboxSession, bool, error) {
+func (s *openAITeamMailboxStore) findActiveInRedis(ctx context.Context, redisClient *redisclient.Client, ownerID int64, now time.Time) (string, openAITeamMailboxSession, bool, error) {
 	var (
 		cursor     uint64
 		bestID     string
@@ -834,7 +834,7 @@ func (h *OpenAIOAuthHandler) lookupTeamMailboxSessionContext(ctx context.Context
 	if redisClient := h.teamMailboxStore.redisClient(); redisClient != nil {
 		var payload []byte
 		payload, err = redisClient.Get(ctx, teamMailboxRedisKeyPrefix+sessionID).Bytes()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			return openAITeamMailboxSession{}, false, nil
 		}
 		if err != nil {
@@ -873,7 +873,7 @@ func (s *openAITeamMailboxStore) delete(ctx context.Context, sessionID string, o
 		// The read + delete race is harmless for this cleanup-only operation, and
 		// the owner check is repeated by the normal lookup path before use.
 		payload, err := redisClient.Get(ctx, teamMailboxRedisKeyPrefix+sessionID).Bytes()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			return nil
 		}
 		if err != nil {
@@ -1034,7 +1034,7 @@ func (h *OpenAIOAuthHandler) nextTeamChildMailboxAddress(ctx context.Context, co
 			end
 			return redis.call('INCR', KEYS[1])
 		`
-		number, err := redis.NewScript(script).Run(ctx, redisClient, []string{teamMailboxSequenceKey}, teamMailboxSequenceStart-1).Int64()
+		number, err := redisclient.NewScript(script).Run(ctx, redisClient, []string{teamMailboxSequenceKey}, teamMailboxSequenceStart-1).Int64()
 		if err != nil {
 			return "", err
 		}
@@ -1189,7 +1189,7 @@ func (h *OpenAIOAuthHandler) doTeamMailboxRequest(request *http.Request) ([]byte
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, teamMailboxBodyLimit+1))
 	if err != nil {
 		return nil, resp.StatusCode, err

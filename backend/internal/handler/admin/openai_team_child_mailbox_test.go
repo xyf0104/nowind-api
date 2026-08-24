@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
+	redis "github.com/Wei-Shaw/sub2api/internal/pkg/redisclient"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,7 +59,7 @@ func TestTeamChildMailboxCanListAndReopenKnownAddressWithoutExposingJWT(t *testi
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 		require.Equal(t, "example.test", payload.Domain)
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"address":%q,"jwt":"mailbox-jwt-%s"}`, payload.Name+"@"+payload.Domain, payload.Name)))
+		_, _ = fmt.Fprintf(w, `{"address":%q,"jwt":"mailbox-jwt-%s"}`, payload.Name+"@"+payload.Domain, payload.Name)
 	})
 
 	createRec := httptest.NewRecorder()

@@ -18,10 +18,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/redisclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -41,7 +41,7 @@ type openAITeamBrowserStore struct {
 	sessions map[string]openAITeamBrowserSession
 	tickets  map[string]openAITeamBrowserTicket
 	control  *openAITeamBrowserControllerLease
-	redis    *redis.Client
+	redis    *redisclient.Client
 	now      func() time.Time
 }
 
@@ -117,7 +117,7 @@ func newOpenAITeamBrowserStore() *openAITeamBrowserStore {
 // ConfigureTeamChildSessionStore upgrades the short-lived Team workflow state
 // to Redis in real deployments. The in-memory implementation remains only for
 // direct unit tests and isolated handler construction.
-func (h *OpenAIOAuthHandler) ConfigureTeamChildSessionStore(redisClient *redis.Client) {
+func (h *OpenAIOAuthHandler) ConfigureTeamChildSessionStore(redisClient *redisclient.Client) {
 	if h == nil {
 		return
 	}
@@ -131,7 +131,7 @@ func (h *OpenAIOAuthHandler) ConfigureTeamChildSessionStore(redisClient *redis.C
 	h.teamBrowserStore.configureRedis(redisClient)
 }
 
-func (s *openAITeamBrowserStore) configureRedis(redisClient *redis.Client) {
+func (s *openAITeamBrowserStore) configureRedis(redisClient *redisclient.Client) {
 	if s == nil {
 		return
 	}
@@ -597,7 +597,7 @@ func (s *openAITeamBrowserStore) hasCurrentControl(ctx context.Context, session 
 	lease := openAITeamBrowserControllerLease{adminUserID: session.adminUserID, controllerID: session.controllerID}
 	if redisClient := s.redisClient(); redisClient != nil {
 		value, err := redisClient.Get(ctx, teamChildBrowserControlRedisKey).Result()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			return false, nil
 		}
 		if err != nil {
@@ -623,7 +623,7 @@ func boolToRedisInteger(value bool) int {
 	return 0
 }
 
-var redisTeamChildBrowserAcquireControl = redis.NewScript(`
+var redisTeamChildBrowserAcquireControl = redisclient.NewScript(`
 local current = redis.call('GET', KEYS[1])
 if not current then
   redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
@@ -640,7 +640,7 @@ end
 return 0
 `)
 
-var redisTeamChildBrowserHeartbeatControl = redis.NewScript(`
+var redisTeamChildBrowserHeartbeatControl = redisclient.NewScript(`
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   redis.call('PEXPIRE', KEYS[1], ARGV[2])
   return 1
@@ -648,7 +648,7 @@ end
 return 0
 `)
 
-var redisTeamChildBrowserReleaseControl = redis.NewScript(`
+var redisTeamChildBrowserReleaseControl = redisclient.NewScript(`
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   return redis.call('DEL', KEYS[1])
 end
@@ -668,7 +668,7 @@ func (s *openAITeamBrowserStore) create(ctx context.Context, sessionToken, ticke
 		if sessionTTL <= 0 {
 			return errors.New("browser workspace session has expired")
 		}
-		_, err = redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		_, err = redisClient.TxPipelined(ctx, func(pipe redisclient.Pipeliner) error {
 			pipe.Set(ctx, teamChildBrowserSessionRedisPrefix+sessionToken, payload, sessionTTL)
 			pipe.Set(ctx, teamChildBrowserTicketRedisPrefix+ticket, sessionToken, ticketTTL)
 			return nil
@@ -699,7 +699,7 @@ func (s *openAITeamBrowserStore) consumeTicket(ctx context.Context, ticket strin
 	}
 	if redisClient := s.redisClient(); redisClient != nil {
 		sessionToken, err := redisClient.GetDel(ctx, teamChildBrowserTicketRedisPrefix+ticket).Result()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			return "", openAITeamBrowserSession{}, false, nil
 		}
 		if err != nil {
@@ -736,7 +736,7 @@ func (s *openAITeamBrowserStore) lookup(ctx context.Context, token string) (open
 	}
 	if redisClient := s.redisClient(); redisClient != nil {
 		payload, err := redisClient.Get(ctx, teamChildBrowserSessionRedisPrefix+token).Bytes()
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, redisclient.Nil) {
 			return openAITeamBrowserSession{}, false, nil
 		}
 		if err != nil {
@@ -777,7 +777,7 @@ func (s *openAITeamBrowserStore) delete(ctx context.Context, token string) error
 	return nil
 }
 
-func (s *openAITeamBrowserStore) redisClient() *redis.Client {
+func (s *openAITeamBrowserStore) redisClient() *redisclient.Client {
 	if s == nil {
 		return nil
 	}
@@ -864,7 +864,11 @@ func newTeamChildBrowserReverseProxy(upstreamURL *url.URL, c *gin.Context) *http
 		// The internal LinuxServer Chromium service presents its own self-signed
 		// certificate. This exception is deliberately scoped to the fixed Docker
 		// service name; all other configured HTTPS upstreams keep normal checks.
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		baseTransport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return proxy
+		}
+		transport := baseTransport.Clone()
 		transport.TLSClientConfig = &tls.Config{
 			MinVersion:         tls.VersionTLS12,
 			InsecureSkipVerify: true, // #nosec G402 -- Docker-internal self-signed Chromium only.

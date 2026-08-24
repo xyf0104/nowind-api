@@ -21,13 +21,13 @@ type teamChildWorkflowStartRequest struct {
 	// Temporary mailbox domains are validated with the same normalized rule as
 	// the browser automation, so both workflow entry points accept the same
 	// provider-generated address.
-	SeatEmail          string `json:"seat_email"`
-	InviteEmail        string `json:"invite_email" binding:"required"`
-	AuthURL            string `json:"auth_url" binding:"required"`
-	OAuthSessionID     string `json:"oauth_session_id" binding:"required"`
-	SeatAlreadyRemoved bool   `json:"seat_already_removed"`
-	MembersAlreadyInvited bool `json:"members_already_invited"`
-	Confirmed          bool   `json:"confirmed"`
+	SeatEmail             string `json:"seat_email"`
+	InviteEmail           string `json:"invite_email" binding:"required"`
+	AuthURL               string `json:"auth_url" binding:"required"`
+	OAuthSessionID        string `json:"oauth_session_id" binding:"required"`
+	SeatAlreadyRemoved    bool   `json:"seat_already_removed"`
+	MembersAlreadyInvited bool   `json:"members_already_invited"`
+	Confirmed             bool   `json:"confirmed"`
 }
 
 type teamChildWorkflowCallbackRequest struct {
@@ -317,7 +317,7 @@ func validTeamChildWorkflowID(value string) bool {
 		return false
 	}
 	for _, r := range value {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
 			return false
 		}
 	}

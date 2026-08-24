@@ -121,7 +121,7 @@ func (h *OpenAIOAuthHandler) teamChildMemberAutomationRequest(c *gin.Context, me
 		response.Error(c, http.StatusBadGateway, "服务器浏览器自动化服务不可用，请先登录或检查部署状态")
 		return
 	}
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	resultBody, readErr := io.ReadAll(io.LimitReader(result.Body, 2<<20))
 	if readErr != nil {
 		response.Error(c, http.StatusBadGateway, "读取服务器浏览器操作结果失败")
@@ -154,7 +154,7 @@ func requireCurrentTeamChildWorkflowProtocol(ctx context.Context, config teamChi
 	if err != nil {
 		return err
 	}
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("automation health returned status %d", result.StatusCode)
 	}
