@@ -157,6 +157,8 @@
         :workflow-busy="workflowBusy"
         :workflow="teamWorkflow"
         :workflow-continuing="workflowContinuing"
+        :browser-configured="browserConfigured"
+        :browser-loading="browserLoading"
         @refresh="refreshMembers"
         @inspect="inspectSeat"
         @select="selectedMemberEmail = $event"

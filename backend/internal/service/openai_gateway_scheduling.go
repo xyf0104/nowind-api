@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -27,6 +28,8 @@ const (
 	openCodeNativeSessionHeader   = "X-OpenCode-Session"
 	codeBuddyConversationHeader   = "X-Conversation-ID"
 )
+
+var openaiGrokFreeQuotaGateCache sync.Map
 
 var explicitOpenAIHeaderSessionNames = []string{
 	"session_id",
@@ -1259,7 +1262,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if accounts, ok := openAIAccountSelectionOverride(ctx); ok {
-		return accounts, nil
+		return s.filterOpenAISchedulablePool(ctx, platform, accounts), nil
 	}
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
@@ -1270,6 +1273,7 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		if err != nil {
 			return nil, err
 		}
+		accounts = s.filterOpenAISchedulablePool(ctx, platform, accounts)
 		// Snapshot rebuilds are asynchronous. If the snapshot is empty while
 		// the repository already exposes a schedulable account, use one
 		// read-only DB fallback so a stale bucket does not become a false 503.
@@ -1361,6 +1365,7 @@ func (s *OpenAIGatewayService) listSchedulableAccountsFromDatabase(ctx context.C
 		if err != nil {
 			return nil, err
 		}
+		accounts = s.filterOpenAISchedulablePool(ctx, platform, accounts)
 		return accounts, nil
 	}
 	var accounts []Account
@@ -1379,7 +1384,19 @@ func (s *OpenAIGatewayService) listSchedulableAccountsFromDatabase(ctx context.C
 	if err != nil {
 		return nil, err
 	}
+	accounts = s.filterOpenAISchedulablePool(ctx, platform, accounts)
 	return accounts, nil
+}
+
+// filterOpenAISchedulablePool applies provider-level eligibility gates to the
+// legacy scheduler, snapshot recovery, and sticky rechecks without mutating
+// shared account state.
+func (s *OpenAIGatewayService) filterOpenAISchedulablePool(ctx context.Context, platform string, accounts []Account) []Account {
+	accounts = s.filterOpenAIAccountsBySchedulingThreshold(ctx, accounts)
+	if normalizeOpenAICompatiblePlatform(platform) == PlatformGrok {
+		accounts = s.filterGrokFreeQuotaAccountsForOpenAI(ctx, accounts)
+	}
+	return accounts
 }
 
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
@@ -1413,6 +1430,9 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	if s.isOpenAIAccountRequestRuntimeBlocked(fresh, requestedModel) {
 		return nil
 	}
+	if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, fresh) {
+		return nil
+	}
 	if s.isOpenAIProxyStreamQuarantined(ctx, fresh) {
 		return nil
 	}
@@ -1439,7 +1459,13 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	}
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
+			return nil
+		}
 		if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, account, platform, requestedModel, requireCompact, requiredCapability, s.settingService) {
+			return nil
+		}
+		if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, account) {
 			return nil
 		}
 		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -1458,6 +1484,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if !s.openAIAccountMatchesSchedulingGroup(latest, groupID) {
 		return nil
 	}
+	if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !latest.IsPrivacySet() {
+		return nil
+	}
 	if !isOpenAICompatibleAccountEligibleForRequestWithSettings(ctx, latest, platform, requestedModel, requireCompact, requiredCapability, s.settingService) {
 		return nil
 	}
@@ -1465,6 +1494,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	if s.isOpenAIAccountRequestRuntimeBlocked(latest, requestedModel) {
+		return nil
+	}
+	if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, latest) {
 		return nil
 	}
 	if s.isOpenAIProxyStreamQuarantined(ctx, latest) {
@@ -1493,7 +1525,44 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 	if err != nil || account == nil {
 		return account, err
 	}
+	if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, account) {
+		return nil, nil
+	}
+	if account.IsGrok() && len(s.filterGrokFreeQuotaAccountsForOpenAI(ctx, []Account{*account})) == 0 {
+		return nil, nil
+	}
 	return account, nil
+}
+
+// filterGrokFreeQuotaAccountsForOpenAI applies the same rolling free-quota
+// gate used by the general gateway scheduler to the OpenAI-compatible legacy
+// path. A stale sticky binding must not bypass that gate.
+func (s *OpenAIGatewayService) filterGrokFreeQuotaAccountsForOpenAI(ctx context.Context, accounts []Account) []Account {
+	if s == nil {
+		return accounts
+	}
+	return filterGrokFreeQuotaAccountsCore(ctx, s.cfg, s.usageLogRepo, &openaiGrokFreeQuotaGateCache, accounts)
+}
+
+func (s *OpenAIGatewayService) filterOpenAIAccountsBySchedulingThreshold(ctx context.Context, accounts []Account) []Account {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	filtered := make([]Account, 0, len(accounts))
+	for i := range accounts {
+		if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, &accounts[i]) {
+			continue
+		}
+		filtered = append(filtered, accounts[i])
+	}
+	return filtered
+}
+
+func (s *OpenAIGatewayService) isOpenAIAccountBlockedBySchedulingThreshold(ctx context.Context, account *Account) bool {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return false
+	}
+	return s.rateLimitService.ApplyAccountSchedulingThreshold(ctx, account)
 }
 
 func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {

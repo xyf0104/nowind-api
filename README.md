@@ -6,7 +6,7 @@
   <h1>XIASS API</h1>
   <p>面向个人与团队的 AI API 网关、账号池和计费管理平台</p>
   <p>
-    <img src="https://img.shields.io/badge/当前版本-v1.1.43-0ea5e9" alt="当前版本 v1.1.43" />
+    <img src="https://img.shields.io/badge/当前版本-v1.1.44-0ea5e9" alt="当前版本 v1.1.44" />
     <img src="https://img.shields.io/badge/Docker-amd64-2496ed" alt="Docker amd64" />
     <img src="https://img.shields.io/badge/Go-1.26-00add8" alt="Go 1.26" />
     <img src="https://img.shields.io/badge/Vue-3-42b883" alt="Vue 3" />
@@ -14,9 +14,9 @@
   </p>
 </div>
 
-> 当前版本：v1.1.43
+> 当前版本：v1.1.44
 
-v1.1.43 收敛 Team 子号的官方 OAuth 交接：成员读取、移除、邀请和 Pending invites 继续由服务器端实时核验；OAuth 只复用 XIASS 原生 OpenAI PKCE 链接，外部验证完成后由管理员粘贴完整回调 URL，系统校验 code/state 后再导入。Team 工作流不再接收或转发外部密码、手机号和验证码，独立 OAuth 接码流程保持不变。调度器增加有界的候选耗尽数据库恢复：快照只残留失败账号时，故障转移会重新读取权威账号池并继续按原优先级、模型能力和并发规则选择，避免误报 503；异步重建短暂延迟也继续使用只读回源兜底。
+v1.1.44 收敛 Team 子号的官方 OAuth 交接：成员读取、移除、邀请和 Pending invites 继续由服务器端实时核验；OAuth 只复用 XIASS 原生 OpenAI PKCE 链接，外部验证完成后由管理员粘贴完整回调 URL，系统校验 code/state 后再导入。Team 工作流不再接收或转发外部密码、手机号和验证码，独立 OAuth 接码流程保持不变。调度器增加有界的候选耗尽数据库恢复：快照只残留失败账号时，故障转移会重新读取权威账号池并继续按原优先级、模型能力和并发规则选择，避免误报 503；异步重建短暂延迟也继续使用只读回源兜底。
 
 v1.1.42 新增 Team 子号的官方 OAuth 验证工作区：在不默认打开嵌入式浏览器的情况下集中展示授权阶段、接码状态、一次性验证码提交、回调捕获和复制动作；外部账号登录、注册和身份验证仍由操作者在官方页面完成，敏感凭据不进入 XIASS 工作流。调度器在快照暂时为空时增加一次只读数据库回退，避免异步快照重建造成误报 503；真实没有可用候选账号时仍按原规则返回 503。
 

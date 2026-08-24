@@ -25,10 +25,12 @@
         <a
           v-if="authUrl"
           :href="authUrl"
-          target="_blank"
+          target="xiass-openai-oauth"
           rel="noopener noreferrer"
           class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
-          title="在当前设备的官方浏览器中打开 OAuth 授权页"
+          title="在当前设备打开并复用官方 OAuth 授权页标签"
+          data-testid="team-open-auth"
+          @click="openOfficialAuth"
         >
           <Icon name="externalLink" size="sm" :stroke-width="2" />
           <span>打开官方授权页</span>
@@ -65,7 +67,7 @@
             </button>
           </div>
           <code class="mt-2 block max-h-16 overflow-auto break-all rounded-md border border-primary-100 bg-white px-2.5 py-2 text-[11px] leading-4 text-gray-700 dark:border-primary-900/50 dark:bg-dark-900 dark:text-gray-300">{{ authUrl }}</code>
-          <p class="mt-2 text-xs leading-5 text-primary-700 dark:text-primary-300">授权完成后，把浏览器地址栏中的完整回调 URL 粘贴到下方“导入 XIASS”区域。</p>
+          <p class="mt-2 text-xs leading-5 text-primary-700 dark:text-primary-300">打开后请在官方页面手动选择 Sign up 或登录并完成页面提示；授权完成后，把地址栏中的完整回调 URL 粘贴到下方“导入 XIASS”区域。</p>
         </div>
 
         <div v-if="workflow.error" class="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300">
@@ -121,6 +123,27 @@ const emit = defineEmits<{
   'copy-auth': []
   'copy-callback': []
 }>()
+
+const officialAuthWindowName = 'xiass-openai-oauth'
+
+function openOfficialAuth(event: MouseEvent) {
+  const rawURL = props.authUrl.trim()
+  if (!rawURL) return
+
+  // Reuse one user-created browsing context. Opening a blank named context
+  // first lets us detach opener before navigating to the cross-origin page;
+  // the native anchor remains the fallback when a popup blocker refuses it.
+  const authWindow = window.open('', officialAuthWindowName)
+  if (!authWindow) return
+  event.preventDefault()
+  try {
+    authWindow.opener = null
+  } catch {
+    // The navigation below is still safe because the URL is server-validated.
+  }
+  authWindow.location.href = rawURL
+  authWindow.focus?.()
+}
 
 const oauthStep = computed(() => props.workflow.steps.find((step) => step.key === 'oauth'))
 const verifyStep = computed(() => props.workflow.steps.find((step) => step.key === 'verify'))

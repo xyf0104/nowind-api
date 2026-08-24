@@ -284,7 +284,10 @@ func (s *OpenAIGatewayService) handleOpenAIWSErrorEventTransientFailure(ctx cont
 		return
 	}
 	status := openAIWSPayloadTransientStatus(payload)
-	if status != 0 {
+	// Rate-limit events are persisted by persistOpenAIWSRateLimitSignal and
+	// carried into the failover loop with the account-aware retry window. Do not
+	// process them a second time here when the payload also contains status=429.
+	if status != 0 && status != http.StatusTooManyRequests {
 		s.handleOpenAIAccountUpstreamError(ctx, account, status, headers, payload, canonicalModel)
 	}
 }
@@ -656,6 +659,22 @@ func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Contex
 		return
 	}
 	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody)
+}
+
+// newOpenAIWSRateLimitFailoverError keeps WebSocket rate-limit failures on the
+// same account-aware path as HTTP Responses failures. The signal persistence
+// above updates account state; this constructor only carries the retry window
+// and Retry-After metadata to the request-local failover loop.
+func (s *OpenAIGatewayService) newOpenAIWSRateLimitFailoverError(account *Account, headers http.Header, responseBody []byte, message string) *UpstreamFailoverError {
+	return s.newOpenAIAccountFailoverError(
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		responseBody,
+		strings.TrimSpace(message),
+		false,
+		false,
+	)
 }
 
 func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {

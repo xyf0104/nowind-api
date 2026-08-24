@@ -12,6 +12,16 @@
       </div>
       <div class="flex flex-wrap items-center gap-2 whitespace-nowrap">
         <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="ready ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'"><span class="h-1.5 w-1.5 rounded-full" :class="ready ? 'bg-green-500' : 'bg-amber-500'"></span>{{ ready ? '已登录' : '等待识别' }}</span>
+        <button
+          type="button"
+          class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
+          :disabled="browserLoading || !browserConfigured"
+          :title="browserConfigured ? '打开服务器浏览器，处理 Pending invites 或登录页面' : '服务器浏览器尚未配置'"
+          @click="emit('open-browser')"
+        >
+          <Icon name="server" size="sm" :class="browserLoading ? 'animate-spin' : ''" :stroke-width="2" />
+          <span>打开服务器浏览器</span>
+        </button>
         <button type="button" class="btn btn-secondary flex items-center gap-2 whitespace-nowrap" :disabled="loading" @click="emit('inspect')"><Icon name="mail" size="sm" :stroke-width="2" /><span>识别席位邮箱</span></button>
         <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" :disabled="loading" title="刷新成员信息" aria-label="刷新成员信息" @click="emit('refresh')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
@@ -133,7 +143,9 @@ const props = withDefaults(defineProps<{
   workflowBusy?: boolean
   workflow?: TeamChildWorkflow | null
   workflowContinuing?: boolean
-}>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false })
+  browserConfigured?: boolean
+  browserLoading?: boolean
+}>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false, browserConfigured: false, browserLoading: false })
 const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': []; 'run-step': [step: TeamChildWorkflowStep['key']] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)

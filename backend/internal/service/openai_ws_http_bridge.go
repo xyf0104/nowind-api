@@ -539,6 +539,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				shouldFailover = s.shouldFailoverOpenAIUpstreamResponse(statusCode, errMessage, upstreamMessage)
 			}
 			requestScopedCapacity := isOpenAIUpstreamCapacityShedEvent(upstreamMessage)
+			willReturnFailover := !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests)
 			if account.Platform == PlatformGrok && eventType == "error" {
 				// SSE error events do not carry an HTTP status. The local status
 				// mapper therefore defaults unknown xAI codes (for example
@@ -551,7 +552,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 					upstreamModel := s.resolveGrokWSUpstreamModel(ctx, account, body, originalModel)
 					s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, statusCode, resp.Header, upstreamMessage)
 				}
-			} else if eventType == "error" && shouldFailover && !requestScopedCapacity {
+				willReturnFailover = !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests)
+			} else if eventType == "error" && shouldFailover && !requestScopedCapacity &&
+				(!willReturnFailover || (statusCode != http.StatusUnauthorized &&
+					statusCode != http.StatusForbidden && statusCode != http.StatusTooManyRequests &&
+					statusCode != 529 && !isOpenAIUpstreamAccessStateError(errMessage, upstreamMessage))) {
 				accountStatus := statusCode
 				if transientStatus := openAIWSPayloadTransientStatus(upstreamMessage); transientStatus != 0 {
 					accountStatus = transientStatus
@@ -559,7 +564,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				canonicalModel := canonicalOpenAIAccountSchedulingModel(account, originalModel)
 				s.handleOpenAIAccountUpstreamError(ctx, account, accountStatus, resp.Header, upstreamMessage, canonicalModel)
 			}
-			if !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
+			if willReturnFailover {
 				if account.Platform == PlatformGrok {
 					return nil, newOpenAIUpstreamFailoverError(statusCode, resp.Header, upstreamMessage, errMessage, false)
 				}

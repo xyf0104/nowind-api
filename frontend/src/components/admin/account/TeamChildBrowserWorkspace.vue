@@ -16,7 +16,6 @@
           {{ browserStateLabel }}
         </span>
         <button
-          v-if="membersReady"
           type="button"
           class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
           title="返回成员模块"

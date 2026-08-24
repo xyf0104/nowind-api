@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TeamChildOAuthWorkspace from '../TeamChildOAuthWorkspace.vue'
 
@@ -46,7 +46,10 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
     expect(wrapper.find('[data-testid="team-oauth-manual-code"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('不会由 Team 页面自动提交')
-    expect(wrapper.find('a[href^="https://auth.openai.com/oauth/authorize"]').exists()).toBe(true)
+    const authLink = wrapper.get('[data-testid="team-open-auth"]')
+    expect(authLink.attributes('href')).toBe('https://auth.openai.com/oauth/authorize?state=test-state')
+    expect(authLink.attributes('target')).toBe('xiass-openai-oauth')
+    expect(wrapper.text()).toContain('手动选择 Sign up')
   })
 
   it('shows callback state without activating the receiver for import', () => {
@@ -67,5 +70,34 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.text()).toContain('回调已就绪')
     expect(wrapper.text()).toContain('复制回调地址')
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
+  })
+
+  it('reuses one named official-auth window without submitting external fields', async () => {
+    const authWindow = {
+      opener: window,
+      location: { href: '' },
+      focus: vi.fn()
+    }
+    const open = vi.spyOn(window, 'open').mockReturnValue(authWindow as unknown as Window)
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow(),
+        authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
+      },
+      global: {
+        stubs: {
+          Icon: IconStub,
+          PixlabSMSReceiver: PixlabSMSReceiverStub
+        }
+      }
+    })
+
+    await wrapper.get('[data-testid="team-open-auth"]').trigger('click')
+
+    expect(open).toHaveBeenCalledWith('', 'xiass-openai-oauth')
+    expect(authWindow.opener).toBeNull()
+    expect(authWindow.location.href).toBe('https://auth.openai.com/oauth/authorize?state=test-state')
+    expect(authWindow.focus).toHaveBeenCalledOnce()
+    open.mockRestore()
   })
 })

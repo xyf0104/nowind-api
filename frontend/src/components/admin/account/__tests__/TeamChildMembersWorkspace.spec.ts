@@ -61,6 +61,18 @@ describe('TeamChildMembersWorkspace', () => {
     expect(wrapper.emitted('inspect')).toHaveLength(1)
   })
 
+  it('keeps the server browser entry available for pending-invite recovery', async () => {
+    const wrapper = mount(TeamChildMembersWorkspace, {
+      props: { members: [member], browserConfigured: true },
+      global
+    })
+
+    const browserButton = wrapper.get('button[title="打开服务器浏览器，处理 Pending invites 或登录页面"]')
+    await browserButton.trigger('click')
+
+    expect(wrapper.emitted('open-browser')).toHaveLength(1)
+  })
+
   it('does not silently treat an owner or unknown role as a member', () => {
     const wrapper = mount(TeamChildMembersWorkspace, {
       props: {
