@@ -615,6 +615,23 @@ def check_update_bridge(errors: list[str]) -> None:
     ):
         errors.append("xiass-runtime-start.sh 必须先启动并验证主服务，再进入浏览器组件阶段")
 
+    for compose_path in [
+        "deploy/docker-compose.yml",
+        "deploy/docker-compose.standalone.yml",
+        "deploy/docker-compose.local.yml",
+        "deploy/docker-compose.dev.yml",
+    ]:
+        require_all(
+            compose_path,
+            read(compose_path),
+            [
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+            ],
+            errors,
+        )
+
     updater_dockerfile = read("deploy/xiass-updater/Dockerfile")
     require_all(
         "deploy/xiass-updater/Dockerfile",

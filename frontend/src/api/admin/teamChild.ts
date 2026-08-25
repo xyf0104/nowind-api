@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { Account } from '@/types'
 
 export interface TeamChildMailboxStatus {
   configured: boolean
@@ -370,9 +371,9 @@ export async function deleteMailboxSession(sessionId: string): Promise<void> {
   await apiClient.delete(`/admin/openai/team-child/mailboxes/${encodeURIComponent(sessionId)}`)
 }
 
-export async function createOpenAIAccountFromOAuth(payload: TeamChildCreateAccountRequest) {
-  const { data } = await apiClient.post('/admin/openai/create-from-oauth', payload)
-  return data as { id?: number; name?: string; email?: string; status?: string; [key: string]: unknown }
+export async function createOpenAIAccountFromOAuth(payload: TeamChildCreateAccountRequest): Promise<Account> {
+  const { data } = await apiClient.post<Account>('/admin/openai/create-from-oauth', payload)
+  return data
 }
 
 export const teamChildAPI = {

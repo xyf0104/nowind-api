@@ -1,5 +1,6 @@
 import { createApp, defineComponent, h } from 'vue'
 import { createPinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import TeamChildCreationView from '@/views/admin/TeamChildCreationView.vue'
 import { teamChildAPI } from '@/api/admin/teamChild'
 import { groupsAPI } from '@/api/admin/groups'
@@ -49,7 +50,47 @@ Object.assign(groupsAPI, {
 })
 
 Object.assign(accountsAPI, {
-  list: async () => ({ items: [], total: 0 })
+  list: async () => ({
+    items: [
+      {
+        id: 317,
+        name: 'team1003@example.test',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'error',
+        error_message: 'OpenAI upstream returned HTTP 401 Unauthorized',
+        schedulable: false,
+        proxy_id: null,
+        concurrency: 10,
+        priority: 1,
+        group_ids: [1],
+        credentials_status: { has_xiass_team_child_password_encrypted: true },
+        extra: { xiass_team_child: true, xiass_team_child_email: 'team1003@example.test' }
+      },
+      {
+        id: 318,
+        name: 'team1004@example.test',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        error_message: '',
+        schedulable: true,
+        proxy_id: null,
+        concurrency: 10,
+        priority: 1,
+        group_ids: [1, 2],
+        credentials_status: { has_xiass_team_child_password_encrypted: true },
+        extra: { xiass_team_child: true, xiass_team_child_email: 'team1004@example.test' }
+      }
+    ],
+    total: 2
+  }),
+  getUsage: async (accountID: number) => accountID === 317
+    ? { needs_reauth: true, error_code: 'unauthenticated', error: 'HTTP 401 Unauthorized' }
+    : {
+        five_hour: { utilization: 18 },
+        seven_day: { utilization: 42, weekly_estimate_usd: 12.34 }
+      }
 })
 
 const Preview = defineComponent({
@@ -60,11 +101,29 @@ const Preview = defineComponent({
   }
 })
 
+const previewRouter = createRouter({
+  history: createMemoryHistory(),
+  routes: [
+    {
+      path: '/',
+      name: 'TeamChildPreview',
+      component: defineComponent({ render: () => null })
+    },
+    {
+      path: '/admin/accounts',
+      name: 'AdminAccounts',
+      component: defineComponent({ render: () => null })
+    }
+  ]
+})
+
 async function mountPreview() {
   const app = createApp(Preview)
   app.use(createPinia())
+  app.use(previewRouter)
   app.use(i18n)
   await initI18n()
+  await previewRouter.isReady()
   app.mount('#app')
 }
 

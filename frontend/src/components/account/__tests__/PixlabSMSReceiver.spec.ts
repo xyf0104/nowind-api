@@ -27,6 +27,7 @@ const { receiverMocks, receiverState, copyToClipboardMock } = vi.hoisted(() => (
   receiverState: {
     canChangeNumber: false,
     hasActiveSession: false,
+    code: '--',
   },
   copyToClipboardMock: vi.fn().mockResolvedValue(true)
 }))
@@ -42,7 +43,7 @@ vi.mock('@/composables/usePixlabSMSReceiver', async () => {
       localPhoneNumber: ref('749433060'),
       region: ref('南非'),
       countryFlag: ref('🇿🇦'),
-      code: ref('--'),
+      code: ref(receiverState.code),
       queuedKeyCount: ref(3),
       statusText: ref('等待取号'),
       statusClass: ref('text-cyan-600'),
@@ -77,6 +78,7 @@ describe('PixlabSMSReceiver', () => {
     Object.values(receiverMocks).forEach((mock) => mock.mockReset())
     receiverState.canChangeNumber = false
     receiverState.hasActiveSession = false
+    receiverState.code = '--'
     copyToClipboardMock.mockClear()
     receiverMocks.start.mockResolvedValue('waiting')
   })
@@ -149,6 +151,17 @@ describe('PixlabSMSReceiver', () => {
     expect(countdown.text()).toContain('号码有效期')
     expect(countdown.text()).toContain('12:34')
     expect(countdown.get('time').attributes('datetime')).toBe('2026-08-14T00:15:00.000Z')
+  })
+
+  it('renders a received SMS code in six aligned copyable slots', async () => {
+    receiverState.code = '581768'
+    const wrapper = mountReceiver()
+    await claimNumber(wrapper)
+
+    const slots = wrapper.get('[data-testid="sms-code-slots"]')
+    expect(slots.findAll(':scope > span').map((slot) => slot.text())).toEqual(['5', '8', '1', '7', '6', '8'])
+    await slots.element.parentElement?.click()
+    expect(copyToClipboardMock).toHaveBeenCalledWith('581768', '验证码已复制')
   })
 
   it('keeps a verification code visible when it arrives during cancellation', async () => {

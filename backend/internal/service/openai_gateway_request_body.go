@@ -455,9 +455,124 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 		}
 		normalized = next
 	}
+	if next, removed, err := normalizeOpenAIParallelToolCallsWithoutTools(normalized, false); err != nil {
+		return body, false, err
+	} else if removed {
+		normalized = next
+	}
 
 	if bytes.Equal(bytes.TrimSpace(body), bytes.TrimSpace(normalized)) {
 		return body, false, nil
+	}
+	return normalized, true, nil
+}
+
+func normalizeOpenAIParallelToolCallsWithoutTools(body []byte, responsesLite bool) ([]byte, bool, error) {
+	if responsesLite {
+		return body, false, nil
+	}
+	parallel := gjson.GetBytes(body, "parallel_tool_calls")
+	if !parallel.Exists() {
+		return body, false, nil
+	}
+	if openAIRequestBodyHasTools(body) {
+		return body, false, nil
+	}
+	normalized, err := sjson.DeleteBytes(body, "parallel_tool_calls")
+	if err != nil {
+		return body, false, fmt.Errorf("normalize parallel_tool_calls without tools: %w", err)
+	}
+	return normalized, true, nil
+}
+
+// openAIRequestBodyHasTools is the []byte counterpart of openAIResponsesLiteHasTools:
+// besides the top-level "tools" array it also recognizes the Responses Lite carrier.
+// normalizeOpenAIResponsesLiteTools moves namespace tools into an input item of type
+// "additional_tools" and drops the top-level "tools" key; the request still carries
+// tools at that point. Looking only at the top level therefore misreads such a body as
+// "no tools" and deletes the parallel_tool_calls:false that
+// ensureOpenAIResponsesLiteParallelToolCalls had just pinned, and OpenAI falls back to
+// its default of true and rejects the request with
+// 400 unsupported_value: "X-OpenAI-Internal-Codex-Responses-Lite requires
+// `parallel_tool_calls` to be false."
+func openAIRequestBodyHasTools(body []byte) bool {
+	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
+		return true
+	}
+	for _, item := range gjson.GetBytes(body, "input").Array() {
+		if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
+			continue
+		}
+		if tools := item.Get("tools"); tools.IsArray() && len(tools.Array()) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse bool) ([]byte, bool, error) {
+	if !knownStoreFalse && gjson.GetBytes(body, "store").Type != gjson.False {
+		return body, false, nil
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+
+	var reqBody map[string]any
+	if err := decodeOpenAIJSONUseNumber(body, &reqBody); err != nil {
+		return body, false, fmt.Errorf("normalize API-key store=false reasoning replay: %w", err)
+	}
+	items, ok := reqBody["input"].([]any)
+	if !ok {
+		return body, false, nil
+	}
+	filtered := make([]any, 0, len(items))
+	changed := false
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			filtered = append(filtered, rawItem)
+			continue
+		}
+		typ := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		id := strings.TrimSpace(firstNonEmptyString(item["id"]))
+		switch typ {
+		case "reasoning":
+			encryptedContent, hasEncryptedContent := item["encrypted_content"].(string)
+			if !hasEncryptedContent || strings.TrimSpace(encryptedContent) == "" {
+				changed = true
+				continue
+			}
+			if strings.HasPrefix(id, "rs_") {
+				delete(item, "id")
+				changed = true
+			}
+			if summary, ok := item["summary"]; !ok || summary == nil {
+				item["summary"] = []any{}
+				changed = true
+			}
+		case "item_reference":
+			if strings.HasPrefix(id, "rs_") {
+				changed = true
+				continue
+			}
+		}
+		if shouldStripOpenAIResponsesNonPairCallID(typ) {
+			if _, hasCallID := item["call_id"]; hasCallID {
+				delete(item, "call_id")
+				changed = true
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	if !changed {
+		return body, false, nil
+	}
+	reqBody["input"] = filtered
+	normalized, err := marshalOpenAIUpstreamJSON(reqBody)
+	if err != nil {
+		return body, false, fmt.Errorf("serialize API-key store=false reasoning replay: %w", err)
 	}
 	return normalized, true, nil
 }
@@ -1648,8 +1763,31 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "max") && isOpenAIGPT56Model(model) {
+	if strings.EqualFold(strings.TrimSpace(raw), "max") && supportsOpenAIReasoningEffortMax(model) {
 		return "max"
 	}
 	return normalizeOpenAIReasoningEffort(raw)
+}
+
+// supportsOpenAIReasoningEffortMax reports model families whose upstream scale
+// has a distinct max level. Other models keep the legacy max -> xhigh behavior.
+func supportsOpenAIReasoningEffortMax(model string) bool {
+	if isOpenAIGPT56Model(model) {
+		return true
+	}
+
+	normalized := strings.ToLower(lastOpenAIModelSegment(model))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch {
+	case strings.HasPrefix(normalized, "deepseek-v4"):
+		return true
+	case strings.HasPrefix(normalized, "glm-"):
+		return true
+	case strings.HasPrefix(normalized, "kimi-"), strings.HasPrefix(normalized, "moonshot-"):
+		return true
+	case normalized == "k3" || strings.HasPrefix(normalized, "k3-"):
+		return true
+	default:
+		return false
+	}
 }

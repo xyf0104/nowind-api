@@ -23,6 +23,7 @@ const (
 	GrokFailureRateLimit     GrokUpstreamFailureClass = "rate_limit"
 	GrokFailureAuth          GrokUpstreamFailureClass = "auth_error"
 	GrokFailureServer        GrokUpstreamFailureClass = "server_error"
+	GrokFailureCompatibility GrokUpstreamFailureClass = "compatibility_error"
 )
 
 type GrokUpstreamFailureDecision struct {
@@ -68,11 +69,14 @@ func classifyGrokUpstreamFailure(statusCode int, responseBody []byte, requestedM
 		}
 		return GrokUpstreamFailureDecision{Class: GrokFailureBilling, Model: model, Cooldown: 30 * time.Minute, ShouldCooldown: true, ShouldFailover: true, BlockModel: model != "", Reason: reason}
 	}
+	if isGrokCompatibilityError(statusCode, low, code) {
+		return GrokUpstreamFailureDecision{Class: GrokFailureCompatibility, Model: model, ShouldFailover: true, Reason: firstNonEmpty(text, "grok response compatibility error")}
+	}
 	if isGrokEmptyModelOutputText(low) || isGrokEmptyModelOutputCode(code) {
 		return GrokUpstreamFailureDecision{Class: GrokFailureEmptyUpstream, Model: model, Cooldown: 4 * time.Minute, ShouldCooldown: true, ShouldFailover: true, BlockModel: model != "", Reason: firstNonEmpty(text, "empty model output")}
 	}
 	if isGrokModelCapacityText(low) {
-		return GrokUpstreamFailureDecision{Class: GrokFailureModelCapacity, Model: model, Cooldown: 3 * time.Minute, ShouldCooldown: true, ShouldFailover: true, Reason: firstNonEmpty(text, "model capacity")}
+		return GrokUpstreamFailureDecision{Class: GrokFailureModelCapacity, Model: model, Cooldown: time.Minute, ShouldCooldown: true, ShouldFailover: true, Reason: firstNonEmpty(text, "model capacity")}
 	}
 	if statusCode == http.StatusTooManyRequests || isGrokRateLimitText(low) {
 		return GrokUpstreamFailureDecision{Class: GrokFailureRateLimit, Model: model, Cooldown: 10 * time.Minute, ShouldCooldown: true, ShouldFailover: true, Reason: firstNonEmpty(text, "rate limit")}
@@ -231,6 +235,61 @@ func isGrokBillingQuotaText(low string) bool {
 		strings.Contains(low, "余额不足") || strings.Contains(low, "欠费") || strings.Contains(low, "需要付费")
 }
 
+func grokRetryableOnSameAccount(account *Account, statusCode int, responseBody []byte) bool {
+	if account == nil || !account.IsGrok() {
+		return false
+	}
+	decision := classifyGrokUpstreamFailure(statusCode, responseBody, "")
+	switch decision.Class {
+	case GrokFailureFreeUsage, GrokFailureBilling, GrokFailureCompatibility:
+		return false
+	case GrokFailureModelCapacity:
+		return statusCode == http.StatusTooManyRequests
+	default:
+		return account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode)
+	}
+}
+
+func grokSameAccountRetryMetadata(account *Account, statusCode int, responseBody []byte) (bool, time.Duration, time.Time, int) {
+	if !grokRetryableOnSameAccount(account, statusCode, responseBody) {
+		return false, 0, time.Time{}, 0
+	}
+	decision := classifyGrokUpstreamFailure(statusCode, responseBody, "")
+	if decision.Class != GrokFailureModelCapacity {
+		return true, 0, time.Time{}, 0
+	}
+	return true, 500 * time.Millisecond, time.Now().Add(30 * time.Second), 1
+}
+
+func shouldMarkGrokTeamModelRateLimit(statusCode int, responseBody []byte) bool {
+	decision := classifyGrokUpstreamFailure(statusCode, responseBody, "")
+	if decision.Class == GrokFailureModelCapacity {
+		return false
+	}
+	return statusCode == http.StatusTooManyRequests || decision.Class == GrokFailureFreeUsage
+}
+
+func isGrokCompatibilityError(statusCode int, low, code string) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	combined := strings.ToLower(strings.TrimSpace(low + " " + code))
+	for _, phrase := range []string{
+		"could not decode the compaction blob",
+		"cannot decode the compaction blob",
+		"decode the compaction blob",
+		"ensure it is unmodified from the compact response",
+		"compaction blob",
+		"invalid_compaction",
+		"compaction_decode_error",
+	} {
+		if strings.Contains(combined, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func isGrokModelCapacityText(low string) bool {
 	return strings.Contains(low, "capacity") || strings.Contains(low, "overloaded") || strings.Contains(low, "server_busy") ||
 		strings.Contains(low, "too many concurrent") || strings.Contains(low, "engine_overloaded")
@@ -327,10 +386,10 @@ func (s *OpenAIGatewayService) applyGrokUpstreamFailureDecision(ctx context.Cont
 	case GrokFailureEmptyUpstream:
 		reason = "grok empty model output"
 	case GrokFailureModelCapacity:
-		if persistGrokTransientModelCooldown(account, decision) {
-			return true
-		}
-		reason = "grok model capacity"
+		// Capacity is model-scoped request pressure. A bounded same-account retry
+		// may run first, but this class must never quarantine the whole account.
+		_ = persistGrokTransientModelCooldown(account, decision)
+		return true
 	case GrokFailureRateLimit:
 		return false
 	case GrokFailureServer:

@@ -22,7 +22,6 @@ const workflowStateFile = process.env.NODE_ENV === 'test'
   : String(process.env.WORKFLOW_STATE_FILE || '/app/data/workflows.enc').trim()
 const oauthPageTimeout = boundedDuration(process.env.OAUTH_PAGE_TIMEOUT_MS, 45000, 10000, 120000)
 const memberRefreshAttempts = 3
-const inviteAttempts = 3
 const workflowProtocolVersion = 2
 const officialOpenAIClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const officialOpenAIRedirectURI = 'http://localhost:1455/auth/callback'
@@ -105,6 +104,17 @@ function restoreWorkflowState() {
       if (!candidate || typeof candidate.id !== 'string' || candidate.expiresAt <= now) continue
       if (!Array.isArray(candidate.nodes) || candidate.nodes.length !== workflowNodeDefinitions.length) continue
       const workflow = candidate
+      const inviteNode = workflow.nodes.find((node) => node.key === 'invite')
+      const inviteConfirmationNode = workflow.nodes.find((node) => node.key === 'invite_confirm')
+      if (typeof workflow.inviteSubmitted !== 'boolean') {
+        workflow.inviteSubmitted = Boolean(
+          workflow.inviteConfirmed
+          || inviteNode?.status === 'completed'
+          || (inviteConfirmationNode && inviteConfirmationNode.status !== 'pending')
+          || /邀请操作已提交|待处理邀请中未出现|pending invites/i.test(String(inviteNode?.message || ''))
+        )
+      }
+      workflow.inviteSubmittedAt = Number(workflow.inviteSubmittedAt || 0)
       if (workflow.status === 'running') {
         workflow.status = 'failed'
         workflow.failedNodeKey = workflow.currentNodeKey || 'oauth'
@@ -203,6 +213,23 @@ async function releaseCacheSession(cdpSession) {
   await cdpSession.detach().catch(() => undefined)
 }
 
+async function activateBrowserPage(active) {
+  // The automation must run at the same speed whether or not an administrator
+  // has opened the noVNC viewer. Activate the managed tab before waiting for a
+  // client-rendered page so Chromium does not treat it as background content.
+  await active.bringToFront().catch(() => undefined)
+  let cdpSession
+  try {
+    cdpSession = await active.context().newCDPSession(active)
+    await cdpSession.send('Page.bringToFront').catch(() => undefined)
+    await cdpSession.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined)
+  } catch {
+    // Playwright's bringToFront above remains the compatibility fallback.
+  } finally {
+    await cdpSession?.detach().catch(() => undefined)
+  }
+}
+
 async function reloadMemberPage(active, targetURL, forceRefresh) {
   // A normal read is deliberately DOM-only. The managed tab may already have
   // a fully authenticated Members SPA, and re-running goto here resets its
@@ -272,6 +299,7 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
   managedMembersPage = active
   let cdpSession
   try {
+    await activateBrowserPage(active)
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   } catch (error) {
     // A Chromium restart invalidates Playwright page objects without always
@@ -280,12 +308,13 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
     if (!active.isClosed()) throw error
     active = await context.newPage()
     managedMembersPage = active
+    await activateBrowserPage(active)
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   }
   try {
     if (pending) await waitForPendingInvitesPageReady(active, { allowRecoveryNavigation: forceRefresh })
     else await waitForMemberPageReady(active)
-    if (forceRefresh) await active.bringToFront().catch(() => undefined)
+    await activateBrowserPage(active)
     return active
   } finally {
     // Keep cache disabled through the SPA's first render/API requests, then
@@ -316,11 +345,12 @@ async function navigatePersistentBrowser(value) {
   if (!active) active = await context.newPage()
   managedOAuthPage = active
 
+  await activateBrowserPage(active)
   await active.goto(targetURL, {
     waitUntil: 'domcontentloaded',
     timeout: operationTimeout
   })
-  await active.bringToFront().catch(() => undefined)
+  await activateBrowserPage(active)
   return { ok: true, url: active.url() }
 }
 
@@ -949,64 +979,68 @@ async function clickMemberMenu(current, email) {
   await waitUntil('成员操作菜单未展开', openMenu)
 }
 
-async function inviteMember(email) {
+function markWorkflowInviteSubmitted(workflow) {
+  if (!workflow || workflow.inviteSubmitted) return false
+  workflow.inviteSubmitted = true
+  workflow.inviteSubmittedAt = Date.now()
+  persistWorkflowState()
+  return true
+}
+
+async function inviteMember(email, { workflow = null, confirm = true } = {}) {
   const normalized = normalizeWorkflowEmail(email)
   if (!isValidWorkflowEmail(normalized)) {
     throw new Error('邀请邮箱格式无效')
   }
-  let lastError
-  for (let attempt = 1; attempt <= inviteAttempts; attempt += 1) {
-    try {
-      const existing = await listMembers({ forceRefresh: false, requireEmails: true })
-      if (existing.members.some((member) => normalizeEmail(member.email) === normalized)) {
-        return {
-          ...existing,
-          pending_invites: existing.pending_invites,
-          operation: { type: 'invite', email: normalized, confirmed: true }
-        }
-      }
-
-      // Only retries may perform a best-effort duplicate check. The first
-      // attempt must always execute the native flow in this exact order:
-      // Invite member -> Email -> Send invites -> Pending invites.
-      if (attempt > 1) {
-        const pendingBefore = await pendingInviteSnapshot({
-          forceRefresh: false,
-          expectedEmail: normalized,
-          waitForExpectedEmail: true
-        }).catch(() => null)
-        if (pendingBefore?.emails.has(normalized)) {
-          return {
-            ...existing,
-            pending_invites: pendingBefore.pendingInvites,
-            operation: { type: 'invite', email: normalized, confirmed: true }
-          }
-        }
-      }
-
-      const current = await membersPage({ forceRefresh: false })
-      const scope = await openInviteDialog(current)
-      await submitInviteDialog(scope, normalized)
-
-      const confirmedPending = await waitForPendingInviteEmail(normalized)
-      const latest = await listMembers({ forceRefresh: false, requireEmails: true })
-      return {
-        ...latest,
-        pending_invites: confirmedPending?.pendingInvites || 1,
-        operation: { type: 'invite', email: normalized, confirmed: true }
-      }
-    } catch (error) {
-      lastError = error
-      if (attempt >= inviteAttempts) break
-      // The requested recovery action is a fresh embedded-browser page load;
-      // never change the dialog state by pressing Enter or selecting a second
-      // submit action. The next attempt rechecks the live invitation first.
-      await membersPage({ forceRefresh: true }).catch(() => undefined)
-      await sleep(500)
+  const existing = await listMembers({ forceRefresh: false, requireEmails: true })
+  if (existing.members.some((member) => normalizeEmail(member.email) === normalized)) {
+    return {
+      ...existing,
+      pending_invites: existing.pending_invites,
+      operation: { type: 'invite', email: normalized, submitted: false, confirmed: true }
     }
   }
-  const detail = lastError instanceof Error ? `：${lastError.message}` : ''
-  throw new Error(`邀请失败，已刷新重试 ${inviteAttempts} 次${detail}`)
+
+  // A workflow records the native Send invites click immediately. Once that
+  // bit is set, every continuation is confirmation-only and can never submit
+  // the same invitation again. The direct member tool still checks Pending
+  // once so a manual repeat click remains idempotent.
+  if (!workflow) {
+    const pendingBefore = await pendingInviteSnapshot({
+      forceRefresh: false,
+      expectedEmail: normalized,
+      waitForExpectedEmail: false
+    }).catch(() => null)
+    if (pendingBefore?.emails.has(normalized)) {
+      return {
+        ...existing,
+        pending_invites: pendingBefore.pendingInvites,
+        operation: { type: 'invite', email: normalized, submitted: false, confirmed: true }
+      }
+    }
+  }
+
+  if (!workflow?.inviteSubmitted) {
+    const current = await membersPage({ forceRefresh: false })
+    const scope = await openInviteDialog(current)
+    await submitInviteDialog(scope, normalized)
+    markWorkflowInviteSubmitted(workflow)
+  }
+
+  if (!confirm) {
+    return {
+      ...existing,
+      operation: { type: 'invite', email: normalized, submitted: true, confirmed: false }
+    }
+  }
+
+  const confirmedPending = await waitForPendingInviteEmail(normalized)
+  const latest = await listMembers({ forceRefresh: false, requireEmails: true })
+  return {
+    ...latest,
+    pending_invites: confirmedPending?.pendingInvites || 1,
+    operation: { type: 'invite', email: normalized, submitted: true, confirmed: true }
+  }
 }
 
 async function removeMember(email) {
@@ -1774,6 +1808,8 @@ function createWorkflow(seatEmail, inviteEmail, authURL, oauthSessionID, seatAlr
     status: 'running',
     error: '',
     failedNodeKey: '',
+    inviteSubmitted: false,
+    inviteSubmittedAt: 0,
     inviteConfirmed: false,
     inviteConfirmedAt: 0,
     callbackURL: '',
@@ -1792,6 +1828,7 @@ function createReauthorizationWorkflow(accountID, email, password, authURL, oaut
   workflow.mode = 'reauthorization'
   workflow.targetAccountID = accountID
   workflow.loginPassword = password
+  workflow.inviteSubmitted = true
   workflow.inviteConfirmed = true
   completeWorkflowNode(workflow, 'members', '已有 Team 账号重新授权，无需读取成员席位')
   completeWorkflowNode(workflow, 'remove', '已有 Team 账号重新授权，不移除成员')
@@ -1860,6 +1897,7 @@ function workflowFailureNodeKey(workflow, fallbackKey) {
 }
 
 function completeInviteStep(workflow) {
+  markWorkflowInviteSubmitted(workflow)
   workflow.inviteConfirmed = true
   workflow.inviteConfirmedAt = Date.now()
 }
@@ -1925,7 +1963,7 @@ async function resumeFineWorkflowFromNextNode(workflow, requestedNextKey = '') {
     }
     if (nextKey === 'invite') {
       setWorkflowNode(workflow, 'invite', 'running', '正在原生邀请弹窗提交临时邮箱')
-      await inviteMember(workflow.inviteEmail)
+      await inviteMember(workflow.inviteEmail, { workflow, confirm: false })
       completeWorkflowNode(workflow, 'invite', '已在原生页面提交邀请')
       await confirmInviteNode(workflow)
       nextKey = 'oauth'
@@ -2192,7 +2230,7 @@ async function executeWorkflow(workflow) {
       // The first attempt must submit the native invitation before reading
       // Pending invites. Preloading the pending tab here used to fail on an
       // empty workspace and prevented Send invites from ever being clicked.
-      await inviteMember(workflow.inviteEmail)
+      await inviteMember(workflow.inviteEmail, { workflow, confirm: false })
       completeWorkflowNode(workflow, 'invite', '已在原生页面提交邀请')
       await confirmInviteNode(workflow)
     }
@@ -2657,14 +2695,18 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 export {
+  activateBrowserPage,
   callbackURLFromNavigationEntries,
   cancelWorkflowState,
+  completeReauthorizationOnlyNodes,
   completeWorkflowNode,
+  createReauthorizationWorkflow,
   createWorkflow,
   decryptWorkflowState,
   encryptWorkflowState,
   fillVerificationCode,
   generateWorkflowPassword,
+  markWorkflowInviteSubmitted,
   pauseWorkflowState,
   pendingInviteEmailsFromTexts,
   recoverOpenAIPhoneEntry,

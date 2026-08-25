@@ -49,11 +49,16 @@
           </div>
           <div class="flex shrink-0 flex-wrap items-center gap-2">
             <button
-              v-if="entry.account && accountIssue(entry)?.needsReauth"
+              v-if="entry.account"
               type="button"
-              class="btn flex items-center gap-1.5 whitespace-nowrap border-red-300 bg-red-50 !px-2.5 !py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/35 dark:text-red-300 dark:hover:bg-red-950/55"
+              class="btn flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs font-semibold"
+              :class="accountIssue(entry)?.needsReauth
+                ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/35 dark:text-red-300 dark:hover:bg-red-950/55'
+                : 'btn-secondary'"
               :disabled="reauthorizingAccountID === entry.account.id || !entry.passwordAvailable"
-              :title="entry.passwordAvailable ? '复用历史邮箱和保存的密码，从 XIASS 官方 OAuth 登录节点重新授权' : '该账号没有可用于自动重新授权的保存密码'"
+              :title="entry.passwordAvailable
+                ? '复用历史邮箱和保存的密码，重新运行 XIASS 官方 OAuth 登录流程；不会进入手机号、姓名或年龄步骤'
+                : '该账号没有可用于自动重新授权的保存密码'"
               :data-testid="`team-history-reauthorize-${entry.account.id}`"
               @click="emit('reauthorize', entry)"
             >

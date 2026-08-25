@@ -373,6 +373,16 @@ func TestPatchGrokResponsesBodyDropsToolChoiceWhenNoSupportedToolsRemain(t *test
 	require.False(t, gjson.GetBytes(patched, "tool_choice").Exists())
 }
 
+func TestSanitizeGrokResponsesToolsRemovesDeferredFlagsWithToolSearch(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"tool_search"},{"type":"function","name":"shell","defer_loading":true},{"type":"function","name":"apply_patch"}]}`)
+
+	patched, err := sanitizeGrokResponsesTools(body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(patched, `tools.#(type=="tool_search")`).Exists())
+	require.False(t, gjson.GetBytes(patched, `tools.#(name=="shell").defer_loading`).Exists())
+	require.True(t, gjson.GetBytes(patched, `tools.#(name=="apply_patch")`).Exists())
+}
+
 func TestSanitizeGrokResponsesToolsKeepsToolChoiceOnlyWithSupportedTools(t *testing.T) {
 	t.Parallel()
 
@@ -1108,7 +1118,7 @@ func TestForwardGrokMediaAppliesAccountModelMappingAfterEndpointNormalization(t 
 			modelMapping:     map[string]any{"grok-imagine-image-quality": "vendor-image-model"},
 			wantRequestModel: "grok-imagine-image-quality",
 			wantUpstream:     "vendor-image-model",
-			wantBody:         `{"model":"vendor-image-model","prompt":"draw"}`,
+			wantBody:         `{"model":"vendor-image-model","prompt":"draw","resolution":"1k","aspect_ratio":"1:1"}`,
 			responseBody:     `{"data":[{"url":"https://images.test/mapped.png"}]}`,
 		},
 		{
@@ -1231,7 +1241,8 @@ func TestForwardGrokMediaImagesGenerationStripsUnsupportedSize(t *testing.T) {
 
 	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointImagesGenerations, "", body, "application/json")
 	require.NoError(t, err)
-	require.JSONEq(t, `{"model":"grok-imagine-image","prompt":"draw a cat"}`, string(upstream.lastBody))
+	require.JSONEq(t, `{"model":"grok-imagine-image","prompt":"draw a cat","resolution":"1k","aspect_ratio":"1:1"}`, string(upstream.lastBody))
+	require.False(t, gjson.GetBytes(upstream.lastBody, "size").Exists())
 	require.Equal(t, ImageBillingSize1K, result.ImageSize)
 	require.Equal(t, "1024x1024", result.ImageInputSize)
 }
@@ -2249,7 +2260,7 @@ func TestForwardAsChatCompletionsForGrokStreamingUsesRawXAIChatCompletions(t *te
 	require.Equal(t, xai.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer access-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "text/event-stream", upstream.lastReq.Header.Get("Accept"))
-	require.Equal(t, "xiass-api-grok/1.0", upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, grokUpstreamUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 	require.Equal(t, "grok-4.5", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream_options.include_usage").Bool())
 	require.True(t, result.Stream)

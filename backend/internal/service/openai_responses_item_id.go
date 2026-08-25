@@ -23,6 +23,15 @@ func shouldStripOpenAIResponsesInputItemID(itemType, id string) bool {
 	return false
 }
 
+func shouldStripOpenAIResponsesNonPairCallID(itemType string) bool {
+	switch strings.TrimSpace(itemType) {
+	case "message", "reasoning", "image_generation_call":
+		return true
+	default:
+		return false
+	}
+}
+
 func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {

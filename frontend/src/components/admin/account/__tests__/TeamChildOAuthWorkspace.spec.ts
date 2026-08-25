@@ -134,6 +134,39 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.emitted('open-mailbox')).toEqual([['team-child@example.test']])
   })
 
+  it('keeps only the mailbox refresh icon spinning during automatic polling', () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ current_node: 'mailbox' }),
+        mailboxEmail: 'team-child@example.test',
+        mailboxCodePolling: true
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-sidebar-mailbox-code-value"]').text()).toBe('轮询中')
+    expect(wrapper.get('button[aria-label="立即检查邮箱"] .animate-spin').exists()).toBe(true)
+  })
+
+  it('replaces the numbered final node with an explicit completed Team card', () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({
+          status: 'completed',
+          manual_required: false,
+          current_node: 'import',
+          nodes: nodeDefinitions.map(([key, label], index) => ({ key, number: index + 1, label, status: 'completed' }))
+        }),
+        mailboxEmail: 'team-child@example.test'
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-oauth-current-node"]').text()).toContain('已完成创建 Team 子账号')
+    expect(wrapper.get('[data-testid="team-oauth-step-stack"]').findAll('article')).toHaveLength(1)
+    expect(wrapper.text()).toContain('22/22')
+  })
+
   it('shows callback state without activating the receiver for import', () => {
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {

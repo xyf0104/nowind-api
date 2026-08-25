@@ -34,6 +34,9 @@ vi.mock('@/api/admin', () => ({
     },
     groups: {
       getAll: getAllGroups
+    },
+    settings: {
+      getSettings: vi.fn().mockResolvedValue({ team_child_creation_enabled: false })
     }
   }
 }))
@@ -67,6 +70,7 @@ const DataTableStub = {
   props: ['columns', 'data'],
   template: `
     <div data-test="data-table">
+	  <span v-for="column in columns" :key="column.key" :data-column="column.key" />
       <div v-for="row in data" :key="row.id" :data-test="'scheduler-score-' + row.id">
         <slot name="cell-scheduler_score" :row="row" />
       </div>
@@ -228,6 +232,20 @@ describe('admin AccountsView scheduler score column', () => {
       include_scheduler_score: '0'
     }))
     expect(JSON.parse(localStorage.getItem('account-hidden-columns') || '[]')).toContain('scheduler_score')
+  })
+
+  it('shows account priority by default while respecting an explicit hidden preference', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.find('[data-column="priority"]').exists()).toBe(true)
+
+    wrapper.unmount()
+    localStorage.setItem('account-hidden-columns', JSON.stringify(['priority', 'scheduler_score']))
+    localStorage.setItem('account-hidden-columns-version', 'scheduler-score-hidden-by-default')
+
+    const hiddenWrapper = mountView()
+    await flushPromises()
+    expect(hiddenWrapper.find('[data-column="priority"]').exists()).toBe(false)
   })
 
   it('requests scheduler scores when the migrated column settings explicitly show the column', async () => {

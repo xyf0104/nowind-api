@@ -49,6 +49,7 @@
         :selected-mailbox-email="selectedMailboxEmail"
         :mailbox-code="mailboxCode"
         :mailbox-code-loading="mailboxCodeLoading"
+        :mailbox-code-polling="mailboxCodePolling"
         :mailbox-selecting="mailboxSelecting"
         :mailbox-configured="mailboxConfigured"
         :mailbox-actions-disabled="workflowBusy"
@@ -171,9 +172,13 @@
                 <Icon name="check" size="md" class="mt-0.5 shrink-0 text-green-600 dark:text-green-400" :stroke-width="2.5" />
                 <div class="min-w-0 flex-1">
                   <div class="font-semibold text-green-800 dark:text-green-200">已导入 XIASS</div>
-                  <div class="mt-1 break-all text-sm text-green-700 dark:text-green-300">{{ createdAccount.name || createdAccount.email || mailbox?.email }}</div>
+                  <div class="mt-1 break-all text-sm text-green-700 dark:text-green-300">{{ createdAccount.name || mailbox?.email }}</div>
                   <div class="mt-2 text-xs text-green-700/80 dark:text-green-300/80">{{ displayedGroupsLabel }} · 并发 {{ displayedImportConfig.concurrency }} · 优先级 {{ displayedImportConfig.priority }}</div>
                 </div>
+                <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="successAccountEditorOpen = true">
+                  <Icon name="edit" size="sm" :stroke-width="2" />
+                  <span>编辑账号配置</span>
+                </button>
               </div>
             </div>
           </section>
@@ -220,6 +225,14 @@
       @cancel="browserTakeOverConfirmOpen = false"
     />
     <TotpStepUpDialog :controller="passwordStepUp" />
+    <EditAccountModal
+      :show="successAccountEditorOpen"
+      :account="createdAccount"
+      :proxies="accountProxies"
+      :groups="groups"
+      @close="successAccountEditorOpen = false"
+      @updated="handleCreatedAccountUpdated"
+    />
   </div>
 </template>
 
@@ -229,6 +242,7 @@ import { Icon } from '@/components/icons'
 import TeamChildOAuthWorkspace from '@/components/admin/account/TeamChildOAuthWorkspace.vue'
 import TeamChildMembersWorkspace from '@/components/admin/account/TeamChildMembersWorkspace.vue'
 import TeamChildHistoryPanel from '@/components/admin/account/TeamChildHistoryPanel.vue'
+import { EditAccountModal } from '@/components/account'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
@@ -245,7 +259,8 @@ import {
 } from '@/api/admin/teamChild'
 import { accountsAPI } from '@/api/admin/accounts'
 import { groupsAPI } from '@/api/admin/groups'
-import type { Account, AccountUsageInfo, AdminGroup } from '@/types'
+import { proxiesAPI } from '@/api/admin/proxies'
+import type { Account, AccountUsageInfo, AdminGroup, Proxy as AccountProxy } from '@/types'
 
 type FlowStatus = 'idle' | 'creating' | 'ready' | 'workflow' | 'waiting' | 'polling' | 'received' | 'callback' | 'importing' | 'completed' | 'error'
 type TeamChildHistoryEntry = { email: string; account: Account | null; usage: AccountUsageInfo | null; passwordAvailable: boolean }
@@ -296,11 +311,13 @@ const oauthGenerating = openaiOAuth.loading
 const oauthError = openaiOAuth.error
 const callbackURL = ref('')
 const groups = ref<AdminGroup[]>([])
+const accountProxies = ref<AccountProxy[]>([])
 const selectedGroupIDs = ref<number[]>([])
 const accountConcurrency = ref(10)
 const accountPriority = ref(1)
 const errorMessage = ref('')
-const createdAccount = ref<{ id?: number; name?: string; email?: string; status?: string } | null>(null)
+const createdAccount = ref<Account | null>(null)
+const successAccountEditorOpen = ref(false)
 const appliedImportConfig = ref<{ groupIDs: number[]; groupNames: string[]; concurrency: number; priority: number } | null>(null)
 const teamWorkflow = ref<TeamChildWorkflow | null>(null)
 const revealedWorkflowPassword = ref('')
@@ -339,6 +356,10 @@ const busy = computed(() => ['creating', 'polling', 'workflow', 'importing'].inc
 // Mailbox polling is a background task and must not make workflow controls
 // appear, disappear, or resize while the refresh icon is spinning.
 const importing = computed(() => status.value === 'importing')
+const mailboxCodePolling = computed(() => Boolean(mailbox.value)
+  && !mailboxCode.value
+  && !['completed', 'callback'].includes(status.value)
+  && (workflowExecutionArmed.value || mailboxPollingRequested.value))
 const statusLabel = computed(() => ({ idle: '未开始', creating: '创建中', ready: '等待授权', workflow: '自动化执行中', waiting: '等待当前节点', polling: '检查邮箱', received: '已收到验证码', callback: '已获取回调', importing: '正在导入', completed: '已完成', error: '需要处理' })[status.value])
 const statusTone = computed(() => {
   if (status.value === 'error') return { text: 'text-red-600 dark:text-red-400', icon: 'exclamationTriangle' as const }
@@ -613,10 +634,7 @@ function historyEntryNeedsReauth(entry: TeamChildHistoryEntry): boolean {
 async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
   const account = entry.account
   if (!account || historyReauthorizingAccountID.value !== null) return
-  if (!historyEntryNeedsReauth(entry)) {
-    appStore.showInfo('该 Team 账号当前未检测到 401，无需重新授权')
-    return
-  }
+  const detected401 = historyEntryNeedsReauth(entry)
   if (!entry.passwordAvailable) {
     appStore.showError('该 Team 账号没有保存的登录密码，无法自动重新授权')
     return
@@ -638,6 +656,14 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
   workflowExecutionArmed.value = true
   mailboxPollingRequested.value = true
   try {
+    if (teamWorkflow.value?.status === 'failed') {
+      await teamChildAPI.cancelTeamChildWorkflow(teamWorkflow.value.id)
+      smsCancelSignal.value += 1
+      teamWorkflow.value = null
+      lastSubmittedEmailCode.value = ''
+      lastSubmittedPhone.value = ''
+      lastSubmittedSMSCode.value = ''
+    }
     const selected = await teamChildAPI.selectMailbox(entry.email)
     mailbox.value = selected
     selectedMailboxEmail.value = selected.email
@@ -650,7 +676,9 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
     if (!auth) throw new Error('未生成 XIASS 官方 OpenAI 授权链接')
     teamWorkflow.value = await teamChildAPI.reauthorizeTeamChildAccount(account.id, auth.auth_url, auth.session_id)
     status.value = 'workflow'
-    appStore.showInfo(`检测到 401，正在为 ${entry.email} 自动重新授权`)
+    appStore.showInfo(detected401
+      ? `检测到 401，正在为 ${entry.email} 重新授权`
+      : `正在为 ${entry.email} 手动重新授权`)
     scheduleWorkflowPoll(500)
   } catch (error) {
     workflowExecutionArmed.value = false
@@ -1095,6 +1123,7 @@ async function resetWorkflowFromStart() {
     mailboxCodeError.value = ''
     callbackURL.value = ''
     createdAccount.value = null
+    successAccountEditorOpen.value = false
     appliedImportConfig.value = null
     lastSubmittedEmailCode.value = ''
     lastSubmittedPhone.value = ''
@@ -1230,7 +1259,7 @@ async function startFlow() {
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
   mailboxPollingRequested.value = true
-  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; appliedImportConfig.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'creating'
+  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; successAccountEditorOpen.value = false; appliedImportConfig.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'creating'
   try {
     mailbox.value = await teamChildAPI.createMailbox()
     selectedMailboxEmail.value = mailbox.value.email
@@ -1258,7 +1287,7 @@ async function restoreActiveMailbox() {
     // A missing or expired mailbox is normal after its short server-side TTL.
   }
 }
-function schedulePoll(delay = 4000) {
+function schedulePoll(delay = 5000) {
   if (pollTimer) clearTimeout(pollTimer)
   if ((!workflowExecutionArmed.value && !mailboxPollingRequested.value) || !mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value)) return
   pollTimer = setTimeout(() => void pollMailbox(), Math.max(0, delay))
@@ -1312,6 +1341,9 @@ async function maybeSubmitMailboxCode() {
     scheduleWorkflowPoll(400)
   } catch (error) {
     lastSubmittedEmailCode.value = ''
+    mailboxCode.value = ''
+    mailboxPollingRequested.value = true
+    schedulePoll(5000)
     status.value = 'error'
     errorMessage.value = extractApiErrorMessage(error, '邮箱验证码自动填入失败')
     await syncWorkflowAfterActionError()
@@ -1405,10 +1437,27 @@ async function importAccount() {
       teamWorkflow.value = await teamChildAPI.completeTeamChildWorkflow(teamWorkflow.value.id).catch(() => teamWorkflow.value!)
     }
     status.value = 'completed'
+    successAccountEditorOpen.value = true
     if (pollTimer) clearTimeout(pollTimer)
     await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
     await loadTeamChildHistory()
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '导入失败') }
+}
+
+async function handleCreatedAccountUpdated(account: Account) {
+  createdAccount.value = account
+  selectedGroupIDs.value = [...(account.group_ids || account.groups?.map((group) => group.id) || [])]
+  accountConcurrency.value = account.concurrency
+  accountPriority.value = account.priority
+  appliedImportConfig.value = {
+    groupIDs: [...selectedGroupIDs.value],
+    groupNames: [...(account.groups?.map((group) => group.name) || [])],
+    concurrency: account.concurrency,
+    priority: account.priority
+  }
+  successAccountEditorOpen.value = false
+  await loadTeamChildHistory()
+  appStore.showSuccess('Team 子账号配置已保存')
 }
 
 async function confirmWorkflowCallback(): Promise<boolean> {
@@ -1471,13 +1520,15 @@ async function restoreActiveWorkflow() {
 onMounted(async () => {
   workflowExecutionArmed.value = false
   mailboxPollingRequested.value = false
-  const [statusResult, groupsResult] = await Promise.allSettled([
+  const [statusResult, groupsResult, proxiesResult] = await Promise.allSettled([
     teamChildAPI.getMailboxStatus(),
-    groupsAPI.getAll('openai')
+    groupsAPI.getAll('openai'),
+    proxiesAPI.getAll()
   ])
   mailboxConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.configured)
   browserConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.browser_configured)
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
+  if (proxiesResult.status === 'fulfilled') accountProxies.value = proxiesResult.value
   await loadKnownMailboxes()
   await restoreActiveMailbox()
   await restoreActiveWorkflow()

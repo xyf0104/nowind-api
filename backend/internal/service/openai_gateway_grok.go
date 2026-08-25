@@ -22,7 +22,7 @@ import (
 const (
 	grokComposerImageBridgeVisionModel     = "grok-build-0.1"
 	grokComposerImageBridgeMaxOutputTokens = 512
-	grokUpstreamUserAgent                  = "xiass-api-grok/1.0"
+	grokUpstreamUserAgent                  = "xai-grok-workspace/" + xai.CLIClientVersion
 	grokCLIVersion                         = xai.CLIClientVersion
 	grokDefaultResponsesModel              = "grok-4.5"
 	grokRateLimitFallbackCooldown          = 2 * time.Minute
@@ -160,17 +160,22 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		})
 		errCtx := withGrokTeamRateLimitModel(ctx, upstreamModel)
 		s.handleGrokAccountUpstreamError(errCtx, account, resp.StatusCode, resp.Header, respBody)
-		// 429 / free-usage: stamp team+model cool so sibling accounts skip this model.
-		if resp.StatusCode == http.StatusTooManyRequests ||
-			classifyGrokUpstreamFailure(resp.StatusCode, respBody, upstreamModel).Class == GrokFailureFreeUsage {
+		// Quota/rate-limit responses stamp the team+model overlay. Capacity is
+		// request pressure and must not hide sibling accounts.
+		if shouldMarkGrokTeamModelRateLimit(resp.StatusCode, respBody) {
 			markGrokTeamModelRateLimit(account, upstreamModel, resolveGrokTeamRateLimitUntil(time.Now().Add(grokTeamRateLimitDefaultTTL), time.Now()))
 		}
 		if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
+			retryable, retryDelay, retryDeadline, retryMax := grokSameAccountRetryMetadata(account, resp.StatusCode, respBody)
 			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				ResponseHeaders:        resp.Header.Clone(),
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				StatusCode:               resp.StatusCode,
+				ResponseBody:             respBody,
+				ResponseHeaders:          resp.Header.Clone(),
+				RetryableOnSameAccount:   retryable,
+				RequestScopedTransient:   retryable && resp.StatusCode == http.StatusTooManyRequests,
+				SameAccountRetryDelay:    retryDelay,
+				SameAccountRetryDeadline: retryDeadline,
+				SameAccountRetryMax:      retryMax,
 			}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, patchedBody, upstreamModel)
@@ -895,6 +900,19 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 			filteredTools = append(filteredTools, raw)
 		}
 	}
+	if !grokRawToolsContainType(filteredTools, "tool_search") {
+		for index, raw := range filteredTools {
+			if !gjson.GetBytes(raw, "defer_loading").Exists() {
+				continue
+			}
+			cleaned, deleteErr := sjson.DeleteBytes(raw, "defer_loading")
+			if deleteErr != nil {
+				return nil, deleteErr
+			}
+			filteredTools[index] = cleaned
+			toolsChanged = true
+		}
+	}
 
 	var err error
 	if len(filteredTools) != len(rawTools) || toolsChanged {
@@ -924,6 +942,15 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 		}
 	}
 	return body, nil
+}
+
+func grokRawToolsContainType(tools []json.RawMessage, want string) bool {
+	for _, tool := range tools {
+		if strings.TrimSpace(gjson.GetBytes(tool, "type").String()) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldDropGrokToolChoice(toolChoice gjson.Result, tools []json.RawMessage) bool {
@@ -1143,11 +1170,16 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 		})
 		s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, grokComposerImageBridgeVisionModel), account, resp.StatusCode, resp.Header, respBody)
 		if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
+			retryable, retryDelay, retryDeadline, retryMax := grokSameAccountRetryMetadata(account, resp.StatusCode, respBody)
 			return "", OpenAIUsage{}, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				ResponseHeaders:        resp.Header.Clone(),
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				StatusCode:               resp.StatusCode,
+				ResponseBody:             respBody,
+				ResponseHeaders:          resp.Header.Clone(),
+				RetryableOnSameAccount:   retryable,
+				RequestScopedTransient:   retryable && resp.StatusCode == http.StatusTooManyRequests,
+				SameAccountRetryDelay:    retryDelay,
+				SameAccountRetryDeadline: retryDeadline,
+				SameAccountRetryMax:      retryMax,
 			}
 		}
 		return "", OpenAIUsage{}, fmt.Errorf("grok composer image bridge upstream error: %s", upstreamMsg)
@@ -1315,6 +1347,10 @@ func applyGrokCLIHeaders(headers http.Header) {
 }
 
 func (s *OpenAIGatewayService) updateGrokUsageSnapshot(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot) {
+	s.updateGrokUsageSnapshotWithRateLimit(ctx, account, snapshot, true)
+}
+
+func (s *OpenAIGatewayService) updateGrokUsageSnapshotWithRateLimit(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot, installRateLimit bool) {
 	if s == nil || account == nil || account.ID <= 0 || snapshot == nil {
 		return
 	}
@@ -1361,7 +1397,7 @@ func (s *OpenAIGatewayService) updateGrokUsageSnapshot(ctx context.Context, acco
 	// API keys retain the snapshot for observability but leave account health to
 	// the upstream pool. Other accounts install the immediate runtime and durable
 	// rate-limit state when the observed window is exhausted.
-	if hasActiveLimit && !account.IsPoolMode() {
+	if installRateLimit && hasActiveLimit && !account.IsPoolMode() {
 		s.rateLimitGrok(stateCtx, account, resetAt)
 	} else if recovery {
 		clearGrokRateLimitAfterRecovery(stateCtx, s.accountRepo, account)
@@ -1674,14 +1710,17 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 		return
 	}
 	now := time.Now()
+	decision := classifyGrokUpstreamFailure(statusCode, responseBody, grokRequestedModelFromCtx(ctx))
 	snapshot := parseGrokQuotaSnapshot(headers, statusCode, now)
 	stampGrokQuotaSnapshotForPlan(account, snapshot, grokRequestedModelFromCtx(ctx))
-	s.updateGrokUsageSnapshot(ctx, account, snapshot)
+	// Capacity is request/model pressure rather than an exhausted credential.
+	// Preserve the snapshot for observability without installing an account-wide
+	// rate-limit block before the bounded retry/failover path runs.
+	s.updateGrokUsageSnapshotWithRateLimit(ctx, account, snapshot, decision.Class != GrokFailureModelCapacity)
 
 	// Classify the response body before the status fallback. xAI can report
 	// free-usage, billing, and model-capacity failures under more than one HTTP
 	// status, and model-specific exhaustion must not disable unrelated models.
-	decision := classifyGrokUpstreamFailure(statusCode, responseBody, grokRequestedModelFromCtx(ctx))
 	if decision.ShouldCooldown && decision.Class != GrokFailureNone && decision.Class != GrokFailureRateLimit && !account.IsPoolMode() {
 		if decision.Class == GrokFailureFreeUsage {
 			if resetAt, limited := grokRateLimitResetAtForAccount(account, snapshot, now); limited && resetAt.After(now) {

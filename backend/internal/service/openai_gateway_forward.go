@@ -58,8 +58,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if toolSchemaSanitized {
 		body = sanitizedToolBody
 	}
-	if account.IsOpenAIOAuth() && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
-		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)
+	responsesLite := account.IsOpenAI() && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader))
+	if responsesLite {
+		liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(body, account)
 		if liteErr != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, liteErr.Error(), "")
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -105,12 +106,22 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	body = forcedImageBody
 
+	nativeDeepSeekResponses := account.Platform == PlatformDeepseek &&
+		(account.GetAPIProtocol() == APIProtocolResponses || account.IsAdaptiveAPIProtocol())
+	if nativeDeepSeekResponses && account.Type == AccountTypeAPIKey && !compactPath &&
+		needsOpenAIResponsesClientToolAdaptation(body) {
+		adaptedBody, mapping, adaptErr := adaptOpenAIResponsesClientTools(body)
+		if adaptErr != nil {
+			return nil, fmt.Errorf("adapt DeepSeek Responses client tools: %w", adaptErr)
+		}
+		body = adaptedBody
+		setOpenAIResponsesClientToolMapping(c, mapping)
+	}
+
 	originalBody := body
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
-	nativeDeepSeekResponses := account.Platform == PlatformDeepseek &&
-		(account.GetAPIProtocol() == APIProtocolResponses || account.IsAdaptiveAPIProtocol())
 
 	if account.Platform == PlatformGrok {
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
@@ -120,6 +131,23 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// treating their base URL as a Chat Completions URL would corrupt routing.
 	if account.IsAnthropicProtocol() {
 		return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
+	}
+	if account.IsOpenAIApiKey() {
+		if normalized, changed, normalizeErr := normalizeOpenAIParallelToolCallsWithoutTools(body, responsesLite); normalizeErr != nil {
+			return nil, normalizeErr
+		} else if changed {
+			body = normalized
+			originalBody = normalized
+		}
+		if normalized, changed, normalizeErr := normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body, isOpenAIResponsesCompactPath(c)); normalizeErr != nil {
+			return nil, normalizeErr
+		} else if changed {
+			body = normalized
+			originalBody = normalized
+		}
+		requestView = newOpenAIRequestView(body)
+		reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+		originalModel = reqModel
 	}
 
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
@@ -967,6 +995,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return s.handleErrorResponse(ctx, resp, c, account, body, billingModel)
 		}
 		defer func() { _ = resp.Body.Close() }()
+
+		if mapping, ok := openAIResponsesClientToolMapping(c); ok && isEventStreamResponse(resp.Header) {
+			maxLineSize := defaultMaxLineSize
+			if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+				maxLineSize = s.cfg.Gateway.MaxLineSize
+			}
+			resp.Body = newResponsesClientToolStreamBody(resp.Body, mapping, maxLineSize)
+		}
 
 		serviceTier := extractOpenAIServiceTierFromBody(body)
 		// 上游接受后只保留计费需要的标量，避免响应处理期间继续保活完整 input/tools map。

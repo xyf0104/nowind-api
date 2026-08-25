@@ -23,7 +23,10 @@
                   <span>{{ cardStatusLabel(node, stackIndex) }}</span>
                   <span v-if="mailboxEmail" class="max-w-[16rem] truncate">{{ mailboxEmail }}</span>
                 </div>
-                <h3 class="mt-1 max-w-full truncate text-lg font-semibold text-white">{{ displayNodeLabel(node) }}</h3>
+                <h3 class="mt-1 flex max-w-full items-center justify-center gap-2 truncate text-lg font-semibold text-white">
+                  <Icon v-if="workflow.status === 'completed'" name="check" size="sm" class="shrink-0 text-emerald-300" :stroke-width="2.75" />
+                  <span class="truncate">{{ displayNodeLabel(node) }}</span>
+                </h3>
                 <p class="mt-1 line-clamp-2 text-sm leading-6 text-cyan-50/90">{{ node.message || cardMessage(node, stackIndex) }}</p>
               </div>
             </div>
@@ -234,7 +237,7 @@
           >
             <div class="min-w-0 flex-1">
               <span class="team-oauth-side-label">邮箱验证码</span>
-              <code data-testid="team-sidebar-mailbox-code-value" class="mt-1 block truncate">{{ mailboxCode || (mailboxCodeLoading ? '等待验证码' : '等待邮件') }}</code>
+              <code data-testid="team-sidebar-mailbox-code-value" class="mt-1 block truncate">{{ mailboxCode || (mailboxCodePolling ? '轮询中' : '等待邮件') }}</code>
             </div>
             <button
               type="button"
@@ -244,7 +247,7 @@
               :disabled="!mailboxEmail || mailboxCodeLoading"
               @click.stop="emit('poll-mailbox')"
             >
-              <Icon name="refresh" size="xs" :class="mailboxCodeLoading ? 'animate-spin' : ''" :stroke-width="2" />
+              <Icon name="refresh" size="xs" :class="mailboxCodePolling || mailboxCodeLoading ? 'animate-spin' : ''" :stroke-width="2" />
             </button>
           </div>
 
@@ -342,6 +345,7 @@ const props = withDefaults(defineProps<{
   selectedMailboxEmail?: string
   mailboxCode?: string
   mailboxCodeLoading?: boolean
+  mailboxCodePolling?: boolean
   mailboxSelecting?: boolean
   mailboxConfigured?: boolean
   mailboxActionsDisabled?: boolean
@@ -369,6 +373,7 @@ const props = withDefaults(defineProps<{
   selectedMailboxEmail: '',
   mailboxCode: '',
   mailboxCodeLoading: false,
+  mailboxCodePolling: false,
   mailboxSelecting: false,
   mailboxConfigured: false,
   mailboxActionsDisabled: false,
@@ -436,7 +441,20 @@ const currentNode = computed(() => {
 })
 const currentNodeIndex = computed(() => Math.max(0, workflowNodes.value.findIndex((node) => node.key === currentNode.value?.key)))
 const completedCount = computed(() => workflowNodes.value.filter((node) => node.status === 'completed').length)
-const visibleStackNodes = computed(() => workflowNodes.value.slice(currentNodeIndex.value, currentNodeIndex.value + 3))
+const terminalNode = computed<TeamChildWorkflowNode | null>(() => {
+  if (props.workflow.status !== 'completed') return null
+  const last = workflowNodes.value[workflowNodes.value.length - 1]
+  if (!last) return null
+  return {
+    ...last,
+    label: props.workflow.mode === 'reauthorization' ? '已完成 Team 账号重新授权' : '已完成创建 Team 子账号',
+    message: props.workflow.mode === 'reauthorization' ? '新的 OAuth 凭据已覆盖保存到原账号。' : '账号已按勾选配置保存到 XIASS。',
+    status: 'completed'
+  }
+})
+const visibleStackNodes = computed(() => terminalNode.value
+  ? [terminalNode.value]
+  : workflowNodes.value.slice(currentNodeIndex.value, currentNodeIndex.value + 3))
 
 function cardStatusLabel(node: TeamChildWorkflowNode, stackIndex: number): string {
   if (node.status === 'failed') return '需要处理'

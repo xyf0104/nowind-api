@@ -750,6 +750,59 @@ func (s *AccountRepoSuite) TestBindGroups_EmptyList() {
 	s.Require().Empty(groups, "expected 0 groups after binding empty list")
 }
 
+func (s *AccountRepoSuite) TestBindGroups_DefaultAllowsOnlyNewMemberships() {
+	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g-default-allow"})
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "new-membership-default@example.test"})
+	existing := mustCreateAccount(s.T(), s.client, &service.Account{Name: "existing-default-allow"})
+	mustBindAccountToGroup(s.T(), s.client, existing.ID, group.ID, 1)
+
+	_, err := integrationDB.ExecContext(s.ctx, `
+		INSERT INTO user_group_account_allowlist_scopes (user_id, group_id)
+		VALUES ($1, $2)
+	`, user.ID, group.ID)
+	s.Require().NoError(err)
+	_, err = integrationDB.ExecContext(s.ctx, `
+		INSERT INTO user_group_account_allowlists (user_id, group_id, account_id)
+		VALUES ($1, $2, $3)
+	`, user.ID, group.ID, existing.ID)
+	s.Require().NoError(err)
+
+	created := mustCreateAccount(s.T(), s.client, &service.Account{Name: "created-default-allow"})
+	s.Require().NoError(s.repo.BindGroups(s.ctx, created.ID, []int64{group.ID}))
+
+	var allowed bool
+	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM user_group_account_allowlists
+			WHERE user_id = $1 AND group_id = $2 AND account_id = $3
+		)
+	`, user.ID, group.ID, created.ID).Scan(&allowed))
+	s.Require().True(allowed, "new group membership should be allowed for restricted users")
+
+	_, err = integrationDB.ExecContext(s.ctx, `
+		DELETE FROM user_group_account_allowlists
+		WHERE user_id = $1 AND group_id = $2 AND account_id = $3
+	`, user.ID, group.ID, created.ID)
+	s.Require().NoError(err)
+	_, err = integrationDB.ExecContext(s.ctx, `
+		UPDATE user_group_account_allowlist_scopes
+		SET updated_at = NOW()
+		WHERE user_id = $1 AND group_id = $2
+	`, user.ID, group.ID)
+	s.Require().NoError(err)
+
+	s.Require().NoError(s.repo.BindGroups(s.ctx, created.ID, []int64{group.ID}))
+	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM user_group_account_allowlists
+			WHERE user_id = $1 AND group_id = $2 AND account_id = $3
+		)
+	`, user.ID, group.ID, created.ID).Scan(&allowed))
+	s.Require().False(allowed, "rebinding an unchanged group must preserve a manual exclusion")
+}
+
 // --- Schedulable ---
 
 func (s *AccountRepoSuite) TestListSchedulable() {

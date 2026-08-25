@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import i18n from '@/i18n'
 
-const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(() => ({
+const { teamChildAPI, accountsAPI, groupsAPI, proxiesAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(() => ({
   teamChildAPI: {
     getMailboxStatus: vi.fn(),
     createMailbox: vi.fn(),
@@ -44,6 +44,7 @@ const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } 
     delete: vi.fn()
   },
   groupsAPI: { getAll: vi.fn() },
+  proxiesAPI: { getAll: vi.fn() },
   nativeGenerateAuthUrl: vi.fn(),
   appStore: {
     showError: vi.fn(),
@@ -52,9 +53,10 @@ const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } 
   }
 }))
 
-vi.mock('@/api/admin/teamChild', () => ({ teamChildAPI }))
+vi.mock('@/api/admin/teamChild', () => ({ teamChildAPI, default: teamChildAPI }))
 vi.mock('@/api/admin/accounts', () => ({ accountsAPI, default: accountsAPI }))
 vi.mock('@/api/admin/groups', () => ({ groupsAPI, default: groupsAPI }))
+vi.mock('@/api/admin/proxies', () => ({ proxiesAPI, default: proxiesAPI }))
 vi.mock('@/components/auth/TotpStepUpDialog.vue', () => ({ default: { template: '<div data-testid="step-up-dialog-stub" />' } }))
 vi.mock('@/composables/useOpenAIOAuth', async () => {
   const { ref } = await import('vue')
@@ -167,6 +169,11 @@ const GroupSelectorStub = {
   template: '<div data-testid="group-selector" />'
 }
 
+const EditAccountModalStub = {
+  props: ['show', 'account'],
+  template: '<div v-if="show" data-testid="created-account-editor">{{ account?.name }}</div>'
+}
+
 function mountView() {
   return mount(TeamChildCreationView, {
     global: {
@@ -177,6 +184,7 @@ function mountView() {
         TeamChildBrowserWorkspace: BrowserWorkspaceStub,
         TeamChildMembersWorkspace: MembersWorkspaceStub,
         GroupSelector: GroupSelectorStub,
+        EditAccountModal: EditAccountModalStub,
         ConfirmDialog: ConfirmDialogStub,
         RouterLink: true
       }
@@ -196,6 +204,7 @@ describe('TeamChildCreationView', () => {
       expires_at: '2026-08-24T12:00:00.000Z'
     })
     groupsAPI.getAll.mockResolvedValue([])
+    proxiesAPI.getAll.mockResolvedValue([])
     accountsAPI.list.mockResolvedValue({ items: [], total: 0 })
     accountsAPI.getUsage.mockResolvedValue(null)
     teamChildAPI.listTeamChildMembers.mockResolvedValue({
@@ -357,6 +366,50 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.reauthorizeTeamChildAccount).toHaveBeenCalledWith(317, testAuthURL, 'oauth-session')
     expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
     expect(window.location.search).toBe('')
+    wrapper.unmount()
+  })
+
+  it('restarts a failed automatic 401 workflow from the history reauthorization button', async () => {
+    const failedWorkflow = currentWorkflow({
+      mode: 'reauthorization',
+      target_account_id: 317,
+      status: 'failed',
+      manual_required: false,
+      current_node: 'oauth',
+      error: 'OpenAI 登录页面未完成加载'
+    })
+    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue(failedWorkflow)
+    accountsAPI.list.mockResolvedValue({
+      items: [{
+        id: 317,
+        name: 'team1004@example.test',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'error',
+        error_message: 'HTTP 401 Unauthorized',
+        schedulable: false,
+        proxy_id: null,
+        concurrency: 10,
+        priority: 1,
+        group_ids: [],
+        credentials_status: { has_xiass_team_child_password_encrypted: true },
+        extra: { xiass_team_child: true, xiass_team_child_email: 'team1004@example.test' }
+      }],
+      total: 1
+    })
+    accountsAPI.getUsage.mockResolvedValue({ needs_reauth: true, error_code: 'unauthenticated', error: 'HTTP 401' })
+    teamChildAPI.listMailboxes.mockResolvedValue(['team1004@example.test'])
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="team-history-reauthorize-317"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.cancelTeamChildWorkflow).toHaveBeenCalledWith(failedWorkflow.id)
+    expect(teamChildAPI.selectMailbox).toHaveBeenCalledWith('team1004@example.test')
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.reauthorizeTeamChildAccount).toHaveBeenCalledWith(317, testAuthURL, 'oauth-session')
+    expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -540,6 +593,28 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
+  it('polls the active mailbox every five seconds until a code arrives', async () => {
+    vi.useFakeTimers()
+    teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'waiting' })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-create-mailbox"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('button[aria-label="立即检查邮箱"] .animate-spin').exists()).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(250)
+    await flushPromises()
+    expect(teamChildAPI.pollMailboxCode).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(teamChildAPI.pollMailboxCode).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(teamChildAPI.pollMailboxCode).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('continues after a manually released seat only when the live members are protected', async () => {
     const protectedMembers = {
       ready: true,
@@ -626,6 +701,8 @@ describe('TeamChildCreationView', () => {
       workflow_id: 'workflow-token-abcdefghijklmnop'
     }))
     expect(teamChildAPI.completeTeamChildWorkflow).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop')
+    expect(wrapper.get('[data-testid="created-account-editor"]').text()).toBe('team-child@example.test')
+    expect(wrapper.findAll('[data-testid="team-oauth-current-node"]').some((card) => card.text().includes('已完成创建 Team 子账号'))).toBe(true)
     wrapper.unmount()
   })
 

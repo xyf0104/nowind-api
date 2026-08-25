@@ -54,7 +54,7 @@ describe('TeamChildHistoryPanel', () => {
     expect(wrapper.emitted('reauthorize')?.[0]?.[0]).toMatchObject({ email: 'team1004@example.test', account })
   })
 
-  it('distinguishes a 403 from a reauthorization failure', () => {
+  it('distinguishes a 403 while keeping the manual reauthorization entry available', () => {
     const wrapper = mount(TeamChildHistoryPanel, {
       props: {
         entries: [{
@@ -68,7 +68,28 @@ describe('TeamChildHistoryPanel', () => {
     })
 
     expect(wrapper.text()).toContain('403 · 访问受限')
-    expect(wrapper.find('[data-testid="team-history-reauthorize-317"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="team-history-reauthorize-317"]').exists()).toBe(true)
+  })
+
+  it('offers manual reauthorization for a normal imported Team account', async () => {
+    const account = teamAccount({ status: 'active', error_message: '', schedulable: true })
+    const wrapper = mount(TeamChildHistoryPanel, {
+      props: {
+        entries: [{
+          email: 'team1004@example.test',
+          account: account as never,
+          usage: null,
+          passwordAvailable: true
+        }]
+      },
+      global: { stubs: { Icon: IconStub, RouterLink: true, ConfirmDialog: ConfirmDialogStub } }
+    })
+
+    expect(wrapper.text()).toContain('正常')
+    const button = wrapper.get('[data-testid="team-history-reauthorize-317"]')
+    expect(button.attributes('disabled')).toBeUndefined()
+    await button.trigger('click')
+    expect(wrapper.emitted('reauthorize')?.[0]?.[0]).toMatchObject({ account })
   })
 
   it('links to the exact account and confirms direct account deletion', async () => {

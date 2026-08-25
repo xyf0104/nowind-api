@@ -62,6 +62,36 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_MissingTypeNotInvented(t *tes
 	require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.type").Exists())
 }
 
+func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectOnlyRootUnion(t *testing.T) {
+	body := []byte(`{"tools":[
+		{"type":"function","name":"automation_update","parameters":{"oneOf":[{"type":"object","properties":{"id":{"type":"string"}}},{"anyOf":[{"type":"object"},{"type":"object","properties":{}}]}]}},
+		{"type":"function","name":"escaped","parameters":{"one\u004ff":[{"type":"object"}]}}
+	]}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.parameters.type").String())
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.1.parameters.type").String())
+	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.parameters.oneOf.0.properties.id.type").String())
+}
+
+func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectUnionSafetyBoundary(t *testing.T) {
+	tests := []string{
+		`{"tools":[{"type":"function","parameters":{"oneOf":[{"type":"object"},{"type":"string"}]}}]}`,
+		`{"tools":[{"type":"function","parameters":{"oneOf":[{"properties":{}}]}}]}`,
+		`{"tools":[{"type":"function","parameters":{"oneOf":[]}}]}`,
+	}
+
+	for _, body := range tests {
+		sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes([]byte(body))
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.type").Exists())
+	}
+}
+
 // 多轮历史：工具定义沉进 input 后，upstream 报错路径形如
 // input[N].tools[i].tools[j].parameters，两层都要修。
 func TestSanitizeOpenAIResponsesToolParameterTypes_NestedHistoryTools(t *testing.T) {

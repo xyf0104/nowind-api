@@ -89,20 +89,33 @@
 
       <button
         type="button"
-        class="group flex min-w-0 items-center justify-between gap-3 rounded-md border border-cyan-200 bg-white/85 px-3 py-2.5 text-left transition-colors hover:border-cyan-400 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-cyan-900/80 dark:bg-gray-900/70 dark:hover:border-cyan-600 dark:hover:bg-gray-900"
+        class="group min-w-0 rounded-md border border-cyan-200 bg-white/85 px-3 py-2.5 text-left transition-colors hover:border-cyan-400 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 sm:col-span-2 dark:border-cyan-900/80 dark:bg-gray-900/70 dark:hover:border-cyan-600 dark:hover:bg-gray-900"
         :disabled="!code || code === '--'"
         :title="code && code !== '--' ? '点击复制验证码' : '正在等待验证码'"
         @click="copyCode"
       >
-        <span>
-          <span class="block text-[11px] font-medium text-cyan-700 dark:text-cyan-300">验证码</span>
-          <span class="mt-0.5 block font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ code }}</span>
+        <span class="flex items-center justify-between gap-3">
+          <span class="block text-[11px] font-medium text-cyan-700 dark:text-cyan-300">短信验证码</span>
+          <Icon
+            :name="codeCopied ? 'check' : 'copy'"
+            size="sm"
+            :class="codeCopied ? 'text-emerald-600 dark:text-emerald-300' : 'text-cyan-600 opacity-60 transition-opacity group-hover:opacity-100 dark:text-cyan-300'"
+          />
         </span>
-        <Icon
-          :name="codeCopied ? 'check' : 'copy'"
-          size="sm"
-          :class="codeCopied ? 'text-emerald-600 dark:text-emerald-300' : 'text-cyan-600 opacity-0 transition-opacity group-hover:opacity-100 dark:text-cyan-300'"
-        />
+        <span
+          data-testid="sms-code-slots"
+          class="mt-2 grid min-w-0 gap-1.5"
+          :style="{ gridTemplateColumns: `repeat(${codeSlots.length}, minmax(0, 1fr))` }"
+          aria-hidden="true"
+        >
+          <span
+            v-for="(character, index) in codeSlots"
+            :key="`sms-code-slot-${index}`"
+            class="flex aspect-square min-w-0 items-center justify-center rounded-md border border-cyan-200 bg-cyan-50/70 font-mono text-base font-semibold tabular-nums text-gray-900 dark:border-cyan-800 dark:bg-cyan-950/30 dark:text-gray-100"
+          >
+            {{ character || '·' }}
+          </span>
+        </span>
       </button>
     </div>
 
@@ -309,6 +322,11 @@ const replacementPromptHandled = ref(false)
 let automationReplacementTimer: ReturnType<typeof setTimeout> | null = null
 const needsManualStart = computed(() => !hasManuallyStarted.value && !hasActiveSession.value)
 const replacementRequired = computed(() => props.replacementRequired && hasActiveSession.value && !replacementPromptHandled.value)
+const codeSlots = computed(() => {
+  const value = code.value === '--' ? '' : code.value.replace(/\s+/g, '').slice(0, 8)
+  const slotCount = Math.max(6, value.length)
+  return Array.from({ length: slotCount }, (_, index) => value[index] || '')
+})
 const confirmationPending = computed(() => {
   if (confirmationAction.value === 'claim') return isStartingPhone.value
   if (confirmationAction.value === 'change') return isChangingNumber.value

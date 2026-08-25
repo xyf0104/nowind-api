@@ -1873,9 +1873,28 @@ func (r *accountRepository) GetGroups(ctx context.Context, accountID int64) ([]s
 }
 
 func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
-	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
+	existingBindings, err := r.client.AccountGroup.
+		Query().
+		Where(dbaccountgroup.AccountIDEQ(accountID)).
+		All(ctx)
 	if err != nil {
 		return err
+	}
+	existingGroupIDs := make([]int64, 0, len(existingBindings))
+	existingByGroupID := make(map[int64]*dbent.AccountGroup, len(existingBindings))
+	for _, binding := range existingBindings {
+		existingGroupIDs = append(existingGroupIDs, binding.GroupID)
+		existingByGroupID[binding.GroupID] = binding
+	}
+	desiredGroupIDs := make(map[int64]struct{}, len(groupIDs))
+	for _, groupID := range groupIDs {
+		desiredGroupIDs[groupID] = struct{}{}
+	}
+	removedGroupIDs := make([]int64, 0, len(existingBindings))
+	for _, binding := range existingBindings {
+		if _, retained := desiredGroupIDs[binding.GroupID]; !retained {
+			removedGroupIDs = append(removedGroupIDs, binding.GroupID)
+		}
 	}
 	// 使用事务保证删除旧绑定与创建新绑定的原子性
 	tx, err := r.client.Tx(ctx)
@@ -1892,21 +1911,39 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		txClient = r.client
 	}
 
-	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(ctx); err != nil {
-		return err
+	if len(removedGroupIDs) > 0 {
+		if _, err := txClient.AccountGroup.Delete().
+			Where(
+				dbaccountgroup.AccountIDEQ(accountID),
+				dbaccountgroup.GroupIDIn(removedGroupIDs...),
+			).
+			Exec(ctx); err != nil {
+			return err
+		}
 	}
 
-	if len(groupIDs) > 0 {
-		builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
-		for i, groupID := range groupIDs {
-			builders = append(builders, txClient.AccountGroup.Create().
-				SetAccountID(accountID).
-				SetGroupID(groupID).
-				SetPriority(i+1),
-			)
+	for i, groupID := range groupIDs {
+		priority := i + 1
+		if binding, exists := existingByGroupID[groupID]; exists {
+			if binding.Priority == priority {
+				continue
+			}
+			if _, err := txClient.AccountGroup.Update().
+				Where(
+					dbaccountgroup.AccountIDEQ(accountID),
+					dbaccountgroup.GroupIDEQ(groupID),
+				).
+				SetPriority(priority).
+				Save(ctx); err != nil {
+				return err
+			}
+			continue
 		}
-
-		if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
+		if _, err := txClient.AccountGroup.Create().
+			SetAccountID(accountID).
+			SetGroupID(groupID).
+			SetPriority(priority).
+			Save(ctx); err != nil {
 			return err
 		}
 	}

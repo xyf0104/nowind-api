@@ -5,14 +5,18 @@ process.env.NODE_ENV = 'test'
 process.env.TEAM_CHILD_AUTOMATION_TOKEN = 'unit-test-team-child-token'
 
 const {
+  activateBrowserPage,
   callbackURLFromNavigationEntries,
   cancelWorkflowState,
+  completeReauthorizationOnlyNodes,
   completeWorkflowNode,
+  createReauthorizationWorkflow,
   createWorkflow,
   decryptWorkflowState,
   encryptWorkflowState,
   fillVerificationCode,
   generateWorkflowPassword,
+  markWorkflowInviteSubmitted,
   pauseWorkflowState,
   pendingInviteEmailsFromTexts,
   recoverOpenAIPhoneEntry,
@@ -31,6 +35,29 @@ const {
 const authURL = 'https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state'
 
 describe('Team child OAuth automation state', () => {
+  it('activates managed pages without requiring the noVNC viewer', async () => {
+    const sent = []
+    let broughtToFront = 0
+    let detached = 0
+    const cdpSession = {
+      send: async (method, params) => { sent.push([method, params]) },
+      detach: async () => { detached += 1 }
+    }
+    const page = {
+      bringToFront: async () => { broughtToFront += 1 },
+      context: () => ({ newCDPSession: async () => cdpSession })
+    }
+
+    await activateBrowserPage(page)
+
+    assert.equal(broughtToFront, 1)
+    assert.deepEqual(sent, [
+      ['Page.bringToFront', undefined],
+      ['Emulation.setFocusEmulationEnabled', { enabled: true }]
+    ])
+    assert.equal(detached, 1)
+  })
+
   it('publishes only the current 22-node workflow protocol', () => {
     const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
     const summary = workflowSummary(workflow)
@@ -84,6 +111,35 @@ describe('Team child OAuth automation state', () => {
     await submitInviteDialog(scope, 'child@example.test')
     assert.equal(observed.email, 'child@example.test')
     assert.equal(observed.clicked, 1)
+  })
+
+  it('records Send invites exactly once for workflow continuations', () => {
+    const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
+    assert.equal(workflow.inviteSubmitted, false)
+    assert.equal(markWorkflowInviteSubmitted(workflow), true)
+    const submittedAt = workflow.inviteSubmittedAt
+    assert.equal(workflow.inviteSubmitted, true)
+    assert.ok(submittedAt > 0)
+    assert.equal(markWorkflowInviteSubmitted(workflow), false)
+    assert.equal(workflow.inviteSubmittedAt, submittedAt)
+  })
+
+  it('keeps existing-account reauthorization out of phone and profile registration', () => {
+    const workflow = createReauthorizationWorkflow(
+      317,
+      'child@example.test',
+      'SavedPassword!',
+      authURL,
+      'oauth-session-abcdefghijklmnop'
+    )
+    completeReauthorizationOnlyNodes(workflow)
+
+    assert.equal(workflow.mode, 'reauthorization')
+    assert.equal(workflow.targetAccountID, 317)
+    for (const key of ['members', 'remove', 'invite', 'invite_confirm', 'phone', 'sms_confirm', 'phone_submit', 'sms_poll', 'sms_code', 'profile_wait', 'profile']) {
+      assert.equal(workflow.nodes.find((node) => node.key === key)?.status, 'completed')
+    }
+    assert.equal(workflow.nodes.find((node) => node.key === 'workspace')?.status, 'pending')
   })
 
   it('prefers Send invites when an older Continue action is also present', async () => {
