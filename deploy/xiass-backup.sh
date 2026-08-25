@@ -223,13 +223,17 @@ wait_for_health() {
 }
 
 prune_old_backups() {
-    local index=0 file
-    while IFS= read -r file; do
+    local index=0 file modified
+    while IFS=' ' read -r modified file; do
         index=$((index + 1))
         if [ "$index" -gt "$KEEP_BACKUPS" ]; then
             rm -f -- "$file" "$file.sha256"
         fi
-    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'xiass-runtime-*.tar.gz' -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-)
+    done < <({
+        while IFS= read -r file; do
+            printf '%s %s\n' "$(stat -c '%Y' "$file")" "$file"
+        done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'xiass-runtime-*.tar.gz' -print)
+    } | sort -nr)
 }
 
 main() {
@@ -309,4 +313,6 @@ main() {
     printf '备份包含 .env 密钥，请只保存在可信位置。默认保留最近 %s 份。\n' "$KEEP_BACKUPS"
 }
 
-main "$@"
+if [ "${XIASS_BACKUP_LIB_ONLY:-0}" != "1" ]; then
+    main "$@"
+fi

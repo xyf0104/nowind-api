@@ -627,6 +627,7 @@ def check_update_bridge(errors: list[str]) -> None:
     )
 
     update_script = read("deploy/xiass-update.sh")
+    backup_script = read("deploy/xiass-backup.sh")
     main_body = update_script.partition("main() {")[2]
     ordered_markers = [
         "ensure_xiass_update_remote",
@@ -701,6 +702,19 @@ def check_update_bridge(errors: list[str]) -> None:
         )
     if "git clean" in update_script:
         errors.append("xiass-update.sh 禁止清理未跟踪的 .env 或数据目录")
+    if '[ -n "$patch_file" ] && printf' in update_script:
+        errors.append("xiass-update.sh 成功收尾不得因空本地补丁路径返回非零状态")
+    require_all(
+        "deploy/xiass-backup.sh",
+        backup_script,
+        [
+            "XIASS_BACKUP_LIB_ONLY",
+            "stat -c '%Y'",
+        ],
+        errors,
+    )
+    if "-printf" in backup_script:
+        errors.append("xiass-backup.sh 必须兼容不支持 find -printf 的 BusyBox")
     if re.search(
         r"(?m)^\s*(?:rm|cp|mv)\b[^\n]*(?:\.env|postgres_data|redis_data|/data\b)",
         update_script,

@@ -622,7 +622,9 @@ main() {
     rm -rf "$PREVIOUS_COMPOSE_SNAPSHOT"
     PREVIOUS_COMPOSE_SNAPSHOT=""
     printf '\nXIASS 更新完成，PostgreSQL、Redis、应用数据和 .env 均沿用原目录。\n'
-    [ -n "$patch_file" ] && printf '原本的本地修改补丁：%s\n' "$patch_file"
+    if [ -n "$patch_file" ]; then
+        printf '原本的本地修改补丁：%s\n' "$patch_file"
+    fi
 }
 
 if [ "${XIASS_UPDATE_LIB_ONLY:-0}" != "1" ]; then

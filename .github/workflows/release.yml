@@ -162,6 +162,7 @@ jobs:
           bash -n deploy/xiass-update.sh
           bash -n deploy/tests/install-github-token-test.sh
           bash -n deploy/tests/docker-entrypoint-socket-group-test.sh
+          bash -n deploy/tests/update-script-portability-test.sh
           bash -n deploy/test-install-download-integrity.sh
           bash -n deploy/test-docker-deploy-existing-install.sh
           bash -n tools/test_xiass_update_origin.sh
@@ -178,6 +179,9 @@ jobs:
 
       - name: Test Docker socket privilege drop compatibility
         run: bash deploy/tests/docker-entrypoint-socket-group-test.sh
+
+      - name: Test updater BusyBox compatibility and success status
+        run: bash deploy/tests/update-script-portability-test.sh
 
       - name: Test XIASS update browser-profile migration
         run: |

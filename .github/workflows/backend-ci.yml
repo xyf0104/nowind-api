@@ -33,6 +33,7 @@ jobs:
           /bin/sh deploy/test-caddyfile-cache.sh
           bash -n deploy/tests/docker-entrypoint-socket-group-test.sh
           bash deploy/tests/docker-entrypoint-socket-group-test.sh
+          bash deploy/tests/update-script-portability-test.sh
           bash deploy/test-install-download-integrity.sh
           bash deploy/tests/install-github-token-test.sh
           bash deploy/test-docker-deploy-existing-install.sh
