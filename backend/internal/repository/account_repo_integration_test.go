@@ -756,12 +756,12 @@ func (s *AccountRepoSuite) TestBindGroups_DefaultAllowsOnlyNewMemberships() {
 	existing := mustCreateAccount(s.T(), s.client, &service.Account{Name: "existing-default-allow"})
 	mustBindAccountToGroup(s.T(), s.client, existing.ID, group.ID, 1)
 
-	_, err := integrationDB.ExecContext(s.ctx, `
+	_, err := s.repo.sql.ExecContext(s.ctx, `
 		INSERT INTO user_group_account_allowlist_scopes (user_id, group_id)
 		VALUES ($1, $2)
 	`, user.ID, group.ID)
 	s.Require().NoError(err)
-	_, err = integrationDB.ExecContext(s.ctx, `
+	_, err = s.repo.sql.ExecContext(s.ctx, `
 		INSERT INTO user_group_account_allowlists (user_id, group_id, account_id)
 		VALUES ($1, $2, $3)
 	`, user.ID, group.ID, existing.ID)
@@ -771,21 +771,21 @@ func (s *AccountRepoSuite) TestBindGroups_DefaultAllowsOnlyNewMemberships() {
 	s.Require().NoError(s.repo.BindGroups(s.ctx, created.ID, []int64{group.ID}))
 
 	var allowed bool
-	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `
+	s.Require().NoError(scanSingleRow(s.ctx, s.repo.sql, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM user_group_account_allowlists
 			WHERE user_id = $1 AND group_id = $2 AND account_id = $3
 		)
-	`, user.ID, group.ID, created.ID).Scan(&allowed))
+	`, []any{user.ID, group.ID, created.ID}, &allowed))
 	s.Require().True(allowed, "new group membership should be allowed for restricted users")
 
-	_, err = integrationDB.ExecContext(s.ctx, `
+	_, err = s.repo.sql.ExecContext(s.ctx, `
 		DELETE FROM user_group_account_allowlists
 		WHERE user_id = $1 AND group_id = $2 AND account_id = $3
 	`, user.ID, group.ID, created.ID)
 	s.Require().NoError(err)
-	_, err = integrationDB.ExecContext(s.ctx, `
+	_, err = s.repo.sql.ExecContext(s.ctx, `
 		UPDATE user_group_account_allowlist_scopes
 		SET updated_at = NOW()
 		WHERE user_id = $1 AND group_id = $2
@@ -793,13 +793,13 @@ func (s *AccountRepoSuite) TestBindGroups_DefaultAllowsOnlyNewMemberships() {
 	s.Require().NoError(err)
 
 	s.Require().NoError(s.repo.BindGroups(s.ctx, created.ID, []int64{group.ID}))
-	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `
+	s.Require().NoError(scanSingleRow(s.ctx, s.repo.sql, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM user_group_account_allowlists
 			WHERE user_id = $1 AND group_id = $2 AND account_id = $3
 		)
-	`, user.ID, group.ID, created.ID).Scan(&allowed))
+	`, []any{user.ID, group.ID, created.ID}, &allowed))
 	s.Require().False(allowed, "rebinding an unchanged group must preserve a manual exclusion")
 }
 
