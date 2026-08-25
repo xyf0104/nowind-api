@@ -246,6 +246,7 @@ func TestLaunchHostUpdaterCreatesScopedUpdaterContainer(t *testing.T) {
 		require.Contains(t, payload.HostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock")
 		require.Contains(t, payload.HostConfig.Binds, "/opt/xiass-api:/opt/xiass-api")
 		require.Contains(t, payload.HostConfig.Binds, "/root/xiass-backups:/root/xiass-backups")
+		require.Equal(t, "host", payload.HostConfig.NetworkMode)
 	case <-time.After(time.Second):
 		t.Fatal("updater create payload was not captured")
 	}

@@ -337,7 +337,9 @@ func (s *DockerUpdateService) launchHostUpdaterWithClient(ctx context.Context, c
 		installDir + ":" + installDir,
 		updaterBackupDir + ":" + updaterBackupDir,
 	}
-	create.HostConfig.NetworkMode = "default"
+	// The updater's backup, startup, and rollback gates probe the published
+	// application health endpoint on the host loopback interface.
+	create.HostConfig.NetworkMode = "host"
 
 	createPayload, err := client.requestOK(ctx, http.MethodPost, "/containers/create?name="+url.QueryEscape(updaterContainerName), &create, http.StatusCreated)
 	if err != nil {

@@ -576,6 +576,7 @@ def check_update_bridge(errors: list[str]) -> None:
             'legacyWatchtowerToken',
             '"sub2api-update-token"',
             "strings.TrimSpace(os.Getenv(watchtowerTokenEnv))",
+            'create.HostConfig.NetworkMode = "host"',
         ],
         errors,
     )
