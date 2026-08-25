@@ -350,7 +350,13 @@ def check_release_branding_and_compatibility(errors: list[str]) -> None:
     require_all(
         "deploy/docker-entrypoint.sh",
         read("deploy/docker-entrypoint.sh"),
-        ["chown -R 1000:1000 /app/data", "su-exec 1000:1000", "/app/xiass-api"],
+        [
+            "chown -R 1000:1000 /app/data",
+            "stat -c '%g' /var/run/docker.sock",
+            'addgroup xiass "$docker_socket_group"',
+            "su-exec xiass",
+            "/app/xiass-api",
+        ],
         errors,
     )
 
