@@ -635,15 +635,32 @@ def check_update_bridge(errors: list[str]) -> None:
         'UPDATE_REF=$(git -C "$INSTALL_DIR" rev-parse "$UPDATE_REMOTE/main")',
         'xiass-backup.sh',
         "capture_previous_image",
+        "prefetch_target_app_image",
         "UPDATE_STARTED=true",
-        "compose down",
-        'git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"',
     ]
     positions = [main_body.find(marker) for marker in ordered_markers]
     if any(position < 0 for position in positions) or positions != sorted(positions):
         errors.append(
-            "xiass-update.sh 必须先备份、拉取并记录旧镜像，再停止旧栈并切换 Git 状态"
+            "xiass-update.sh 必须先备份、记录旧镜像并预拉取，再开始容器切换"
         )
+    hot_swap_body = main_body.partition("if can_hot_swap_canonical_app; then")[2].partition("else")[0]
+    hot_swap_markers = [
+        'git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"',
+        "hot_swap_canonical_app",
+        "start_runtime_stack true true",
+    ]
+    hot_swap_positions = [hot_swap_body.find(marker) for marker in hot_swap_markers]
+    if any(position < 0 for position in hot_swap_positions) or hot_swap_positions != sorted(hot_swap_positions):
+        errors.append("xiass-update.sh 规范安装必须只热切换应用并保持数据库、缓存容器在线")
+    legacy_body = main_body.partition('log "历史部署布局使用完整兼容切换')[2]
+    legacy_markers = [
+        "compose down",
+        'git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"',
+        'start_runtime_stack "$TARGET_APP_IMAGE_PREFETCHED"',
+    ]
+    legacy_positions = [legacy_body.find(marker) for marker in legacy_markers]
+    if any(position < 0 for position in legacy_positions) or legacy_positions != sorted(legacy_positions):
+        errors.append("xiass-update.sh 历史安装必须保留停止旧栈后的完整兼容迁移路径")
     require_all(
         "deploy/xiass-update.sh",
         update_script,

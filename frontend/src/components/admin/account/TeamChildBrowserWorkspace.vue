@@ -10,11 +10,21 @@
           <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">仅在需要人工处理登录或未知页面时打开，平时请使用成员自动化工作区。</p>
         </div>
       </div>
-      <div class="flex items-center gap-2 self-start sm:self-auto">
+      <div class="flex flex-wrap items-center justify-end gap-2 self-start sm:self-auto">
         <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="browserStateClass">
           <span class="h-1.5 w-1.5 rounded-full" :class="browserDotClass"></span>
           {{ browserStateLabel }}
         </span>
+        <button
+          type="button"
+          class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
+          :disabled="loading || !configured"
+          title="刷新并切换到 ChatGPT 成员页"
+          @click="$emit('refresh-members')"
+        >
+          <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
+          <span>刷新成员页</span>
+        </button>
         <button
           type="button"
           class="btn btn-secondary flex items-center gap-2 whitespace-nowrap"
@@ -129,6 +139,7 @@ const props = withDefaults(defineProps<{
 defineEmits<{
   reload: []
   copyMailbox: []
+  'refresh-members': []
   'open-modular': []
   'force-take-over': []
 }>()

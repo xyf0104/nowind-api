@@ -69,6 +69,7 @@ describe('TeamChildOAuthWorkspace', () => {
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {
         workflow: workflow(),
+        automationEnabled: true,
         mailboxEmail: 'team-child@example.test',
         authUrl: 'https://auth.openai.com/oauth/authorize?state=test-state'
       },
@@ -216,5 +217,21 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
     expect(wrapper.emitted('reset-workflow')).toHaveLength(1)
     expect(wrapper.find('[data-testid="team-pause-workflow"]').exists()).toBe(false)
+  })
+
+  it('does not resume a restored SMS node until continue is explicitly clicked', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ status: 'manual_required', current_node: 'sms_poll' }),
+        automationEnabled: false
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
+    expect(wrapper.find('[data-testid="team-pause-workflow"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="team-one-click-authorize"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="team-resume-workflow"]').trigger('click')
+    expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
   })
 })

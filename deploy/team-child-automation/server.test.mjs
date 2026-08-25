@@ -16,6 +16,7 @@ const {
   pauseWorkflowState,
   pendingInviteEmailsFromTexts,
   recoverOpenAIPhoneEntry,
+  reusableOAuthPage,
   resumePausedWorkflow,
   setWorkflowNode,
   submitInviteDialog,
@@ -47,6 +48,15 @@ describe('Team child OAuth automation state', () => {
       [...pendingInviteEmailsFromTexts(['child@example.test\nInvited today\nMember'])],
       ['child@example.test']
     )
+  })
+
+  it('never selects the ChatGPT Members tab as the OAuth workflow tab', () => {
+    const page = (url) => ({ url: () => url, isClosed: () => false })
+    const members = page('https://chatgpt.com/admin/members')
+    const oauth = page('https://auth.openai.com/oauth/authorize?state=test-state')
+
+    assert.equal(reusableOAuthPage({ pages: () => [members] }), undefined)
+    assert.equal(reusableOAuthPage({ pages: () => [members, oauth] }), oauth)
   })
 
   it('fills the native invite Email input and clicks Send invites', async () => {
@@ -172,6 +182,56 @@ describe('Team child OAuth automation state', () => {
     assert.equal(password, 'SavedPassword!')
   })
 
+  it('restarts the XIASS official PKCE URL when OpenAI reports an invalid authorization step', async () => {
+    let state = 'invalid_auth_step'
+    let password = ''
+    let backClicks = 0
+    const visited = []
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const passwordInput = {
+      isVisible: async () => true,
+      getAttribute: async (name) => ({ type: 'password', autocomplete: 'current-password' }[name] || null),
+      fill: async (value) => { password = value }
+    }
+    const phoneInput = {
+      isVisible: async () => true,
+      getAttribute: async (name) => ({ type: 'tel', autocomplete: 'tel' }[name] || null),
+      fill: async () => undefined
+    }
+    const page = {
+      locator: (selector) => {
+        if (selector === 'body') {
+          return { innerText: async () => state === 'invalid_auth_step'
+            ? 'Invalid authorization step. error_code: invalid_auth_step'
+            : state === 'password' ? 'Enter your password' : 'Phone number' }
+        }
+        if (selector === 'input') {
+          if (state === 'password') return collection([passwordInput])
+          if (state === 'phone') return collection([phoneInput])
+        }
+        return collection([])
+      },
+      getByRole: (role, options) => collection(
+        role === 'button' && state === 'password' && options.name.test('Continue')
+          ? [{ isVisible: async () => true, click: async () => { state = 'phone' } }]
+          : []
+      ),
+      goBack: async () => { backClicks += 1 },
+      goto: async (url) => { visited.push(url); state = 'password' },
+      url: () => 'https://auth.openai.com/add-phone'
+    }
+    const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
+    workflow.generatedPassword = 'SavedPassword!'
+
+    assert.equal(await recoverOpenAIPhoneEntry(page, workflow), 'phone')
+    assert.deepEqual(visited, [authURL])
+    assert.equal(backClicks, 0)
+    assert.equal(password, 'SavedPassword!')
+  })
+
   it('recovers the matching localhost callback from Chromium navigation history', () => {
     const matching = 'http://localhost:1455/auth/callback?code=secret-code&state=current-state'
     const result = callbackURLFromNavigationEntries([
@@ -221,6 +281,18 @@ describe('Team child OAuth automation state', () => {
     assert.equal(resumed.status, 'manual_required')
     assert.equal(resumed.pause_requested, false)
     assert.equal(workflow.generatedPassword, 'SavedPassword!')
+  })
+
+  it('marks a running browser node paused immediately and blocks its next node', () => {
+    const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
+    setWorkflowNode(workflow, 'invite', 'running', '正在邀请')
+
+    pauseWorkflowState(workflow)
+
+    assert.equal(workflow.status, 'paused')
+    assert.equal(workflow.pauseRequested, true)
+    assert.throws(() => setWorkflowNode(workflow, 'invite_confirm', 'running', '正在确认'), /工作流已暂停/)
+    assert.equal(workflow.currentNodeKey, 'invite_confirm')
   })
 
   it('keeps the complete node order stable', () => {

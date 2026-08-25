@@ -64,10 +64,21 @@
               <Icon name="mail" size="xs" :class="openingEmail === entry.email ? 'animate-pulse' : ''" :stroke-width="2" />
               <span>{{ openingEmail === entry.email ? '打开中' : '接收验证码' }}</span>
             </button>
-            <router-link v-if="entry.account" to="/admin/accounts" class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs">
+            <router-link v-if="entry.account" :to="{ name: 'AdminAccounts', query: { account_id: String(entry.account.id) } }" class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs" :data-testid="`team-history-manage-${entry.account.id}`">
               <Icon name="arrowRight" size="xs" :stroke-width="2" />
               <span>账号管理</span>
             </router-link>
+            <button
+              v-if="entry.account"
+              type="button"
+              class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs text-red-600 hover:text-red-700 dark:text-red-400"
+              :disabled="deletingAccountID === entry.account.id"
+              :data-testid="`team-history-delete-${entry.account.id}`"
+              @click="deletingEntry = entry"
+            >
+              <Icon name="trash" size="xs" :class="deletingAccountID === entry.account.id ? 'animate-pulse' : ''" :stroke-width="2" />
+              <span>{{ deletingAccountID === entry.account.id ? '删除中' : '删除账号' }}</span>
+            </button>
           </div>
         </div>
 
@@ -99,12 +110,23 @@
         </div>
       </article>
     </div>
+    <ConfirmDialog
+      :show="Boolean(deletingEntry?.account)"
+      title="删除 Team 账号"
+      :message="`确定从 XIASS 账号管理中删除 ${deletingEntry?.email || '该 Team 账号'} 吗？历史邮箱仍会保留，可继续接收验证码。`"
+      confirm-text="删除账号"
+      cancel-text="取消"
+      danger
+      @confirm="confirmDelete"
+      @cancel="deletingEntry = null"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Icon } from '@/components/icons'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { Account, AccountUsageInfo } from '@/types'
 
 interface TeamChildHistoryEntry {
@@ -121,6 +143,7 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   passwordLoadingAccountID?: number | null
   reauthorizingAccountID?: number | null
+  deletingAccountID?: number | null
   revealedPasswords?: Record<number, string>
 }>(), {
   activeMailboxEmail: '',
@@ -128,6 +151,7 @@ const props = withDefaults(defineProps<{
   loading: false,
   passwordLoadingAccountID: null,
   reauthorizingAccountID: null,
+  deletingAccountID: null,
   revealedPasswords: () => ({})
 })
 
@@ -137,9 +161,17 @@ const emit = defineEmits<{
   'toggle-password': [entry: TeamChildHistoryEntry]
   'copy-password': [password: string]
   reauthorize: [entry: TeamChildHistoryEntry]
+  'delete-account': [entry: TeamChildHistoryEntry]
 }>()
 
 const normalizedActiveEmail = computed(() => normalizeEmail(props.activeMailboxEmail))
+const deletingEntry = ref<TeamChildHistoryEntry | null>(null)
+
+function confirmDelete() {
+  if (!deletingEntry.value?.account) return
+  emit('delete-account', deletingEntry.value)
+  deletingEntry.value = null
+}
 
 function normalizeEmail(value: string): string {
   return String(value || '').trim().toLowerCase()

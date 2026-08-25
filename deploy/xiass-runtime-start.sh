@@ -12,6 +12,7 @@ PERSISTENCE_MODE="${PERSISTENCE_MODE:-}"
 BUILD_MODE="${BUILD_MODE:-}"
 CORE_READY_DELAY_SECONDS="${XIASS_CORE_READY_DELAY_SECONDS:-${TEAM_CHILD_BROWSER_START_DELAY_SECONDS:-5}}"
 TEAM_CHILD_BROWSER_ENABLED="${TEAM_CHILD_BROWSER_ENABLED:-}"
+SKIP_CORE_START="${XIASS_RUNTIME_SKIP_CORE_START:-false}"
 
 log() { printf '[XIASS] %s\n' "$*"; }
 warn() { printf '[XIASS] 警告：%s\n' "$*" >&2; }
@@ -214,7 +215,11 @@ main() {
     [[ "$CORE_READY_DELAY_SECONDS" =~ ^[0-9]+$ ]] || die "启动延迟必须是非负整数秒。"
     [ "$CORE_READY_DELAY_SECONDS" -le 120 ] || die "启动延迟不能超过 120 秒。"
     resolve_compose
-    start_core
+    if [ "$SKIP_CORE_START" = "true" ]; then
+        log "XIASS 主应用已经热切换并通过健康检查，保持数据库和缓存容器不变。"
+    else
+        start_core
+    fi
     start_browser_stack
 }
 

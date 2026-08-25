@@ -28,4 +28,16 @@ if grep -Fq '[ -n "$patch_file" ] && printf' "$repo_root/deploy/xiass-update.sh"
     exit 1
 fi
 
+prefetch_line=$(grep -n '^[[:space:]]*prefetch_target_app_image$' "$repo_root/deploy/xiass-update.sh" | tail -n 1 | cut -d: -f1)
+legacy_down_line=$(grep -n '^[[:space:]]*if ! compose down; then$' "$repo_root/deploy/xiass-update.sh" | tail -n 1 | cut -d: -f1)
+if [ -z "$prefetch_line" ] || [ -z "$legacy_down_line" ] || [ "$prefetch_line" -ge "$legacy_down_line" ]; then
+    echo "main image must be prefetched before the legacy stack is stopped" >&2
+    exit 1
+fi
+
+grep -Fq 'compose up -d --no-deps --no-build --force-recreate xiass-api' "$repo_root/deploy/xiass-update.sh" \
+    || { echo "canonical app hot-swap path is missing" >&2; exit 1; }
+grep -Fq 'XIASS_RUNTIME_SKIP_CORE_START="$skip_core_start"' "$repo_root/deploy/xiass-update.sh" \
+    || { echo "hot-swap must preserve the running database and cache" >&2; exit 1; }
+
 echo "Updater BusyBox compatibility and success-status test passed."

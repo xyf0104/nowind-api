@@ -71,7 +71,9 @@ describe('TeamChildMembersWorkspace', () => {
       global
     })
 
-    await wrapper.get('button[title="刷新成员信息"]').trigger('click')
+    const refreshButton = wrapper.get('button[aria-label="刷新成员页"]')
+    expect(refreshButton.text()).toContain('刷新成员页')
+    await refreshButton.trigger('click')
     const inspectButton = wrapper.findAll('button').find((button) => button.text().includes('识别席位邮箱'))
     expect(inspectButton).toBeDefined()
     await inspectButton!.trigger('click')

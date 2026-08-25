@@ -207,6 +207,20 @@
             {{ t('admin.accounts.clearActiveConcurrencyFilter') }}
           </button>
         </div>
+        <div
+          v-if="hasFocusedAccountFilter"
+          data-test="focused-account-filter"
+          class="mt-2 flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-700/40 dark:bg-primary-900/20 dark:text-primary-200"
+        >
+          <span>当前仅显示账号 #{{ params.account_id }}</span>
+          <button
+            type="button"
+            class="btn btn-secondary flex-shrink-0 px-2 py-1 text-xs"
+            @click="clearFocusedAccountFilter"
+          >
+            显示全部账号
+          </button>
+        </div>
       </template>
       <template #table>
         <AccountBulkActionsBar
@@ -214,7 +228,7 @@
           :total-results="pagination.total"
           :selecting-all="selectingAllResults"
           :all-results-selected="allResultsSelected"
-          :dynamic-filter="hasActiveConcurrencyFilter"
+          :dynamic-filter="hasDynamicAccountFilter"
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
@@ -632,9 +646,16 @@ const normalizeActiveConcurrencyGroup = (value: unknown): string => {
   return rawValue
 }
 
+const normalizeFocusedAccountID = (value: unknown): string => {
+  const rawValue = Array.isArray(value) ? value[0] : value
+  if (typeof rawValue !== 'string' || !/^[1-9]\d*$/.test(rawValue)) return ''
+  return rawValue
+}
+
 const initialActiveConcurrencyGroup = normalizeActiveConcurrencyGroup(
   route?.query.active_concurrency_group
 )
+const initialFocusedAccountID = normalizeFocusedAccountID(route?.query.account_id)
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -1007,6 +1028,7 @@ const {
     privacy_mode: '',
     group: '',
     active_concurrency_group: initialActiveConcurrencyGroup,
+    account_id: initialFocusedAccountID,
     search: '',
     include_scheduler_score: shouldIncludeSchedulerScore() ? '1' : '0',
     sort_by: sortState.sort_by,
@@ -1015,6 +1037,8 @@ const {
 })
 
 const hasActiveConcurrencyFilter = computed(() => Boolean(params.active_concurrency_group))
+const hasFocusedAccountFilter = computed(() => Boolean(params.account_id))
+const hasDynamicAccountFilter = computed(() => hasActiveConcurrencyFilter.value || hasFocusedAccountFilter.value)
 const activeConcurrencyGroupLabel = computed(() => {
   const groupID = Number(params.active_concurrency_group)
   return groups.value.find(group => group.id === groupID)?.name || `#${groupID}`
@@ -1100,6 +1124,15 @@ const clearActiveConcurrencyFilter = async () => {
   await reload()
 }
 
+const clearFocusedAccountFilter = async () => {
+  clearSelection()
+  params.account_id = ''
+  const query = { ...(route?.query ?? {}) }
+  delete query.account_id
+  if (router) await router.replace({ name: 'AdminAccounts', query })
+  await reload()
+}
+
 const selectPage = () => {
   selectCurrentPage()
 }
@@ -1154,6 +1187,16 @@ watch(
     if (activeGroup === params.active_concurrency_group) return
     clearSelection()
     params.active_concurrency_group = activeGroup
+    await reload()
+  }
+)
+
+watch(
+  () => normalizeFocusedAccountID(route?.query.account_id),
+  async (accountID) => {
+    if (accountID === params.account_id) return
+    clearSelection()
+    params.account_id = accountID
     await reload()
   }
 )
@@ -1398,6 +1441,7 @@ const refreshAccountsIncrementally = async () => {
         privacy_mode?: string
         group?: string
         active_concurrency_group?: string
+        account_id?: string
         search?: string
         sort_by?: string
         sort_order?: AccountSortOrder
@@ -1977,6 +2021,7 @@ const buildBulkEditFilterSnapshot = () => {
     group: typeof rawParams.group === 'string' ? rawParams.group : '',
     search: typeof rawParams.search === 'string' ? rawParams.search : '',
     privacy_mode: typeof rawParams.privacy_mode === 'string' ? rawParams.privacy_mode : '',
+    account_id: typeof rawParams.account_id === 'string' ? rawParams.account_id : '',
     sort_by: typeof rawParams.sort_by === 'string' ? rawParams.sort_by : '',
     sort_order: sortOrder
   }
@@ -2097,11 +2142,13 @@ const buildAccountQueryFilters = () => ({
   group: params.group || '',
   privacy_mode: params.privacy_mode || '',
   search: params.search || '',
+  account_id: params.account_id || '',
   sort_by: sortState.sort_by,
   sort_order: sortState.sort_order
 })
 const accountMatchesCurrentFilters = (account: Account) => {
   const filters = buildAccountQueryFilters()
+  if (params.account_id && account.id !== Number(params.account_id)) return false
   if (filters.platform && account.platform !== filters.platform) return false
   if (filters.type && account.type !== filters.type) return false
   if (filters.status) {

@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils'
 import TeamChildHistoryPanel from '../TeamChildHistoryPanel.vue'
 
 const IconStub = { template: '<span />' }
+const ConfirmDialogStub = { props: ['show'], template: '<div v-if="show" />' }
 
 function teamAccount(overrides: Record<string, unknown> = {}) {
   return {
@@ -40,7 +41,8 @@ describe('TeamChildHistoryPanel', () => {
       global: {
         stubs: {
           Icon: IconStub,
-          RouterLink: { template: '<a><slot /></a>' }
+          RouterLink: { template: '<a><slot /></a>' },
+          ConfirmDialog: ConfirmDialogStub
         }
       }
     })
@@ -62,10 +64,42 @@ describe('TeamChildHistoryPanel', () => {
           passwordAvailable: true
         }]
       },
-      global: { stubs: { Icon: IconStub, RouterLink: true } }
+      global: { stubs: { Icon: IconStub, RouterLink: true, ConfirmDialog: ConfirmDialogStub } }
     })
 
     expect(wrapper.text()).toContain('403 · 访问受限')
     expect(wrapper.find('[data-testid="team-history-reauthorize-317"]').exists()).toBe(false)
+  })
+
+  it('links to the exact account and confirms direct account deletion', async () => {
+    const account = teamAccount({ status: 'active', error_message: '', schedulable: true })
+    const wrapper = mount(TeamChildHistoryPanel, {
+      props: {
+        entries: [{
+          email: 'team1004@example.test',
+          account: account as never,
+          usage: null,
+          passwordAvailable: true
+        }]
+      },
+      global: {
+        stubs: {
+          Icon: IconStub,
+          RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' },
+          ConfirmDialog: {
+            props: ['show'],
+            template: '<button v-if="show" data-testid="confirm-team-delete" @click="$emit(\'confirm\')">confirm</button>'
+          }
+        }
+      }
+    })
+
+    expect(wrapper.getComponent({ name: 'RouterLink' }).props('to')).toEqual({
+      name: 'AdminAccounts',
+      query: { account_id: '317' }
+    })
+    await wrapper.get('[data-testid="team-history-delete-317"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-team-delete"]').trigger('click')
+    expect(wrapper.emitted('delete-account')?.[0]?.[0]).toMatchObject({ account })
   })
 })

@@ -27,8 +27,9 @@
           <span class="truncate">打开内嵌浏览器</span>
         </button>
         <button type="button" class="btn btn-secondary flex min-w-0 items-center justify-center gap-2 whitespace-nowrap" :disabled="loading" @click="emit('inspect')"><Icon name="mail" size="sm" :stroke-width="2" /><span class="truncate">识别席位邮箱</span></button>
-        <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" :disabled="loading" title="刷新成员信息" aria-label="刷新成员信息" @click="emit('refresh')">
+        <button type="button" class="btn btn-secondary flex min-w-0 items-center justify-center gap-2 whitespace-nowrap" :disabled="loading" title="刷新成员页并切换到成员标签" aria-label="刷新成员页" @click="emit('refresh')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
+          <span class="truncate">刷新成员页</span>
         </button>
         <button v-if="!embedded" type="button" class="btn btn-primary col-span-2 flex min-w-0 items-center justify-center gap-2 whitespace-nowrap sm:col-span-1" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后准备授权链接' : '确认替换已选普通成员并准备授权链接') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
           <Icon :name="workflowBusy ? 'refresh' : 'play'" size="sm" :class="workflowBusy ? 'animate-spin' : ''" :stroke-width="2" />
@@ -198,7 +199,7 @@ function submitRemove() { if (!removingMember.value || !canManageMember(removing
   }
 
   .team-child-members-workspace-embedded .team-child-members-actions {
-    grid-template-columns: minmax(0, 1fr) 2.25rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .team-child-members-workspace-embedded .team-child-members-actions > span {
@@ -209,9 +210,6 @@ function submitRemove() { if (!removingMember.value || !canManageMember(removing
     width: 100%;
   }
 
-  .team-child-members-workspace-embedded .team-child-members-actions > button[aria-label="刷新成员信息"] {
-    width: 2.25rem;
-  }
 }
 
 @media (min-width: 1280px) {

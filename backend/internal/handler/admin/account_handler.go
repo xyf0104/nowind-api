@@ -542,6 +542,16 @@ func (h *AccountHandler) List(c *gin.Context) {
 	// 调度分需要跨候选池批量打分并读取负载，默认列表不计算；只有前端列可见时才显式开启。
 	includeSchedulerScore := parseBoolQueryWithDefault(c.Query("include_scheduler_score"), false)
 
+	var focusedAccountID int64
+	if rawAccountID := strings.TrimSpace(c.Query("account_id")); rawAccountID != "" {
+		parsedAccountID, parseErr := strconv.ParseInt(rawAccountID, 10, 64)
+		if parseErr != nil || parsedAccountID <= 0 {
+			response.ErrorFrom(c, infraerrors.BadRequest("INVALID_ACCOUNT_FILTER", "invalid account filter"))
+			return
+		}
+		focusedAccountID = parsedAccountID
+	}
+
 	var groupID int64
 	groupFilterSet := false
 	if groupIDStr := c.Query("group"); groupIDStr != "" {
@@ -566,6 +576,10 @@ func (h *AccountHandler) List(c *gin.Context) {
 	var groupConcurrencyCounts map[int64]int
 	var concurrencySnapshotAt time.Time
 	if rawActiveGroup := strings.TrimSpace(c.Query("active_concurrency_group")); rawActiveGroup != "" {
+		if focusedAccountID > 0 {
+			response.ErrorFrom(c, infraerrors.BadRequest("CONFLICTING_ACCOUNT_FILTERS", "account and active concurrency group filters cannot be combined"))
+			return
+		}
 		parsedActiveGroup, parseErr := strconv.ParseInt(rawActiveGroup, 10, 64)
 		if parseErr != nil || parsedActiveGroup <= 0 {
 			response.ErrorFrom(c, infraerrors.BadRequest("INVALID_CONCURRENCY_GROUP_FILTER", "invalid active concurrency group filter"))
@@ -598,7 +612,14 @@ func (h *AccountHandler) List(c *gin.Context) {
 	var accounts []service.Account
 	var total int64
 	var err error
-	if activeConcurrencyGroupID > 0 {
+	if focusedAccountID > 0 {
+		lister, ok := h.adminService.(activeConcurrencyAccountLister)
+		if !ok {
+			response.ErrorFrom(c, infraerrors.ServiceUnavailable("ACCOUNT_FILTER_UNAVAILABLE", "account filtering is temporarily unavailable"))
+			return
+		}
+		accounts, total, err = lister.ListAccountsByIDs(c.Request.Context(), page, pageSize, []int64{focusedAccountID}, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	} else if activeConcurrencyGroupID > 0 {
 		lister, ok := h.adminService.(activeConcurrencyAccountLister)
 		if !ok {
 			response.ErrorFrom(c, infraerrors.ServiceUnavailable("CONCURRENCY_SNAPSHOT_UNAVAILABLE", "group concurrency account filtering is temporarily unavailable"))
@@ -810,7 +831,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	if !concurrencySnapshotAt.IsZero() {
 		c.Header("X-Concurrency-Snapshot-At", concurrencySnapshotAt.Format(time.RFC3339))
 	}
-	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, activeConcurrencyGroupID, groupConcurrencyCounts, lite)
+	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, focusedAccountID, activeConcurrencyGroupID, groupConcurrencyCounts, lite)
 	if etag != "" {
 		c.Header("ETag", etag)
 		c.Header("Vary", "If-None-Match")
@@ -828,6 +849,7 @@ func buildAccountsListETag(
 	total int64,
 	page, pageSize int,
 	platform, accountType, status, search string,
+	focusedAccountID int64,
 	activeConcurrencyGroupID int64,
 	groupConcurrencyCounts map[int64]int,
 	lite bool,
@@ -840,6 +862,7 @@ func buildAccountsListETag(
 		AccountType              string                   `json:"type"`
 		Status                   string                   `json:"status"`
 		Search                   string                   `json:"search"`
+		FocusedAccountID         int64                    `json:"account_id"`
 		ActiveConcurrencyGroupID int64                    `json:"active_concurrency_group"`
 		GroupConcurrencyCounts   map[int64]int            `json:"group_current_concurrency"`
 		Lite                     bool                     `json:"lite"`
@@ -852,6 +875,7 @@ func buildAccountsListETag(
 		AccountType:              accountType,
 		Status:                   status,
 		Search:                   search,
+		FocusedAccountID:         focusedAccountID,
 		ActiveConcurrencyGroupID: activeConcurrencyGroupID,
 		GroupConcurrencyCounts:   groupConcurrencyCounts,
 		Lite:                     lite,

@@ -10,7 +10,9 @@ const {
   getUpstreamBillingProbeSettings,
   getAllProxies,
   getAllGroups,
-  getConcurrencyStats
+  getConcurrencyStats,
+  routeState,
+  routerReplace
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
@@ -18,8 +20,19 @@ const {
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
-  getConcurrencyStats: vi.fn()
+  getConcurrencyStats: vi.fn(),
+  routeState: { query: {} as Record<string, string> },
+  routerReplace: vi.fn()
 }))
+
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return {
+    ...actual,
+    useRoute: () => routeState,
+    useRouter: () => ({ replace: routerReplace, push: vi.fn() })
+  }
+})
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
@@ -35,7 +48,8 @@ vi.mock('@/api/admin', () => ({
     },
     ops: { getConcurrencyStats },
     proxies: { getAll: getAllProxies },
-    groups: { getAll: getAllGroups }
+    groups: { getAll: getAllGroups },
+    settings: { getSettings: vi.fn().mockResolvedValue({ team_child_creation_enabled: true }) }
   }
 }))
 
@@ -164,6 +178,8 @@ describe('admin AccountsView initial data synchronization', () => {
     getAllProxies.mockReset()
     getAllGroups.mockReset()
     getConcurrencyStats.mockReset()
+    routerReplace.mockReset()
+    routeState.query = {}
 
     listAccounts.mockImplementation(async (_page: number, _pageSize: number, filters: { lite?: string }) => (
       paginated(filters?.lite === '1' ? liteAccount : completeAccount)
@@ -232,6 +248,20 @@ describe('admin AccountsView initial data synchronization', () => {
     expect(tableAccount(wrapper)).toMatchObject({ current_concurrency: 4 })
     expect(listAccounts).toHaveBeenCalledTimes(1)
     expect(getConcurrencyStats).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('opens an exact account-only view from the Team history link', async () => {
+    routeState.query = { account_id: '317' }
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(listAccounts.mock.calls[0]?.[2]).toMatchObject({ account_id: '317' })
+    expect(wrapper.get('[data-test="focused-account-filter"]').text()).toContain('账号 #317')
+
+    await wrapper.get('[data-test="focused-account-filter"] button').trigger('click')
+    await flushPromises()
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'AdminAccounts', query: {} })
     wrapper.unmount()
   })
 })

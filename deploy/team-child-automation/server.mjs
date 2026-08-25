@@ -38,10 +38,12 @@ let browserPromise
 let operation = Promise.resolve()
 let activeWorkflowID = ''
 const workflows = new Map()
-// All automated Team member navigation stays in one dedicated browser tab.
-// Route changes (Members -> Pending invites) and the official OAuth navigation
-// are serialized by the operation queue and stay in this same managed tab.
-let managedBrowserPage
+// Member administration and OpenAI OAuth have separate, persistent tabs. The
+// member tab keeps the ChatGPT administrator session and must never be
+// navigated to auth.openai.com; the OAuth tab may move through login,
+// verification, consent, and localhost callback pages independently.
+let managedMembersPage
+let managedOAuthPage
 
 function workflowStateEncryptionKey() {
   if (!serviceToken) return undefined
@@ -117,7 +119,7 @@ function restoreWorkflowState() {
     }
     const restoredActiveID = String(decoded.active_workflow_id || '')
     const restoredActive = workflows.get(restoredActiveID)
-    if (restoredActive && ['running', 'manual_required', 'callback_ready', 'failed'].includes(restoredActive.status)) {
+    if (restoredActive && ['running', 'manual_required', 'callback_ready', 'failed', 'paused'].includes(restoredActive.status)) {
       activeWorkflowID = restoredActiveID
     }
     persistWorkflowState()
@@ -239,27 +241,35 @@ function isTeamMembersPage(page) {
   }
 }
 
-function reusableTeamPage(context, { allowNonMembers = false } = {}) {
-  if (managedBrowserPage && !managedBrowserPage.isClosed() && (allowNonMembers || isTeamMembersPage(managedBrowserPage))) return managedBrowserPage
+function reusableTeamPage(context) {
+  if (managedMembersPage && !managedMembersPage.isClosed() && isTeamMembersPage(managedMembersPage)) return managedMembersPage
   return context.pages().find((page) => isTeamMembersPage(page) && !page.isClosed())
+}
+
+function isOpenAIWorkflowPage(page) {
+  try {
+    const parsed = new URL(page.url())
+    const hostname = parsed.hostname.toLowerCase()
+    return hostname === 'auth.openai.com' || hostname === 'openai.com' || hostname === 'localhost'
+  } catch {
+    return false
+  }
+}
+
+function reusableOAuthPage(context) {
+  if (managedOAuthPage && !managedOAuthPage.isClosed() && !isTeamMembersPage(managedOAuthPage)) return managedOAuthPage
+  return context.pages().find((page) => !page.isClosed() && isOpenAIWorkflowPage(page))
 }
 
 async function membersPage({ forceRefresh = false, targetURL = membersURL, pending = false } = {}) {
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
-  // Never reuse an arbitrary visible tab. Only the single dedicated Members
-  // page owned by this service is eligible; OAuth/CAPTCHA/manual tabs remain
-  // untouched until this workflow explicitly takes over that same page.
+  // Never reuse an arbitrary visible tab. Only the dedicated Members page is
+  // eligible; OAuth, CAPTCHA, callback, and operator tabs remain untouched.
   let active = reusableTeamPage(context)
-  if (!active && managedBrowserPage && !managedBrowserPage.isClosed()) {
-    if (!forceRefresh) throw new Error('服务器浏览器当前正在 OpenAI 授权页，成员检查不会打断授权流程')
-    // An explicit reset/refresh is allowed to return the dedicated workflow tab
-    // from OAuth to Members. Ordinary background reads still never interrupt it.
-    active = managedBrowserPage
-  }
   if (!active) active = await context.newPage()
-  managedBrowserPage = active
+  managedMembersPage = active
   let cdpSession
   try {
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
@@ -269,12 +279,13 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
     // another user-visible tab.
     if (!active.isClosed()) throw error
     active = await context.newPage()
-    managedBrowserPage = active
+    managedMembersPage = active
     cdpSession = await reloadMemberPage(active, targetURL, forceRefresh)
   }
   try {
     if (pending) await waitForPendingInvitesPageReady(active, { allowRecoveryNavigation: forceRefresh })
     else await waitForMemberPageReady(active)
+    if (forceRefresh) await active.bringToFront().catch(() => undefined)
     return active
   } finally {
     // Keep cache disabled through the SPA's first render/API requests, then
@@ -292,46 +303,35 @@ async function pendingInvitesPage({ forceRefresh = false } = {}) {
   return current
 }
 
-// Keep the official OAuth handoff in the same persistent Chromium tab that
-// the operator sees in the XIASS iframe. This deliberately navigates an
-// existing page instead of calling context.newPage(), so clicking the XIASS
-// button cannot leak the flow into a local browser or create a second tab.
+// Keep the official OAuth handoff in one persistent server-side OAuth tab.
+// The ChatGPT Members tab is deliberately excluded so every workflow can
+// return to member administration without logging in or reconstructing it.
 async function navigatePersistentBrowser(value) {
   const targetURL = validateOpenAIAuthURL(value)
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
 
-  let active = managedBrowserPage && !managedBrowserPage.isClosed()
-    ? managedBrowserPage
-    : context.pages().find((page) => !page.isClosed())
-  if (!active) throw new Error('服务器浏览器没有可复用的现有标签页')
-  managedBrowserPage = active
+  let active = reusableOAuthPage(context)
+  if (!active) active = await context.newPage()
+  managedOAuthPage = active
 
   await active.goto(targetURL, {
     waitUntil: 'domcontentloaded',
     timeout: operationTimeout
   })
+  await active.bringToFront().catch(() => undefined)
   return { ok: true, url: active.url() }
 }
 
 async function workflowBrowserPage(workflow) {
-  if (managedBrowserPage && !managedBrowserPage.isClosed()) return managedBrowserPage
+  if (managedOAuthPage && !managedOAuthPage.isClosed() && !isTeamMembersPage(managedOAuthPage)) return managedOAuthPage
   const connected = await browser()
   const context = connected.contexts()[0]
   if (!context) throw new Error('Chromium 尚未创建浏览器上下文')
-  const pages = context.pages().filter((page) => !page.isClosed())
-  const oauthPage = pages.find((page) => {
-    try {
-      const parsed = new URL(page.url())
-      return parsed.hostname === 'auth.openai.com' || parsed.hostname === 'openai.com' || parsed.hostname === 'localhost'
-    } catch {
-      return false
-    }
-  })
-  const active = oauthPage || pages.find((page) => isTeamMembersPage(page))
+  const active = reusableOAuthPage(context)
   if (!active) throw new Error('服务器浏览器没有可恢复的工作流标签页')
-  managedBrowserPage = active
+  managedOAuthPage = active
   return active
 }
 
@@ -1341,6 +1341,7 @@ async function openAIPhoneRecoveryState(current) {
   if (emailInput) return 'email'
 
   const body = await oauthBody(current)
+  if (/invalid authorization step|invalid_auth_step|授权步骤无效/i.test(body)) return 'invalid_auth_step'
   const codeInputs = await verificationInputs(current)
   if (codeInputs.length > 0 && /phone|text message|sms|mobile|短信|手机/i.test(body)) return 'sms_code'
   if (codeInputs.length > 0 && /email|inbox|邮箱|验证邮件/i.test(body)) return 'email_code'
@@ -1361,6 +1362,16 @@ async function recoverOpenAIPhoneEntry(current, workflow) {
     if (state === 'email_code') return 'email_code'
     if (state === 'callback' || state === 'workspace') {
       throw new Error('OpenAI 重新授权已跳过手机号页面，请在内嵌浏览器核对后继续')
+    }
+    if (state === 'invalid_auth_step') {
+      if (restartedOAuth) {
+        throw new Error('OpenAI 授权步骤已失效，请重新生成 XIASS 官方 OAuth 链接后继续')
+      }
+      restartedOAuth = true
+      backAttempts = 0
+      await current.goto(workflow.authURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
+      await sleep(500)
+      continue
     }
     if (state === 'password') {
       if (!password) throw new Error('重新进入手机号步骤需要登录密码，但本次工作流未保存密码')
@@ -1412,6 +1423,9 @@ async function submitPhoneOnOpenAI(current, rawPhone) {
 
   const verificationState = await waitForOAuthPage('OpenAI 未进入短信验证码页面', async () => {
     const body = await oauthBody(current)
+    if (/invalid authorization step|invalid_auth_step|授权步骤无效/i.test(body)) {
+      return 'invalid_auth_step'
+    }
     if (/phone.*(?:invalid|unavailable|used too many)|too many.*phone|无法使用.*号码|手机号.*(?:不可用|次数过多)/i.test(body)) {
       return 'phone_rejected'
     }
@@ -1420,6 +1434,23 @@ async function submitPhoneOnOpenAI(current, rawPhone) {
   })
   if (verificationState === 'phone_rejected') {
     throw new Error('当前手机号不可用或使用次数过多，请确认换号后继续')
+  }
+  if (verificationState === 'invalid_auth_step') {
+    throw new Error('OpenAI 授权步骤已失效，将从 XIASS 官方 OAuth 链接重新进入手机号步骤')
+  }
+}
+
+async function submitPhoneWithOAuthRecovery(current, workflow, phone) {
+  try {
+    await submitPhoneOnOpenAI(current, phone)
+    return 'submitted'
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '')
+    if (!/授权步骤已失效|invalid_auth_step|invalid authorization step/i.test(message)) throw error
+    const recoveryState = await recoverOpenAIPhoneEntry(current, workflow)
+    if (recoveryState === 'email_code') return 'email_code'
+    await submitPhoneOnOpenAI(current, phone)
+    return 'submitted'
   }
 }
 
@@ -1510,9 +1541,9 @@ async function captureWorkflowCallback(current, workflow) {
 }
 
 async function runOAuthRegistrationUntilMailbox(workflow) {
-  setWorkflowNode(workflow, 'oauth', 'running', '正在当前服务器浏览器标签页打开官方 PKCE URL')
+  setWorkflowNode(workflow, 'oauth', 'running', '正在独立 OAuth 标签页打开官方 PKCE URL')
   await navigatePersistentBrowser(workflow.authURL)
-  const current = managedBrowserPage
+  const current = managedOAuthPage
   if (!current || current.isClosed()) throw new Error('服务器浏览器授权标签页不可用')
   completeWorkflowNode(workflow, 'oauth', 'XIASS 官方 OAuth 页面已打开')
 
@@ -1570,9 +1601,9 @@ async function reauthorizationPostPasswordState(current, workflow) {
 }
 
 async function runOAuthReauthorization(workflow) {
-  setWorkflowNode(workflow, 'oauth', 'running', '正在当前服务器浏览器标签页打开官方 PKCE URL')
+  setWorkflowNode(workflow, 'oauth', 'running', '正在独立 OAuth 标签页打开官方 PKCE URL')
   await navigatePersistentBrowser(workflow.authURL)
-  const current = managedBrowserPage
+  const current = managedOAuthPage
   if (!current || current.isClosed()) throw new Error('服务器浏览器授权标签页不可用')
   completeWorkflowNode(workflow, 'oauth', 'XIASS 官方 OAuth 页面已打开')
 
@@ -1655,7 +1686,15 @@ async function continueWorkflowWithPhone(workflow, phone, replacing = false) {
     completeWorkflowNode(workflow, 'sms_confirm', 'XIASS Team 自动化已领取手机号')
     setWorkflowNode(workflow, 'phone_submit', 'running', '正在填入完整号码并选择 Text message')
   }
-  await submitPhoneOnOpenAI(current, phone)
+  const submissionState = await submitPhoneWithOAuthRecovery(current, workflow, phone)
+  if (submissionState === 'email_code') {
+    completeWorkflowNode(workflow, 'mail', '重新进入官方 OAuth 后已发送新的邮箱验证码')
+    setWorkflowNode(workflow, 'mailbox', 'waiting', '正在轮询新的 OpenAI 邮箱验证码')
+    workflow.status = 'manual_required'
+    activeWorkflowID = workflow.id
+    persistWorkflowState()
+    return
+  }
   workflow.lastSubmittedPhone = phone
   completeWorkflowNode(workflow, 'phone_submit', replacing
     ? '新号码已提交并选择 Text message'
@@ -1869,8 +1908,6 @@ async function resumeFineWorkflowFromNextNode(workflow, requestedNextKey = '') {
     nextKey = workflow.nodes[failedIndex + 1]?.key || 'import'
   }
 
-  const current = await workflowBrowserPage(workflow)
-
   try {
     // Fine-node recovery must preserve the complete 1-3 prefix. If reading,
     // removing, or inviting failed and the operator fixed that page manually,
@@ -1901,6 +1938,7 @@ async function resumeFineWorkflowFromNextNode(workflow, requestedNextKey = '') {
       await runOAuthRegistrationUntilMailbox(workflow)
       return
     }
+    const current = await workflowBrowserPage(workflow)
     if (nextKey === 'signup') {
       setWorkflowNode(workflow, 'signup', 'running', '正在选择 Sign up')
       await selectSignUp(current)
@@ -2117,10 +2155,10 @@ async function restartOAuthWorkflow(id, value, oauthSessionIDValue) {
 async function executeWorkflow(workflow) {
   try {
     setWorkflowNode(workflow, 'members', 'running', '正在刷新并读取实时成员页面')
-    // A workflow reads the live managed tab and waits for real member rows. A
-    // reload is reserved for an explicit refresh or a failed operation retry;
-    // normal SPA reads must not reset the page while its data is arriving.
-    const initial = await listMembers({ forceRefresh: false, requireEmails: true })
+    // Every new one-click workflow starts from a hard refresh of the dedicated
+    // Members tab. This re-establishes the native member/invite UI without
+    // touching the separate OAuth tab.
+    const initial = await listMembers({ forceRefresh: true, requireEmails: true })
     const selected = initial.members.find((member) => normalizeEmail(member.email) === workflow.seatEmail)
 
     if (workflow.seatAlreadyRemoved) {
@@ -2335,7 +2373,14 @@ async function continueWorkflow(id) {
 }
 
 async function recoverWorkflowCallback(workflow) {
-  const current = await workflowBrowserPage(workflow)
+  let current
+  try {
+    current = await workflowBrowserPage(workflow)
+  } catch {
+    // A member-page failure can occur before an OAuth tab exists. That is a
+    // normal fine-node recovery case, not a callback-recovery failure.
+    return false
+  }
   const callbackURL = await workflowCallbackURLFromPage(current, workflow)
   if (!callbackURL) return false
 
@@ -2395,7 +2440,7 @@ function pauseWorkflowState(workflow) {
   workflow.pauseRequested = true
   workflow.pausedFromStatus = workflow.status
   workflow.pausedNodeKey = workflow.currentNodeKey || workflow.nodes.find((node) => ['running', 'waiting'].includes(node.status))?.key || ''
-  if (workflow.status === 'manual_required') workflow.status = 'paused'
+  workflow.status = 'paused'
   persistWorkflowState()
   return workflow
 }
@@ -2623,6 +2668,7 @@ export {
   pauseWorkflowState,
   pendingInviteEmailsFromTexts,
   recoverOpenAIPhoneEntry,
+  reusableOAuthPage,
   resumePausedWorkflow,
   setWorkflowNode,
   submitInviteDialog,

@@ -58,7 +58,7 @@
           <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">服务器自动执行当前步骤；页面结构变化时可手动接入处理后继续。</p>
         </div>
         <div class="team-oauth-operation-actions">
-          <button v-if="showOneClick && workflow.status !== 'paused'" type="button" data-testid="team-one-click-authorize" class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap" :disabled="oneClickDisabled" @click="emit('one-click')">
+          <button v-if="showOneClick && workflow.status !== 'paused' && (preflight || automationEnabled || !['running', 'manual_required'].includes(workflow.status))" type="button" data-testid="team-one-click-authorize" class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap" :disabled="oneClickDisabled" @click="emit('one-click')">
             <Icon name="play" size="sm" :stroke-width="2" />
             <span>{{ oneClickLabel }}</span>
           </button>
@@ -67,7 +67,7 @@
             <span>手动接入</span>
           </button>
           <button
-            v-if="!preflight && ['running', 'manual_required'].includes(workflow.status)"
+            v-if="!preflight && automationEnabled && ['running', 'manual_required'].includes(workflow.status)"
             type="button"
             data-testid="team-pause-workflow"
             class="btn btn-secondary flex items-center justify-center gap-2 whitespace-nowrap"
@@ -78,7 +78,7 @@
             <span>{{ workflow.pause_requested ? '正在暂停' : '暂停自动化' }}</span>
           </button>
           <button
-            v-if="!preflight && workflow.status === 'paused'"
+            v-if="!preflight && (workflow.status === 'paused' || (!automationEnabled && ['running', 'manual_required'].includes(workflow.status)))"
             type="button"
             data-testid="team-resume-workflow"
             class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap"
@@ -132,7 +132,7 @@
             </button>
           </div>
           <code class="mt-2 block max-h-16 overflow-auto break-all rounded-md border border-primary-100 bg-white px-2.5 py-2 text-[11px] leading-4 text-gray-700 dark:border-primary-900/50 dark:bg-dark-900 dark:text-gray-300">{{ authUrl }}</code>
-          <p class="mt-2 text-xs leading-5 text-primary-700 dark:text-primary-300">XIASS 服务器浏览器会在当前标签页打开官方 PKCE 链接；上方只显示当前节点，节点完成后自动切换到下一项。</p>
+          <p class="mt-2 text-xs leading-5 text-primary-700 dark:text-primary-300">XIASS 服务器浏览器会在独立 OAuth 标签页打开官方 PKCE 链接，并保留成员管理标签页；上方只显示当前节点，节点完成后自动切换到下一项。</p>
         </div>
 
         <div v-if="workflow.error" class="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300">
@@ -353,6 +353,7 @@ const props = withDefaults(defineProps<{
   browserError?: string
   browserControlConflict?: boolean
   smsCancelSignal?: number
+  automationEnabled?: boolean
 }>(), {
   mailboxEmail: '',
   preflight: false,
@@ -378,7 +379,8 @@ const props = withDefaults(defineProps<{
   browserLoading: false,
   browserError: '',
   browserControlConflict: false,
-  smsCancelSignal: 0
+  smsCancelSignal: 0,
+  automationEnabled: false
 })
 
 const emit = defineEmits<{
@@ -409,7 +411,8 @@ const emit = defineEmits<{
 }>()
 
 const receiverNodes = new Set(['sms_confirm', 'phone_submit', 'sms_poll', 'sms_code'])
-const receiverActive = computed(() => !props.workflow.pause_requested
+const receiverActive = computed(() => props.automationEnabled
+  && !props.workflow.pause_requested
   && !['callback_ready', 'completed', 'paused', 'cancelled'].includes(props.workflow.status)
   && receiverNodes.has(props.workflow.current_node || ''))
 const replacementRequired = computed(() => props.workflow.status === 'failed'

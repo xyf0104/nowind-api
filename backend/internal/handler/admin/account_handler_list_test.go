@@ -64,6 +64,39 @@ func TestAccountHandlerListDefaultsToRecentAccountActivity(t *testing.T) {
 	require.Equal(t, "desc", adminSvc.lastListAccounts.sortOrder)
 }
 
+func TestAccountHandlerListFiltersOneExactAccountID(t *testing.T) {
+	router, adminSvc := setupAccountListRouter()
+	adminSvc.accounts = []service.Account{
+		{ID: 17, Name: "target", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth},
+		{ID: 18, Name: "other", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?page=1&page_size=20&account_id=17", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []int64{17}, adminSvc.lastListAccounts.accountIDs)
+	var payload struct {
+		Data struct {
+			Items []struct {
+				ID int64 `json:"id"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Len(t, payload.Data.Items, 1)
+	require.Equal(t, []int64{17}, []int64{payload.Data.Items[0].ID})
+}
+
+func TestAccountHandlerListRejectsInvalidExactAccountID(t *testing.T) {
+	router, _ := setupAccountListRouter()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?account_id=0", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestAccountHandlerListLiteUsesStrictCredentialFreeAllowlist(t *testing.T) {
 	router, adminSvc := setupAccountListRouter()
 	notes := "visible note"

@@ -40,7 +40,8 @@ const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } 
   accountsAPI: {
     list: vi.fn(),
     getUsage: vi.fn(),
-    applyOAuthCredentials: vi.fn()
+    applyOAuthCredentials: vi.fn(),
+    delete: vi.fn()
   },
   groupsAPI: { getAll: vi.fn() },
   nativeGenerateAuthUrl: vi.fn(),
@@ -304,13 +305,19 @@ describe('TeamChildCreationView', () => {
   })
 
   it('restores an active workflow after the page is reopened', async () => {
-    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue(currentWorkflow({ current_node: 'mailbox' }))
+    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue(currentWorkflow({ current_node: 'sms_confirm' }))
 
     const wrapper = mountView()
     await flushPromises()
 
     expect(teamChildAPI.getActiveTeamChildWorkflow).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('等待当前节点')
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
+    expect(wrapper.find('[data-testid="team-pause-workflow"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="team-resume-workflow"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.continueTeamChildWorkflow).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('true')
     wrapper.unmount()
   })
 
@@ -349,6 +356,55 @@ describe('TeamChildCreationView', () => {
     expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.reauthorizeTeamChildAccount).toHaveBeenCalledWith(317, testAuthURL, 'oauth-session')
     expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
+    expect(window.location.search).toBe('')
+    wrapper.unmount()
+  })
+
+  it('offers a fresh XIASS OAuth session when OpenAI invalidates the current authorization step', async () => {
+    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue(currentWorkflow({
+      status: 'failed',
+      manual_required: false,
+      current_node: 'phone_submit',
+      error: 'OpenAI invalid_auth_step：授权步骤已失效'
+    }))
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="team-reauthorize"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('deletes a Team account directly while retaining its historical mailbox', async () => {
+    const account = {
+      id: 317,
+      name: 'team1004@example.test',
+      platform: 'openai',
+      type: 'oauth',
+      status: 'active',
+      schedulable: true,
+      proxy_id: null,
+      concurrency: 10,
+      priority: 1,
+      group_ids: [],
+      credentials_status: { has_xiass_team_child_password_encrypted: true },
+      extra: { xiass_team_child: true, xiass_team_child_email: 'team1004@example.test' }
+    }
+    accountsAPI.list
+      .mockResolvedValueOnce({ items: [account], total: 1 })
+      .mockResolvedValue({ items: [], total: 0 })
+    accountsAPI.delete.mockResolvedValue({ message: 'deleted' })
+    teamChildAPI.listMailboxes.mockResolvedValue(['team1004@example.test'])
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="team-history-delete-317"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    expect(accountsAPI.delete).toHaveBeenCalledWith(317)
+    expect(teamChildAPI.listMailboxes).toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -388,6 +444,10 @@ describe('TeamChildCreationView', () => {
 
     await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
+    expect(teamChildAPI.refreshTeamChildMembers).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.refreshTeamChildMembers.mock.invocationCallOrder[0]).toBeLessThan(
+      teamChildAPI.createMailbox.mock.invocationCallOrder[0]
+    )
     expect(teamChildAPI.createMailbox).toHaveBeenCalledTimes(1)
     expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
@@ -434,11 +494,13 @@ describe('TeamChildCreationView', () => {
   })
 
   it('always starts the full workflow when the live page shows only protected members', async () => {
-    teamChildAPI.listTeamChildMembers.mockResolvedValue({
+    const protectedMembers = {
       ready: true,
       pending_invites: 1,
       members: [{ id: 'owner@example.test', email: 'owner@example.test', role: 'owner', protected: true }]
-    })
+    }
+    teamChildAPI.listTeamChildMembers.mockResolvedValue(protectedMembers)
+    teamChildAPI.refreshTeamChildMembers.mockResolvedValue(protectedMembers)
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
@@ -479,13 +541,15 @@ describe('TeamChildCreationView', () => {
   })
 
   it('continues after a manually released seat only when the live members are protected', async () => {
-    teamChildAPI.listTeamChildMembers.mockResolvedValue({
+    const protectedMembers = {
       ready: true,
       members: [
         { id: 'owner@example.test', email: 'owner@example.test', role: 'owner', protected: true },
         { id: 'admin@example.test', email: 'admin@example.test', role: 'admin', protected: true }
       ]
-    })
+    }
+    teamChildAPI.listTeamChildMembers.mockResolvedValue(protectedMembers)
+    teamChildAPI.refreshTeamChildMembers.mockResolvedValue(protectedMembers)
     const wrapper = mountView()
     await flushPromises()
 
@@ -515,7 +579,8 @@ describe('TeamChildCreationView', () => {
 
     expect(teamChildAPI.getActiveMailbox).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.createMailbox).not.toHaveBeenCalled()
-    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
+    expect(nativeGenerateAuthUrl).not.toHaveBeenCalled()
+    expect(teamChildAPI.pollMailboxCode).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('restored@example.test')
     wrapper.unmount()
   })

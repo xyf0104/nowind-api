@@ -34,6 +34,8 @@ LOCK_HELD=false
 CREATED_UPDATE_REMOTE=false
 RUNTIME_START_SCRIPT=""
 TEAM_CHILD_BROWSER_PROFILE_SOURCE=""
+TARGET_APP_IMAGE="ghcr.io/xyf0104/xiass-api:latest"
+TARGET_APP_IMAGE_PREFETCHED=false
 
 log() { printf '[XIASS] %s\n' "$*"; }
 die() { printf '[XIASS] 错误：%s\n' "$*" >&2; exit 1; }
@@ -406,6 +408,7 @@ stop_known_runtime_containers() {
 
 start_runtime_stack() {
     local core_ready="${1:-false}"
+    local skip_core_start="${2:-false}"
     RUNTIME_START_SCRIPT="$DEPLOY_DIR/xiass-runtime-start.sh"
     if [ -x "$RUNTIME_START_SCRIPT" ]; then
         INSTALL_DIR="$INSTALL_DIR" \
@@ -415,6 +418,7 @@ start_runtime_stack() {
         PERSISTENCE_MODE="$PERSISTENCE_MODE" \
         BUILD_MODE="$(read_env_compat XIASS_BUILD_MODE NOWIND_BUILD_MODE)" \
         XIASS_RUNTIME_CORE_READY="$core_ready" \
+        XIASS_RUNTIME_SKIP_CORE_START="$skip_core_start" \
         bash "$RUNTIME_START_SCRIPT"
         return 0
     fi
@@ -423,6 +427,37 @@ start_runtime_stack() {
     # their recovery path functional; the next successful update installs it.
     log "旧版本没有两阶段启动脚本，使用兼容 Compose 恢复路径。"
     compose up -d --no-build
+    wait_for_health
+}
+
+deployment_build_mode() {
+    local mode
+    mode=$(read_env_compat XIASS_BUILD_MODE NOWIND_BUILD_MODE)
+    printf '%s\n' "${mode:-image}"
+}
+
+prefetch_target_app_image() {
+    if [ "$(deployment_build_mode)" = "source" ]; then
+        log "源码构建模式跳过主镜像预拉取。"
+        return 0
+    fi
+
+    log "旧服务保持在线，预拉取 XIASS 主应用镜像..."
+    docker pull "$TARGET_APP_IMAGE" \
+        || die "无法预拉取 XIASS 主应用镜像；旧容器保持运行，未开始切换。"
+    TARGET_APP_IMAGE_PREFETCHED=true
+}
+
+can_hot_swap_canonical_app() {
+    [ "$APP_CONTAINER" = "xiass-api" ] \
+        && [ "$(deployment_build_mode)" != "source" ] \
+        && [ "$TARGET_APP_IMAGE_PREFETCHED" = true ]
+}
+
+hot_swap_canonical_app() {
+    log "仅热切换 XIASS 应用容器；PostgreSQL、Redis 和持久化数据保持在线..."
+    compose up -d --no-deps --no-build --force-recreate xiass-api \
+        || return 1
     wait_for_health
 }
 
@@ -591,25 +626,56 @@ main() {
     log "同步已验证的 XIASS API 部署文件..."
     capture_previous_image
     capture_team_child_browser_profile
+    prefetch_target_app_image
 
-    log "停止旧栈以切换到新版本（不会删除卷或数据）..."
     UPDATE_STARTED=true
-    if ! compose down; then
-        log "Compose 未能完整停止旧栈，改为按已知容器名安全停止。"
+    if can_hot_swap_canonical_app; then
+        git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"
+        ensure_team_child_runtime_config
+        migrate_team_child_browser_profile
+        COMPOSE_FILES=()
+        ACTUAL_COMPOSE_FILES=()
+        select_compose_file true
+        init_compose
+
+        if ! hot_swap_canonical_app; then
+            compose ps || true
+            compose logs --tail 160 xiass-api || true
+            die "新版应用容器热切换失败。数据没有删除，将自动恢复旧版本。"
+        fi
+        # The page can recover as soon as the new application health check
+        # passes. Converge unchanged core services and the Team browser stack
+        # afterwards without another full-stack shutdown.
+        if ! start_runtime_stack true true; then
+            compose ps || true
+            compose logs --tail 160 xiass-api || true
+            die "更新后运行组件检查失败。数据没有删除，将自动恢复旧版本。"
+        fi
+    else
+        log "历史部署布局使用完整兼容切换（不会删除卷或数据）..."
+        if ! compose down; then
+            log "Compose 未能完整停止旧栈，改为按已知容器名安全停止。"
+        fi
+        stop_known_runtime_containers
+
+        git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"
+        ensure_team_child_runtime_config
+        migrate_team_child_browser_profile
+        COMPOSE_FILES=()
+        ACTUAL_COMPOSE_FILES=()
+        select_compose_file true
+        init_compose
+
+        # A successfully prefetched image avoids placing registry download time
+        # inside the legacy full-stack downtime window.
+        if ! start_runtime_stack "$TARGET_APP_IMAGE_PREFETCHED"; then
+            compose ps || true
+            compose logs --tail 160 xiass-api || true
+            die "更新后健康检查失败。数据没有删除，更新前备份位于 ${BACKUP_DIR}，可使用 xiass-restore.sh 恢复。"
+        fi
     fi
-    stop_known_runtime_containers
 
-    git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"
-    ensure_team_child_runtime_config
-    migrate_team_child_browser_profile
-    COMPOSE_FILES=()
-    ACTUAL_COMPOSE_FILES=()
-    select_compose_file true
-    init_compose
-
-    # The runtime helper starts the core first and only then downloads/builds
-    # Chromium and the Team automation service after the core health check.
-    if ! start_runtime_stack false; then
+    if ! wait_for_health; then
         compose ps || true
         compose logs --tail 160 xiass-api || true
         die "更新后健康检查失败。数据没有删除，更新前备份位于 ${BACKUP_DIR}，可使用 xiass-restore.sh 恢复。"

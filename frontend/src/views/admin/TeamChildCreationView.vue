@@ -60,6 +60,7 @@
         :browser-error="browserError"
         :browser-control-conflict="browserControlConflict"
         :sms-cancel-signal="smsCancelSignal"
+        :automation-enabled="workflowExecutionArmed"
         @session-cancelled="pauseWorkflowAfterSMSCancel"
         @reauthorize="restartWorkflowOAuth"
         @one-click="handleWorkspaceOneClick"
@@ -78,10 +79,11 @@
         @select-mailbox="selectedMailboxEmail = $event"
         @create-mailbox="startFlow"
         @open-mailbox="openHistoryMailbox"
-        @poll-mailbox="pollMailbox"
+        @poll-mailbox="requestMailboxPoll"
         @copy-mailbox="copyText"
         @open-history="scrollToTeamChildHistory"
         @reload-browser="reloadBrowserWorkspace"
+        @refresh-members="refreshMembers"
         @open-modular="closeBrowserWorkspace"
         @force-take-over="browserTakeOverConfirmOpen = true"
       >
@@ -188,12 +190,14 @@
         :loading="teamChildHistoryLoading"
         :password-loading-account-id="historyPasswordLoadingAccountID"
         :reauthorizing-account-id="historyReauthorizingAccountID"
+        :deleting-account-id="historyDeletingAccountID"
         :revealed-passwords="revealedHistoryPasswords"
         @refresh="loadTeamChildHistory"
         @open-mailbox="openHistoryMailbox"
         @toggle-password="toggleHistoryPassword"
         @copy-password="copyText"
         @reauthorize="startHistoryReauthorization"
+        @delete-account="deleteHistoryTeamAccount"
       />
     </div>
     <ConfirmDialog
@@ -278,6 +282,7 @@ const teamChildHistoryLoading = ref(false)
 const historyOpeningEmail = ref('')
 const historyPasswordLoadingAccountID = ref<number | null>(null)
 const historyReauthorizingAccountID = ref<number | null>(null)
+const historyDeletingAccountID = ref<number | null>(null)
 const revealedHistoryPasswords = ref<Record<number, string>>({})
 const selectedMailboxEmail = ref('')
 const mailboxSelecting = ref(false)
@@ -308,6 +313,10 @@ const emailCodeSubmitting = ref(false)
 const phoneSubmitting = ref(false)
 const smsCodeSubmitting = ref(false)
 const smsCancelSignal = ref(0)
+// Restoring persisted state must never grant permission to resume browser,
+// mailbox, or SMS actions. Only an explicit start/continue click arms them.
+const workflowExecutionArmed = ref(false)
+const mailboxPollingRequested = ref(false)
 const lastSubmittedEmailCode = ref('')
 const lastSubmittedPhone = ref('')
 const lastSubmittedSMSCode = ref('')
@@ -362,9 +371,10 @@ function isProtectedMember(member: TeamChildMember) {
   return Boolean(member.protected) || /^(owner|所有者|admin|administrator|管理员)$/i.test(member.role.trim())
 }
 const selectedReplaceableMember = computed(() => members.value.find((member) => normalizeTeamChildEmail(member.email) === normalizeTeamChildEmail(selectedMemberEmail.value)))
-const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || teamWorkflow.value?.status === 'running')
+const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || (workflowExecutionArmed.value && teamWorkflow.value?.status === 'running'))
 const workspaceOneClickLabel = computed(() => {
-  if (workflowContinuing.value || teamWorkflow.value?.status === 'running') return '自动执行中'
+  if (workflowContinuing.value || (workflowExecutionArmed.value && teamWorkflow.value?.status === 'running')) return '自动执行中'
+  if (!workflowExecutionArmed.value && ['running', 'manual_required'].includes(teamWorkflow.value?.status || '')) return '继续自动化'
   if (['failed', 'paused'].includes(teamWorkflow.value?.status || '')) return '继续自动化'
   if (teamWorkflow.value?.status === 'callback_ready') return '准备导入'
   if (teamWorkflow.value?.status === 'completed') return '已完成'
@@ -374,14 +384,11 @@ const workflowNeedsReauth = computed(() => {
   const workflow = teamWorkflow.value
   if (!workflow || !['manual_required', 'failed'].includes(workflow.status)) return false
   const messages = [workflow.error || '', ...workflow.nodes.map((node) => node.message || '')].join(' ')
-  return /\b401\b|unauthori[sz]ed|token\s*(?:已|已被)?(?:失效|过期)|重新授权/i.test(messages)
+  return /\b401\b|unauthori[sz]ed|invalid_auth_step|authorization step|授权步骤.*失效|token\s*(?:已|已被)?(?:失效|过期)|重新授权/i.test(messages)
 })
 const manualSeatReady = computed(() => membersReady.value && members.value.length > 0 && !members.value.some((member) => isReplaceableMember(member)) && members.value.every(isProtectedMember))
 const preflightWorkflow = computed<TeamChildWorkflow>(() => {
-  let currentKey: TeamChildWorkflowNodeKey = 'members'
-  if (membersReady.value && manualSeatReady.value) currentKey = 'invite'
-  else if (membersReady.value && isReplaceableMember(selectedReplaceableMember.value)) currentKey = 'remove'
-
+  const currentKey: TeamChildWorkflowNodeKey = 'members'
   const currentIndex = workflowNodeDefinitions.findIndex(([key]) => key === currentKey)
   const failed = status.value === 'error'
   return {
@@ -403,7 +410,10 @@ const preflightWorkflow = computed<TeamChildWorkflow>(() => {
 })
 const displayWorkflow = computed<TeamChildWorkflow>(() => teamWorkflow.value || preflightWorkflow.value)
 const workspaceOneClickDisabled = computed(() => {
-  if (teamWorkflow.value) return !['failed', 'paused'].includes(teamWorkflow.value.status) || workflowContinuing.value
+  if (teamWorkflow.value) {
+    if (!workflowExecutionArmed.value && ['running', 'manual_required'].includes(teamWorkflow.value.status)) return workflowContinuing.value
+    return !['failed', 'paused'].includes(teamWorkflow.value.status) || workflowContinuing.value
+  }
   return busy.value || !mailboxConfigured.value || !browserConfigured.value
 })
 const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed', 'paused'].includes(teamWorkflow.value?.status || ''))
@@ -563,6 +573,24 @@ async function openHistoryMailbox(email: string) {
   }
 }
 
+async function deleteHistoryTeamAccount(entry: TeamChildHistoryEntry) {
+  const account = entry.account
+  if (!account || historyDeletingAccountID.value !== null) return
+  historyDeletingAccountID.value = account.id
+  try {
+    await accountsAPI.delete(account.id)
+    const nextPasswords = { ...revealedHistoryPasswords.value }
+    delete nextPasswords[account.id]
+    revealedHistoryPasswords.value = nextPasswords
+    await loadTeamChildHistory()
+    appStore.showSuccess(`已删除 Team 账号：${entry.email}`)
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, '删除 Team 账号失败'))
+  } finally {
+    historyDeletingAccountID.value = null
+  }
+}
+
 function historyEntryNeedsReauth(entry: TeamChildHistoryEntry): boolean {
   const account = entry.account
   if (!account) return false
@@ -607,6 +635,8 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
   createdAccount.value = null
   appliedImportConfig.value = null
   callbackURL.value = ''
+  workflowExecutionArmed.value = true
+  mailboxPollingRequested.value = true
   try {
     const selected = await teamChildAPI.selectMailbox(entry.email)
     mailbox.value = selected
@@ -623,6 +653,8 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
     appStore.showInfo(`检测到 401，正在为 ${entry.email} 自动重新授权`)
     scheduleWorkflowPoll(500)
   } catch (error) {
+    workflowExecutionArmed.value = false
+    mailboxPollingRequested.value = false
     status.value = 'error'
     errorMessage.value = extractApiErrorMessage(error, 'Team 账号重新授权启动失败')
   } finally {
@@ -631,9 +663,13 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
 }
 
 async function startRequestedHistoryReauthorization() {
-  const raw = new URLSearchParams(window.location.search).get('reauthorize')
+  const currentURL = new URL(window.location.href)
+  const raw = currentURL.searchParams.get('reauthorize')
   const accountID = Number(raw)
-  if (!Number.isSafeInteger(accountID) || accountID <= 0 || teamWorkflow.value) return
+  if (!Number.isSafeInteger(accountID) || accountID <= 0) return
+  currentURL.searchParams.delete('reauthorize')
+  window.history.replaceState(window.history.state, '', `${currentURL.pathname}${currentURL.search}${currentURL.hash}`)
+  if (teamWorkflow.value) return
   const entry = teamChildHistory.value.find((candidate) => candidate.account?.id === accountID)
   if (entry && historyEntryNeedsReauth(entry)) await startHistoryReauthorization(entry)
 }
@@ -949,7 +985,7 @@ function clearWorkflowPoll() {
 }
 function scheduleWorkflowPoll(delay = 1200) {
   clearWorkflowPoll()
-  if (!teamWorkflow.value || !['running', 'manual_required'].includes(teamWorkflow.value.status)) return
+  if (!workflowExecutionArmed.value || !teamWorkflow.value || !['running', 'manual_required'].includes(teamWorkflow.value.status)) return
   workflowPollTimer = setTimeout(() => void pollWorkflow(), delay)
 }
 async function startConfirmedWorkflow() {
@@ -976,6 +1012,8 @@ async function startConfirmedWorkflow() {
       seat_already_removed: seatAlreadyRemoved,
       confirmed: true
     })
+    workflowExecutionArmed.value = true
+    mailboxPollingRequested.value = true
     status.value = 'workflow'
     scheduleWorkflowPoll()
   } catch (error) {
@@ -986,11 +1024,23 @@ async function startConfirmedWorkflow() {
   }
 }
 async function continueWorkflow() {
-  if (!teamWorkflow.value || !['failed', 'paused'].includes(teamWorkflow.value.status) || workflowContinuing.value) return
+  if (!teamWorkflow.value || workflowContinuing.value) return
+  if (!workflowExecutionArmed.value && ['running', 'manual_required'].includes(teamWorkflow.value.status)) {
+    workflowExecutionArmed.value = true
+    mailboxPollingRequested.value = true
+    status.value = teamWorkflow.value.status === 'running' ? 'workflow' : 'waiting'
+    scheduleWorkflowPoll(250)
+    if (teamWorkflow.value.status === 'manual_required' && !mailboxCode.value) schedulePoll(250)
+    appStore.showInfo('已继续当前自动化')
+    return
+  }
+  if (!['failed', 'paused'].includes(teamWorkflow.value.status)) return
   workflowContinuing.value = true
   errorMessage.value = ''
   try {
     teamWorkflow.value = await teamChildAPI.continueTeamChildWorkflow(teamWorkflow.value.id)
+    workflowExecutionArmed.value = true
+    mailboxPollingRequested.value = true
     status.value = 'workflow'
     scheduleWorkflowPoll(500)
   } catch (error) {
@@ -1004,12 +1054,14 @@ async function continueWorkflow() {
 async function pauseWorkflow() {
   const workflow = teamWorkflow.value
   if (!workflow || !['running', 'manual_required'].includes(workflow.status) || workflow.pause_requested) return
+  workflowExecutionArmed.value = false
+  mailboxPollingRequested.value = false
   clearWorkflowPoll()
+  if (pollTimer) clearTimeout(pollTimer)
   try {
     teamWorkflow.value = await teamChildAPI.pauseTeamChildWorkflow(workflow.id)
     status.value = 'waiting'
-    if (teamWorkflow.value.status === 'running') scheduleWorkflowPoll(400)
-    else appStore.showInfo('自动化已暂停，刷新页面也不会自动领取新号码')
+    appStore.showInfo('自动化已暂停，刷新或重新进入页面都不会自动继续')
   } catch (error) {
     status.value = 'error'
     errorMessage.value = extractApiErrorMessage(error, '无法暂停当前自动化')
@@ -1027,6 +1079,8 @@ async function resetWorkflowFromStart() {
   if (!workflow) return
   clearWorkflowPoll()
   if (pollTimer) clearTimeout(pollTimer)
+  workflowExecutionArmed.value = false
+  mailboxPollingRequested.value = false
   errorMessage.value = ''
   try {
     await teamChildAPI.cancelTeamChildWorkflow(workflow.id)
@@ -1058,15 +1112,26 @@ async function resetWorkflowFromStart() {
 }
 
 async function handleWorkspaceOneClick() {
+  if (!workflowExecutionArmed.value && ['running', 'manual_required'].includes(teamWorkflow.value?.status || '')) {
+    await continueWorkflow()
+    return
+  }
   if (['failed', 'paused'].includes(teamWorkflow.value?.status || '')) {
     await continueWorkflow()
     return
   }
   if (teamWorkflow.value || busy.value) return
 
+  // A new one-click run always starts from the real ChatGPT Members home.
+  // The automation service brings that dedicated tab to the foreground while
+  // preserving any separate OAuth tab from an earlier run.
+  await refreshMembers(false)
+  if (!membersReady.value) {
+    appStore.showError('成员页刷新失败，请先在内嵌浏览器完成 ChatGPT 管理员登录')
+    return
+  }
   if (!mailbox.value) await startFlow()
   if (!mailbox.value || status.value === 'error') return
-  if (!membersReady.value) await refreshMembers(false)
   if (!authUrl.value || !oauthSessionID.value) await generateFreshOAuthSession().catch(() => null)
 
   if (workflowReady.value) {
@@ -1087,6 +1152,8 @@ async function restartWorkflowOAuth() {
     if (activeMailbox) mailbox.value = activeMailbox
     mailboxCode.value = ''
     mailboxCodeError.value = ''
+    workflowExecutionArmed.value = true
+    mailboxPollingRequested.value = true
     schedulePoll(250)
     const auth = await generateFreshOAuthSession()
     if (!auth) throw new Error('未生成 XIASS 官方 OpenAI 授权链接')
@@ -1122,7 +1189,7 @@ async function syncWorkflowAfterActionError() {
 }
 
 async function pollWorkflow() {
-  if (!teamWorkflow.value || !['running', 'manual_required'].includes(teamWorkflow.value.status)) return
+  if (!workflowExecutionArmed.value || !teamWorkflow.value || !['running', 'manual_required'].includes(teamWorkflow.value.status)) return
   try {
     const workflow = await teamChildAPI.getTeamChildWorkflow(teamWorkflow.value.id)
     teamWorkflow.value = workflow
@@ -1162,6 +1229,7 @@ async function startFlow() {
   if (busy.value || !mailboxConfigured.value) return
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
+  mailboxPollingRequested.value = true
   errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; appliedImportConfig.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'creating'
   try {
     mailbox.value = await teamChildAPI.createMailbox()
@@ -1170,7 +1238,11 @@ async function startFlow() {
     schedulePoll(250)
     if (!teamWorkflow.value) await generateFreshOAuthSession()
     status.value = 'ready'
-  } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '流程启动失败') }
+  } catch (error) {
+    mailboxPollingRequested.value = false
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '流程启动失败')
+  }
 }
 
 async function restoreActiveMailbox() {
@@ -1181,25 +1253,18 @@ async function restoreActiveMailbox() {
     mailbox.value = restored
     selectedMailboxEmail.value = restored.email
     mailboxCodeError.value = ''
-    schedulePoll(250)
-    if (!teamWorkflow.value) {
-      await generateFreshOAuthSession()
-      status.value = 'ready'
-    } else if (teamWorkflow.value.status === 'callback_ready') {
-      await importAccount()
-    }
-    appStore.showInfo('已恢复当前临时邮箱，可以继续成员邀请和授权')
+    if (!teamWorkflow.value) status.value = 'ready'
   } catch {
     // A missing or expired mailbox is normal after its short server-side TTL.
   }
 }
 function schedulePoll(delay = 4000) {
   if (pollTimer) clearTimeout(pollTimer)
-  if (!mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value)) return
+  if ((!workflowExecutionArmed.value && !mailboxPollingRequested.value) || !mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value)) return
   pollTimer = setTimeout(() => void pollMailbox(), Math.max(0, delay))
 }
 async function pollMailbox() {
-  if (!mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value) || mailboxCodeLoading.value) return
+  if ((!workflowExecutionArmed.value && !mailboxPollingRequested.value) || !mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value) || mailboxCodeLoading.value) return
   mailboxCodeLoading.value = true
   if (status.value === 'ready' || status.value === 'waiting' || status.value === 'error') status.value = 'polling'
   try {
@@ -1207,6 +1272,7 @@ async function pollMailbox() {
     mailboxCodeError.value = ''
     if (result.status === 'received' && result.code) {
       mailboxCode.value = result.code
+      mailboxPollingRequested.value = false
       status.value = 'received'
       if (pollTimer) clearTimeout(pollTimer)
       void maybeSubmitMailboxCode()
@@ -1229,10 +1295,15 @@ async function pollMailbox() {
   } finally { mailboxCodeLoading.value = false }
 }
 
+function requestMailboxPoll() {
+  mailboxPollingRequested.value = true
+  void pollMailbox()
+}
+
 async function maybeSubmitMailboxCode() {
   const workflow = teamWorkflow.value
   const code = mailboxCode.value.trim()
-  if (!workflow || !['mailbox', 'email_code'].includes(workflow.current_node || '') || !code || emailCodeSubmitting.value || lastSubmittedEmailCode.value === code) return
+  if (!workflowExecutionArmed.value || !workflow || !['mailbox', 'email_code'].includes(workflow.current_node || '') || !code || emailCodeSubmitting.value || lastSubmittedEmailCode.value === code) return
   emailCodeSubmitting.value = true
   lastSubmittedEmailCode.value = code
   try {
@@ -1252,7 +1323,7 @@ async function maybeSubmitMailboxCode() {
 async function submitWorkflowPhone(phone: string) {
   const workflow = teamWorkflow.value
   const normalized = phone.replace(/[\s()-]/g, '')
-  if (!workflow || !['sms_confirm', 'phone_submit', 'sms_poll', 'sms_code'].includes(workflow.current_node || '') || phoneSubmitting.value || lastSubmittedPhone.value === normalized) return
+  if (!workflowExecutionArmed.value || !workflow || !['sms_confirm', 'phone_submit', 'sms_poll', 'sms_code'].includes(workflow.current_node || '') || phoneSubmitting.value || lastSubmittedPhone.value === normalized) return
   phoneSubmitting.value = true
   lastSubmittedPhone.value = normalized
   try {
@@ -1272,7 +1343,7 @@ async function submitWorkflowPhone(phone: string) {
 async function submitWorkflowSMSCode(code: string) {
   const workflow = teamWorkflow.value
   const normalized = code.replace(/\s+/g, '')
-  if (!workflow || !['sms_poll', 'sms_code'].includes(workflow.current_node || '') || smsCodeSubmitting.value || lastSubmittedSMSCode.value === normalized) return
+  if (!workflowExecutionArmed.value || !workflow || !['sms_poll', 'sms_code'].includes(workflow.current_node || '') || smsCodeSubmitting.value || lastSubmittedSMSCode.value === normalized) return
   smsCodeSubmitting.value = true
   lastSubmittedSMSCode.value = normalized
   try {
@@ -1370,7 +1441,6 @@ async function restoreActiveWorkflow() {
     if (restored.status === 'callback_ready' && restored.callback_url) {
       callbackURL.value = restored.callback_url
       status.value = 'callback'
-      await importAccount()
       return
     }
     if (restored.status === 'completed') {
@@ -1387,8 +1457,8 @@ async function restoreActiveWorkflow() {
       errorMessage.value = ''
       return
     }
-    status.value = restored.status === 'manual_required' ? 'waiting' : 'workflow'
-    scheduleWorkflowPoll(restored.status === 'running' ? 500 : 1500)
+    status.value = 'waiting'
+    errorMessage.value = ''
   } catch (error) {
     const message = extractApiErrorMessage(error, '')
     if (/运行组件版本不匹配/.test(message)) {
@@ -1399,6 +1469,8 @@ async function restoreActiveWorkflow() {
 }
 
 onMounted(async () => {
+  workflowExecutionArmed.value = false
+  mailboxPollingRequested.value = false
   const [statusResult, groupsResult] = await Promise.allSettled([
     teamChildAPI.getMailboxStatus(),
     groupsAPI.getAll('openai')
@@ -1425,6 +1497,8 @@ watch(
   }
 )
 onBeforeUnmount(() => {
+  workflowExecutionArmed.value = false
+  mailboxPollingRequested.value = false
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
   clearRevealedPassword()

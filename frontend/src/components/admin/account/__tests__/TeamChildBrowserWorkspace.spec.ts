@@ -29,6 +29,11 @@ describe('TeamChildBrowserWorkspace', () => {
 
     await wrapper.get('[aria-label="刷新服务器浏览器"]').trigger('click')
     expect(wrapper.emitted('reload')).toHaveLength(1)
+
+    const refreshMembers = wrapper.findAll('button').find((button) => button.text().includes('刷新成员页'))
+    expect(refreshMembers).toBeDefined()
+    await refreshMembers!.trigger('click')
+    expect(wrapper.emitted('refresh-members')).toHaveLength(1)
   })
 
   it('explains the deployment state when the server browser is disabled', () => {
