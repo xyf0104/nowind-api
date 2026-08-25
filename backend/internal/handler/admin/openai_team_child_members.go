@@ -87,7 +87,7 @@ func (h *OpenAIOAuthHandler) teamChildMemberAutomationRequest(c *gin.Context, me
 		return
 	}
 	isWorkflowRequest := path == "/workflows" || strings.HasPrefix(path, "/workflows/")
-	if path == "/workflows" && method == http.MethodPost {
+	if (path == "/workflows" || path == "/workflows/reauthorize") && method == http.MethodPost {
 		if err := requireCurrentTeamChildWorkflowProtocol(c.Request.Context(), config); err != nil {
 			response.Error(c, http.StatusBadGateway, "Team 自动化运行组件版本不匹配，请完成运行组件更新后重试")
 			return

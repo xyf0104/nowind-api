@@ -6,13 +6,17 @@ process.env.TEAM_CHILD_AUTOMATION_TOKEN = 'unit-test-team-child-token'
 
 const {
   callbackURLFromNavigationEntries,
+  cancelWorkflowState,
   completeWorkflowNode,
   createWorkflow,
   decryptWorkflowState,
   encryptWorkflowState,
   fillVerificationCode,
   generateWorkflowPassword,
+  pauseWorkflowState,
   pendingInviteEmailsFromTexts,
+  recoverOpenAIPhoneEntry,
+  resumePausedWorkflow,
   setWorkflowNode,
   submitInviteDialog,
   validateOAuthSessionID,
@@ -45,7 +49,7 @@ describe('Team child OAuth automation state', () => {
     )
   })
 
-  it('fills the native invite Email input and clicks its Continue action', async () => {
+  it('fills the native invite Email input and clicks Send invites', async () => {
     const observed = { email: '', clicked: 0 }
     const input = {
       isVisible: async () => true,
@@ -55,7 +59,7 @@ describe('Team child OAuth automation state', () => {
     const button = {
       isVisible: async () => true,
       isDisabled: async () => false,
-      innerText: async () => 'Continue',
+      innerText: async () => 'Send invites',
       click: async () => { observed.clicked += 1 }
     }
     const collection = (items) => ({
@@ -64,12 +68,42 @@ describe('Team child OAuth automation state', () => {
     })
     const scope = {
       locator: (selector) => collection(selector === 'input' ? [input] : []),
-      getByRole: (role, options) => collection(role === 'button' && options.name.test('Continue') ? [button] : [])
+      getByRole: (role, options) => collection(role === 'button' && options.name.test('Send invites') ? [button] : [])
     }
 
     await submitInviteDialog(scope, 'child@example.test')
     assert.equal(observed.email, 'child@example.test')
     assert.equal(observed.clicked, 1)
+  })
+
+  it('prefers Send invites when an older Continue action is also present', async () => {
+    const clicked = []
+    const input = {
+      isVisible: async () => true,
+      getAttribute: async (name) => name === 'type' ? 'email' : null,
+      fill: async () => undefined
+    }
+    const button = (label) => ({
+      isVisible: async () => true,
+      isDisabled: async () => false,
+      innerText: async () => label,
+      click: async () => { clicked.push(label) }
+    })
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const scope = {
+      locator: (selector) => collection(selector === 'input' ? [input] : []),
+      getByRole: (role, options) => {
+        if (role !== 'button') return collection([])
+        const items = ['Continue', 'Send invites'].filter((label) => options.name.test(label)).map(button)
+        return collection(items)
+      }
+    }
+
+    await submitInviteDialog(scope, 'child@example.test')
+    assert.deepEqual(clicked, ['Send invites'])
   })
 
   it('fills an OAuth verification code against the current browser page', async () => {
@@ -96,6 +130,48 @@ describe('Team child OAuth automation state', () => {
     assert.equal(observed.clicked, 1)
   })
 
+  it('returns from an old SMS code page and reuses the saved password before replacing the phone', async () => {
+    let state = 'sms_code'
+    let password = ''
+    let backClicks = 0
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const input = (type, autocomplete = '') => ({
+      isVisible: async () => true,
+      getAttribute: async (name) => ({ type, autocomplete }[name] || null),
+      fill: async (value) => { if (type === 'password') password = value }
+    })
+    const page = {
+      locator: (selector) => {
+        if (selector === 'body') {
+          return { innerText: async () => state === 'sms_code' ? 'Check your phone SMS code' : state === 'password' ? 'Enter your password' : 'Phone number' }
+        }
+        const currentInput = state === 'sms_code'
+          ? input('text', 'one-time-code')
+          : state === 'password' ? input('password') : input('tel')
+        if (selector === 'input') return collection([currentInput])
+        if (selector.includes('one-time-code')) return collection(state === 'sms_code' ? [currentInput] : [])
+        return collection([])
+      },
+      getByRole: (role, options) => collection(
+        role === 'button' && state === 'password' && options.name.test('Continue')
+          ? [{ isVisible: async () => true, click: async () => { state = 'phone' } }]
+          : []
+      ),
+      goBack: async () => { backClicks += 1; state = 'password' },
+      goto: async () => undefined,
+      url: () => 'https://auth.openai.com/phone-verification'
+    }
+    const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
+    workflow.generatedPassword = 'SavedPassword!'
+
+    assert.equal(await recoverOpenAIPhoneEntry(page, workflow), 'phone')
+    assert.equal(backClicks, 1)
+    assert.equal(password, 'SavedPassword!')
+  })
+
   it('recovers the matching localhost callback from Chromium navigation history', () => {
     const matching = 'http://localhost:1455/auth/callback?code=secret-code&state=current-state'
     const result = callbackURLFromNavigationEntries([
@@ -112,6 +188,39 @@ describe('Team child OAuth automation state', () => {
     completeWorkflowNode(workflow, 'sms_code', '短信验证码已提交')
     setWorkflowNode(workflow, 'callback', 'running', '正在捕获回调')
     assert.equal(workflowFailureNodeKey(workflow, 'sms_code'), 'callback')
+  })
+
+  it('cancels a running workflow and clears its short-lived login secrets', () => {
+    const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
+    workflow.generatedPassword = 'Generated123!'
+    workflow.loginPassword = 'SavedPassword!'
+    setWorkflowNode(workflow, 'invite', 'running', '正在提交邀请')
+
+    cancelWorkflowState(workflow)
+
+    assert.equal(workflow.status, 'cancelled')
+    assert.equal(workflow.cancelRequested, true)
+    assert.equal(workflow.generatedPassword, '')
+    assert.equal(workflow.loginPassword, '')
+    assert.equal(workflow.nodes.find((node) => node.key === 'invite').status, 'cancelled')
+  })
+
+  it('persists a manual SMS pause and resumes without clearing workflow secrets', () => {
+    const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
+    workflow.generatedPassword = 'SavedPassword!'
+    completeWorkflowNode(workflow, 'phone_submit', '手机号已提交')
+    setWorkflowNode(workflow, 'sms_poll', 'waiting', '等待短信')
+    workflow.status = 'manual_required'
+
+    pauseWorkflowState(workflow)
+    assert.equal(workflow.status, 'paused')
+    assert.equal(workflowSummary(workflow).pause_requested, true)
+    assert.equal(workflow.generatedPassword, 'SavedPassword!')
+
+    const resumed = resumePausedWorkflow(workflow)
+    assert.equal(resumed.status, 'manual_required')
+    assert.equal(resumed.pause_requested, false)
+    assert.equal(workflow.generatedPassword, 'SavedPassword!')
   })
 
   it('keeps the complete node order stable', () => {

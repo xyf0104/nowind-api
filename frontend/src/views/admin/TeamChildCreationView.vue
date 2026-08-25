@@ -59,11 +59,14 @@
         :browser-loading="browserLoading"
         :browser-error="browserError"
         :browser-control-conflict="browserControlConflict"
-        @session-cancelled="restartWorkflowOAuth"
+        :sms-cancel-signal="smsCancelSignal"
+        @session-cancelled="pauseWorkflowAfterSMSCancel"
         @reauthorize="restartWorkflowOAuth"
         @one-click="handleWorkspaceOneClick"
         @open-browser="openBrowserWorkspace"
         @continue-workflow="continueWorkflow"
+        @pause-workflow="pauseWorkflow"
+        @reset-workflow="resetWorkflowFromStart"
         @reveal-password="revealWorkflowPassword"
         @clear-password="clearRevealedPassword"
         @copy-password="copyText(revealedWorkflowPassword)"
@@ -184,11 +187,13 @@
         :opening-email="historyOpeningEmail"
         :loading="teamChildHistoryLoading"
         :password-loading-account-id="historyPasswordLoadingAccountID"
+        :reauthorizing-account-id="historyReauthorizingAccountID"
         :revealed-passwords="revealedHistoryPasswords"
         @refresh="loadTeamChildHistory"
         @open-mailbox="openHistoryMailbox"
         @toggle-password="toggleHistoryPassword"
         @copy-password="copyText"
+        @reauthorize="startHistoryReauthorization"
       />
     </div>
     <ConfirmDialog
@@ -239,6 +244,7 @@ import { groupsAPI } from '@/api/admin/groups'
 import type { Account, AccountUsageInfo, AdminGroup } from '@/types'
 
 type FlowStatus = 'idle' | 'creating' | 'ready' | 'workflow' | 'waiting' | 'polling' | 'received' | 'callback' | 'importing' | 'completed' | 'error'
+type TeamChildHistoryEntry = { email: string; account: Account | null; usage: AccountUsageInfo | null; passwordAvailable: boolean }
 
 const appStore = useAppStore()
 const openaiOAuth = useOpenAIOAuth()
@@ -267,10 +273,11 @@ const mailboxConfigFileInput = ref<HTMLInputElement | null>(null)
 const teamChildHistoryPanelRef = ref<InstanceType<typeof TeamChildHistoryPanel> | null>(null)
 const mailbox = ref<TeamChildMailbox | null>(null)
 const knownMailboxes = ref<string[]>([])
-const teamChildHistory = ref<Array<{ email: string; account: Account | null; usage: AccountUsageInfo | null; passwordAvailable: boolean }>>([])
+const teamChildHistory = ref<TeamChildHistoryEntry[]>([])
 const teamChildHistoryLoading = ref(false)
 const historyOpeningEmail = ref('')
 const historyPasswordLoadingAccountID = ref<number | null>(null)
+const historyReauthorizingAccountID = ref<number | null>(null)
 const revealedHistoryPasswords = ref<Record<number, string>>({})
 const selectedMailboxEmail = ref('')
 const mailboxSelecting = ref(false)
@@ -288,7 +295,7 @@ const selectedGroupIDs = ref<number[]>([])
 const accountConcurrency = ref(10)
 const accountPriority = ref(1)
 const errorMessage = ref('')
-const createdAccount = ref<{ id?: number; name?: string; [key: string]: unknown } | null>(null)
+const createdAccount = ref<{ id?: number; name?: string; email?: string; status?: string } | null>(null)
 const appliedImportConfig = ref<{ groupIDs: number[]; groupNames: string[]; concurrency: number; priority: number } | null>(null)
 const teamWorkflow = ref<TeamChildWorkflow | null>(null)
 const revealedWorkflowPassword = ref('')
@@ -300,6 +307,7 @@ const callbackConfirming = ref(false)
 const emailCodeSubmitting = ref(false)
 const phoneSubmitting = ref(false)
 const smsCodeSubmitting = ref(false)
+const smsCancelSignal = ref(0)
 const lastSubmittedEmailCode = ref('')
 const lastSubmittedPhone = ref('')
 const lastSubmittedSMSCode = ref('')
@@ -357,7 +365,7 @@ const selectedReplaceableMember = computed(() => members.value.find((member) => 
 const workflowBusy = computed(() => workflowStarting.value || workflowContinuing.value || teamWorkflow.value?.status === 'running')
 const workspaceOneClickLabel = computed(() => {
   if (workflowContinuing.value || teamWorkflow.value?.status === 'running') return '自动执行中'
-  if (teamWorkflow.value?.status === 'failed') return '继续自动化'
+  if (['failed', 'paused'].includes(teamWorkflow.value?.status || '')) return '继续自动化'
   if (teamWorkflow.value?.status === 'callback_ready') return '准备导入'
   if (teamWorkflow.value?.status === 'completed') return '已完成'
   return '一键授权'
@@ -395,10 +403,10 @@ const preflightWorkflow = computed<TeamChildWorkflow>(() => {
 })
 const displayWorkflow = computed<TeamChildWorkflow>(() => teamWorkflow.value || preflightWorkflow.value)
 const workspaceOneClickDisabled = computed(() => {
-  if (teamWorkflow.value) return teamWorkflow.value.status !== 'failed' || workflowContinuing.value
+  if (teamWorkflow.value) return !['failed', 'paused'].includes(teamWorkflow.value.status) || workflowContinuing.value
   return busy.value || !mailboxConfigured.value || !browserConfigured.value
 })
-const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed'].includes(teamWorkflow.value?.status || ''))
+const workflowReady = computed(() => Boolean(mailbox.value?.email) && Boolean(authUrl.value) && (isReplaceableMember(selectedReplaceableMember.value) || manualSeatReady.value) && membersReady.value && !workflowBusy.value && !['manual_required', 'callback_ready', 'failed', 'paused'].includes(teamWorkflow.value?.status || ''))
 const workflowConfirmationTitle = computed(() => manualSeatReady.value ? '确认邀请并授权' : '确认替换成员并授权')
 const workflowConfirmationMessage = computed(() => {
   if (!mailbox.value?.email) return '当前缺少临时邮箱。'
@@ -447,14 +455,14 @@ function normalizeTeamChildEmail(value: string) {
   return normalized.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i)?.[0] || normalized
 }
 
-async function generateFreshOAuthSession() {
+async function generateFreshOAuthSession(proxyID?: number | null) {
   if (oauthGenerating.value) return null
   callbackURL.value = ''
   try {
     // Delegate to the same composable used by the standard Add Account form.
     // The XIASS backend owns PKCE, state and session persistence; this view
     // only consumes the returned session.
-    const generated = await openaiOAuth.generateAuthUrl()
+    const generated = await openaiOAuth.generateAuthUrl(proxyID)
     if (!generated || !authUrl.value || !oauthSessionID.value) {
       throw new Error(oauthError.value || '生成 XIASS 官方 OpenAI 授权链接失败')
     }
@@ -553,6 +561,81 @@ async function openHistoryMailbox(email: string) {
   } finally {
     historyOpeningEmail.value = ''
   }
+}
+
+function historyEntryNeedsReauth(entry: TeamChildHistoryEntry): boolean {
+  const account = entry.account
+  if (!account) return false
+  const extra = account.extra as Record<string, unknown> | undefined
+  const errorText = [
+    entry.usage?.error || '',
+    entry.usage?.error_code || '',
+    account.error_message || '',
+    account.temp_unschedulable_reason || '',
+    typeof extra?.error === 'string' ? extra.error : '',
+    typeof extra?.error_code === 'string' ? extra.error_code : ''
+  ].join(' ')
+  return entry.usage?.needs_reauth === true
+    || extra?.needs_reauth === true
+    || entry.usage?.error_code === 'unauthenticated'
+    || extra?.error_code === 'unauthenticated'
+    || /\b401\b|unauthori[sz]ed|invalid[_ ](?:grant|token)|token\s*(?:expired|invalid|失效|过期)/i.test(errorText)
+}
+
+async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
+  const account = entry.account
+  if (!account || historyReauthorizingAccountID.value !== null) return
+  if (!historyEntryNeedsReauth(entry)) {
+    appStore.showInfo('该 Team 账号当前未检测到 401，无需重新授权')
+    return
+  }
+  if (!entry.passwordAvailable) {
+    appStore.showError('该 Team 账号没有保存的登录密码，无法自动重新授权')
+    return
+  }
+  if (teamWorkflow.value && ['running', 'manual_required', 'callback_ready', 'paused'].includes(teamWorkflow.value.status)) {
+    if (teamWorkflow.value.mode === 'reauthorization' && teamWorkflow.value.target_account_id === account.id) {
+      appStore.showInfo('该账号的重新授权工作流已经在运行')
+    } else {
+      appStore.showError('已有 Team 子号工作流正在运行，请先完成当前流程')
+    }
+    return
+  }
+
+  historyReauthorizingAccountID.value = account.id
+  errorMessage.value = ''
+  createdAccount.value = null
+  appliedImportConfig.value = null
+  callbackURL.value = ''
+  try {
+    const selected = await teamChildAPI.selectMailbox(entry.email)
+    mailbox.value = selected
+    selectedMailboxEmail.value = selected.email
+    mailboxCode.value = ''
+    mailboxCodeError.value = ''
+    lastSubmittedEmailCode.value = ''
+    schedulePoll(250)
+
+    const auth = await generateFreshOAuthSession(account.proxy_id)
+    if (!auth) throw new Error('未生成 XIASS 官方 OpenAI 授权链接')
+    teamWorkflow.value = await teamChildAPI.reauthorizeTeamChildAccount(account.id, auth.auth_url, auth.session_id)
+    status.value = 'workflow'
+    appStore.showInfo(`检测到 401，正在为 ${entry.email} 自动重新授权`)
+    scheduleWorkflowPoll(500)
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, 'Team 账号重新授权启动失败')
+  } finally {
+    historyReauthorizingAccountID.value = null
+  }
+}
+
+async function startRequestedHistoryReauthorization() {
+  const raw = new URLSearchParams(window.location.search).get('reauthorize')
+  const accountID = Number(raw)
+  if (!Number.isSafeInteger(accountID) || accountID <= 0 || teamWorkflow.value) return
+  const entry = teamChildHistory.value.find((candidate) => candidate.account?.id === accountID)
+  if (entry && historyEntryNeedsReauth(entry)) await startHistoryReauthorization(entry)
 }
 
 function scrollToTeamChildHistory() {
@@ -903,7 +986,7 @@ async function startConfirmedWorkflow() {
   }
 }
 async function continueWorkflow() {
-  if (!teamWorkflow.value || teamWorkflow.value.status !== 'failed' || workflowContinuing.value) return
+  if (!teamWorkflow.value || !['failed', 'paused'].includes(teamWorkflow.value.status) || workflowContinuing.value) return
   workflowContinuing.value = true
   errorMessage.value = ''
   try {
@@ -918,8 +1001,64 @@ async function continueWorkflow() {
   }
 }
 
+async function pauseWorkflow() {
+  const workflow = teamWorkflow.value
+  if (!workflow || !['running', 'manual_required'].includes(workflow.status) || workflow.pause_requested) return
+  clearWorkflowPoll()
+  try {
+    teamWorkflow.value = await teamChildAPI.pauseTeamChildWorkflow(workflow.id)
+    status.value = 'waiting'
+    if (teamWorkflow.value.status === 'running') scheduleWorkflowPoll(400)
+    else appStore.showInfo('自动化已暂停，刷新页面也不会自动领取新号码')
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '无法暂停当前自动化')
+  }
+}
+
+async function pauseWorkflowAfterSMSCancel() {
+  lastSubmittedPhone.value = ''
+  lastSubmittedSMSCode.value = ''
+  await pauseWorkflow()
+}
+
+async function resetWorkflowFromStart() {
+  const workflow = teamWorkflow.value
+  if (!workflow) return
+  clearWorkflowPoll()
+  if (pollTimer) clearTimeout(pollTimer)
+  errorMessage.value = ''
+  try {
+    await teamChildAPI.cancelTeamChildWorkflow(workflow.id)
+    smsCancelSignal.value += 1
+    if (mailbox.value?.session_id) {
+      await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
+    }
+    teamWorkflow.value = null
+    mailbox.value = null
+    selectedMailboxEmail.value = ''
+    mailboxCode.value = ''
+    mailboxCodeError.value = ''
+    callbackURL.value = ''
+    createdAccount.value = null
+    appliedImportConfig.value = null
+    lastSubmittedEmailCode.value = ''
+    lastSubmittedPhone.value = ''
+    lastSubmittedSMSCode.value = ''
+    openaiOAuth.resetState()
+    status.value = 'idle'
+    await refreshMembers(true).catch(() => undefined)
+    await loadKnownMailboxes()
+    await loadTeamChildHistory()
+    appStore.showSuccess('当前自动化已取消，可以从第一步重新开始')
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = extractApiErrorMessage(error, '无法取消当前自动化工作流')
+  }
+}
+
 async function handleWorkspaceOneClick() {
-  if (teamWorkflow.value?.status === 'failed') {
+  if (['failed', 'paused'].includes(teamWorkflow.value?.status || '')) {
     await continueWorkflow()
     return
   }
@@ -1003,6 +1142,12 @@ async function pollWorkflow() {
     if (workflow.status === 'failed') {
       status.value = 'error'
       errorMessage.value = workflow.error || '成员替换或 OAuth 授权交接未完成'
+      clearWorkflowPoll()
+      return
+    }
+    if (workflow.status === 'paused') {
+      status.value = 'waiting'
+      errorMessage.value = ''
       clearWorkflowPoll()
       return
     }
@@ -1107,7 +1252,7 @@ async function maybeSubmitMailboxCode() {
 async function submitWorkflowPhone(phone: string) {
   const workflow = teamWorkflow.value
   const normalized = phone.replace(/[\s()-]/g, '')
-  if (!workflow || !['sms_confirm', 'phone_submit'].includes(workflow.current_node || '') || phoneSubmitting.value || lastSubmittedPhone.value === normalized) return
+  if (!workflow || !['sms_confirm', 'phone_submit', 'sms_poll', 'sms_code'].includes(workflow.current_node || '') || phoneSubmitting.value || lastSubmittedPhone.value === normalized) return
   phoneSubmitting.value = true
   lastSubmittedPhone.value = normalized
   try {
@@ -1115,6 +1260,7 @@ async function submitWorkflowPhone(phone: string) {
     status.value = 'workflow'
     scheduleWorkflowPoll(400)
   } catch (error) {
+    lastSubmittedPhone.value = ''
     status.value = 'error'
     errorMessage.value = extractApiErrorMessage(error, '手机号自动填入失败')
     await syncWorkflowAfterActionError()
@@ -1144,7 +1290,15 @@ async function submitWorkflowSMSCode(code: string) {
 }
 async function importAccount() {
   if (!mailbox.value || !oauthSessionID.value || !parsedCallback.value || parsedCallbackError.value || importing.value) return
-  const importConfig = {
+  const reauthorizationAccount = teamWorkflow.value?.mode === 'reauthorization'
+    ? teamChildHistory.value.find((entry) => entry.account?.id === teamWorkflow.value?.target_account_id)?.account || null
+    : null
+  const importConfig = reauthorizationAccount ? {
+    groupIDs: [...(reauthorizationAccount.group_ids || reauthorizationAccount.groups?.map((group) => group.id) || [])],
+    groupNames: [...(reauthorizationAccount.groups?.map((group) => group.name) || [])],
+    concurrency: reauthorizationAccount.concurrency,
+    priority: reauthorizationAccount.priority
+  } : {
     groupIDs: [...selectedGroupIDs.value],
     groupNames: [...selectedGroupNames.value],
     concurrency: normalizedConcurrency.value,
@@ -1160,13 +1314,29 @@ async function importAccount() {
         return
       }
     }
-    createdAccount.value = await teamChildAPI.createOpenAIAccountFromOAuth({ session_id: oauthSessionID.value, code: parsedCallback.value.code, state: parsedCallback.value.state, name: mailbox.value.email, concurrency: importConfig.concurrency, priority: importConfig.priority, group_ids: importConfig.groupIDs, team_child: true, workflow_id: teamWorkflow.value!.id })
+    if (reauthorizationAccount) {
+      const tokenInfo = await openaiOAuth.exchangeAuthCode(
+        parsedCallback.value.code,
+        oauthSessionID.value,
+        parsedCallback.value.state,
+        reauthorizationAccount.proxy_id
+      )
+      if (!tokenInfo) throw new Error(oauthError.value || '重新授权回调无法交换 OAuth 凭据')
+      createdAccount.value = await accountsAPI.applyOAuthCredentials(reauthorizationAccount.id, {
+        type: 'oauth',
+        credentials: openaiOAuth.buildCredentials(tokenInfo),
+        extra: openaiOAuth.buildExtraInfo(tokenInfo)
+      })
+    } else {
+      createdAccount.value = await teamChildAPI.createOpenAIAccountFromOAuth({ session_id: oauthSessionID.value, code: parsedCallback.value.code, state: parsedCallback.value.state, name: mailbox.value.email, concurrency: importConfig.concurrency, priority: importConfig.priority, group_ids: importConfig.groupIDs, team_child: true, workflow_id: teamWorkflow.value!.id })
+    }
     if (teamWorkflow.value) {
       teamWorkflow.value = await teamChildAPI.completeTeamChildWorkflow(teamWorkflow.value.id).catch(() => teamWorkflow.value!)
     }
     status.value = 'completed'
     if (pollTimer) clearTimeout(pollTimer)
     await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
+    await loadTeamChildHistory()
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '导入失败') }
 }
 
@@ -1212,6 +1382,11 @@ async function restoreActiveWorkflow() {
       errorMessage.value = restored.error || '自动化步骤未完成，请点击继续自动化'
       return
     }
+    if (restored.status === 'paused') {
+      status.value = 'waiting'
+      errorMessage.value = ''
+      return
+    }
     status.value = restored.status === 'manual_required' ? 'waiting' : 'workflow'
     scheduleWorkflowPoll(restored.status === 'running' ? 500 : 1500)
   } catch (error) {
@@ -1232,9 +1407,10 @@ onMounted(async () => {
   browserConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.browser_configured)
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
   await loadKnownMailboxes()
-  void loadTeamChildHistory()
-  await restoreActiveWorkflow()
   await restoreActiveMailbox()
+  await restoreActiveWorkflow()
+  await loadTeamChildHistory()
+  await startRequestedHistoryReauthorization()
   if (browserConfigured.value) await loadMembers()
 })
 

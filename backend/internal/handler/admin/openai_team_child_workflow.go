@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -37,6 +39,19 @@ type teamChildWorkflowCallbackRequest struct {
 type teamChildWorkflowRestartOAuthRequest struct {
 	AuthURL        string `json:"auth_url" binding:"required"`
 	OAuthSessionID string `json:"oauth_session_id" binding:"required"`
+}
+
+type teamChildAccountReauthorizeRequest struct {
+	AuthURL        string `json:"auth_url" binding:"required"`
+	OAuthSessionID string `json:"oauth_session_id" binding:"required"`
+}
+
+type teamChildAutomationReauthorizeRequest struct {
+	AccountID      int64  `json:"account_id"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	AuthURL        string `json:"auth_url"`
+	OAuthSessionID string `json:"oauth_session_id"`
 }
 
 type teamChildWorkflowCodeRequest struct {
@@ -162,6 +177,18 @@ func (h *OpenAIOAuthHandler) ContinueTeamChildWorkflow(c *gin.Context) {
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/continue", nil)
+}
+
+// PauseTeamChildWorkflow preserves the current workflow and asks the private
+// browser runner to stop before entering its next external-page node.
+// POST /api/v1/admin/openai/team-child/workflows/:workflow_id/pause
+func (h *OpenAIOAuthHandler) PauseTeamChildWorkflow(c *gin.Context) {
+	workflowID := strings.TrimSpace(c.Param("workflow_id"))
+	if !validTeamChildWorkflowID(workflowID) {
+		response.BadRequest(c, "工作流 ID 无效")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/pause", nil)
 }
 
 // SubmitTeamChildWorkflowEmailCode forwards a code read by the active XIASS
@@ -299,9 +326,68 @@ func (h *OpenAIOAuthHandler) RestartTeamChildWorkflowOAuth(c *gin.Context) {
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/restart-oauth", req)
 }
 
-// CancelTeamChildWorkflow stops only the pending callback observation. It never
-// reverses an already confirmed member removal or invitation, because guessing
-// at an external workspace rollback would be more destructive than stopping.
+// ReauthorizeTeamChildAccount starts the narrow login-only OAuth workflow for
+// an existing Team child. The saved password is decrypted only on the XIASS
+// server and sent to the private automation service; it is never returned to
+// the browser or included in the workflow summary.
+func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	accountID, err := strconv.ParseInt(strings.TrimSpace(c.Param("account_id")), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Team 子号账号 ID 无效")
+		return
+	}
+	var req teamChildAccountReauthorizeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "授权链接无效")
+		return
+	}
+	req.AuthURL = strings.TrimSpace(req.AuthURL)
+	req.OAuthSessionID = strings.TrimSpace(req.OAuthSessionID)
+	if err := validateTeamChildWorkflowAuthURL(req.AuthURL); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if !teamChildWorkflowSessionPattern.MatchString(req.OAuthSessionID) {
+		response.BadRequest(c, "XIASS OAuth 会话无效")
+		return
+	}
+	if h == nil || h.adminService == nil || h.secretEncryptor == nil {
+		response.InternalError(c, "Team 子号重新授权服务不可用")
+		return
+	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	teamChild, _ := account.Extra[service.OpenAITeamChildExtraKey].(bool)
+	email, _ := account.Extra[service.OpenAITeamChildEmailExtraKey].(string)
+	ciphertext, _ := account.Credentials[service.OpenAITeamChildPasswordCredentialKey].(string)
+	email = normalizeTeamChildWorkflowEmail(email)
+	if account.Platform != service.PlatformOpenAI || !account.IsOAuth() || !teamChild || !validTeamChildWorkflowEmail(email) || strings.TrimSpace(ciphertext) == "" {
+		response.BadRequest(c, "该账号不是可自动重新授权的 Team 子号")
+		return
+	}
+	password, err := h.secretEncryptor.Decrypt(ciphertext)
+	if err != nil || len(password) < 8 || len(password) > 256 {
+		response.InternalError(c, "Team 子号登录密码无法解密")
+		return
+	}
+	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/reauthorize", teamChildAutomationReauthorizeRequest{
+		AccountID:      accountID,
+		Email:          email,
+		Password:       password,
+		AuthURL:        req.AuthURL,
+		OAuthSessionID: req.OAuthSessionID,
+	})
+}
+
+// CancelTeamChildWorkflow stops the current workflow at its next node boundary.
+// It never reverses an already confirmed member removal or invitation, because
+// guessing at an external workspace rollback would be more destructive.
 // DELETE /api/v1/admin/openai/team-child/workflows/:workflow_id
 func (h *OpenAIOAuthHandler) CancelTeamChildWorkflow(c *gin.Context) {
 	workflowID := strings.TrimSpace(c.Param("workflow_id"))

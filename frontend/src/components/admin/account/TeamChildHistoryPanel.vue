@@ -37,8 +37,29 @@
               账号 #{{ entry.account.id }}<span v-if="entry.account.last_used_at"> · 最近调用 {{ formatDateTime(entry.account.last_used_at) }}</span>
             </p>
             <p v-else class="mt-1 text-xs text-gray-500 dark:text-gray-400">邮箱已保留，尚未导入 XIASS 账号管理</p>
+            <p
+              v-if="accountIssue(entry)?.description"
+              class="mt-1.5 max-w-2xl text-xs leading-5"
+              :class="accountIssue(entry)?.tone === 'error' ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300'"
+              :title="accountIssue(entry)?.rawReason"
+              :data-testid="`team-history-issue-${entry.account?.id || entry.email}`"
+            >
+              {{ accountIssue(entry)?.description }}
+            </p>
           </div>
           <div class="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              v-if="entry.account && accountIssue(entry)?.needsReauth"
+              type="button"
+              class="btn flex items-center gap-1.5 whitespace-nowrap border-red-300 bg-red-50 !px-2.5 !py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/35 dark:text-red-300 dark:hover:bg-red-950/55"
+              :disabled="reauthorizingAccountID === entry.account.id || !entry.passwordAvailable"
+              :title="entry.passwordAvailable ? '复用历史邮箱和保存的密码，从 XIASS 官方 OAuth 登录节点重新授权' : '该账号没有可用于自动重新授权的保存密码'"
+              :data-testid="`team-history-reauthorize-${entry.account.id}`"
+              @click="emit('reauthorize', entry)"
+            >
+              <Icon name="key" size="xs" :class="reauthorizingAccountID === entry.account.id ? 'animate-pulse' : ''" :stroke-width="2.5" />
+              <span>{{ reauthorizingAccountID === entry.account.id ? '正在重新授权' : '重新授权' }}</span>
+            </button>
             <button type="button" class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs" :disabled="openingEmail === entry.email" @click="emit('open-mailbox', entry.email)">
               <Icon name="mail" size="xs" :class="openingEmail === entry.email ? 'animate-pulse' : ''" :stroke-width="2" />
               <span>{{ openingEmail === entry.email ? '打开中' : '接收验证码' }}</span>
@@ -99,12 +120,14 @@ const props = withDefaults(defineProps<{
   openingEmail?: string
   loading?: boolean
   passwordLoadingAccountID?: number | null
+  reauthorizingAccountID?: number | null
   revealedPasswords?: Record<number, string>
 }>(), {
   activeMailboxEmail: '',
   openingEmail: '',
   loading: false,
   passwordLoadingAccountID: null,
+  reauthorizingAccountID: null,
   revealedPasswords: () => ({})
 })
 
@@ -113,6 +136,7 @@ const emit = defineEmits<{
   'open-mailbox': [email: string]
   'toggle-password': [entry: TeamChildHistoryEntry]
   'copy-password': [password: string]
+  reauthorize: [entry: TeamChildHistoryEntry]
 }>()
 
 const normalizedActiveEmail = computed(() => normalizeEmail(props.activeMailboxEmail))
@@ -122,18 +146,78 @@ function normalizeEmail(value: string): string {
 }
 
 function accountStatusLabel(entry: TeamChildHistoryEntry): string {
+  const issue = accountIssue(entry)
+  if (issue) return issue.label
   if (!entry.account) return '仅邮箱'
-  if (entry.account.status === 'error') return '异常'
   if (entry.account.status !== 'active') return '已停用'
   if (!entry.account.schedulable) return '暂停调度'
   return '正常'
 }
 
 function accountStatusClass(entry: TeamChildHistoryEntry): string {
+  const issue = accountIssue(entry)
+  if (issue?.tone === 'error') return 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+  if (issue) return 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
   if (!entry.account) return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
-  if (entry.account.status === 'error') return 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'
   if (entry.account.status !== 'active' || !entry.account.schedulable) return 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
   return 'bg-green-100 text-green-700 dark:bg-green-950/35 dark:text-green-300'
+}
+
+interface TeamAccountIssue {
+  label: string
+  description: string
+  rawReason: string
+  tone: 'error' | 'warning'
+  needsReauth: boolean
+}
+
+function accountIssue(entry: TeamChildHistoryEntry): TeamAccountIssue | null {
+  const account = entry.account
+  if (!account) return null
+  const extra = account.extra as Record<string, unknown> | undefined
+  const errorCode = String(entry.usage?.error_code || extra?.error_code || '').trim().toLowerCase()
+  const rawReason = [
+    entry.usage?.error,
+    account.error_message,
+    account.temp_unschedulable_reason,
+    typeof extra?.error === 'string' ? extra.error : ''
+  ].filter(Boolean).join(' · ').replace(/\s+/g, ' ').trim().slice(0, 240)
+  const statusMatch = rawReason.match(/\b(401|403|408|409|429|5\d\d)\b/)
+  const statusCode = statusMatch?.[1] || ''
+  const needsReauth = entry.usage?.needs_reauth === true
+    || extra?.needs_reauth === true
+    || errorCode === 'unauthenticated'
+    || statusCode === '401'
+    || /unauthori[sz]ed|invalid[_ ](?:grant|token)|token\s*(?:expired|invalid|失效|过期)/i.test(rawReason)
+  if (needsReauth) {
+    return {
+      label: '401 · 授权失效',
+      description: '401：OpenAI OAuth 凭据已失效，需要重新授权',
+      rawReason,
+      tone: 'error',
+      needsReauth: true
+    }
+  }
+  if (errorCode === 'forbidden' || statusCode === '403' || entry.usage?.is_forbidden) {
+    return { label: '403 · 访问受限', description: '403：OpenAI 拒绝访问，需检查验证或账号状态', rawReason, tone: 'error', needsReauth: false }
+  }
+  if (errorCode === 'rate_limited' || statusCode === '429') {
+    return { label: '429 · 请求限流', description: '429：当前账号被上游限流，请等待额度窗口恢复', rawReason, tone: 'warning', needsReauth: false }
+  }
+  if (errorCode === 'network_error' || /network|timeout|connection|dns|tls|网络|连接|超时/i.test(rawReason)) {
+    return { label: '网络异常', description: '网络异常：暂时无法连接 OpenAI，上游恢复后可继续调度', rawReason, tone: 'warning', needsReauth: false }
+  }
+  if (account.status === 'error' || errorCode || statusCode) {
+    const code = statusCode || (errorCode && errorCode !== 'network_error' ? errorCode.toUpperCase() : '')
+    return {
+      label: code ? `${code} · 账号异常` : '账号异常',
+      description: rawReason ? `账号异常：${rawReason.slice(0, 120)}` : '账号异常：服务器未返回更具体的错误原因',
+      rawReason,
+      tone: 'error',
+      needsReauth: false
+    }
+  }
+  return null
 }
 
 function formatUsage(value: number | null | undefined): string {

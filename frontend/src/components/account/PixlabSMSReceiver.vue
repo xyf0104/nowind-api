@@ -252,13 +252,16 @@ const props = withDefaults(defineProps<{
   automationMode?: boolean
   /** Replace a waiting Team number once after this interval. */
   automationReplaceAfterMs?: number
+  /** Team workflow reset signal; cancels an owned active session without a dialog. */
+  automationCancelSignal?: number
 }>(), {
   active: false,
   replacementRequired: false,
   submissionKey: '',
   autoSubmit: true,
   automationMode: false,
-  automationReplaceAfterMs: 120_000
+  automationReplaceAfterMs: 120_000,
+  automationCancelSignal: 0
 })
 
 const emit = defineEmits<{
@@ -409,6 +412,8 @@ async function cancel(): Promise<void> {
       return
     }
     hasManuallyStarted.value = false
+    lastEmittedPhoneSignature.value = ''
+    lastEmittedCode.value = ''
     appStore.showInfo('已取消当前手机号。')
     emit('session-cancelled')
   } catch (error) {
@@ -529,6 +534,14 @@ watch(
     if (props.automationMode) void requestPhone()
   },
   { immediate: true }
+)
+
+watch(
+  () => props.automationCancelSignal,
+  (next, previous) => {
+    if (!props.automationMode || next === previous || !hasActiveSession.value || isCancelling.value) return
+    void cancel()
+  }
 )
 
 watch([replacementRequired, canChangeNumber], ([required]) => {

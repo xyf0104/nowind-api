@@ -177,6 +177,8 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.get('[data-testid="team-oauth-side-actions"]').find('[data-testid="team-manual-browser"]').exists()).toBe(false)
     expect(wrapper.emitted('open-browser')).toHaveLength(1)
     expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
+    await wrapper.get('[data-testid="team-reset-workflow"]').trigger('click')
+    expect(wrapper.emitted('reset-workflow')).toHaveLength(1)
   })
 
   it('routes a rejected phone directly to one confirmed replacement instead of generic continuation', () => {
@@ -198,5 +200,21 @@ describe('TeamChildOAuthWorkspace', () => {
 
     expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-replacement-required')).toBe('true')
     expect(wrapper.find('[data-testid="team-continue-after-failure"]').exists()).toBe(false)
+  })
+
+  it('keeps SMS inactive while paused and exposes separate resume and cancel controls', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ status: 'paused', manual_required: false, current_node: 'sms_poll', pause_requested: true })
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
+    await wrapper.get('[data-testid="team-resume-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="team-reset-workflow"]').trigger('click')
+    expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
+    expect(wrapper.emitted('reset-workflow')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="team-pause-workflow"]').exists()).toBe(false)
   })
 })

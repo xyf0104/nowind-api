@@ -26,7 +26,7 @@
                 data-testid="create-team-child"
                 @click="openTeamChildCreation"
               >
-                <Icon :name="teamChildNeedsReauth ? 'exclamationTriangle' : 'userPlus'" size="sm" :stroke-width="2" />
+                <Icon :name="teamChildNeedsReauth ? 'exclamationTriangle' : 'userPlus'" size="sm" :class="teamChildNeedsReauth ? 'text-red-600 dark:text-red-400' : ''" :stroke-width="teamChildNeedsReauth ? 2.75 : 2" />
                 <span>创建 Team 子号</span>
               </button>
             </template>
@@ -619,7 +619,11 @@ const route = useRoute() as ReturnType<typeof useRoute> | undefined
 const router = useRouter() as ReturnType<typeof useRouter> | undefined
 
 function openTeamChildCreation() {
-  void router?.push({ name: 'AdminTeamChildCreation' })
+  const account = latestTeamChildAccount.value
+  void router?.push({
+    name: 'AdminTeamChildCreation',
+    ...(teamChildNeedsReauth.value && account ? { query: { reauthorize: String(account.id) } } : {})
+  })
 }
 
 const normalizeActiveConcurrencyGroup = (value: unknown): string => {

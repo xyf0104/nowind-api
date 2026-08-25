@@ -256,4 +256,26 @@ describe('PixlabSMSReceiver', () => {
     expect(wrapper.emitted('session-cancelled')).toEqual([[]])
   })
 
+  it('cancels an automation-owned number immediately when the workflow resets', async () => {
+    receiverState.hasActiveSession = true
+    receiverMocks.cancel.mockResolvedValue('expired')
+    const wrapper = mount(PixlabSMSReceiver, {
+      props: { active: true, automationMode: true, automationCancelSignal: 0 },
+      global: {
+        stubs: {
+          BaseDialog: true,
+          Icon: true,
+          SMSReceiverActionDialog: SMSReceiverActionDialogStub
+        }
+      }
+    })
+
+    await wrapper.setProps({ automationCancelSignal: 1 })
+    await flushPromises()
+
+    expect(receiverMocks.cancel).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="sms-confirm-dialog"]').exists()).toBe(false)
+    expect(wrapper.emitted('session-cancelled')).toEqual([[]])
+  })
+
 })

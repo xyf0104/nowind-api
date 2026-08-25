@@ -58,13 +58,44 @@
           <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">服务器自动执行当前步骤；页面结构变化时可手动接入处理后继续。</p>
         </div>
         <div class="team-oauth-operation-actions">
-          <button v-if="showOneClick" type="button" data-testid="team-one-click-authorize" class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap" :disabled="oneClickDisabled" @click="emit('one-click')">
+          <button v-if="showOneClick && workflow.status !== 'paused'" type="button" data-testid="team-one-click-authorize" class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap" :disabled="oneClickDisabled" @click="emit('one-click')">
             <Icon name="play" size="sm" :stroke-width="2" />
             <span>{{ oneClickLabel }}</span>
           </button>
           <button type="button" data-testid="team-manual-browser" class="btn btn-secondary flex items-center justify-center gap-2 whitespace-nowrap" @click="emit('open-browser')">
             <Icon name="server" size="sm" :stroke-width="2" />
             <span>手动接入</span>
+          </button>
+          <button
+            v-if="!preflight && ['running', 'manual_required'].includes(workflow.status)"
+            type="button"
+            data-testid="team-pause-workflow"
+            class="btn btn-secondary flex items-center justify-center gap-2 whitespace-nowrap"
+            :disabled="workflow.pause_requested"
+            @click="emit('pause-workflow')"
+          >
+            <Icon name="pause" size="sm" :stroke-width="2.25" />
+            <span>{{ workflow.pause_requested ? '正在暂停' : '暂停自动化' }}</span>
+          </button>
+          <button
+            v-if="!preflight && workflow.status === 'paused'"
+            type="button"
+            data-testid="team-resume-workflow"
+            class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap"
+            @click="emit('continue-workflow')"
+          >
+            <Icon name="play" size="sm" :stroke-width="2.25" />
+            <span>继续自动化</span>
+          </button>
+          <button
+            v-if="!preflight && !['completed', 'cancelled'].includes(workflow.status)"
+            type="button"
+            data-testid="team-reset-workflow"
+            class="btn flex items-center justify-center gap-2 whitespace-nowrap border-red-200 bg-white text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:bg-dark-900 dark:text-red-300 dark:hover:bg-red-950/25"
+            @click="emit('reset-workflow')"
+          >
+            <Icon name="x" size="sm" :stroke-width="2.5" />
+            <span>取消并重头开始</span>
           </button>
         </div>
       </header>
@@ -128,7 +159,7 @@
         </div>
 
         <div v-if="receiverActive" class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-          已进入手机号验证阶段。右侧会自动领取号码；号码被拒或等待两分钟仍未收到验证码时，自动更换并覆盖旧号码继续，不会重复提交原号码。
+          已进入手机号验证阶段。号码被拒或等待两分钟仍未收到验证码时，系统会释放旧号码，返回授权页的手机号步骤后填入新号码；页面如果重新要求密码，会使用本次已保存的登录密码继续。
         </div>
         </template>
 
@@ -273,6 +304,7 @@
             :active="receiverActive"
             :replacement-required="replacementRequired"
             :submission-key="workflow.current_node || ''"
+            :automation-cancel-signal="smsCancelSignal"
             :auto-submit="true"
             :automation-mode="true"
             :automation-replace-after-ms="120000"
@@ -320,6 +352,7 @@ const props = withDefaults(defineProps<{
   browserLoading?: boolean
   browserError?: string
   browserControlConflict?: boolean
+  smsCancelSignal?: number
 }>(), {
   mailboxEmail: '',
   preflight: false,
@@ -344,7 +377,8 @@ const props = withDefaults(defineProps<{
   browserEmbedUrl: '',
   browserLoading: false,
   browserError: '',
-  browserControlConflict: false
+  browserControlConflict: false,
+  smsCancelSignal: 0
 })
 
 const emit = defineEmits<{
@@ -355,6 +389,8 @@ const emit = defineEmits<{
   'copy-callback': []
   'open-browser': []
   'continue-workflow': []
+  'pause-workflow': []
+  'reset-workflow': []
   'reveal-password': []
   'clear-password': []
   'copy-password': []
@@ -373,7 +409,8 @@ const emit = defineEmits<{
 }>()
 
 const receiverNodes = new Set(['sms_confirm', 'phone_submit', 'sms_poll', 'sms_code'])
-const receiverActive = computed(() => !['callback_ready', 'completed', 'cancelled'].includes(props.workflow.status)
+const receiverActive = computed(() => !props.workflow.pause_requested
+  && !['callback_ready', 'completed', 'paused', 'cancelled'].includes(props.workflow.status)
   && receiverNodes.has(props.workflow.current_node || ''))
 const replacementRequired = computed(() => props.workflow.status === 'failed'
   && props.workflow.current_node === 'phone_submit'
@@ -428,6 +465,16 @@ function cardClass(node: TeamChildWorkflowNode, stackIndex: number): string {
 }
 
 function displayNodeLabel(node: { key: string; label: string }) {
+  if (props.workflow.mode === 'reauthorization') {
+    if (node.key === 'signup') return '进入已有账号登录'
+    if (node.key === 'email') return '填入历史 Team 邮箱'
+    if (node.key === 'password') return '填入保存的登录密码'
+    if (node.key === 'mail') return '判断是否需要邮箱验证码'
+    if (node.key === 'mailbox') return '读取历史 Team 邮箱验证码'
+    if (node.key === 'email_code') return '自动填入邮箱验证码'
+    if (node.key === 'workspace') return '选择默认工作空间'
+    if (node.key === 'import') return '覆盖导入原 Team 账号'
+  }
   if (node.key === 'members') return '读取并确认成员席位'
   if (node.key === 'remove') return '移除普通成员'
   if (node.key === 'invite') return '邀请并确认 Pending invites'

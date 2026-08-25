@@ -98,7 +98,7 @@ export interface TeamChildMembersResult {
   }
 }
 
-export type TeamChildWorkflowStatus = 'running' | 'manual_required' | 'callback_ready' | 'completed' | 'failed' | 'cancelled'
+export type TeamChildWorkflowStatus = 'running' | 'manual_required' | 'callback_ready' | 'completed' | 'failed' | 'paused' | 'cancelled'
 
 export type TeamChildWorkflowNodeStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 
@@ -120,8 +120,11 @@ export interface TeamChildWorkflow {
   schema_version: 2
   id: string
   status: TeamChildWorkflowStatus
+  mode?: 'registration' | 'reauthorization'
+  target_account_id?: number
   expires_at: string
   manual_required: boolean
+  pause_requested?: boolean
   oauth_session_id?: string
   oauth_state?: string
   current_node?: TeamChildWorkflowNodeKey | ''
@@ -277,6 +280,11 @@ export async function continueTeamChildWorkflow(workflowID: string): Promise<Tea
   return requireCurrentTeamChildWorkflow(data)
 }
 
+export async function pauseTeamChildWorkflow(workflowID: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(`/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/pause`)
+  return requireCurrentTeamChildWorkflow(data)
+}
+
 export async function submitTeamChildWorkflowCallback(workflowID: string, callbackURL: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/callback`,
@@ -288,6 +296,14 @@ export async function submitTeamChildWorkflowCallback(workflowID: string, callba
 export async function restartTeamChildWorkflowOAuth(workflowID: string, authURL: string, oauthSessionID: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/restart-oauth`,
+    { auth_url: authURL, oauth_session_id: oauthSessionID }
+  )
+  return requireCurrentTeamChildWorkflow(data)
+}
+
+export async function reauthorizeTeamChildAccount(accountID: number, authURL: string, oauthSessionID: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(
+    `/admin/openai/team-child/accounts/${encodeURIComponent(String(accountID))}/reauthorize`,
     { auth_url: authURL, oauth_session_id: oauthSessionID }
   )
   return requireCurrentTeamChildWorkflow(data)
@@ -374,8 +390,10 @@ export const teamChildAPI = {
   getTeamChildWorkflow,
   getActiveTeamChildWorkflow,
   continueTeamChildWorkflow,
+  pauseTeamChildWorkflow,
   submitTeamChildWorkflowCallback,
   restartTeamChildWorkflowOAuth,
+  reauthorizeTeamChildAccount,
   submitTeamChildWorkflowEmailCode,
   submitTeamChildWorkflowPhone,
   submitTeamChildWorkflowSMSCode,

@@ -25,8 +25,10 @@ const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } 
     startTeamChildWorkflow: vi.fn(),
     getTeamChildWorkflow: vi.fn(),
     continueTeamChildWorkflow: vi.fn(),
+    pauseTeamChildWorkflow: vi.fn(),
     submitTeamChildWorkflowCallback: vi.fn(),
     restartTeamChildWorkflowOAuth: vi.fn(),
+    reauthorizeTeamChildAccount: vi.fn(),
     submitTeamChildWorkflowEmailCode: vi.fn(),
     submitTeamChildWorkflowPhone: vi.fn(),
     submitTeamChildWorkflowSMSCode: vi.fn(),
@@ -37,7 +39,8 @@ const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } 
   },
   accountsAPI: {
     list: vi.fn(),
-    getUsage: vi.fn()
+    getUsage: vi.fn(),
+    applyOAuthCredentials: vi.fn()
   },
   groupsAPI: { getAll: vi.fn() },
   nativeGenerateAuthUrl: vi.fn(),
@@ -82,7 +85,10 @@ vi.mock('@/composables/useOpenAIOAuth', async () => {
           oauthState.value = new URL(result.auth_url).searchParams.get('state') || ''
           loading.value = false
           return true
-        }
+        },
+        exchangeAuthCode: vi.fn(),
+        buildCredentials: vi.fn(() => ({})),
+        buildExtraInfo: vi.fn(() => undefined)
       }
     }
   }
@@ -92,8 +98,6 @@ vi.mock('@/stores/app', () => ({ useAppStore: () => appStore }))
 import TeamChildCreationView from '../TeamChildCreationView.vue'
 
 const testAuthURL = 'https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=team-state'
-const freshTestAuthURL = 'https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=fresh-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=fresh-team-state'
-
 const workflowNodeDefinitions = [
   ['members', '读取成员席位'], ['remove', '移除已选成员'], ['invite', '提交成员邀请'],
   ['invite_confirm', '确认 Pending invites'], ['oauth', '打开 XIASS 官方 OAuth'], ['signup', '选择 Sign up'],
@@ -182,6 +186,7 @@ function mountView() {
 describe('TeamChildCreationView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.history.replaceState({}, '', '/')
     teamChildAPI.getMailboxStatus.mockResolvedValue({ configured: true, browser_configured: true })
     teamChildAPI.listMailboxes.mockResolvedValue([])
     teamChildAPI.selectMailbox.mockResolvedValue({
@@ -232,10 +237,24 @@ describe('TeamChildCreationView', () => {
       callback_url: 'http://localhost:1455/auth/callback?code=callback-code&state=team-state'
     }))
     teamChildAPI.restartTeamChildWorkflowOAuth.mockResolvedValue(currentWorkflow({ current_node: 'mailbox' }))
+    teamChildAPI.reauthorizeTeamChildAccount.mockResolvedValue(currentWorkflow({
+      mode: 'reauthorization',
+      target_account_id: 317,
+      status: 'running',
+      manual_required: false,
+      current_node: 'oauth'
+    }))
     teamChildAPI.submitTeamChildWorkflowEmailCode.mockResolvedValue(currentWorkflow({ status: 'running', manual_required: false, current_node: 'email_code' }))
     teamChildAPI.submitTeamChildWorkflowPhone.mockResolvedValue(currentWorkflow({ status: 'running', manual_required: false, current_node: 'phone_submit' }))
     teamChildAPI.submitTeamChildWorkflowSMSCode.mockResolvedValue(currentWorkflow({ status: 'running', manual_required: false, current_node: 'sms_code' }))
+    teamChildAPI.pauseTeamChildWorkflow.mockResolvedValue(currentWorkflow({ status: 'paused', manual_required: false, current_node: 'sms_poll', pause_requested: true }))
     teamChildAPI.completeTeamChildWorkflow.mockResolvedValue(currentWorkflow({ status: 'completed', manual_required: false, current_node: 'import' }))
+    teamChildAPI.cancelTeamChildWorkflow.mockResolvedValue(currentWorkflow({ status: 'cancelled', manual_required: false, current_node: 'invite' }))
+    teamChildAPI.refreshTeamChildMembers.mockResolvedValue({
+      ready: true,
+      members: [{ id: 'member@example.test', email: 'member@example.test', role: 'member' }],
+      seat_email: 'member@example.test'
+    })
   })
 
   afterEach(() => {
@@ -292,6 +311,63 @@ describe('TeamChildCreationView', () => {
 
     expect(teamChildAPI.getActiveTeamChildWorkflow).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('等待当前节点')
+    wrapper.unmount()
+  })
+
+  it('starts the login-only OAuth workflow when the 401 Team entry is opened from account management', async () => {
+    window.history.replaceState({}, '', '/admin/team-child-creation?reauthorize=317')
+    accountsAPI.list.mockResolvedValue({
+      items: [{
+        id: 317,
+        name: 'team1004@example.test',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'error',
+        error_message: 'HTTP 401 Unauthorized',
+        schedulable: false,
+        proxy_id: null,
+        concurrency: 10,
+        priority: 1,
+        group_ids: [],
+        credentials_status: { has_xiass_team_child_password_encrypted: true },
+        extra: { xiass_team_child: true, xiass_team_child_email: 'team1004@example.test' }
+      }],
+      total: 1
+    })
+    accountsAPI.getUsage.mockResolvedValue({ needs_reauth: true, error_code: 'unauthenticated', error: 'HTTP 401' })
+    teamChildAPI.listMailboxes.mockResolvedValue(['team1004@example.test'])
+    teamChildAPI.selectMailbox.mockResolvedValue({
+      session_id: 'selected-mailbox-session',
+      email: 'team1004@example.test',
+      expires_at: '2026-08-24T12:00:00.000Z'
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(teamChildAPI.selectMailbox).toHaveBeenCalledWith('team1004@example.test')
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.reauthorizeTeamChildAccount).toHaveBeenCalledWith(317, testAuthURL, 'oauth-session')
+    expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('cancels a failed workflow and returns to the first-step workspace', async () => {
+    teamChildAPI.getActiveTeamChildWorkflow.mockResolvedValue(currentWorkflow({
+      status: 'failed',
+      current_node: 'invite',
+      error: '待处理邀请页面未完成加载'
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-reset-workflow"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.cancelTeamChildWorkflow).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop')
+    expect(teamChildAPI.refreshTeamChildMembers).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="team-reset-workflow"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="team-one-click-authorize"]').text()).toContain('一键授权')
     wrapper.unmount()
   })
 
@@ -506,6 +582,42 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
+  it('forwards a replacement number while an old SMS code is still being polled', async () => {
+    teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce(currentWorkflow({ current_node: 'sms_poll' }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="sms-phone-ready"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.submitTeamChildWorkflowPhone).toHaveBeenCalledWith(
+      'workflow-token-abcdefghijklmnop',
+      '+14155550123'
+    )
+    wrapper.unmount()
+  })
+
+  it('pauses the persisted workflow when an automation-owned SMS session is cancelled', async () => {
+    teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce(currentWorkflow({ current_node: 'sms_poll' }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="sms-session-cancelled"]').trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.pauseTeamChildWorkflow).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop')
+    expect(teamChildAPI.restartTeamChildWorkflowOAuth).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('forwards a Cloudflare mailbox code only while the mailbox node is waiting', async () => {
     teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce(currentWorkflow({ current_node: 'mailbox' }))
     teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'received', code: '123456' })
@@ -545,10 +657,7 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
-  it('restarts only OAuth after confirmed SMS cancellation', async () => {
-    nativeGenerateAuthUrl
-      .mockResolvedValueOnce({ auth_url: testAuthURL, session_id: 'oauth-session-initial' })
-      .mockResolvedValueOnce({ auth_url: freshTestAuthURL, session_id: 'oauth-session-fresh' })
+  it('does not mint a new OAuth session after confirmed SMS cancellation', async () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
@@ -559,12 +668,9 @@ describe('TeamChildCreationView', () => {
     await wrapper.get('[data-testid="sms-session-cancelled"]').trigger('click')
     await flushPromises()
 
-    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(2)
-    expect(teamChildAPI.restartTeamChildWorkflowOAuth).toHaveBeenCalledWith(
-      'workflow-token-abcdefghijklmnop',
-      freshTestAuthURL,
-      'oauth-session-fresh'
-    )
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.pauseTeamChildWorkflow).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop')
+    expect(teamChildAPI.restartTeamChildWorkflowOAuth).not.toHaveBeenCalled()
     expect(teamChildAPI.cancelTeamChildWorkflow).not.toHaveBeenCalled()
     wrapper.unmount()
   })
