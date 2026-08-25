@@ -31,6 +31,24 @@ const member = {
 }
 
 describe('TeamChildMembersWorkspace', () => {
+  it('embeds member controls without duplicating the page-level workflow actions', () => {
+    const wrapper = mount(TeamChildMembersWorkspace, {
+      props: {
+        members: [member],
+        embedded: true,
+        browserConfigured: true,
+        workflowReady: true
+      },
+      global
+    })
+
+    expect(wrapper.classes()).toContain('team-child-members-workspace-embedded')
+    expect(wrapper.text()).toContain('成员席位')
+    expect(wrapper.text()).not.toContain('成员自动化工作区')
+    expect(wrapper.find('button[title="打开 XIASS 内嵌服务器浏览器，处理 Pending invites 或登录页面"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text().includes('一键授权'))).toBe(false)
+  })
+
   it('uses the stable email identity for edit and remove operations', async () => {
     const wrapper = mount(TeamChildMembersWorkspace, {
       props: { members: [member] },

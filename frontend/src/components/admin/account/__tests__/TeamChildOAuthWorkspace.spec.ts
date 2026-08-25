@@ -45,6 +45,26 @@ function workflow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('TeamChildOAuthWorkspace', () => {
+  it('uses the same card workspace for preflight member controls', () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({ current_node: 'members' }),
+        preflight: true,
+        showOneClick: true
+      },
+      slots: {
+        operation: '<div data-testid="preflight-operation">成员席位</div>',
+        'operation-after': '<div data-testid="preflight-import">账号导入配置</div>'
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    expect(wrapper.get('[data-testid="team-oauth-progress-card"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="preflight-operation"]').text()).toBe('成员席位')
+    expect(wrapper.get('[data-testid="preflight-import"]').text()).toBe('账号导入配置')
+    expect(wrapper.text()).not.toContain('XIASS 官方 OAuth PKCE 链接')
+  })
+
   it('activates the confirmed SMS receiver only at the phone node', async () => {
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {

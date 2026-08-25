@@ -688,6 +688,29 @@ describe("admin SettingsView payment visible method controls", () => {
     adminSettingsFetch.mockResolvedValue(undefined);
   });
 
+  it("keeps the only global save action in the sticky settings header", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    const saveButtons = wrapper.findAll('[data-testid="settings-save-button"]');
+    expect(saveButtons).toHaveLength(1);
+    expect(saveButtons[0]!.classes()).toContain("settings-save-button");
+    expect(saveButtons[0]!.classes()).toContain("whitespace-nowrap");
+    expect(saveButtons[0]!.attributes("type")).toBe("submit");
+    expect(saveButtons[0]!.element.closest(".settings-tabs-shell")).not.toBeNull();
+
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+
+    const backupTabButton = wrapper
+      .findAll("button")
+      .find((node) => node.text().includes("admin.settings.tabs.backup"));
+    expect(backupTabButton).toBeDefined();
+    await backupTabButton!.trigger("click");
+    expect(wrapper.find('[data-testid="settings-save-button"]').exists()).toBe(false);
+  });
+
   it("renders panel rate limit card and saves settings", async () => {
     getPanelRateLimitSettings.mockClear();
     updatePanelRateLimitSettings.mockClear();

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import i18n from '@/i18n'
 
-const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(() => ({
+const { teamChildAPI, accountsAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(() => ({
   teamChildAPI: {
     getMailboxStatus: vi.fn(),
     createMailbox: vi.fn(),
@@ -35,6 +35,10 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
     revealTeamChildWorkflowPassword: vi.fn(),
     createOpenAIAccountFromOAuth: vi.fn()
   },
+  accountsAPI: {
+    list: vi.fn(),
+    getUsage: vi.fn()
+  },
   groupsAPI: { getAll: vi.fn() },
   nativeGenerateAuthUrl: vi.fn(),
   appStore: {
@@ -45,6 +49,7 @@ const { teamChildAPI, groupsAPI, appStore, nativeGenerateAuthUrl } = vi.hoisted(
 }))
 
 vi.mock('@/api/admin/teamChild', () => ({ teamChildAPI }))
+vi.mock('@/api/admin/accounts', () => ({ accountsAPI, default: accountsAPI }))
 vi.mock('@/api/admin/groups', () => ({ groupsAPI, default: groupsAPI }))
 vi.mock('@/components/auth/TotpStepUpDialog.vue', () => ({ default: { template: '<div data-testid="step-up-dialog-stub" />' } }))
 vi.mock('@/composables/useOpenAIOAuth', async () => {
@@ -185,6 +190,8 @@ describe('TeamChildCreationView', () => {
       expires_at: '2026-08-24T12:00:00.000Z'
     })
     groupsAPI.getAll.mockResolvedValue([])
+    accountsAPI.list.mockResolvedValue({ items: [], total: 0 })
+    accountsAPI.getUsage.mockResolvedValue(null)
     teamChildAPI.listTeamChildMembers.mockResolvedValue({
       ready: true,
       members: [{ id: 'member@example.test', email: 'member@example.test', role: 'member' }],
@@ -242,11 +249,13 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.listTeamChildMembers).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.refreshTeamChildMembers).not.toHaveBeenCalled()
     expect(teamChildAPI.createBrowserSession).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="team-oauth-workspace"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="team-members-workspace"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="team-sms-receiver"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('流程状态')
+    expect(wrapper.get('[data-testid="team-sms-receiver"]').attributes('data-active')).toBe('false')
     expect(wrapper.text()).not.toContain('需要你在 OpenAI 页面完成验证')
 
-    await wrapper.get('[data-testid="team-members-workspace"]').trigger('click')
+    await wrapper.get('[data-testid="team-manual-browser"]').trigger('click')
     await flushPromises()
     expect(teamChildAPI.createBrowserSession).toHaveBeenCalledWith({})
     expect(wrapper.find('[data-testid="team-browser-workspace"]').exists()).toBe(true)
@@ -262,7 +271,7 @@ describe('TeamChildCreationView', () => {
     await vi.runAllTimersAsync()
     await flushPromises()
 
-    await wrapper.get('[data-testid="team-members-workspace"]').trigger('click')
+    await wrapper.get('[data-testid="team-manual-browser"]').trigger('click')
     await flushPromises()
     const browser = wrapper.get('[data-testid="team-browser-workspace"]')
     expect(browser.attributes('data-embed-url')).toBe('/browser?ticket=test')
@@ -301,16 +310,10 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    expect(mailboxButton).toBeDefined()
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
     expect(teamChildAPI.createMailbox).toHaveBeenCalledTimes(1)
     expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
-
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
-    await flushPromises()
     expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
 
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
@@ -333,16 +336,13 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
     const callback = 'http://localhost:1455/auth/callback?code=callback-code&state=team-state'
-    await wrapper.get('textarea[placeholder^="https://"]')
+    await wrapper.get('textarea[placeholder^="http://localhost"]')
       .setValue(callback)
     await flushPromises()
     const confirmCallback = wrapper.findAll('button').find((button) => button.text().includes('确认回调状态'))
@@ -365,11 +365,8 @@ describe('TeamChildCreationView', () => {
     })
     const wrapper = mountView()
     await flushPromises()
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
@@ -390,16 +387,16 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-create-mailbox"]').trigger('click')
     await flushPromises()
     await wrapper.get('button[aria-label="立即检查邮箱"]').trigger('click')
     await flushPromises()
-    await wrapper.get('input[aria-label="邮箱验证码，点击复制"]').trigger('click')
+    await wrapper.get('[data-testid="team-sidebar-mailbox-code"]').trigger('click')
     await flushPromises()
 
-    const codeInput = wrapper.get('input[aria-label="邮箱验证码，点击复制"]')
-    expect(codeInput.classes()).toContain('w-44')
+    const codeBox = wrapper.get('[data-testid="team-sidebar-mailbox-code"]')
+    expect(codeBox.attributes('role')).toBe('button')
+    expect(codeBox.attributes('tabindex')).toBe('0')
     expect(writeText).toHaveBeenCalledWith('123456')
     expect(wrapper.findAll('button').some((button) => button.text().trim() === '复制')).toBe(false)
     wrapper.unmount()
@@ -416,11 +413,7 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    expect(mailboxButton).toBeDefined()
-    await mailboxButton!.trigger('click')
-    await flushPromises()
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
@@ -456,10 +449,7 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.get('input[placeholder="team1003@example.com"]').setValue('team1003@example.test')
-    const openButton = wrapper.findAll('button').find((button) => button.text().includes('打开邮箱'))
-    expect(openButton).toBeDefined()
-    await openButton!.trigger('click')
+    await wrapper.get('[data-testid="team-open-mailbox"]').trigger('click')
     await flushPromises()
 
     expect(teamChildAPI.selectMailbox).toHaveBeenCalledWith('team1003@example.test')
@@ -473,15 +463,12 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
-    await wrapper.get('textarea[placeholder^="https://"]').setValue('http://localhost:1455/auth/callback?code=callback-code&state=team-state')
+    await wrapper.get('textarea[placeholder^="http://localhost"]').setValue('http://localhost:1455/auth/callback?code=callback-code&state=team-state')
     const confirmCallback = wrapper.findAll('button').find((button) => button.text().includes('确认回调状态'))
     await confirmCallback!.trigger('click')
     await flushPromises()
@@ -504,11 +491,8 @@ describe('TeamChildCreationView', () => {
   it('forwards a confirmed SMS receiver number only at the matching workflow node', async () => {
     const wrapper = mountView()
     await flushPromises()
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
@@ -527,11 +511,8 @@ describe('TeamChildCreationView', () => {
     teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'received', code: '123456' })
     const wrapper = mountView()
     await flushPromises()
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
     await wrapper.get('button[aria-label="立即检查邮箱"]').trigger('click')
@@ -549,11 +530,8 @@ describe('TeamChildCreationView', () => {
     teamChildAPI.startTeamChildWorkflow.mockResolvedValueOnce(currentWorkflow({ current_node: 'sms_poll' }))
     const wrapper = mountView()
     await flushPromises()
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="sms-code-received"]').trigger('click')
@@ -573,11 +551,8 @@ describe('TeamChildCreationView', () => {
       .mockResolvedValueOnce({ auth_url: freshTestAuthURL, session_id: 'oauth-session-fresh' })
     const wrapper = mountView()
     await flushPromises()
-    const mailboxButton = wrapper.findAll('button').find((button) => button.text().includes('获取临时邮箱'))
-    await mailboxButton!.trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="team-member-select"]').trigger('click')
-    await wrapper.get('[data-testid="team-start-workflow"]').trigger('click')
     await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 

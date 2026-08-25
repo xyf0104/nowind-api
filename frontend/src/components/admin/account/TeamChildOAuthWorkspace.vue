@@ -86,6 +86,8 @@
       <template v-else>
       <div class="team-oauth-operation-body min-w-0 p-4">
       <div class="team-oauth-operation-content min-w-0">
+        <slot v-if="preflight" name="operation"></slot>
+        <template v-else>
         <div class="mt-4 flex items-start gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs leading-5 text-gray-600 dark:border-dark-600 dark:bg-dark-900/40 dark:text-gray-300">
           <Icon name="shield" size="sm" class="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" :stroke-width="2" />
           <p>成员移除、邀请和 Pending invites 会先在当前服务器页面确认；后续 OAuth、邮箱验证码、手机号、短信和回调继续使用同一工作流。验证码和浏览器凭据不会写入工作流记录；生成的登录密码会加密保存，并仅在管理员二次验证后显示。</p>
@@ -128,6 +130,9 @@
         <div v-if="receiverActive" class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
           已进入手机号验证阶段。右侧会自动领取号码；号码被拒或等待两分钟仍未收到验证码时，自动更换并覆盖旧号码继续，不会重复提交原号码。
         </div>
+        </template>
+
+        <slot name="operation-after"></slot>
       </div>
 
       </div>
@@ -291,6 +296,7 @@ import type { TeamChildWorkflow, TeamChildWorkflowNode } from '@/api/admin/teamC
 
 const props = withDefaults(defineProps<{
   workflow: TeamChildWorkflow
+  preflight?: boolean
   mailboxEmail?: string
   callbackURL?: string
   authUrl?: string
@@ -316,6 +322,7 @@ const props = withDefaults(defineProps<{
   browserControlConflict?: boolean
 }>(), {
   mailboxEmail: '',
+  preflight: false,
   callbackURL: '',
   authUrl: '',
   showReauthorize: false,

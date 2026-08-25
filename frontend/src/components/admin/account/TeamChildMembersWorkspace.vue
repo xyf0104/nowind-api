@@ -1,18 +1,22 @@
 <template>
-  <section class="team-child-members-workspace flex min-h-[540px] min-w-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800 2xl:min-h-[calc(100vh-10.5rem)]">
+  <section
+    class="team-child-members-workspace flex min-h-[540px] min-w-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800 2xl:min-h-[calc(100vh-10.5rem)]"
+    :class="embedded ? 'team-child-members-workspace-embedded' : ''"
+  >
     <header class="flex flex-col gap-3 border-b border-gray-200 px-4 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex min-w-0 items-center gap-3">
         <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-400">
           <Icon name="users" size="md" :stroke-width="2" />
         </span>
         <div class="min-w-0">
-          <h2 class="whitespace-nowrap text-base font-semibold text-gray-900 dark:text-gray-100">成员自动化工作区</h2>
+          <h2 class="whitespace-nowrap text-base font-semibold text-gray-900 dark:text-gray-100">{{ embedded ? '成员席位' : '成员自动化工作区' }}</h2>
           <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">成员、邀请和 OAuth 节点均以服务器端实时页面结果为准；未知页面可随时打开内嵌浏览器接管。</p>
         </div>
       </div>
       <div class="team-child-members-actions grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end">
         <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="ready ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'"><span class="h-1.5 w-1.5 rounded-full" :class="ready ? 'bg-green-500' : 'bg-amber-500'"></span>{{ ready ? '已登录' : '等待识别' }}</span>
         <button
+          v-if="!embedded"
           type="button"
           class="btn btn-secondary flex min-w-0 items-center justify-center gap-2 whitespace-nowrap"
           :disabled="browserLoading || !browserConfigured"
@@ -26,7 +30,7 @@
         <button type="button" class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0" :disabled="loading" title="刷新成员信息" aria-label="刷新成员信息" @click="emit('refresh')">
           <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" :stroke-width="2" />
         </button>
-        <button type="button" class="btn btn-primary col-span-2 flex min-w-0 items-center justify-center gap-2 whitespace-nowrap sm:col-span-1" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后准备授权链接' : '确认替换已选普通成员并准备授权链接') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
+        <button v-if="!embedded" type="button" class="btn btn-primary col-span-2 flex min-w-0 items-center justify-center gap-2 whitespace-nowrap sm:col-span-1" :disabled="!workflowReady || workflowBusy" :title="workflowReady ? (seatAlreadyRemoved ? '确认已人工腾出席位，并邀请临时邮箱后准备授权链接' : '确认替换已选普通成员并准备授权链接') : '先获取临时邮箱并选择普通成员席位，或刷新确认已人工腾出的席位'" @click="emit('start-workflow')">
           <Icon :name="workflowBusy ? 'refresh' : 'play'" size="sm" :class="workflowBusy ? 'animate-spin' : ''" :stroke-width="2" />
           <span>{{ workflowBusy ? '正在执行' : '一键授权' }}</span>
         </button>
@@ -108,7 +112,8 @@ const props = withDefaults(defineProps<{
   workflowContinuing?: boolean
   browserConfigured?: boolean
   browserLoading?: boolean
-}>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false, browserConfigured: false, browserLoading: false })
+  embedded?: boolean
+}>(), { pendingInvites: 0, loading: false, error: '', ready: false, seatEmail: '', workspaceName: '', invitationEmail: '', selectedEmail: '', seatAlreadyRemoved: false, workflowReady: false, workflowBusy: false, workflow: null, workflowContinuing: false, browserConfigured: false, browserLoading: false, embedded: false })
 const emit = defineEmits<{ refresh: []; inspect: []; select: [email: string]; invite: [email: string]; edit: [email: string, role: string]; remove: [email: string]; 'open-browser': []; 'start-workflow': []; 'continue-workflow': [] }>()
 const inviteOpen = ref(false)
 const editOpen = ref(false)
@@ -170,6 +175,15 @@ function submitRemove() { if (!removingMember.value || !canManageMember(removing
   min-height: 540px;
 }
 
+.team-child-members-workspace.team-child-members-workspace-embedded {
+  min-height: 24rem !important;
+  height: auto !important;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .team-child-members-actions > .btn {
   min-height: 2.25rem;
 }
@@ -179,8 +193,24 @@ function submitRemove() { if (!removingMember.value || !canManageMember(removing
     min-height: 480px;
   }
 
+  .team-child-members-workspace.team-child-members-workspace-embedded {
+    min-height: 22rem !important;
+  }
+
+  .team-child-members-workspace-embedded .team-child-members-actions {
+    grid-template-columns: minmax(0, 1fr) 2.25rem;
+  }
+
+  .team-child-members-workspace-embedded .team-child-members-actions > span {
+    grid-column: 1 / -1;
+  }
+
   .team-child-members-actions > .btn {
     width: 100%;
+  }
+
+  .team-child-members-workspace-embedded .team-child-members-actions > button[aria-label="刷新成员信息"] {
+    width: 2.25rem;
   }
 }
 
