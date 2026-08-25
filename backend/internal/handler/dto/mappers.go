@@ -3,6 +3,7 @@ package dto
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -227,6 +228,17 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		return nil
 	}
 	redactedCreds, credsStatus := RedactCredentials(a.Credentials)
+	name := a.Name
+	if email := canonicalTeamChildDisplayEmail(a); email != "" {
+		// Old Team records may carry a transient mailbox as Name while their
+		// workflow metadata already has the verified OAuth mailbox. Present both
+		// account fields consistently without exposing any additional secret.
+		name = email
+		if redactedCreds == nil {
+			redactedCreds = make(map[string]any)
+		}
+		redactedCreds["email"] = email
+	}
 	extra := redactAccountManagedExtra(a.Extra)
 	var ollamaCloudUsage *service.OllamaCloudUsageState
 	if state := service.OllamaCloudUsageStateFromAccount(a); state.Eligible {
@@ -234,7 +246,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	}
 	out := &Account{
 		ID:                      a.ID,
-		Name:                    a.Name,
+		Name:                    name,
 		Notes:                   a.Notes,
 		Platform:                a.Platform,
 		Type:                    a.Type,
@@ -415,6 +427,23 @@ func redactAccountManagedExtra(extra map[string]any) map[string]any {
 		}
 	}
 	return redacted
+}
+
+// canonicalTeamChildDisplayEmail repairs the presentation of records created
+// before Team imports began forcing the verified mailbox into account.Name.
+// The managed Extra value is written only by the state-bound workflow, so it
+// is the source of truth for this narrowly scoped account type.
+func canonicalTeamChildDisplayEmail(account *service.Account) string {
+	if account == nil || account.Platform != service.PlatformOpenAI || !account.IsOAuth() {
+		return ""
+	}
+	teamChild, _ := account.Extra[service.OpenAITeamChildExtraKey].(bool)
+	email, _ := account.Extra[service.OpenAITeamChildEmailExtraKey].(string)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !teamChild || email == "" {
+		return ""
+	}
+	return email
 }
 
 func AccountFromService(a *service.Account) *Account {

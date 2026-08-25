@@ -21,7 +21,13 @@ const workflowStateFile = process.env.NODE_ENV === 'test'
   ? ''
   : String(process.env.WORKFLOW_STATE_FILE || '/app/data/workflows.enc').trim()
 const oauthPageTimeout = boundedDuration(process.env.OAUTH_PAGE_TIMEOUT_MS, 45000, 10000, 120000)
-const memberRefreshAttempts = 3
+// The Members SPA exposes its shell before the native invitation controls are
+// fully hydrated. Keep each transition visible long enough for the UI to
+// settle, and never turn a slow render into a rapid refresh loop.
+const memberPageMinimumDwellMs = 1500
+const memberPageRefreshWindowMs = 5000
+const memberPageMaxRefreshesPerWindow = 2
+const memberRefreshAttempts = memberPageMaxRefreshesPerWindow
 const workflowProtocolVersion = 2
 const officialOpenAIClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const officialOpenAIRedirectURI = 'http://localhost:1455/auth/callback'
@@ -43,6 +49,8 @@ const workflows = new Map()
 // verification, consent, and localhost callback pages independently.
 let managedMembersPage
 let managedOAuthPage
+let memberPageRefreshes = []
+const memberPageRenderStartedAt = new WeakMap()
 
 function workflowStateEncryptionKey() {
   if (!serviceToken) return undefined
@@ -172,6 +180,29 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+function markMemberPageRenderStarted(page) {
+  if (page && typeof page === 'object') memberPageRenderStartedAt.set(page, Date.now())
+}
+
+async function waitForMemberPageDwell(page) {
+  if (!page || typeof page !== 'object') return
+  const startedAt = memberPageRenderStartedAt.get(page) || Date.now()
+  memberPageRenderStartedAt.set(page, startedAt)
+  const remaining = memberPageMinimumDwellMs - (Date.now() - startedAt)
+  if (remaining > 0) await sleep(remaining)
+}
+
+async function reserveMemberPageHardRefresh() {
+  const now = Date.now()
+  memberPageRefreshes = memberPageRefreshes.filter((timestamp) => now - timestamp < memberPageRefreshWindowMs)
+  if (memberPageRefreshes.length >= memberPageMaxRefreshesPerWindow) {
+    const remaining = memberPageRefreshWindowMs - (now - memberPageRefreshes[0])
+    if (remaining > 0) await sleep(remaining)
+    return reserveMemberPageHardRefresh()
+  }
+  memberPageRefreshes.push(Date.now())
+}
+
 async function connectPersistentBrowser() {
   const deadline = Date.now() + browserConnectTimeout
   let lastError
@@ -238,6 +269,7 @@ async function reloadMemberPage(active, targetURL, forceRefresh) {
 
   let cdpSession
   if (forceRefresh) {
+    await reserveMemberPageHardRefresh()
     try {
       cdpSession = await active.context().newCDPSession(active)
       await cdpSession.send('Network.enable')
@@ -252,6 +284,7 @@ async function reloadMemberPage(active, targetURL, forceRefresh) {
   }
   try {
     await active.goto(targetURL, { waitUntil: 'domcontentloaded', timeout: operationTimeout })
+    markMemberPageRenderStarted(active)
     return cdpSession
   } catch (error) {
     await releaseCacheSession(cdpSession)
@@ -314,6 +347,7 @@ async function membersPage({ forceRefresh = false, targetURL = membersURL, pendi
   try {
     if (pending) await waitForPendingInvitesPageReady(active, { allowRecoveryNavigation: forceRefresh })
     else await waitForMemberPageReady(active)
+    await waitForMemberPageDwell(active)
     await activateBrowserPage(active)
     return active
   } finally {
@@ -684,13 +718,17 @@ async function waitForMemberPageReady(current) {
       const control = await membersControl(current)
       if (control) {
         await control.click().catch(() => undefined)
+        markMemberPageRenderStarted(current)
         await sleep(500)
         continue
       }
       await sleep(400)
       continue
     }
-    if (await rows.first().isVisible().catch(() => false)) return
+    if (await rows.first().isVisible().catch(() => false)) {
+      await waitForMemberPageDwell(current)
+      return
+    }
     if (await inviteButton.isVisible().catch(() => false)) {
       // The Members toolbar commits before the table data. Returning as soon
       // as Invite member appears makes an owner-only workspace look empty on
@@ -701,11 +739,17 @@ async function waitForMemberPageReady(current) {
       const explicitEmpty = /no members|no users|暂无成员|没有成员|还没有成员/i.test(body)
       if (explicitEmpty) {
         emptyStateVisibleAt ||= Date.now()
-        if (Date.now() - emptyStateVisibleAt >= 1500) return
+        if (Date.now() - emptyStateVisibleAt >= memberPageMinimumDwellMs) {
+          await waitForMemberPageDwell(current)
+          return
+        }
       } else {
         emptyStateVisibleAt = 0
       }
-      if (Date.now() - toolbarVisibleAt >= 5000) return
+      if (Date.now() - toolbarVisibleAt >= 5000) {
+        await waitForMemberPageDwell(current)
+        return
+      }
     }
     await sleep(250)
   }
@@ -740,14 +784,14 @@ async function waitForPendingInvitesPageReady(current, { allowRecoveryNavigation
     const pendingSelected = selectedControl || (routeSelected && pendingContent)
     if (pendingSelected && pendingContent) {
       selectedSince ||= Date.now()
-      if (Date.now() - selectedSince < 750) {
+      if (Date.now() - selectedSince < memberPageMinimumDwellMs) {
         await sleep(250)
         continue
       }
       // Give the SPA one short render tick after the route/tab selection. This
       // prevents a previous Members table from being mistaken for Pending
       // invites when the page reuses its shell.
-      await sleep(500)
+      await waitForMemberPageDwell(current)
       return
     }
     selectedSince = 0
@@ -757,6 +801,7 @@ async function waitForPendingInvitesPageReady(current, { allowRecoveryNavigation
       const control = await pendingInvitesControl(current)
       if (control) {
         await control.click().catch(() => undefined)
+        markMemberPageRenderStarted(current)
         await sleep(300)
         continue
       }
@@ -766,7 +811,9 @@ async function waitForPendingInvitesPageReady(current, { allowRecoveryNavigation
     // actual selected panel/heading before the page is accepted.
     if (allowRecoveryNavigation && !attemptedDirectRoute) {
       attemptedDirectRoute = true
+      await reserveMemberPageHardRefresh()
       await current.goto(pendingInvitesURL(), { waitUntil: 'domcontentloaded', timeout: operationTimeout }).catch(() => undefined)
+      markMemberPageRenderStarted(current)
       await sleep(300)
       continue
     }
@@ -798,7 +845,10 @@ async function visibleInviteDialog(current) {
 
 async function openInviteDialog(current) {
   const existing = await visibleInviteDialog(current)
-  if (existing) return existing
+  if (existing) {
+    await sleep(memberPageMinimumDwellMs)
+    return existing
+  }
 
   const inviteButton = await firstVisibleInviteButton(current)
   if (!inviteButton) {
@@ -809,6 +859,9 @@ async function openInviteDialog(current) {
   await waitUntil('邀请成员弹窗未出现', async () => Boolean(await visibleInviteDialog(current)))
   const dialog = await visibleInviteDialog(current)
   if (!dialog) throw new Error('邀请成员弹窗未出现')
+  // The dialog shell mounts before the Email input and Send invites action are
+  // ready on slower hosted workspaces. Let it hydrate before touching either.
+  await sleep(memberPageMinimumDwellMs)
   return dialog
 }
 

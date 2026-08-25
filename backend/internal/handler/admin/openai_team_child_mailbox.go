@@ -1092,6 +1092,11 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 	query := endpoint.Query()
 	query.Set("limit", "20")
 	query.Set("offset", "0")
+	// Cloudflare Workers may serve a just-created inbox list from an edge cache.
+	// Polling must observe newly delivered verification messages without relying on
+	// an operator to reopen the mailbox, so every read has an opaque cache-buster
+	// and explicit no-cache headers. Provider authentication remains unchanged.
+	query.Set("_xiass_poll", strconv.FormatInt(time.Now().UnixNano(), 10))
 	if session.config.authMode == "query-key" && session.config.apiKey != "" {
 		query.Set("key", session.config.apiKey)
 	}
@@ -1100,7 +1105,7 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("Accept", "application/json")
+	applyTeamMailboxFreshReadHeaders(request)
 	applyTeamMailboxReadAuth(request, session)
 	body, status, err := h.doTeamMailboxRequest(request)
 	if err != nil {
@@ -1145,6 +1150,7 @@ func (h *OpenAIOAuthHandler) fetchTeamMailboxMessage(ctx context.Context, sessio
 	for _, endpointPath := range candidates {
 		endpoint := teamMailboxURL(session.config.baseURL, endpointPath)
 		query := endpoint.Query()
+		query.Set("_xiass_poll", strconv.FormatInt(time.Now().UnixNano(), 10))
 		if session.config.authMode == "query-key" && session.config.apiKey != "" {
 			query.Set("key", session.config.apiKey)
 		}
@@ -1154,7 +1160,7 @@ func (h *OpenAIOAuthHandler) fetchTeamMailboxMessage(ctx context.Context, sessio
 			lastErr = err
 			continue
 		}
-		request.Header.Set("Accept", "application/json")
+		applyTeamMailboxFreshReadHeaders(request)
 		applyTeamMailboxReadAuth(request, session)
 		body, status, err := h.doTeamMailboxRequest(request)
 		if err != nil {
@@ -1230,6 +1236,15 @@ func applyTeamMailboxReadAuth(request *http.Request, session openAITeamMailboxSe
 	if session.config.customAuth != "" {
 		request.Header.Set("x-custom-auth", session.config.customAuth)
 	}
+}
+
+func applyTeamMailboxFreshReadHeaders(request *http.Request) {
+	if request == nil {
+		return
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Cache-Control", "no-cache, no-store, max-age=0")
+	request.Header.Set("Pragma", "no-cache")
 }
 
 func decodeTeamMailboxObject(body []byte) (map[string]any, error) {

@@ -142,6 +142,71 @@ func TestApplyOAuthCredentialsRejectsMalformedOpenAILongContextBillingBeforeMuta
 	require.Zero(t, stub.updateAccountExtraCalls)
 }
 
+func TestApplyOAuthCredentialsKeepsTeamChildMailboxIdentity(t *testing.T) {
+	newHandler := func(stub *stubAdminService) (*gin.Engine, *AccountHandler) {
+		stub.getAccountResult = &service.Account{
+			ID:       317,
+			Name:     "old-mailbox@example.test",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Extra: map[string]any{
+				service.OpenAITeamChildExtraKey:      true,
+				service.OpenAITeamChildEmailExtraKey: "team1003@example.test",
+			},
+		}
+		handler := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		router := gin.New()
+		router.POST("/accounts/:id/apply-oauth-credentials", handler.ApplyOAuthCredentials)
+		return router, handler
+	}
+
+	t.Run("normalizes matching email and repairs the account name", func(t *testing.T) {
+		stub := newStubAdminService()
+		router, _ := newHandler(stub)
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/accounts/317/apply-oauth-credentials", bytes.NewBufferString(
+			`{"type":"oauth","credentials":{"access_token":"new-token","email":"Team1003@Example.Test"}}`,
+		))
+		request.Header.Set("Content-Type", "application/json")
+
+		router.ServeHTTP(recorder, request)
+
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		require.Equal(t, "team1003@example.test", stub.lastUpdateAccountInput.Name)
+		require.Equal(t, "team1003@example.test", stub.lastUpdateAccountInput.Credentials["email"])
+	})
+
+	t.Run("rejects a different OAuth subject before mutation", func(t *testing.T) {
+		stub := newStubAdminService()
+		router, _ := newHandler(stub)
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/accounts/317/apply-oauth-credentials", bytes.NewBufferString(
+			`{"type":"oauth","credentials":{"access_token":"new-token","email":"other@example.test"}}`,
+		))
+		request.Header.Set("Content-Type", "application/json")
+
+		router.ServeHTTP(recorder, request)
+
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		require.Zero(t, stub.updateAccountCalls)
+	})
+
+	t.Run("preserves the verified email when the new token has no email claim", func(t *testing.T) {
+		stub := newStubAdminService()
+		router, _ := newHandler(stub)
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/accounts/317/apply-oauth-credentials", bytes.NewBufferString(
+			`{"type":"oauth","credentials":{"access_token":"new-token"}}`,
+		))
+		request.Header.Set("Content-Type", "application/json")
+
+		router.ServeHTTP(recorder, request)
+
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		require.Equal(t, "team1003@example.test", stub.lastUpdateAccountInput.Credentials["email"])
+	})
+}
+
 func TestOpenAIOAuthCodexPATBoundaryRejectsMalformedOpenAILongContextBillingValueBeforeTokenValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewOpenAIOAuthHandler(nil, newStubAdminService(), nil, nil)

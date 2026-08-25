@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -145,4 +146,112 @@ func TestHandle403_CNProviderStructured403UsesOpenAICooldownPolicy(t *testing.T)
 	require.Zero(t, repo.setErrorCalls)
 	require.Equal(t, 1, repo.tempCalls)
 	require.Contains(t, repo.lastTempReason, "(1/3)")
+}
+
+func TestIsCNProviderConcurrencyLimit403_RequiresExactKimiMessage(t *testing.T) {
+	kimi := &Account{Platform: PlatformKimi}
+
+	require.True(t, isCNProviderConcurrencyLimit403(kimi, kimiConcurrentRequestLimitMessage))
+	require.True(t, isCNProviderConcurrencyLimit403(kimi, "  "+kimiConcurrentRequestLimitMessage+"\n"))
+
+	for name, tc := range map[string]struct {
+		account *Account
+		message string
+	}{
+		"generic concurrency wording":    {kimi, "concurrent request limit reached"},
+		"near match missing punctuation": {kimi, "You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again"},
+		"other CN provider":              {&Account{Platform: PlatformZhipu}, kimiConcurrentRequestLimitMessage},
+		"non CN provider":                {&Account{Platform: PlatformOpenAI}, kimiConcurrentRequestLimitMessage},
+		"nil account":                    {nil, kimiConcurrentRequestLimitMessage},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.False(t, isCNProviderConcurrencyLimit403(tc.account, tc.message))
+		})
+	}
+}
+
+func TestHandle403_OtherCNProviderWithKimiConcurrencyMessageKeepsNormalPolicy(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{openAI403DisableThreshold}}
+	blocker := &runtimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetOpenAI403CounterCache(counter)
+	svc.SetAccountRuntimeBlocker(blocker)
+	account := &Account{ID: 506, Platform: PlatformZhipu, Type: AccountTypeAPIKey}
+
+	shouldDisable := svc.HandleUpstreamError(
+		context.Background(), account, http.StatusForbidden, http.Header{},
+		[]byte(`{"error":{"message":"You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls, "only Kimi receives the transient concurrency exception")
+	require.Zero(t, repo.tempCalls)
+	require.Empty(t, counter.counts, "normal 403 policy must consume the counter")
+	require.Equal(t, []string{"auth_error"}, blocker.reasons)
+}
+
+func TestHandle403_KimiConcurrencyLimitUsesTemporaryCooldown(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{openAI403DisableThreshold}}
+	blocker := &runtimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetOpenAI403CounterCache(counter)
+	svc.SetAccountRuntimeBlocker(blocker)
+	account := &Account{ID: 507, Platform: PlatformKimi, Type: AccountTypeAPIKey}
+
+	shouldDisable := svc.HandleUpstreamError(
+		context.Background(), account, http.StatusForbidden, http.Header{},
+		[]byte(`{"error":{"message":"You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."}}`),
+	)
+
+	require.True(t, shouldDisable, "the current request must fail over")
+	require.Zero(t, repo.setErrorCalls)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Contains(t, repo.lastTempReason, cnConcurrencyLimitReasonPrefix)
+	require.Equal(t, []int64{openAI403DisableThreshold}, counter.counts, "the exact transient error must bypass the permanent-error counter")
+	require.Len(t, blocker.accounts, 1)
+	require.Equal(t, cnConcurrencyLimitReasonPrefix, blocker.reasons[0])
+	require.True(t, blocker.until[0].After(time.Now()))
+}
+
+func TestHandle403_KimiConcurrencyLimitRepositoryFailureKeepsRuntimeBlock(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{tempErr: errors.New("repository unavailable")}
+	counter := &openAI403CounterCacheStub{counts: []int64{openAI403DisableThreshold}}
+	blocker := &runtimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetOpenAI403CounterCache(counter)
+	svc.SetAccountRuntimeBlocker(blocker)
+	account := &Account{ID: 508, Platform: PlatformKimi, Type: AccountTypeAPIKey}
+
+	shouldDisable := svc.HandleUpstreamError(
+		context.Background(), account, http.StatusForbidden, http.Header{},
+		[]byte(`{"error":{"message":"You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Zero(t, repo.setErrorCalls, "a failed cooldown write must not turn this into a permanent error")
+	require.Equal(t, []int64{openAI403DisableThreshold}, counter.counts)
+	require.Len(t, blocker.accounts, 1, "the in-memory block protects immediately even if persistence is unavailable")
+	require.Same(t, account, blocker.accounts[0])
+	require.Equal(t, cnConcurrencyLimitReasonPrefix, blocker.reasons[0])
+	require.True(t, blocker.until[0].After(time.Now()))
+}
+
+func TestHandle403_KimiConcurrencyNearMatchKeepsNormalPermanentErrorPolicy(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{openAI403DisableThreshold}}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetOpenAI403CounterCache(counter)
+	account := &Account{ID: 509, Platform: PlatformKimi, Type: AccountTypeAPIKey}
+
+	shouldDisable := svc.HandleUpstreamError(
+		context.Background(), account, http.StatusForbidden, http.Header{},
+		[]byte(`{"error":{"message":"You've reached your concurrent request limit. Please contact support."}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls, "only the known exact transient response receives the cooldown exception")
+	require.Zero(t, repo.tempCalls)
 }

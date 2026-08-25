@@ -41,6 +41,7 @@ const { teamChildAPI, accountsAPI, groupsAPI, proxiesAPI, appStore, nativeGenera
     list: vi.fn(),
     getUsage: vi.fn(),
     applyOAuthCredentials: vi.fn(),
+    update: vi.fn(),
     delete: vi.fn()
   },
   groupsAPI: { getAll: vi.fn() },
@@ -169,9 +170,15 @@ const GroupSelectorStub = {
   template: '<div data-testid="group-selector" />'
 }
 
-const EditAccountModalStub = {
+const TeamChildAccountSuccessDialogStub = {
   props: ['show', 'account'],
-  template: '<div v-if="show" data-testid="created-account-editor">{{ account?.name }}</div>'
+  template: `<div v-if="show" data-testid="team-child-account-success-dialog">
+    {{ account?.name }}
+    <button type="button" data-testid="success-dialog-groups" @click="$emit('update:group-ids', [19])" />
+    <button type="button" data-testid="success-dialog-concurrency" @click="$emit('update:concurrency', 18)" />
+    <button type="button" data-testid="success-dialog-priority" @click="$emit('update:priority', 3)" />
+    <button type="button" data-testid="success-dialog-save" @click="$emit('save')" />
+  </div>`
 }
 
 function mountView() {
@@ -184,7 +191,7 @@ function mountView() {
         TeamChildBrowserWorkspace: BrowserWorkspaceStub,
         TeamChildMembersWorkspace: MembersWorkspaceStub,
         GroupSelector: GroupSelectorStub,
-        EditAccountModal: EditAccountModalStub,
+        TeamChildAccountSuccessDialog: TeamChildAccountSuccessDialogStub,
         ConfirmDialog: ConfirmDialogStub,
         RouterLink: true
       }
@@ -224,6 +231,7 @@ describe('TeamChildCreationView', () => {
       session_id: 'oauth-session'
     })
     teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'waiting' })
+    teamChildAPI.deleteMailboxSession.mockResolvedValue({ deleted: true })
     teamChildAPI.heartbeatTeamChildBrowserControl.mockResolvedValue({
       controller_id: 'controller-token-abcdefghijklmnop',
       control_expires_at: '2026-08-22T12:02:00.000Z'
@@ -366,6 +374,38 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.reauthorizeTeamChildAccount).toHaveBeenCalledWith(317, testAuthURL, 'oauth-session')
     expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
     expect(window.location.search).toBe('')
+    wrapper.unmount()
+  })
+
+  it('reads Team history through the OpenAI quota endpoint instead of Anthropic passive usage', async () => {
+    accountsAPI.list.mockResolvedValue({
+      items: [{
+        id: 319,
+        name: 'team1015@example.test',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        proxy_id: null,
+        concurrency: 10,
+        priority: 1,
+        credentials_status: { has_xiass_team_child_password_encrypted: true },
+        extra: { xiass_team_child: true, xiass_team_child_email: 'team1015@example.test' }
+      }],
+      total: 1
+    })
+    accountsAPI.getUsage.mockResolvedValue({
+      five_hour: { utilization: 7 },
+      seven_day: { utilization: 33, weekly_estimate_usd: 138 }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(accountsAPI.getUsage).toHaveBeenCalledWith(319)
+    expect(wrapper.text()).toContain('7%')
+    expect(wrapper.text()).toContain('33%')
+    expect(wrapper.text()).toContain('$138.00')
     wrapper.unmount()
   })
 
@@ -615,6 +655,33 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
+  it('reopens a stale mailbox session after two waiting polls and continues from the same email', async () => {
+    vi.useFakeTimers()
+    teamChildAPI.pollMailboxCode.mockResolvedValue({ status: 'waiting' })
+    teamChildAPI.selectMailbox.mockResolvedValue({
+      session_id: 'fresh-mailbox-session',
+      email: 'team-child@example.test',
+      expires_at: '2026-08-22T12:35:00.000Z'
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-create-mailbox"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(250)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+
+    expect(teamChildAPI.selectMailbox).toHaveBeenCalledWith('team-child@example.test')
+    expect(teamChildAPI.deleteMailboxSession).toHaveBeenCalledWith('mailbox-session')
+
+    await vi.advanceTimersByTimeAsync(50)
+    await flushPromises()
+    expect(teamChildAPI.pollMailboxCode).toHaveBeenLastCalledWith('fresh-mailbox-session')
+    wrapper.unmount()
+  })
+
   it('continues after a manually released seat only when the live members are protected', async () => {
     const protectedMembers = {
       ready: true,
@@ -701,8 +768,54 @@ describe('TeamChildCreationView', () => {
       workflow_id: 'workflow-token-abcdefghijklmnop'
     }))
     expect(teamChildAPI.completeTeamChildWorkflow).toHaveBeenCalledWith('workflow-token-abcdefghijklmnop')
-    expect(wrapper.get('[data-testid="created-account-editor"]').text()).toBe('team-child@example.test')
+    expect(wrapper.get('[data-testid="team-child-account-success-dialog"]').text()).toBe('team-child@example.test')
     expect(wrapper.findAll('[data-testid="team-oauth-current-node"]').some((card) => card.text().includes('已完成创建 Team 子账号'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('persists the compact success dialog group, concurrency, and priority changes', async () => {
+    teamChildAPI.createOpenAIAccountFromOAuth.mockResolvedValue({
+      id: 300,
+      name: 'team-child@example.test',
+      concurrency: 10,
+      priority: 1,
+      group_ids: []
+    })
+    accountsAPI.update.mockResolvedValue({
+      id: 300,
+      name: 'team-child@example.test',
+      concurrency: 18,
+      priority: 3,
+      group_ids: [19],
+      groups: [{ id: 19, name: 'OpenAI Team' }]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea[placeholder^="http://localhost"]').setValue('http://localhost:1455/auth/callback?code=callback-code&state=team-state')
+    const confirmCallback = wrapper.findAll('button').find((button) => button.text().includes('确认回调状态'))
+    await confirmCallback!.trigger('click')
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('校验并导入'))
+    await importButton!.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="success-dialog-groups"]').trigger('click')
+    await wrapper.get('[data-testid="success-dialog-concurrency"]').trigger('click')
+    await wrapper.get('[data-testid="success-dialog-priority"]').trigger('click')
+    await wrapper.get('[data-testid="success-dialog-save"]').trigger('click')
+    await flushPromises()
+
+    expect(accountsAPI.update).toHaveBeenCalledWith(300, {
+      group_ids: [19],
+      concurrency: 18,
+      priority: 3
+    })
+    expect(appStore.showSuccess).toHaveBeenCalledWith('Team 子账号配置已保存')
     wrapper.unmount()
   })
 

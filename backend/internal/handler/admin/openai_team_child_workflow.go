@@ -82,6 +82,22 @@ func validTeamChildWorkflowEmail(value string) bool {
 	return len(value) > 0 && len(value) <= 320 && teamChildWorkflowEmailPattern.MatchString(value)
 }
 
+// teamChildAccountWorkflowEmail returns the mailbox identity established by a
+// completed Team-child workflow. It is managed server-side and remains the
+// canonical identity for password recovery and reauthorization.
+func teamChildAccountWorkflowEmail(account *service.Account) (string, bool) {
+	if account == nil || account.Platform != service.PlatformOpenAI || !account.IsOAuth() {
+		return "", false
+	}
+	teamChild, _ := account.Extra[service.OpenAITeamChildExtraKey].(bool)
+	email, _ := account.Extra[service.OpenAITeamChildEmailExtraKey].(string)
+	email = normalizeTeamChildWorkflowEmail(email)
+	if !teamChild || !validTeamChildWorkflowEmail(email) {
+		return "", false
+	}
+	return email, true
+}
+
 // StartTeamChildWorkflow confirms the chosen replacement seat, sends the
 // temporary-email invitation through the internal Playwright service. The
 // service then prepares the official OAuth handoff and exposes no external
@@ -363,11 +379,9 @@ func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	teamChild, _ := account.Extra[service.OpenAITeamChildExtraKey].(bool)
-	email, _ := account.Extra[service.OpenAITeamChildEmailExtraKey].(string)
+	email, teamChild := teamChildAccountWorkflowEmail(account)
 	ciphertext, _ := account.Credentials[service.OpenAITeamChildPasswordCredentialKey].(string)
-	email = normalizeTeamChildWorkflowEmail(email)
-	if account.Platform != service.PlatformOpenAI || !account.IsOAuth() || !teamChild || !validTeamChildWorkflowEmail(email) || strings.TrimSpace(ciphertext) == "" {
+	if !teamChild || strings.TrimSpace(ciphertext) == "" {
 		response.BadRequest(c, "该账号不是可自动重新授权的 Team 子号")
 		return
 	}

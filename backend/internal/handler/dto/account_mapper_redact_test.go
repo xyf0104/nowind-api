@@ -100,3 +100,26 @@ func TestAccountFromServiceShallow_NilCredentialsOmitsStatus(t *testing.T) {
 	require.Nil(t, got.Credentials)
 	require.Nil(t, got.CredentialsStatus)
 }
+
+func TestAccountFromServiceShallow_UsesVerifiedTeamMailboxForLegacyDisplay(t *testing.T) {
+	src := &service.Account{
+		ID:       19,
+		Name:     "temporary-mailbox@example.test",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email": "temporary-mailbox@example.test",
+		},
+		Extra: map[string]any{
+			service.OpenAITeamChildExtraKey:      true,
+			service.OpenAITeamChildEmailExtraKey: "Team1003@Example.Test",
+		},
+	}
+
+	got := AccountFromServiceShallow(src)
+	require.Equal(t, "team1003@example.test", got.Name)
+	require.Equal(t, "team1003@example.test", got.Credentials["email"])
+	// Mapping a response must not mutate stored account metadata or credentials.
+	require.Equal(t, "temporary-mailbox@example.test", src.Name)
+	require.Equal(t, "temporary-mailbox@example.test", src.Credentials["email"])
+}

@@ -404,6 +404,13 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 
 	// Build new credentials from token info
 	newCredentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	teamChildEmail, isTeamChild := teamChildAccountWorkflowEmail(account)
+	if isTeamChild {
+		// Token refresh cannot change a completed Team-child's mailbox identity.
+		// Keep later account responses aligned with the verified mailbox/password
+		// record created by the workflow.
+		newCredentials["email"] = teamChildEmail
+	}
 
 	// Preserve non-token settings from existing credentials
 	for k, v := range account.Credentials {
@@ -413,9 +420,11 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	}
 	newCredentials = service.NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
 
-	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Credentials: newCredentials,
-	})
+	updateInput := &service.UpdateAccountInput{Credentials: newCredentials}
+	if isTeamChild {
+		updateInput.Name = teamChildEmail
+	}
+	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, updateInput)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -486,18 +495,27 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	// Build credentials from token info
 	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
 	if teamSecret != nil {
-		if !strings.EqualFold(strings.TrimSpace(tokenInfo.Email), teamSecret.Email) {
+		loginEmail := normalizeTeamChildWorkflowEmail(tokenInfo.Email)
+		workflowEmail := normalizeTeamChildWorkflowEmail(teamSecret.Email)
+		if !validTeamChildWorkflowEmail(loginEmail) || !strings.EqualFold(loginEmail, workflowEmail) {
 			response.BadRequest(c, "OAuth 登录邮箱与当前 Team 子号工作流邮箱不一致")
 			return
 		}
+		teamSecret.Email = workflowEmail
+		credentials["email"] = workflowEmail
 		credentials[service.OpenAITeamChildPasswordCredentialKey] = encryptedTeamPassword
 	}
 
 	platform := oauthPlatformFromPath(c)
 
 	// Use email as default name if not provided
-	name := req.Name
-	if name == "" && tokenInfo.Email != "" {
+	name := strings.TrimSpace(req.Name)
+	if teamSecret != nil {
+		// The workflow mailbox is already verified against the OAuth subject
+		// above. Use it as the visible account name too, so account management,
+		// Team history, password recovery, and mailbox selection cannot drift.
+		name = teamSecret.Email
+	} else if name == "" && tokenInfo.Email != "" {
 		name = tokenInfo.Email
 	}
 	if name == "" {

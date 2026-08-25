@@ -222,6 +222,9 @@ func TestTeamChildMailboxPollUsesMailboxJWTAndExtractsReadableVerificationCode(t
 			require.Equal(t, "Bearer mailbox-jwt-secret", r.Header.Get("Authorization"))
 			require.Equal(t, "", r.Header.Get("X-API-Key"))
 			require.Equal(t, "20", r.URL.Query().Get("limit"))
+			require.NotEmpty(t, r.URL.Query().Get("_xiass_poll"))
+			require.Equal(t, "no-cache, no-store, max-age=0", r.Header.Get("Cache-Control"))
+			require.Equal(t, "no-cache", r.Header.Get("Pragma"))
 			_, _ = w.Write([]byte(`{"messages":[{"id":"m-1","to":[{"address":"team1000@example.test"}],"subject":"OpenAI verification code: 418204"}]}`))
 		default:
 			t.Fatalf("unexpected request to %s", r.URL.Path)

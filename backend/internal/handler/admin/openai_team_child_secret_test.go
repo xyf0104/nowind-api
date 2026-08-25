@@ -220,7 +220,9 @@ func TestCreateAccountFromOAuthEncryptsAndBindsTeamWorkflowPassword(t *testing.T
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Len(t, adminService.createdAccounts, 1)
 	created := adminService.createdAccounts[0]
+	require.Equal(t, email, created.Name)
 	require.Equal(t, "encrypted:"+password, created.Credentials[service.OpenAITeamChildPasswordCredentialKey])
+	require.Equal(t, email, created.Credentials["email"])
 	require.Equal(t, true, created.Extra[service.OpenAITeamChildExtraKey])
 	require.Equal(t, email, created.Extra[service.OpenAITeamChildEmailExtraKey])
 	require.NotContains(t, rec.Body.String(), password)

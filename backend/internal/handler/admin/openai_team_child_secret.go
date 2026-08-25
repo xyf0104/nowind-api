@@ -113,11 +113,9 @@ func (h *OpenAIOAuthHandler) RevealTeamChildAccountPassword(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	teamChild, _ := account.Extra[service.OpenAITeamChildExtraKey].(bool)
-	email, _ := account.Extra[service.OpenAITeamChildEmailExtraKey].(string)
+	email, teamChild := teamChildAccountWorkflowEmail(account)
 	ciphertext, _ := account.Credentials[service.OpenAITeamChildPasswordCredentialKey].(string)
-	email = normalizeTeamChildWorkflowEmail(email)
-	if account.Platform != service.PlatformOpenAI || !account.IsOAuth() || !teamChild || !validTeamChildWorkflowEmail(email) || strings.TrimSpace(ciphertext) == "" {
+	if !teamChild || strings.TrimSpace(ciphertext) == "" {
 		response.NotFound(c, "该账号没有可查看的 Team 子号登录密码")
 		return
 	}

@@ -6,131 +6,137 @@ import (
 	"time"
 )
 
-func TestOpenAIWeeklyEstimateUsesCumulativeReadableAverage(t *testing.T) {
+func TestOpenAIWeeklyEstimateUsesNewestCompletedPercentInterval(t *testing.T) {
 	t.Parallel()
 	account := newOpenAIWeeklyEstimateTestAccount(1)
 	resetAt := openAIWeeklyEstimateTestResetAt()
 
-	// The first readable observation is the fixed baseline for this 7d window.
 	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
 	first := openAIWeeklyEstimateProgress(21, 40, resetAt)
 	applyOpenAIWeeklyEstimateForTest(t, account, first)
-	requireOpenAIWeeklyEstimate(t, first, 1000)
+	requireOpenAIWeeklyEstimate(t, first, 40+79*10)
 
-	// More cost at the same upstream percentage does not change the estimate.
-	// The next completed percentage uses its own current cumulative cost.
-	insideTwentyOne := openAIWeeklyEstimateProgress(21, 50, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, insideTwentyOne)
-	requireOpenAIWeeklyEstimate(t, insideTwentyOne, 1000)
+	// At the same endpoint, use its current maximum account cost immediately.
+	samePercent := openAIWeeklyEstimateProgress(21, 50, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, samePercent)
+	requireOpenAIWeeklyEstimate(t, samePercent, 50+79*20)
 
-	atTwentyTwo := openAIWeeklyEstimateProgress(22, 55, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, atTwentyTwo)
-	requireOpenAIWeeklyEstimate(t, atTwentyTwo, 1250)
+	// An unfinished next interval keeps the previous complete estimate.
+	partial := openAIWeeklyEstimateProgress(21.5, 55, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, partial)
+	requireOpenAIWeeklyEstimate(t, partial, 50+79*20)
 
-	atTwentyThree := openAIWeeklyEstimateProgress(23, 58, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, atTwentyThree)
-	requireOpenAIWeeklyEstimate(t, atTwentyThree, 28.0/3.0*100)
-	requireOpenAIWeeklyEstimateV10State(t, account, 20, 30, 23, 58, 23)
-	raw := requireOpenAIWeeklyEstimateRawState(t, account)
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "last_estimated_cost", 58)
+	// The next full interval uses only 21% -> 22%, never a historical average.
+	next := openAIWeeklyEstimateProgress(22, 60, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, next)
+	requireOpenAIWeeklyEstimate(t, next, 60+78*10)
+	requireOpenAIWeeklyEstimateStateVersion(t, account)
 }
 
-func TestOpenAIWeeklyEstimateConvertsObservedCumulativeAverageToWeeklyQuota(t *testing.T) {
-	t.Parallel()
-	account := newOpenAIWeeklyEstimateTestAccount(101)
-	resetAt := openAIWeeklyEstimateTestResetAt()
-
-	// These are the three observed values from the reported account. The
-	// estimate must use the readable 33%/$699.34 origin, not the old latest-1%
-	// extrapolation that produced 1243 -> 2754 -> 808.
-	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(33, 699.34, resetAt))
-	atThirtyFour := openAIWeeklyEstimateProgress(34, 700.96, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, atThirtyFour)
-	requireOpenAIWeeklyEstimate(t, atThirtyFour, (700.96-699.34)*100)
-
-	atThirtyFive := openAIWeeklyEstimateProgress(35, 743.43, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, atThirtyFive)
-	requireOpenAIWeeklyEstimate(t, atThirtyFive, (743.43-699.34)/2*100)
-}
-
-func TestOpenAIWeeklyEstimateWaitsForReadableCostAtNonzeroStartingPercent(t *testing.T) {
+func TestOpenAIWeeklyEstimateUsesActualSkippedIntervalAverage(t *testing.T) {
 	t.Parallel()
 	account := newOpenAIWeeklyEstimateTestAccount(2)
-	resetAt := openAIWeeklyEstimateTestResetAt()
-
-	// An account added at 20% with no local cost keeps the percentage as the
-	// pending start but does not invent a cost for earlier usage.
-	initial := openAIWeeklyEstimateProgress(20, 0, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, initial)
-	requireOpenAIWeeklyEstimatePending(t, initial)
-	requireOpenAIWeeklyEstimateV10HasNoBaseline(t, account, 20, 0)
-
-	// As soon as the 20% point has an actual XIASS cost, it becomes the baseline.
-	readableAtTwenty := openAIWeeklyEstimateProgress(20, 30, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, readableAtTwenty)
-	requireOpenAIWeeklyEstimatePending(t, readableAtTwenty)
-	requireOpenAIWeeklyEstimateV10State(t, account, 20, 30, 20, 30, 20)
-
-	atTwentyOne := openAIWeeklyEstimateProgress(21, 40, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, atTwentyOne)
-	requireOpenAIWeeklyEstimate(t, atTwentyOne, 1000)
-}
-
-func TestOpenAIWeeklyEstimateUsesFullObservedDeltaWhenPercentagesAreSkipped(t *testing.T) {
-	t.Parallel()
-	account := newOpenAIWeeklyEstimateTestAccount(3)
 	resetAt := openAIWeeklyEstimateTestResetAt()
 
 	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
 	skipped := openAIWeeklyEstimateProgress(22, 55, resetAt)
 	applyOpenAIWeeklyEstimateForTest(t, account, skipped)
 
-	// $25 across two readable percentage points is $12.50 per point.
-	requireOpenAIWeeklyEstimate(t, skipped, 1250)
+	// No intermediate observation exists, so $25 / 2 percentage points is the
+	// only valid rate for this latest complete interval.
+	requireOpenAIWeeklyEstimate(t, skipped, 55+78*(25.0/2.0))
 }
 
-func TestOpenAIWeeklyEstimateRebasesAfterUnbilledPercentAdvance(t *testing.T) {
+func TestOpenAIWeeklyEstimateDoesNotSmoothAgainstHistoricIntervals(t *testing.T) {
 	t.Parallel()
-	account := newOpenAIWeeklyEstimateTestAccount(31)
+	account := newOpenAIWeeklyEstimateTestAccount(3)
 	resetAt := openAIWeeklyEstimateTestResetAt()
 
-	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
-	first := openAIWeeklyEstimateProgress(21, 40, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, first)
-	requireOpenAIWeeklyEstimate(t, first, 1000)
+	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(33, 699.34, resetAt))
+	atThirtyFour := openAIWeeklyEstimateProgress(34, 700.96, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, atThirtyFour)
+	requireOpenAIWeeklyEstimate(t, atThirtyFour, 700.96+66*(700.96-699.34))
 
-	// The provider percentage moved but XIASS did not bill anything. Keep the
-	// previous credible result and sample anew from this point.
-	external := openAIWeeklyEstimateProgress(22, 40, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, external)
-	requireOpenAIWeeklyEstimate(t, external, 1000)
-	requireOpenAIWeeklyEstimateV10State(t, account, 22, 40, 22, 40, 22)
-
-	localAgain := openAIWeeklyEstimateProgress(23, 50, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, localAgain)
-	requireOpenAIWeeklyEstimate(t, localAgain, 1000)
+	atThirtyFive := openAIWeeklyEstimateProgress(35, 743.43, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, atThirtyFive)
+	requireOpenAIWeeklyEstimate(t, atThirtyFive, 743.43+65*(743.43-700.96))
 }
 
-func TestOpenAIWeeklyEstimatePreservesSameIdentityAcrossReauthorization(t *testing.T) {
+func TestOpenAIWeeklyEstimateRetainsLastResultAcrossUnbilledExternalAdvance(t *testing.T) {
 	t.Parallel()
 	account := newOpenAIWeeklyEstimateTestAccount(4)
 	resetAt := openAIWeeklyEstimateTestResetAt()
 
 	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
-	first := openAIWeeklyEstimateProgress(21, 40, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, first)
-	requireOpenAIWeeklyEstimate(t, first, 1000)
+	trusted := openAIWeeklyEstimateProgress(21, 40, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, trusted)
+	requireOpenAIWeeklyEstimate(t, trusted, 830)
 
-	// Reauthorization rotates credentials but keeps the upstream account identity.
-	account.Credentials["access_token"] = "rotated-access-token"
-	account.Credentials["refresh_token"] = "rotated-refresh-token"
-	afterReauthorization := openAIWeeklyEstimateProgress(22, 55, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, afterReauthorization)
-	requireOpenAIWeeklyEstimate(t, afterReauthorization, 1250)
-	requireOpenAIWeeklyEstimateV10State(t, account, 20, 30, 22, 55, 22)
+	// The provider percentage moved but no XIASS account cost was added. Rebase
+	// without blending that external use into the next local interval.
+	external := openAIWeeklyEstimateProgress(22, 40, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, external)
+	requireOpenAIWeeklyEstimate(t, external, 830)
+
+	localAgain := openAIWeeklyEstimateProgress(23, 50, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, localAgain)
+	requireOpenAIWeeklyEstimate(t, localAgain, 50+77*10)
 }
 
-func TestOpenAIWeeklyEstimateRebasesForRealStateBreaks(t *testing.T) {
+func TestOpenAIWeeklyEstimateCompensatesMidWindowZeroCostLogin(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(5)
+	resetAt := openAIWeeklyEstimateTestResetAt()
+
+	// This account was added at 20% before XIASS had recorded any local cost.
+	initial := openAIWeeklyEstimateProgress(20, 0, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, initial)
+	requireOpenAIWeeklyEstimatePending(t, initial)
+
+	// Cost collected at the unchanged endpoint is the first interval's start.
+	stillTwenty := openAIWeeklyEstimateProgress(20, 30, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, stillTwenty)
+	requireOpenAIWeeklyEstimatePending(t, stillTwenty)
+
+	firstComplete := openAIWeeklyEstimateProgress(21, 40, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, firstComplete)
+	// $10 per point compensates the prior 20%, then adds the real local total
+	// and the unconsumed 79%.
+	requireOpenAIWeeklyEstimate(t, firstComplete, 20*10+40+79*10)
+
+	// A higher maximum at 21% must update both that interval and its bootstrap.
+	sameEndpoint := openAIWeeklyEstimateProgress(21, 50, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, sameEndpoint)
+	requireOpenAIWeeklyEstimate(t, sameEndpoint, 20*20+50+79*20)
+
+	// Once OpenAI moves on, the bootstrap is fixed and only the most recent
+	// 1% interval controls the remaining projection.
+	nextComplete := openAIWeeklyEstimateProgress(22, 55, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, nextComplete)
+	requireOpenAIWeeklyEstimate(t, nextComplete, 20*20+55+78*5)
+}
+
+func TestOpenAIWeeklyEstimateKeepsStateAcrossCredentialRotation(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(6)
+	resetAt := openAIWeeklyEstimateTestResetAt()
+
+	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
+	first := openAIWeeklyEstimateProgress(21, 40, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, first)
+	requireOpenAIWeeklyEstimate(t, first, 830)
+
+	// Routine token rotation preserves the same ChatGPT identity and therefore
+	// must not erase the sampled interval. Interactive reauthorization clears
+	// this state at its dedicated credential-apply boundary.
+	account.Credentials["access_token"] = "rotated-access-token"
+	account.Credentials["refresh_token"] = "rotated-refresh-token"
+	afterRotation := openAIWeeklyEstimateProgress(22, 55, resetAt)
+	applyOpenAIWeeklyEstimateForTest(t, account, afterRotation)
+	requireOpenAIWeeklyEstimate(t, afterRotation, 55+78*15)
+}
+
+func TestOpenAIWeeklyEstimateResetsOnIdentityWindowPercentOrCostRegression(t *testing.T) {
 	resetAt := openAIWeeklyEstimateTestResetAt()
 	cases := []struct {
 		name     string
@@ -178,7 +184,7 @@ func TestOpenAIWeeklyEstimateRebasesForRealStateBreaks(t *testing.T) {
 			applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
 			trusted := openAIWeeklyEstimateProgress(21, 40, resetAt)
 			applyOpenAIWeeklyEstimateForTest(t, account, trusted)
-			requireOpenAIWeeklyEstimate(t, trusted, 1000)
+			requireOpenAIWeeklyEstimate(t, trusted, 830)
 
 			if tc.mutate != nil {
 				tc.mutate(account)
@@ -186,36 +192,18 @@ func TestOpenAIWeeklyEstimateRebasesForRealStateBreaks(t *testing.T) {
 			observed := tc.progress()
 			applyOpenAIWeeklyEstimateForTest(t, account, observed)
 			requireOpenAIWeeklyEstimatePending(t, observed)
-			requireOpenAIWeeklyEstimateV10State(t, account, observed.Utilization, observed.WindowStats.Cost, observed.Utilization, observed.WindowStats.Cost, observed.Utilization)
 		})
 	}
 }
 
-func TestOpenAIWeeklyEstimateAcceptsResetETAJitterWithinAnActiveWindow(t *testing.T) {
+func TestOpenAIWeeklyEstimateRebuildsLegacyCumulativeState(t *testing.T) {
 	t.Parallel()
-	account := newOpenAIWeeklyEstimateTestAccount(5)
-	resetAt := openAIWeeklyEstimateTestResetAt()
-
-	applyOpenAIWeeklyEstimateForTest(t, account, openAIWeeklyEstimateProgress(20, 30, resetAt))
-	first := openAIWeeklyEstimateProgress(21, 40, resetAt)
-	applyOpenAIWeeklyEstimateForTest(t, account, first)
-	requireOpenAIWeeklyEstimate(t, first, 1000)
-
-	jittered := openAIWeeklyEstimateProgress(22, 55, resetAt.Add(2*time.Hour))
-	applyOpenAIWeeklyEstimateForTest(t, account, jittered)
-	requireOpenAIWeeklyEstimate(t, jittered, 1250)
-}
-
-func TestOpenAIWeeklyEstimateRebasesLegacyState(t *testing.T) {
-	t.Parallel()
-	account := newOpenAIWeeklyEstimateTestAccount(6)
+	account := newOpenAIWeeklyEstimateTestAccount(7)
 	resetAt := openAIWeeklyEstimateTestResetAt()
 	account.Extra[openAIWeeklyEstimateBaselineKey] = map[string]any{
-		"version":            8,
-		"segment_percent":    33.0,
-		"segment_cost":       699.34,
-		"pending_percent":    34.0,
-		"pending_max_cost":   700.96,
+		"version":            10,
+		"baseline_percent":   33.0,
+		"baseline_cost":      699.34,
 		"completed_estimate": 2754.0,
 		"reset_at":           resetAt.Format(time.RFC3339Nano),
 		"identity":           "workspace-a",
@@ -224,18 +212,18 @@ func TestOpenAIWeeklyEstimateRebasesLegacyState(t *testing.T) {
 	observed := openAIWeeklyEstimateProgress(35, 743.43, resetAt)
 	applyOpenAIWeeklyEstimateForTest(t, account, observed)
 	requireOpenAIWeeklyEstimatePending(t, observed)
-	requireOpenAIWeeklyEstimateV10State(t, account, 35, 743.43, 35, 743.43, 35)
+	requireOpenAIWeeklyEstimateStateVersion(t, account)
 }
 
 func TestOpenAIWeeklyEstimateAtFullQuotaAlwaysEqualsAccountCost(t *testing.T) {
 	t.Parallel()
 	resetAt := openAIWeeklyEstimateTestResetAt()
-	account := newOpenAIWeeklyEstimateTestAccount(7)
+	account := newOpenAIWeeklyEstimateTestAccount(8)
 	full := openAIWeeklyEstimateProgress(100, 108.05, resetAt)
 	applyOpenAIWeeklyEstimateForTest(t, account, full)
 	requireOpenAIWeeklyEstimate(t, full, 108.05)
 
-	zeroCostAccount := newOpenAIWeeklyEstimateTestAccount(8)
+	zeroCostAccount := newOpenAIWeeklyEstimateTestAccount(9)
 	zeroCost := openAIWeeklyEstimateProgress(100, 0, resetAt)
 	applyOpenAIWeeklyEstimateForTest(t, zeroCostAccount, zeroCost)
 	requireOpenAIWeeklyEstimate(t, zeroCost, 0)
@@ -279,45 +267,13 @@ func requireOpenAIWeeklyEstimatePending(t *testing.T, progress *UsageProgress) {
 	}
 }
 
-func requireOpenAIWeeklyEstimateV10State(t *testing.T, account *Account, baselinePercent, baselineCost, observedPercent, observedCost, estimatedPercent float64) {
-	t.Helper()
-	raw := requireOpenAIWeeklyEstimateRawState(t, account)
-	if version := parseExtraInt(raw["version"]); version != openAIWeeklyEstimateStateVersion {
-		t.Fatalf("state version = %d, want %d", version, openAIWeeklyEstimateStateVersion)
-	}
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "baseline_percent", baselinePercent)
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "baseline_cost", baselineCost)
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "last_observed_percent", observedPercent)
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "last_observed_cost", observedCost)
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "last_estimated_percent", estimatedPercent)
-}
-
-func requireOpenAIWeeklyEstimateV10HasNoBaseline(t *testing.T, account *Account, observedPercent, observedCost float64) {
-	t.Helper()
-	raw := requireOpenAIWeeklyEstimateRawState(t, account)
-	if version := parseExtraInt(raw["version"]); version != openAIWeeklyEstimateStateVersion {
-		t.Fatalf("state version = %d, want %d", version, openAIWeeklyEstimateStateVersion)
-	}
-	if _, ok := raw["baseline_percent"]; ok {
-		t.Fatal("zero-cost nonzero-percent observation must not set a readable baseline")
-	}
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "last_observed_percent", observedPercent)
-	requireOpenAIWeeklyEstimateStateNumber(t, raw, "last_observed_cost", observedCost)
-}
-
-func requireOpenAIWeeklyEstimateRawState(t *testing.T, account *Account) map[string]any {
+func requireOpenAIWeeklyEstimateStateVersion(t *testing.T, account *Account) {
 	t.Helper()
 	raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
 	if !ok {
 		t.Fatal("weekly estimate state is missing")
 	}
-	return raw
-}
-
-func requireOpenAIWeeklyEstimateStateNumber(t *testing.T, raw map[string]any, key string, want float64) {
-	t.Helper()
-	got, ok := parseOpenAIWeeklyEstimateNumber(raw, key)
-	if !ok || math.Abs(got-want) > 1e-9 {
-		t.Fatalf("state %s = %v, want %v", key, got, want)
+	if version := parseExtraInt(raw["version"]); version != openAIWeeklyEstimateStateVersion {
+		t.Fatalf("state version = %d, want %d", version, openAIWeeklyEstimateStateVersion)
 	}
 }

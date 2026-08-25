@@ -1616,6 +1616,19 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	teamChildEmail, isTeamChild := teamChildAccountWorkflowEmail(existing)
+	if isTeamChild {
+		// A Team-child reauthorization must stay bound to the mailbox that the
+		// original workflow verified. Reject an explicit different OAuth subject;
+		// absent email claims retain the verified identity for compatibility.
+		incomingRawEmail, _ := req.Credentials["email"].(string)
+		incomingEmail := normalizeTeamChildWorkflowEmail(incomingRawEmail)
+		if incomingEmail != "" && (!validTeamChildWorkflowEmail(incomingEmail) || !strings.EqualFold(incomingEmail, teamChildEmail)) {
+			response.BadRequest(c, "重新授权邮箱与 Team 子号工作流邮箱不一致")
+			return
+		}
+		req.Credentials["email"] = teamChildEmail
+	}
 
 	var updatedAccount *service.Account
 	if existing.Platform == service.PlatformAntigravity {
@@ -1631,11 +1644,15 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 			PrivacyMode: privacyMode,
 		})
 	} else {
-		updatedAccount, err = h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
+		updateInput := &service.UpdateAccountInput{
 			Type:                      req.Type,
 			Credentials:               req.Credentials,
 			ResetOpenAIWeeklyEstimate: existing.Platform == service.PlatformOpenAI,
-		})
+		}
+		if isTeamChild {
+			updateInput.Name = teamChildEmail
+		}
+		updatedAccount, err = h.adminService.UpdateAccount(ctx, accountID, updateInput)
 		if err == nil && len(req.Extra) > 0 {
 			// Non-Antigravity platforms retain the existing key-level Extra merge.
 			if extraErr := h.adminService.UpdateAccountExtra(ctx, accountID, req.Extra); extraErr != nil {

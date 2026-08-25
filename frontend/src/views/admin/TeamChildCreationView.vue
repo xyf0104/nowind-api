@@ -175,7 +175,7 @@
                   <div class="mt-1 break-all text-sm text-green-700 dark:text-green-300">{{ createdAccount.name || mailbox?.email }}</div>
                   <div class="mt-2 text-xs text-green-700/80 dark:text-green-300/80">{{ displayedGroupsLabel }} · 并发 {{ displayedImportConfig.concurrency }} · 优先级 {{ displayedImportConfig.priority }}</div>
                 </div>
-                <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="successAccountEditorOpen = true">
+                <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="successAccountDialogOpen = true">
                   <Icon name="edit" size="sm" :stroke-width="2" />
                   <span>编辑账号配置</span>
                 </button>
@@ -225,13 +225,19 @@
       @cancel="browserTakeOverConfirmOpen = false"
     />
     <TotpStepUpDialog :controller="passwordStepUp" />
-    <EditAccountModal
-      :show="successAccountEditorOpen"
+    <TeamChildAccountSuccessDialog
+      :show="successAccountDialogOpen"
       :account="createdAccount"
-      :proxies="accountProxies"
       :groups="groups"
-      @close="successAccountEditorOpen = false"
-      @updated="handleCreatedAccountUpdated"
+      :group-ids="successAccountGroupIDs"
+      :concurrency="successAccountConcurrency"
+      :priority="successAccountPriority"
+      :saving="successAccountSaving"
+      @close="successAccountDialogOpen = false"
+      @update:group-ids="successAccountGroupIDs = $event"
+      @update:concurrency="successAccountConcurrency = $event"
+      @update:priority="successAccountPriority = $event"
+      @save="saveCreatedAccountConfiguration"
     />
   </div>
 </template>
@@ -242,7 +248,7 @@ import { Icon } from '@/components/icons'
 import TeamChildOAuthWorkspace from '@/components/admin/account/TeamChildOAuthWorkspace.vue'
 import TeamChildMembersWorkspace from '@/components/admin/account/TeamChildMembersWorkspace.vue'
 import TeamChildHistoryPanel from '@/components/admin/account/TeamChildHistoryPanel.vue'
-import { EditAccountModal } from '@/components/account'
+import TeamChildAccountSuccessDialog from '@/components/admin/account/TeamChildAccountSuccessDialog.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
@@ -259,8 +265,7 @@ import {
 } from '@/api/admin/teamChild'
 import { accountsAPI } from '@/api/admin/accounts'
 import { groupsAPI } from '@/api/admin/groups'
-import { proxiesAPI } from '@/api/admin/proxies'
-import type { Account, AccountUsageInfo, AdminGroup, Proxy as AccountProxy } from '@/types'
+import type { Account, AccountUsageInfo, AdminGroup } from '@/types'
 
 type FlowStatus = 'idle' | 'creating' | 'ready' | 'workflow' | 'waiting' | 'polling' | 'received' | 'callback' | 'importing' | 'completed' | 'error'
 type TeamChildHistoryEntry = { email: string; account: Account | null; usage: AccountUsageInfo | null; passwordAvailable: boolean }
@@ -304,6 +309,7 @@ const mailboxSelecting = ref(false)
 const mailboxCode = ref('')
 const mailboxCodeLoading = ref(false)
 const mailboxCodeError = ref('')
+const mailboxWaitingPolls = ref(0)
 const authUrl = openaiOAuth.authUrl
 const oauthState = openaiOAuth.oauthState
 const oauthSessionID = openaiOAuth.sessionId
@@ -311,13 +317,16 @@ const oauthGenerating = openaiOAuth.loading
 const oauthError = openaiOAuth.error
 const callbackURL = ref('')
 const groups = ref<AdminGroup[]>([])
-const accountProxies = ref<AccountProxy[]>([])
 const selectedGroupIDs = ref<number[]>([])
 const accountConcurrency = ref(10)
 const accountPriority = ref(1)
 const errorMessage = ref('')
 const createdAccount = ref<Account | null>(null)
-const successAccountEditorOpen = ref(false)
+const successAccountDialogOpen = ref(false)
+const successAccountSaving = ref(false)
+const successAccountGroupIDs = ref<number[]>([])
+const successAccountConcurrency = ref(10)
+const successAccountPriority = ref(1)
 const appliedImportConfig = ref<{ groupIDs: number[]; groupNames: string[]; concurrency: number; priority: number } | null>(null)
 const teamWorkflow = ref<TeamChildWorkflow | null>(null)
 const revealedWorkflowPassword = ref('')
@@ -340,6 +349,7 @@ const lastSubmittedSMSCode = ref('')
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let workflowPollTimer: ReturnType<typeof setTimeout> | null = null
 let browserHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
+let mailboxSessionRefreshInFlight = false
 
 const workflowNodeDefinitions: Array<[TeamChildWorkflowNodeKey, string]> = [
   ['members', '读取成员席位'], ['remove', '移除已选成员'], ['invite', '提交成员邀请'],
@@ -543,7 +553,10 @@ async function loadTeamChildHistory() {
       const extra = account.extra as Record<string, unknown> | undefined
       return extra?.xiass_team_child === true && Boolean(teamChildAccountEmail(account))
     })
-    const usageResults = await Promise.allSettled(teamAccounts.map((account) => accountsAPI.getUsage(account.id, 'passive')))
+    // OpenAI OAuth usage is read through its own cached Codex quota path. The
+    // passive endpoint is Anthropic-only, so asking it for Team accounts failed
+    // silently here and left the history cards stuck at "待刷新".
+    const usageResults = await Promise.allSettled(teamAccounts.map((account) => accountsAPI.getUsage(account.id)))
     const usageByAccountID = new Map<number, AccountUsageInfo>()
     usageResults.forEach((result, index) => {
       if (result.status === 'fulfilled') usageByAccountID.set(teamAccounts[index].id, result.value)
@@ -746,6 +759,7 @@ async function selectExistingMailbox() {
     selectedMailboxEmail.value = selected.email
     mailboxCode.value = ''
     mailboxCodeError.value = ''
+    resetMailboxPollRecovery()
     lastSubmittedEmailCode.value = ''
     schedulePoll(250)
     await loadKnownMailboxes()
@@ -1123,7 +1137,7 @@ async function resetWorkflowFromStart() {
     mailboxCodeError.value = ''
     callbackURL.value = ''
     createdAccount.value = null
-    successAccountEditorOpen.value = false
+    successAccountDialogOpen.value = false
     appliedImportConfig.value = null
     lastSubmittedEmailCode.value = ''
     lastSubmittedPhone.value = ''
@@ -1259,10 +1273,11 @@ async function startFlow() {
   if (pollTimer) clearTimeout(pollTimer)
   clearWorkflowPoll()
   mailboxPollingRequested.value = true
-  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; successAccountEditorOpen.value = false; appliedImportConfig.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'creating'
+  errorMessage.value = ''; mailboxCodeError.value = ''; createdAccount.value = null; successAccountDialogOpen.value = false; appliedImportConfig.value = null; teamWorkflow.value = null; openaiOAuth.resetState(); callbackURL.value = ''; mailboxCode.value = ''; lastSubmittedEmailCode.value = ''; lastSubmittedPhone.value = ''; lastSubmittedSMSCode.value = ''; status.value = 'creating'
   try {
     mailbox.value = await teamChildAPI.createMailbox()
     selectedMailboxEmail.value = mailbox.value.email
+    resetMailboxPollRecovery()
     await loadKnownMailboxes()
     schedulePoll(250)
     if (!teamWorkflow.value) await generateFreshOAuthSession()
@@ -1282,6 +1297,7 @@ async function restoreActiveMailbox() {
     mailbox.value = restored
     selectedMailboxEmail.value = restored.email
     mailboxCodeError.value = ''
+    resetMailboxPollRecovery()
     if (!teamWorkflow.value) status.value = 'ready'
   } catch {
     // A missing or expired mailbox is normal after its short server-side TTL.
@@ -1292,21 +1308,64 @@ function schedulePoll(delay = 5000) {
   if ((!workflowExecutionArmed.value && !mailboxPollingRequested.value) || !mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value)) return
   pollTimer = setTimeout(() => void pollMailbox(), Math.max(0, delay))
 }
+
+function resetMailboxPollRecovery() {
+  mailboxWaitingPolls.value = 0
+}
+
+async function refreshMailboxPollingSession(expectedSessionID: string): Promise<boolean> {
+  const current = mailbox.value
+  const email = current ? normalizeTeamChildEmail(current.email) : ''
+  if (!current || current.session_id !== expectedSessionID || !email || mailboxSessionRefreshInFlight) return false
+  mailboxSessionRefreshInFlight = true
+  try {
+    const replacement = await teamChildAPI.selectMailbox(email)
+    // The operator can select a different mailbox while the provider request is
+    // in flight. Only replace the exact session that initiated this recovery.
+    if (!mailbox.value || mailbox.value.session_id !== expectedSessionID || normalizeTeamChildEmail(replacement.email) !== email) {
+      await Promise.resolve(teamChildAPI.deleteMailboxSession(replacement.session_id)).catch(() => undefined)
+      return false
+    }
+    mailbox.value = replacement
+    selectedMailboxEmail.value = replacement.email
+    mailboxCode.value = ''
+    mailboxCodeError.value = ''
+    lastSubmittedEmailCode.value = ''
+    resetMailboxPollRecovery()
+    await Promise.resolve(teamChildAPI.deleteMailboxSession(expectedSessionID)).catch(() => undefined)
+    return true
+  } finally {
+    mailboxSessionRefreshInFlight = false
+  }
+}
+
 async function pollMailbox() {
   if ((!workflowExecutionArmed.value && !mailboxPollingRequested.value) || !mailbox.value || mailboxCode.value || ['completed', 'callback'].includes(status.value) || mailboxCodeLoading.value) return
+  const pollingMailbox = mailbox.value
   mailboxCodeLoading.value = true
   if (status.value === 'ready' || status.value === 'waiting' || status.value === 'error') status.value = 'polling'
   try {
-    const result = await teamChildAPI.pollMailboxCode(mailbox.value.session_id)
+    const result = await teamChildAPI.pollMailboxCode(pollingMailbox.session_id)
+    if (!mailbox.value || mailbox.value.session_id !== pollingMailbox.session_id) return
     mailboxCodeError.value = ''
     if (result.status === 'received' && result.code) {
       mailboxCode.value = result.code
       mailboxPollingRequested.value = false
+      resetMailboxPollRecovery()
       status.value = 'received'
       if (pollTimer) clearTimeout(pollTimer)
       void maybeSubmitMailboxCode()
     } else {
       if (status.value === 'polling') status.value = 'waiting'
+      mailboxWaitingPolls.value += 1
+      if (mailboxWaitingPolls.value >= 2) {
+        resetMailboxPollRecovery()
+        const refreshed = await refreshMailboxPollingSession(pollingMailbox.session_id).catch(() => false)
+        if (refreshed) {
+          schedulePoll(50)
+          return
+        }
+      }
       schedulePoll()
     }
   } catch (error) {
@@ -1324,8 +1383,12 @@ async function pollMailbox() {
   } finally { mailboxCodeLoading.value = false }
 }
 
-function requestMailboxPoll() {
+async function requestMailboxPoll() {
   mailboxPollingRequested.value = true
+  const current = mailbox.value
+  if (current && !mailboxCodeLoading.value) {
+    await refreshMailboxPollingSession(current.session_id).catch(() => undefined)
+  }
   void pollMailbox()
 }
 
@@ -1437,27 +1500,53 @@ async function importAccount() {
       teamWorkflow.value = await teamChildAPI.completeTeamChildWorkflow(teamWorkflow.value.id).catch(() => teamWorkflow.value!)
     }
     status.value = 'completed'
-    successAccountEditorOpen.value = true
+    initializeSuccessAccountConfiguration(createdAccount.value, importConfig)
+    successAccountDialogOpen.value = true
     if (pollTimer) clearTimeout(pollTimer)
     await teamChildAPI.deleteMailboxSession(mailbox.value.session_id).catch(() => undefined)
     await loadTeamChildHistory()
   } catch (error) { status.value = 'error'; errorMessage.value = extractApiErrorMessage(error, '导入失败') }
 }
 
-async function handleCreatedAccountUpdated(account: Account) {
-  createdAccount.value = account
-  selectedGroupIDs.value = [...(account.group_ids || account.groups?.map((group) => group.id) || [])]
-  accountConcurrency.value = account.concurrency
-  accountPriority.value = account.priority
-  appliedImportConfig.value = {
-    groupIDs: [...selectedGroupIDs.value],
-    groupNames: [...(account.groups?.map((group) => group.name) || [])],
-    concurrency: account.concurrency,
-    priority: account.priority
+function initializeSuccessAccountConfiguration(account: Account | null, fallback: { groupIDs: number[]; groupNames: string[]; concurrency: number; priority: number }) {
+  const accountGroupIDs = account?.group_ids || account?.groups?.map((group) => group.id) || fallback.groupIDs
+  successAccountGroupIDs.value = [...accountGroupIDs]
+  successAccountConcurrency.value = account?.concurrency || fallback.concurrency
+  successAccountPriority.value = account?.priority || fallback.priority
+}
+
+async function saveCreatedAccountConfiguration() {
+  const account = createdAccount.value
+  if (!account || successAccountSaving.value) return
+  successAccountSaving.value = true
+  try {
+    const concurrency = Math.min(1000, Math.max(1, Math.trunc(Number(successAccountConcurrency.value) || 10)))
+    const priority = Math.min(999, Math.max(1, Math.trunc(Number(successAccountPriority.value) || 1)))
+    const groupIDs = [...new Set(successAccountGroupIDs.value.filter((id) => Number.isSafeInteger(id) && id > 0))]
+    const updated = await accountsAPI.update(account.id, {
+      group_ids: groupIDs,
+      concurrency,
+      priority
+    })
+    createdAccount.value = updated
+    selectedGroupIDs.value = [...(updated.group_ids || updated.groups?.map((group) => group.id) || groupIDs)]
+    accountConcurrency.value = updated.concurrency
+    accountPriority.value = updated.priority
+    appliedImportConfig.value = {
+      groupIDs: [...selectedGroupIDs.value],
+      groupNames: [...(updated.groups?.map((group) => group.name) || selectedGroupNames.value)],
+      concurrency: updated.concurrency,
+      priority: updated.priority
+    }
+    initializeSuccessAccountConfiguration(updated, appliedImportConfig.value)
+    successAccountDialogOpen.value = false
+    await loadTeamChildHistory()
+    appStore.showSuccess('Team 子账号配置已保存')
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, '保存 Team 子账号配置失败'))
+  } finally {
+    successAccountSaving.value = false
   }
-  successAccountEditorOpen.value = false
-  await loadTeamChildHistory()
-  appStore.showSuccess('Team 子账号配置已保存')
 }
 
 async function confirmWorkflowCallback(): Promise<boolean> {
@@ -1520,15 +1609,13 @@ async function restoreActiveWorkflow() {
 onMounted(async () => {
   workflowExecutionArmed.value = false
   mailboxPollingRequested.value = false
-  const [statusResult, groupsResult, proxiesResult] = await Promise.allSettled([
+  const [statusResult, groupsResult] = await Promise.allSettled([
     teamChildAPI.getMailboxStatus(),
-    groupsAPI.getAll('openai'),
-    proxiesAPI.getAll()
+    groupsAPI.getAll('openai')
   ])
   mailboxConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.configured)
   browserConfigured.value = statusResult.status === 'fulfilled' && Boolean(statusResult.value.browser_configured)
   if (groupsResult.status === 'fulfilled') groups.value = groupsResult.value
-  if (proxiesResult.status === 'fulfilled') accountProxies.value = proxiesResult.value
   await loadKnownMailboxes()
   await restoreActiveMailbox()
   await restoreActiveWorkflow()

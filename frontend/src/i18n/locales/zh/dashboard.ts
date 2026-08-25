@@ -302,7 +302,7 @@ export default {
     requestCountUnit: '次请求',
     openBillingBreakdown: '查看用户与模型扣费明细',
     weeklyEstimate: '周额度约',
-    weeklyEstimateHint: '从本 7d 窗口内首次可读的「使用率、账号已用」建立基线；每当使用率较上次计算至少上升 1 个百分点，以基线后的累计账号已用增量除以累计百分点，再乘 100 估算周额度。当前百分点内保持不变；同一账号重新授权保留基线，非零使用率但账号已用为 0 时等待可读成本，100% 时显示实际账号已用',
+    weeklyEstimateHint: '以最近一个完整的实际 1% 使用区间计算账号成本；达到同一百分点时会使用该点的最高账号已用即时重算，尚未完成下一个完整区间时保留上一结果。中途接入的账号会补算接入前已用部分；401 重新授权、账号身份或周窗口变化后重新统计，100% 时显示实际账号已用。',
     weeklyEstimatePending: '统计中',
     oauthBillingDetails: '账号扣费明细',
     currentUsageWindow: '当前 {window} 窗口',
