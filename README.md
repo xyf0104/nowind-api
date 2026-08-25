@@ -379,8 +379,8 @@ git clone https://github.com/xyf0104/xiass-api.git
 cd xiass-api
 
 # 前端
-CI=true npx -y pnpm@11.5.1 --dir frontend install --frozen-lockfile
-CI=true npx -y pnpm@11.5.1 --dir frontend run build
+CI=true npx -y pnpm@10.15.0 --dir frontend install --frozen-lockfile
+CI=true npx -y pnpm@10.15.0 --dir frontend run build
 
 # 后端
 cd backend
