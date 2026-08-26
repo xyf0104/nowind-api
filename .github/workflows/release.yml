@@ -167,6 +167,7 @@ jobs:
           bash -n deploy/test-docker-deploy-existing-install.sh
           bash -n tools/test_xiass_update_origin.sh
           bash -n tools/test_xiass_update_browser_profile_migration.sh
+          bash -n tools/test_xiass_runtime_start_team_update.sh
 
       - name: Test install download integrity
         run: bash deploy/test-install-download-integrity.sh
@@ -187,6 +188,7 @@ jobs:
         run: |
           bash tools/test_xiass_update_origin.sh
           bash tools/test_xiass_update_browser_profile_migration.sh
+          bash tools/test_xiass_runtime_start_team_update.sh
 
   build-runtime-support-images:
     runs-on: ubuntu-latest

@@ -113,6 +113,7 @@
         :members-ready="true"
         :control-conflict="browserControlConflict"
         @reload="emit('reload-browser')"
+        @refresh-members="emit('refresh-members')"
         @copy-mailbox="emit('copy-mailbox', mailboxEmail)"
         @open-modular="emit('open-modular')"
         @force-take-over="emit('force-take-over')"
@@ -411,6 +412,7 @@ const emit = defineEmits<{
   'copy-mailbox-code': [code: string]
   'open-history': [],
   'reload-browser': [],
+  'refresh-members': [],
   'open-modular': [],
   'force-take-over': []
 }>()

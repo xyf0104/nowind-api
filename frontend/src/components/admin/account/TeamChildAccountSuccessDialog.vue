@@ -2,7 +2,7 @@
   <BaseDialog
     :show="show"
     title="Team 子账号创建成功"
-    width="normal"
+    width="narrow"
     @close="emit('close')"
   >
     <section v-if="account" data-testid="team-child-account-success-dialog" class="space-y-4">

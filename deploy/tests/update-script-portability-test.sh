@@ -39,5 +39,7 @@ grep -Fq 'compose up -d --no-deps --no-build --force-recreate xiass-api' "$repo_
     || { echo "canonical app hot-swap path is missing" >&2; exit 1; }
 grep -Fq 'XIASS_RUNTIME_SKIP_CORE_START="$skip_core_start"' "$repo_root/deploy/xiass-update.sh" \
     || { echo "hot-swap must preserve the running database and cache" >&2; exit 1; }
+grep -Fq 'up -d --no-deps --no-build --force-recreate team-child-automation' "$repo_root/deploy/xiass-runtime-start.sh" \
+    || { echo "hot-swap must recreate the Team automation sidecar" >&2; exit 1; }
 
 echo "Updater BusyBox compatibility and success-status test passed."

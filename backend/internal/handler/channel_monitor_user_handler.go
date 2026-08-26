@@ -3,6 +3,7 @@ package handler
 import (
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -38,6 +39,14 @@ func (h *ChannelMonitorUserHandler) featureEnabled(c *gin.Context) bool {
 	return h.settingService.GetChannelMonitorRuntime(c.Request.Context()).Enabled
 }
 
+// quotaVisible keeps account quota snapshots opt-in on the public monitor page.
+func (h *ChannelMonitorUserHandler) quotaVisible(c *gin.Context) bool {
+	if h.settingService == nil {
+		return false
+	}
+	return h.settingService.GetChannelMonitorRuntime(c.Request.Context()).ShowQuota
+}
+
 // --- Response ---
 
 type channelMonitorUserListItem struct {
@@ -52,6 +61,7 @@ type channelMonitorUserListItem struct {
 	Availability7d       float64                              `json:"availability_7d"`
 	ExtraModels          []dto.ChannelMonitorExtraModelStatus `json:"extra_models"`
 	Timeline             []channelMonitorUserTimelinePoint    `json:"timeline"`
+	LatestQuota          *domain.MonitorQuotaSnapshot         `json:"latest_quota,omitempty"`
 }
 
 // channelMonitorUserTimelinePoint 主模型最近一次检测的 timeline 点。
@@ -81,7 +91,7 @@ type channelMonitorUserModelStat struct {
 	AvgLatency7dMs  *int    `json:"avg_latency_7d_ms"`
 }
 
-func userMonitorViewToItem(v *service.UserMonitorView) channelMonitorUserListItem {
+func userMonitorViewToItem(v *service.UserMonitorView, includeQuota bool) channelMonitorUserListItem {
 	extras := make([]dto.ChannelMonitorExtraModelStatus, 0, len(v.ExtraModels))
 	for _, e := range v.ExtraModels {
 		extras = append(extras, dto.ChannelMonitorExtraModelStatus{
@@ -99,7 +109,7 @@ func userMonitorViewToItem(v *service.UserMonitorView) channelMonitorUserListIte
 			CheckedAt:     p.CheckedAt.UTC().Format(time.RFC3339),
 		})
 	}
-	return channelMonitorUserListItem{
+	item := channelMonitorUserListItem{
 		ID:                   v.ID,
 		Name:                 v.Name,
 		Provider:             v.Provider,
@@ -112,6 +122,10 @@ func userMonitorViewToItem(v *service.UserMonitorView) channelMonitorUserListIte
 		ExtraModels:          extras,
 		Timeline:             timeline,
 	}
+	if includeQuota {
+		item.LatestQuota = v.LatestQuota
+	}
+	return item
 }
 
 func userMonitorDetailToResponse(d *service.UserMonitorDetail) *channelMonitorUserDetailResponse {
@@ -149,9 +163,10 @@ func (h *ChannelMonitorUserHandler) List(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	includeQuota := h.quotaVisible(c)
 	items := make([]channelMonitorUserListItem, 0, len(views))
 	for _, v := range views {
-		items = append(items, userMonitorViewToItem(v))
+		items = append(items, userMonitorViewToItem(v, includeQuota))
 	}
 	response.Success(c, gin.H{"items": items})
 }

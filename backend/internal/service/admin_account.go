@@ -586,6 +586,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
 			return nil, err
 		}
+		// Create returns the account object used directly by the OAuth and Team
+		// import responses. Reflect the durable bindings here so a caller cannot
+		// mistake a newly grouped account for an ungrouped one and clear it on a
+		// subsequent configuration save.
+		account.GroupIDs = append([]int64(nil), groupIDs...)
 	}
 
 	// OAuth 账号：创建后异步设置隐私。

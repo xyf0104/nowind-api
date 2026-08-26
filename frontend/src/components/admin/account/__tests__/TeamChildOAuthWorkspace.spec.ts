@@ -10,6 +10,10 @@ const PixlabSMSReceiverStub = {
 
 const IconStub = { template: '<span />' }
 
+const BrowserWorkspaceRefreshStub = {
+  template: '<button type="button" data-testid="team-browser-refresh-members" @click="$emit(\'refresh-members\')" />'
+}
+
 const nodeDefinitions = [
   ['members', '读取成员席位'], ['remove', '移除已选成员'], ['invite', '提交成员邀请'],
   ['invite_confirm', '确认 Pending invites'], ['oauth', '打开 XIASS 官方 OAuth'], ['signup', '选择 Sign up'],
@@ -213,6 +217,29 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
     await wrapper.get('[data-testid="team-reset-workflow"]').trigger('click')
     expect(wrapper.emitted('reset-workflow')).toHaveLength(1)
+  })
+
+  it('forwards an embedded browser member-page refresh to the Team workspace', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow(),
+        browserVisible: true,
+        browserConfigured: true,
+        browserEmbedUrl: '/api/v1/team-child-browser/?ticket=test'
+      },
+      global: {
+        plugins: [i18n],
+        stubs: {
+          Icon: IconStub,
+          PixlabSMSReceiver: PixlabSMSReceiverStub,
+          TeamChildBrowserWorkspace: BrowserWorkspaceRefreshStub
+        }
+      }
+    })
+
+    await wrapper.get('[data-testid="team-browser-refresh-members"]').trigger('click')
+
+    expect(wrapper.emitted('refresh-members')).toHaveLength(1)
   })
 
   it('routes a rejected phone directly to one confirmed replacement instead of generic continuation', () => {

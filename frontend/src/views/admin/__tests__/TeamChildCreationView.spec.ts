@@ -150,7 +150,11 @@ const BrowserWorkspaceStub = {
     embedUrl: { type: String, default: '' },
     error: { type: String, default: '' }
   },
-  template: '<button type="button" data-testid="team-browser-workspace" :data-embed-url="embedUrl" :data-error="error" @click="$emit(\'open-modular\')" />'
+  template: `<div>
+    <button type="button" data-testid="team-browser-workspace" :data-embed-url="embedUrl" :data-error="error" @click="$emit('open-modular')" />
+    <button type="button" data-testid="team-browser-reload" @click="$emit('reload')" />
+    <button type="button" data-testid="team-browser-refresh-members" @click="$emit('refresh-members')" />
+  </div>`
 }
 
 const MembersWorkspaceStub = {
@@ -167,13 +171,14 @@ const ConfirmDialogStub = {
 }
 
 const GroupSelectorStub = {
-  template: '<div data-testid="group-selector" />'
+  template: '<button type="button" data-testid="group-selector" @click="$emit(\'update:modelValue\', [19])" />'
 }
 
 const TeamChildAccountSuccessDialogStub = {
-  props: ['show', 'account'],
+  props: ['show', 'account', 'groupIds'],
   template: `<div v-if="show" data-testid="team-child-account-success-dialog">
     {{ account?.name }}
+    <span data-testid="success-dialog-group-ids">{{ groupIds.join(',') }}</span>
     <button type="button" data-testid="success-dialog-groups" @click="$emit('update:group-ids', [19])" />
     <button type="button" data-testid="success-dialog-concurrency" @click="$emit('update:concurrency', 18)" />
     <button type="button" data-testid="success-dialog-priority" @click="$emit('update:priority', 3)" />
@@ -318,6 +323,26 @@ describe('TeamChildCreationView', () => {
     expect(teamChildAPI.heartbeatTeamChildBrowserControl).toHaveBeenCalledTimes(1)
     expect(wrapper.get('[data-testid="team-browser-workspace"]').attributes('data-embed-url')).toBe('/browser?ticket=test')
     expect(wrapper.get('[data-testid="team-browser-workspace"]').attributes('data-error')).toBe('')
+    wrapper.unmount()
+  })
+
+  it('performs explicit browser and member-page refreshes from the embedded workspace', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="team-manual-browser"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.createBrowserSession).toHaveBeenCalledWith({})
+
+    await wrapper.get('[data-testid="team-browser-reload"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.createBrowserSession).toHaveBeenLastCalledWith({
+      controller_id: 'controller-token-abcdefghijklmnop'
+    })
+
+    await wrapper.get('[data-testid="team-browser-refresh-members"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.refreshTeamChildMembers).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
@@ -816,6 +841,50 @@ describe('TeamChildCreationView', () => {
       priority: 3
     })
     expect(appStore.showSuccess).toHaveBeenCalledWith('Team 子账号配置已保存')
+    wrapper.unmount()
+  })
+
+  it('keeps the pre-import group checked when an older create response omits group_ids', async () => {
+    teamChildAPI.createOpenAIAccountFromOAuth.mockResolvedValue({
+      id: 300,
+      name: 'team-child@example.test',
+      concurrency: 10,
+      priority: 1,
+      group_ids: []
+    })
+    accountsAPI.update.mockResolvedValue({
+      id: 300,
+      name: 'team-child@example.test',
+      concurrency: 10,
+      priority: 1,
+      group_ids: [19]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="group-selector"]').trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea[placeholder^="http://localhost"]').setValue('http://localhost:1455/auth/callback?code=callback-code&state=team-state')
+    const confirmCallback = wrapper.findAll('button').find((button) => button.text().includes('确认回调状态'))
+    await confirmCallback!.trigger('click')
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('校验并导入'))
+    await importButton!.trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.createOpenAIAccountFromOAuth).toHaveBeenCalledWith(expect.objectContaining({ group_ids: [19] }))
+    expect(wrapper.get('[data-testid="success-dialog-group-ids"]').text()).toBe('19')
+
+    await wrapper.get('[data-testid="success-dialog-save"]').trigger('click')
+    await flushPromises()
+    expect(accountsAPI.update).toHaveBeenCalledWith(300, {
+      group_ids: [19],
+      concurrency: 10,
+      priority: 1
+    })
     wrapper.unmount()
   })
 

@@ -309,6 +309,31 @@ describe('MonitorFormDialog linked account selector', () => {
     expect(accountTrigger(wrapper).text()).toContain('linkedAccountPlaceholder')
   })
 
+  it('creates an Antigravity quota monitor from a linked account without probe credentials', async () => {
+    accountsList.mockResolvedValue({ items: [{ id: 104, name: 'antigravity', platform: 'antigravity' }] })
+    const wrapper = mountDialog()
+
+    await wrapper.get('[data-testid="monitor-provider-antigravity"]').trigger('click')
+    await flushPromises()
+
+    const dropdown = await openAccountDropdown(wrapper)
+    clickOption(dropdown, 'antigravity (#104)')
+    await nextTick()
+    await wrapper.findAll('input[type="text"]')[0].setValue('antigravity quota')
+    await wrapper.get('#channel-monitor-form').trigger('submit')
+    await flushPromises()
+
+    expect(monitorCreate).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'antigravity quota',
+      provider: 'antigravity',
+      check_mode: 'quota',
+      account_id: 104,
+      endpoint: '',
+      api_key: '',
+      primary_model: 'quota',
+    }))
+  })
+
   // P2-7(b)：antigravity 强制的 quota 在切走时要对称还原，占位模型一并清掉。
   it('restores probe mode and clears the quota placeholder when switching away from antigravity', async () => {
     accountsGetById.mockRejectedValue(new Error('gone'))

@@ -83,7 +83,7 @@
         @poll-mailbox="requestMailboxPoll"
         @copy-mailbox="copyText"
         @open-history="scrollToTeamChildHistory"
-        @reload-browser="reloadBrowserWorkspace"
+        @reload-browser="forceReloadBrowserWorkspace"
         @refresh-members="refreshMembers"
         @open-modular="closeBrowserWorkspace"
         @force-take-over="browserTakeOverConfirmOpen = true"
@@ -468,6 +468,25 @@ const displayedImportConfig = computed(() => appliedImportConfig.value || {
   priority: normalizedPriority.value
 })
 const displayedGroupsLabel = computed(() => displayedImportConfig.value.groupNames.length > 0 ? displayedImportConfig.value.groupNames.join('、') : '未选择分组')
+
+function normalizedGroupIDs(groupIDs: readonly number[]): number[] {
+  return [...new Set(groupIDs.filter((id) => Number.isSafeInteger(id) && id > 0))]
+}
+
+// Older create-account responses did not carry freshly persisted group_ids.
+// Keep the configuration chosen before import authoritative in that case so a
+// later click on the compact success dialog cannot clear the new binding.
+function persistedOrImportedGroupIDs(account: Account | null | undefined, fallback: readonly number[] = []): number[] {
+  const responseGroupIDs = Array.isArray(account?.group_ids)
+    ? account.group_ids
+    : Array.isArray(account?.groups)
+      ? account.groups.map((group) => group.id)
+      : null
+  if (responseGroupIDs && (responseGroupIDs.length > 0 || fallback.length === 0)) {
+    return normalizedGroupIDs(responseGroupIDs)
+  }
+  return normalizedGroupIDs(fallback)
+}
 
 function assertOfficialOAuthSession(auth: { auth_url: string; session_id: string }) {
   const parsed = new URL(auth.auth_url)
@@ -868,12 +887,12 @@ async function releaseBrowserControl() {
   browserControllerID.value = ''
   if (controllerID) await teamChildAPI.releaseTeamChildBrowserControl(controllerID).catch(() => undefined)
 }
-async function reloadBrowserWorkspace(takeOver = false): Promise<boolean> {
+async function reloadBrowserWorkspace({ takeOver = false, forceReload = false }: { takeOver?: boolean; forceReload?: boolean } = {}): Promise<boolean> {
   if (!browserConfigured.value) return false
-  // Keep the mounted iframe and its persistent Chromium tab stable when a
-  // second action targets the already-open workspace. An explicit reload or
-  // takeover is the only path that mints a new viewer session.
-  if (!takeOver && browserEmbedURL.value && browserControllerID.value) return true
+  // Opening an already-visible workspace keeps its persistent Chromium tab.
+  // The explicit refresh control must mint a fresh iframe ticket so the
+  // browser viewer actually reloads instead of being silently short-circuited.
+  if (!takeOver && !forceReload && browserEmbedURL.value && browserControllerID.value) return true
   if (browserLoading.value) return false
   browserLoading.value = true
   browserError.value = ''
@@ -903,9 +922,13 @@ async function openBrowserWorkspace() {
   await reloadBrowserWorkspace()
 }
 
+async function forceReloadBrowserWorkspace() {
+  await reloadBrowserWorkspace({ forceReload: true })
+}
+
 async function confirmBrowserTakeOver() {
   browserTakeOverConfirmOpen.value = false
-  await reloadBrowserWorkspace(true)
+  await reloadBrowserWorkspace({ takeOver: true })
 }
 async function closeBrowserWorkspace() {
   browserVisible.value = false
@@ -1460,7 +1483,7 @@ async function importAccount() {
     ? teamChildHistory.value.find((entry) => entry.account?.id === teamWorkflow.value?.target_account_id)?.account || null
     : null
   const importConfig = reauthorizationAccount ? {
-    groupIDs: [...(reauthorizationAccount.group_ids || reauthorizationAccount.groups?.map((group) => group.id) || [])],
+    groupIDs: persistedOrImportedGroupIDs(reauthorizationAccount),
     groupNames: [...(reauthorizationAccount.groups?.map((group) => group.name) || [])],
     concurrency: reauthorizationAccount.concurrency,
     priority: reauthorizationAccount.priority
@@ -1509,7 +1532,7 @@ async function importAccount() {
 }
 
 function initializeSuccessAccountConfiguration(account: Account | null, fallback: { groupIDs: number[]; groupNames: string[]; concurrency: number; priority: number }) {
-  const accountGroupIDs = account?.group_ids || account?.groups?.map((group) => group.id) || fallback.groupIDs
+  const accountGroupIDs = persistedOrImportedGroupIDs(account, fallback.groupIDs)
   successAccountGroupIDs.value = [...accountGroupIDs]
   successAccountConcurrency.value = account?.concurrency || fallback.concurrency
   successAccountPriority.value = account?.priority || fallback.priority
@@ -1529,7 +1552,7 @@ async function saveCreatedAccountConfiguration() {
       priority
     })
     createdAccount.value = updated
-    selectedGroupIDs.value = [...(updated.group_ids || updated.groups?.map((group) => group.id) || groupIDs)]
+    selectedGroupIDs.value = persistedOrImportedGroupIDs(updated, groupIDs)
     accountConcurrency.value = updated.concurrency
     accountPriority.value = updated.priority
     appliedImportConfig.value = {

@@ -161,15 +161,17 @@ start_core() {
 }
 
 browser_enabled() {
-    local value="$TEAM_CHILD_BROWSER_ENABLED"
+    local value="$TEAM_CHILD_BROWSER_ENABLED" normalized
     [ -n "$value" ] || value=$(read_env_value TEAM_CHILD_BROWSER_ENABLED)
-    case "${value,,}" in
+    normalized=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+    case "$normalized" in
         1|true|yes|on) return 0 ;;
         *) return 1 ;;
     esac
 }
 
 start_browser_stack() {
+    local automation_image_ready=true
     if ! browser_enabled; then
         log "TEAM_CHILD_BROWSER_ENABLED 未开启，跳过浏览器组件阶段。"
         return 0
@@ -179,27 +181,67 @@ start_browser_stack() {
         return 0
     fi
 
-    log "主服务已稳定运行，等待 ${CORE_READY_DELAY_SECONDS} 秒后开始浏览器组件阶段..."
-    sleep "$CORE_READY_DELAY_SECONDS"
+    # A normal boot gives Chromium a short core-service settling period. A hot
+    # update already has a healthy app and an existing browser profile, so do
+    # not add avoidable downtime before refreshing only the sidecar.
+    if [ "$SKIP_CORE_START" = "true" ]; then
+        log "主服务已稳定运行，热更新直接开始浏览器组件阶段..."
+        sleep 0
+    else
+        log "主服务已稳定运行，等待 ${CORE_READY_DELAY_SECONDS} 秒后开始浏览器组件阶段..."
+        sleep "$CORE_READY_DELAY_SECONDS"
+    fi
 
-    if [ "$BUILD_MODE" = "source" ]; then
-        log "构建 Team 自动化组件..."
-        if ! profile_compose build team-child-automation; then
-            warn "Team 自动化组件构建失败；主服务保持运行，可稍后重试。"
+    if [ "$SKIP_CORE_START" = "true" ]; then
+        # The fast online-update path has already restored the main app. Keep
+        # Chromium and its persistent login profile untouched, but always
+        # rebuild/recreate the automation sidecar so Team behavior cannot stay
+        # on an older image under the same latest tag.
+        if [ "$BUILD_MODE" = "source" ]; then
+            log "构建并更新 Team 自动化组件..."
+            if ! profile_compose build team-child-automation; then
+                warn "Team 自动化组件构建失败；主服务保持运行，可稍后重试。"
+                return 0
+            fi
+        else
+            log "拉取并更新 Team 自动化组件..."
+            if ! profile_compose pull team-child-automation; then
+                warn "Team 自动化组件镜像拉取失败；保留当前运行实例，避免无新镜像时中断工作流。"
+                automation_image_ready=false
+            fi
+        fi
+
+        if ! profile_compose up -d --no-build team-child-browser; then
+            warn "Team 浏览器组件启动失败；主服务保持运行，可稍后重试。"
+            return 0
+        fi
+        if [ "$automation_image_ready" != "true" ]; then
+            return 0
+        fi
+        if ! profile_compose up -d --no-deps --no-build --force-recreate team-child-automation; then
+            warn "Team 自动化组件更新失败；主服务保持运行，可稍后重试。"
             return 0
         fi
     else
-        log "拉取 Chromium 和 Team 自动化组件..."
-        if ! profile_compose pull team-child-browser team-child-automation; then
-            warn "Team 组件镜像拉取未完全成功，尝试使用本地缓存或构建自动化组件。"
-            profile_compose build team-child-automation >/dev/null 2>&1 || true
+        if [ "$BUILD_MODE" = "source" ]; then
+            log "构建 Team 自动化组件..."
+            if ! profile_compose build team-child-automation; then
+                warn "Team 自动化组件构建失败；主服务保持运行，可稍后重试。"
+                return 0
+            fi
+        else
+            log "拉取 Chromium 和 Team 自动化组件..."
+            if ! profile_compose pull team-child-browser team-child-automation; then
+                warn "Team 组件镜像拉取未完全成功，尝试使用本地缓存或构建自动化组件。"
+                profile_compose build team-child-automation >/dev/null 2>&1 || true
+            fi
         fi
-    fi
 
-    log "启动 Chromium 和 Team 自动化服务..."
-    if ! profile_compose up -d --no-build team-child-browser team-child-automation; then
-        warn "浏览器组件启动失败；XIASS 主服务保持运行，可稍后重试。"
-        return 0
+        log "启动 Chromium 和 Team 自动化服务..."
+        if ! profile_compose up -d --no-build team-child-browser team-child-automation; then
+            warn "浏览器组件启动失败；主服务保持运行，可稍后重试。"
+            return 0
+        fi
     fi
 
     local automation_container
@@ -223,4 +265,6 @@ main() {
     start_browser_stack
 }
 
-main "$@"
+if [ "${XIASS_RUNTIME_START_LIB_ONLY:-0}" != "1" ]; then
+    main "$@"
+fi
