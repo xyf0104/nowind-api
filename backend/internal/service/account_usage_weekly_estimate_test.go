@@ -33,6 +33,70 @@ func TestOpenAIWeeklyEstimateUsesNewestCompletedPercentInterval(t *testing.T) {
 	requireOpenAIWeeklyEstimateStateVersion(t, account)
 }
 
+func TestOpenAIWeeklyEstimatePairsCostWithTheQuotaObservationTime(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(10)
+	resetAt := openAIWeeklyEstimateTestResetAt()
+	firstAt := time.Date(2099, time.August, 25, 1, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(10 * time.Minute)
+
+	first := openAIWeeklyEstimateProgress(20, 100, resetAt)
+	applyOpenAIWeeklyEstimateWithCostsForTest(t, account, first, 100, 100, true, firstAt)
+	requireOpenAIWeeklyEstimatePending(t, first)
+
+	// The visible live total has advanced to $999 after the official 21%
+	// observation. The estimator must use only the $110 total that existed at
+	// that observation, otherwise the future $889 is attributed to this 1%.
+	second := openAIWeeklyEstimateProgress(21, 999, resetAt)
+	applyOpenAIWeeklyEstimateWithCostsForTest(t, account, second, 110, 999, true, secondAt)
+	requireOpenAIWeeklyEstimate(t, second, 110+79*10)
+}
+
+func TestOpenAIWeeklyEstimateWithoutMatchedCostStaysPending(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(11)
+	progress := openAIWeeklyEstimateProgress(21, 999, openAIWeeklyEstimateTestResetAt())
+
+	applyOpenAIWeeklyEstimateWithCostsForTest(t, account, progress, 0, 999, false, time.Now().UTC())
+	requireOpenAIWeeklyEstimatePending(t, progress)
+}
+
+func TestOpenAIWeeklyEstimateRejectsPointInTimeCostBeyondLiveTotal(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(13)
+	progress := openAIWeeklyEstimateProgress(21, 100, openAIWeeklyEstimateTestResetAt())
+
+	applyOpenAIWeeklyEstimateWithCostsForTest(t, account, progress, 101, 100, true, time.Now().UTC())
+	requireOpenAIWeeklyEstimatePending(t, progress)
+}
+
+func TestOpenAICodexSnapshotObservationAtAllowsRequestDurationDrift(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 26, 8, 0, 0, 0, time.UTC)
+	account := newOpenAIWeeklyEstimateTestAccount(14)
+	account.Extra["codex_usage_updated_at"] = now.Add(2 * time.Second).Format(time.RFC3339Nano)
+
+	observedAt, ok := openAICodexSnapshotObservationAt(account, now)
+	wantObservedAt := now.Add(2 * time.Second)
+	if !ok || !observedAt.Equal(wantObservedAt) {
+		t.Fatalf("small future timestamp = (%v, %v), want (%v, true)", observedAt, ok, wantObservedAt)
+	}
+
+	account.Extra["codex_usage_updated_at"] = now.Add(6 * time.Second).Format(time.RFC3339Nano)
+	if observedAt, ok := openAICodexSnapshotObservationAt(account, now); ok || !observedAt.IsZero() {
+		t.Fatalf("large future timestamp = (%v, %v), want (zero, false)", observedAt, ok)
+	}
+}
+
+func TestOpenAIWeeklyEstimateAtFullQuotaUsesCurrentCost(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(12)
+	progress := openAIWeeklyEstimateProgress(100, 999, openAIWeeklyEstimateTestResetAt())
+
+	applyOpenAIWeeklyEstimateWithCostsForTest(t, account, progress, 110, 999, false, time.Now().UTC())
+	requireOpenAIWeeklyEstimate(t, progress, 999)
+}
+
 func TestOpenAIWeeklyEstimateUsesActualSkippedIntervalAverage(t *testing.T) {
 	t.Parallel()
 	account := newOpenAIWeeklyEstimateTestAccount(2)
@@ -240,6 +304,15 @@ func openAIWeeklyEstimateTestResetAt() time.Time {
 func applyOpenAIWeeklyEstimateForTest(t *testing.T, account *Account, progress *UsageProgress) {
 	t.Helper()
 	estimate, updates := calculateOpenAIWeeklyEstimate(account, progress)
+	progress.WeeklyEstimateUSD = estimate
+	if len(updates) > 0 {
+		mergeAccountExtra(account, updates)
+	}
+}
+
+func applyOpenAIWeeklyEstimateWithCostsForTest(t *testing.T, account *Account, progress *UsageProgress, estimateCost, currentCost float64, matched bool, observedAt time.Time) {
+	t.Helper()
+	estimate, updates := calculateOpenAIWeeklyEstimateWithCosts(account, progress, estimateCost, currentCost, matched, observedAt)
 	progress.WeeklyEstimateUSD = estimate
 	if len(updates) > 0 {
 		mergeAccountExtra(account, updates)

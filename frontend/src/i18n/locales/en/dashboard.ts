@@ -297,7 +297,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Uses the newest complete real 1% usage interval. More account cost at the same percentage updates that endpoint immediately; an unfinished next interval keeps the last result. Mid-window imports compensate the already-used portion, while reauthorization, account identity, or weekly-window changes collect a fresh sample. At 100%, this is the exact account cost.',
+    weeklyEstimateHint: 'Pairs account cost with the exact timestamp of the provider 7-day percentage. An estimate appears only after a complete real 1% interval; unaligned or incomplete samples stay in Collecting. Mid-window imports, reauthorization, identity changes, and window resets start a fresh sample, while 100% shows the current exact account cost.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

@@ -893,7 +893,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Starts from the first readable usage-percent and account-cost pair in this 7-day window. Whenever usage advances by at least one percentage point from the last calculation, it divides the cumulative account-cost increase by the cumulative percentage increase, then multiplies by 100. The value stays fixed inside the current percentage point; reauthorization of the same account keeps its baseline, a non-zero percentage with zero account cost waits for a readable cost, and 100% shows the actual account cost.',
+    weeklyEstimateHint: 'Pairs account cost with the exact timestamp of the provider 7-day percentage. An estimate appears only after a complete real 1% interval; unaligned or incomplete samples stay in Collecting. Mid-window imports, reauthorization, identity changes, and window resets start a fresh sample, while 100% shows the current exact account cost.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

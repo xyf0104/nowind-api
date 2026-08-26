@@ -88,6 +88,13 @@ type accountWindowStatsBatchReader interface {
 	GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error)
 }
 
+// accountWindowStatsRangeReader is intentionally optional. OpenAI's official
+// 7d percentage is a point-in-time observation, so its estimate must use the
+// local account cost as of that same instant rather than a later live total.
+type accountWindowStatsRangeReader interface {
+	GetAccountWindowStatsRange(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountStats, error)
+}
+
 type accountBillingBreakdownRepository interface {
 	GetAccountBillingUsers(ctx context.Context, accountID int64, startTime, endTime time.Time) ([]usagestats.AccountBillingUser, error)
 	GetAccountBillingModels(ctx context.Context, accountID, userID int64, startTime, endTime time.Time) (*usagestats.AccountBillingSelectedUser, []usagestats.AccountBillingModel, error)
@@ -105,6 +112,13 @@ type apiUsageCache struct {
 type windowStatsCache struct {
 	stats     *WindowStats
 	timestamp time.Time
+}
+
+type weeklyEstimateStatsCache struct {
+	stats      *usagestats.AccountStats
+	startAt    time.Time
+	snapshotAt time.Time
+	timestamp  time.Time
 }
 
 // antigravityUsageCache 缓存 Antigravity 额度数据
@@ -126,13 +140,14 @@ const (
 
 // UsageCache 封装账户使用量相关的缓存
 type UsageCache struct {
-	apiCache          sync.Map           // accountID -> *apiUsageCache
-	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
-	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
-	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
-	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
-	openAIProbeCache  sync.Map           // accountID -> time.Time
-	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
+	apiCache                 sync.Map           // accountID -> *apiUsageCache
+	windowStatsCache         sync.Map           // accountID -> *windowStatsCache
+	weeklyEstimateStatsCache sync.Map           // accountID -> *weeklyEstimateStatsCache
+	antigravityCache         sync.Map           // accountID -> *antigravityUsageCache
+	apiFlight                singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
+	antigravityFlight        singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	openAIProbeCache         sync.Map           // accountID -> time.Time
+	grokProbeCache           sync.Map           // accountID -> last billing probe attempt
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -159,7 +174,7 @@ type UsageProgress struct {
 	ResetsAt          *time.Time   `json:"resets_at"`                     // 重置时间
 	RemainingSeconds  int          `json:"remaining_seconds"`             // 距重置剩余秒数
 	WindowStats       *WindowStats `json:"window_stats,omitempty"`        // 窗口期统计（从窗口开始到当前的使用量）
-	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 从本窗口首次可读采样起的累计百分点平均账号已用，折算为 100% 周额度
+	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 按与官方快照时间对齐的最近完整实际百分点区间估算的 100% 周额度
 	UsedRequests      int64        `json:"used_requests,omitempty"`
 	LimitRequests     int64        `json:"limit_requests,omitempty"`
 }
@@ -845,12 +860,13 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
-		if usage.SevenDay == nil {
-			usage.SevenDay = &UsageProgress{Utilization: 0}
+	// A missing upstream 7d window is not a real 0% observation. Do not query
+	// or create an estimate baseline for it.
+	if usage.SevenDay != nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
+			usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
+			s.applyOpenAIWeeklyEstimate(ctx, account, usage.SevenDay, stats, now)
 		}
-		usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
-		s.applyOpenAIWeeklyEstimate(ctx, account, usage.SevenDay)
 	}
 
 	return usage, nil
@@ -1720,13 +1736,13 @@ func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration
 
 const (
 	openAIWeeklyEstimateBaselineKey         = "codex_7d_estimate_baseline"
-	openAIWeeklyEstimateStateVersion        = 11
+	openAIWeeklyEstimateStateVersion        = 12
 	openAIWeeklyEstimateMinPercentAdvance   = 1.0
 	openAIWeeklyEstimateEpsilon             = 1e-9
 	openAIWeeklyEstimateMaxActiveResetDrift = 24 * time.Hour
 )
 
-// openAIWeeklyEstimateV11State keeps the latest completed real percentage
+// openAIWeeklyEstimateV11State (persisted as state version 12) keeps the latest completed real percentage
 // interval instead of averaging every observation since a window baseline.
 // OpenAI reports a quota percentage while XIASS records only local account
 // cost, so a cumulative average silently blends in consumption from other
@@ -1750,18 +1766,97 @@ type openAIWeeklyEstimateV11State struct {
 	HasCompletedEstimate         bool
 	LastObservedPercent          float64
 	LastObservedCost             float64
+	LastObservedAt               time.Time
 	ResetAt                      time.Time
 	Identity                     string
 }
 
-func (s *AccountUsageService) applyOpenAIWeeklyEstimate(ctx context.Context, account *Account, progress *UsageProgress) {
-	if s == nil || account == nil || progress == nil || progress.WindowStats == nil {
+func (s *AccountUsageService) applyOpenAIWeeklyEstimate(
+	ctx context.Context,
+	account *Account,
+	progress *UsageProgress,
+	currentStats *usagestats.AccountStats,
+	now time.Time,
+) {
+	if s == nil || account == nil || progress == nil || progress.WindowStats == nil || currentStats == nil {
 		return
 	}
 
-	estimate, baselineUpdates := calculateOpenAIWeeklyEstimate(account, progress)
+	currentCost := currentStats.Cost
+	percent := progress.Utilization
+	if !validOpenAIWeeklyEstimateValue(currentCost) || !validOpenAIWeeklyEstimateValue(percent) {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+
+	// At 100% the official quota is complete, so the live account total is the
+	// exact answer. It must not wait for a historical point-in-time range query.
+	if percent >= 100-openAIWeeklyEstimateEpsilon {
+		estimate, baselineUpdates := calculateOpenAIWeeklyEstimateWithCosts(
+			account, progress, currentCost, currentCost, true, now,
+		)
+		progress.WeeklyEstimateUSD = estimate
+		s.persistOpenAIWeeklyEstimate(ctx, account, baselineUpdates)
+		return
+	}
+
+	snapshotAt, ok := openAICodexSnapshotObservationAt(account, now)
+	if !ok {
+		// Never pair an un-timestamped percentage with a live cumulative cost.
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+
+	rangeReader, ok := s.usageLogRepo.(accountWindowStatsRangeReader)
+	if !ok {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+	startAt := codexWindowStatsStart(progress, 7*24*time.Hour, snapshotAt)
+	if !startAt.Before(snapshotAt) {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+	var boundedStats *usagestats.AccountStats
+	if s.cache != nil {
+		if cached, cachedOK := s.cache.weeklyEstimateStatsCache.Load(account.ID); cachedOK {
+			if entry, entryOK := cached.(*weeklyEstimateStatsCache); entryOK &&
+				time.Since(entry.timestamp) < windowStatsCacheTTL &&
+				entry.startAt.Equal(startAt) && entry.snapshotAt.Equal(snapshotAt) {
+				boundedStats = entry.stats
+			}
+		}
+	}
+	if boundedStats == nil {
+		var err error
+		boundedStats, err = rangeReader.GetAccountWindowStatsRange(ctx, account.ID, startAt, snapshotAt)
+		if err == nil && boundedStats != nil && validOpenAIWeeklyEstimateValue(boundedStats.Cost) {
+			if s.cache != nil {
+				s.cache.weeklyEstimateStatsCache.Store(account.ID, &weeklyEstimateStatsCache{
+					stats:      boundedStats,
+					startAt:    startAt,
+					snapshotAt: snapshotAt,
+					timestamp:  time.Now(),
+				})
+			}
+		}
+	}
+	if boundedStats == nil || !validOpenAIWeeklyEstimateValue(boundedStats.Cost) {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+
+	// The estimate uses the cost observed at the same instant as the provider
+	// percentage. The visible WindowStats above intentionally remains live.
+	estimate, baselineUpdates := calculateOpenAIWeeklyEstimateWithCosts(
+		account, progress, boundedStats.Cost, currentCost, true, snapshotAt,
+	)
 	progress.WeeklyEstimateUSD = estimate
-	if len(baselineUpdates) == 0 {
+	s.persistOpenAIWeeklyEstimate(ctx, account, baselineUpdates)
+}
+
+func (s *AccountUsageService) persistOpenAIWeeklyEstimate(ctx context.Context, account *Account, baselineUpdates map[string]any) {
+	if s == nil || s.accountRepo == nil || account == nil || len(baselineUpdates) == 0 {
 		return
 	}
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, baselineUpdates); err != nil {
@@ -1771,17 +1866,69 @@ func (s *AccountUsageService) applyOpenAIWeeklyEstimate(ctx context.Context, acc
 	mergeAccountExtra(account, baselineUpdates)
 }
 
+func openAICodexSnapshotObservationAt(account *Account, now time.Time) (time.Time, bool) {
+	if account == nil || account.Extra == nil {
+		return time.Time{}, false
+	}
+	raw, ok := account.Extra["codex_usage_updated_at"]
+	if !ok {
+		return time.Time{}, false
+	}
+	observedAt, err := parseTime(fmt.Sprint(raw))
+	if err != nil || observedAt.IsZero() {
+		return time.Time{}, false
+	}
+	observedAt = observedAt.UTC()
+	// The request start can precede the remote quota response by a few seconds,
+	// so allow a small clock skew. A clearly future-dated timestamp cannot be a
+	// trustworthy boundary for local usage.
+	if observedAt.After(now.Add(5 * time.Second)) {
+		return time.Time{}, false
+	}
+	return observedAt, true
+}
+
 func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*float64, map[string]any) {
+	if account == nil || progress == nil || progress.WindowStats == nil {
+		return nil, nil
+	}
+	return calculateOpenAIWeeklyEstimateWithCosts(
+		account,
+		progress,
+		progress.WindowStats.Cost,
+		progress.WindowStats.Cost,
+		true,
+		time.Time{},
+	)
+}
+
+func calculateOpenAIWeeklyEstimateWithCosts(
+	account *Account,
+	progress *UsageProgress,
+	estimateCost float64,
+	currentCost float64,
+	estimateCostMatched bool,
+	observedAt time.Time,
+) (*float64, map[string]any) {
 	if account == nil || progress == nil || progress.WindowStats == nil {
 		return nil, nil
 	}
 
 	percent := progress.Utilization
-	cost := progress.WindowStats.Cost
-	if math.IsNaN(percent) || math.IsInf(percent, 0) || math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 {
+	if !validOpenAIWeeklyEstimateValue(percent) || !validOpenAIWeeklyEstimateValue(estimateCost) || !validOpenAIWeeklyEstimateValue(currentCost) {
 		return nil, nil
 	}
 	percent = math.Max(0, math.Min(100, percent))
+	if percent < 100-openAIWeeklyEstimateEpsilon && !estimateCostMatched {
+		return nil, nil
+	}
+	if percent < 100-openAIWeeklyEstimateEpsilon && estimateCost > currentCost+openAIWeeklyEstimateEpsilon {
+		// A point-in-time cumulative cost cannot exceed the live total for the
+		// same quota window. Treat a mismatched window or delayed data as
+		// untrusted instead of projecting from an impossible endpoint.
+		return nil, nil
+	}
+	cost := estimateCost
 
 	identity := account.GetCredential("chatgpt_account_id")
 	resetAt := time.Time{}
@@ -1790,13 +1937,14 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 	}
 
 	state, stateOK := readOpenAIWeeklyEstimateV11State(account.Extra)
-	if !stateOK || !validOpenAIWeeklyEstimateV11Observation(state, percent, cost, resetAt, identity, time.Now().UTC()) {
-		state = newOpenAIWeeklyEstimateV11State(percent, cost, resetAt, identity)
+	if !stateOK || !validOpenAIWeeklyEstimateV11Observation(state, percent, cost, resetAt, identity, observedAt, time.Now().UTC()) {
+		state = newOpenAIWeeklyEstimateV11State(percent, cost, resetAt, identity, observedAt)
 	}
 
 	if percent >= 100-openAIWeeklyEstimateEpsilon {
-		completeOpenAIWeeklyEstimateV11(&state, percent, cost)
-		return openAIWeeklyEstimateV11CompletedValue(state, percent, cost), openAIWeeklyEstimateV11StateUpdate(state)
+		state.LastObservedAt = observedAt
+		completeOpenAIWeeklyEstimateV11(&state, percent, currentCost)
+		return openAIWeeklyEstimateV11CompletedValue(state, percent, currentCost), openAIWeeklyEstimateV11StateUpdate(state)
 	}
 
 	// A non-zero upstream percent paired with a zero XIASS cost is a mid-window
@@ -1810,7 +1958,7 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 		}
 		if percent-state.SegmentStartPercent+openAIWeeklyEstimateEpsilon >= openAIWeeklyEstimateMinPercentAdvance {
 			if cost <= state.SegmentStartCost+openAIWeeklyEstimateEpsilon {
-				state = rebaseOpenAIWeeklyEstimateV11(state, percent, cost, resetAt, identity)
+				state = rebaseOpenAIWeeklyEstimateV11(state, percent, cost, resetAt, identity, observedAt)
 			} else {
 				state.HasReadableSegmentStart = true
 				completeOpenAIWeeklyEstimateInterval(&state, percent, cost)
@@ -1819,6 +1967,7 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 		state.LastObservedPercent = percent
 		state.LastObservedCost = cost
 		state.ResetAt = resetAt
+		state.LastObservedAt = observedAt
 		return openAIWeeklyEstimateV11CompletedValue(state, percent, cost), openAIWeeklyEstimateV11StateUpdate(state)
 	}
 
@@ -1833,6 +1982,7 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 			state.LastObservedPercent = percent
 			state.LastObservedCost = cost
 			state.ResetAt = resetAt
+			state.LastObservedAt = observedAt
 			return openAIWeeklyEstimateV11CompletedValue(state, percent, cost), openAIWeeklyEstimateV11StateUpdate(state)
 		}
 
@@ -1852,7 +2002,7 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 		// A quota percentage can move because the account was used outside XIASS.
 		// Do not put that movement in the denominator of a local cost estimate.
 		if cost <= state.SegmentStartCost+openAIWeeklyEstimateEpsilon {
-			state = rebaseOpenAIWeeklyEstimateV11(state, percent, cost, resetAt, identity)
+			state = rebaseOpenAIWeeklyEstimateV11(state, percent, cost, resetAt, identity, observedAt)
 		} else {
 			completeOpenAIWeeklyEstimateInterval(&state, percent, cost)
 		}
@@ -1861,10 +2011,11 @@ func calculateOpenAIWeeklyEstimate(account *Account, progress *UsageProgress) (*
 	state.LastObservedPercent = percent
 	state.LastObservedCost = cost
 	state.ResetAt = resetAt
+	state.LastObservedAt = observedAt
 	return openAIWeeklyEstimateV11CompletedValue(state, percent, cost), openAIWeeklyEstimateV11StateUpdate(state)
 }
 
-func newOpenAIWeeklyEstimateV11State(percent, cost float64, resetAt time.Time, identity string) openAIWeeklyEstimateV11State {
+func newOpenAIWeeklyEstimateV11State(percent, cost float64, resetAt time.Time, identity string, observedAt time.Time) openAIWeeklyEstimateV11State {
 	return openAIWeeklyEstimateV11State{
 		SegmentStartPercent:          percent,
 		SegmentStartCost:             cost,
@@ -1875,13 +2026,14 @@ func newOpenAIWeeklyEstimateV11State(percent, cost float64, resetAt time.Time, i
 		LastObservedCost:             cost,
 		ResetAt:                      resetAt,
 		Identity:                     identity,
+		LastObservedAt:               observedAt,
 	}
 }
 
-func rebaseOpenAIWeeklyEstimateV11(state openAIWeeklyEstimateV11State, percent, cost float64, resetAt time.Time, identity string) openAIWeeklyEstimateV11State {
+func rebaseOpenAIWeeklyEstimateV11(state openAIWeeklyEstimateV11State, percent, cost float64, resetAt time.Time, identity string, observedAt time.Time) openAIWeeklyEstimateV11State {
 	previousEstimate := state.CompletedEstimate
 	hadPreviousEstimate := state.HasCompletedEstimate && validOpenAIWeeklyEstimateValue(previousEstimate)
-	state = newOpenAIWeeklyEstimateV11State(percent, cost, resetAt, identity)
+	state = newOpenAIWeeklyEstimateV11State(percent, cost, resetAt, identity, observedAt)
 	if hadPreviousEstimate {
 		// An externally consumed percent must not affect the next local interval.
 		// Retain the last complete result while a new local sample is collected.
@@ -1945,10 +2097,13 @@ func recalculateOpenAIWeeklyEstimateInterval(state *openAIWeeklyEstimateV11State
 	}
 }
 
-func validOpenAIWeeklyEstimateV11Observation(state openAIWeeklyEstimateV11State, percent, cost float64, resetAt time.Time, identity string, now time.Time) bool {
+func validOpenAIWeeklyEstimateV11Observation(state openAIWeeklyEstimateV11State, percent, cost float64, resetAt time.Time, identity string, observedAt, now time.Time) bool {
 	if state.Identity != identity || !sameOpenAIWeeklyEstimateWindow(state.ResetAt, resetAt, now) ||
 		percent+openAIWeeklyEstimateEpsilon < state.LastObservedPercent ||
 		cost+openAIWeeklyEstimateEpsilon < state.LastObservedCost {
+		return false
+	}
+	if !state.LastObservedAt.IsZero() && (observedAt.IsZero() || observedAt.Before(state.LastObservedAt)) {
 		return false
 	}
 	return validOpenAIWeeklyEstimateV11State(state)
@@ -2020,6 +2175,9 @@ func openAIWeeklyEstimateV11StateUpdate(state openAIWeeklyEstimateV11State) map[
 		"identity":                        state.Identity,
 		"has_completed_estimate":          state.HasCompletedEstimate,
 	}
+	if !state.LastObservedAt.IsZero() {
+		raw["last_observed_at"] = state.LastObservedAt.Format(time.RFC3339Nano)
+	}
 	if state.HasHistoricalCost {
 		raw["historical_cost"] = state.HistoricalCost
 	}
@@ -2053,6 +2211,14 @@ func readOpenAIWeeklyEstimateV11State(extra map[string]any) (openAIWeeklyEstimat
 	lastObservedCost, lastObservedCostOK := parseOpenAIWeeklyEstimateNumber(raw, "last_observed_cost")
 	resetText, resetOK := raw["reset_at"].(string)
 	identity, identityOK := raw["identity"].(string)
+	lastObservedAt := time.Time{}
+	if observedText, exists := raw["last_observed_at"]; exists && observedText != nil {
+		parsed, parseErr := parseTime(fmt.Sprint(observedText))
+		if parseErr != nil {
+			return openAIWeeklyEstimateV11State{}, false
+		}
+		lastObservedAt = parsed.UTC()
+	}
 	resetAt, resetErr := parseTime(resetText)
 	if !segmentStartPercentOK || !segmentStartCostOK || !hasReadableSegmentStartOK || !needsInitialCostCompensationOK ||
 		!initialCompensationPercentOK || !hasCompletedIntervalOK || !hasCompletedEstimateOK || !lastObservedPercentOK ||
@@ -2070,6 +2236,7 @@ func readOpenAIWeeklyEstimateV11State(extra map[string]any) (openAIWeeklyEstimat
 		HasCompletedEstimate:         hasCompletedEstimate,
 		LastObservedPercent:          lastObservedPercent,
 		LastObservedCost:             lastObservedCost,
+		LastObservedAt:               lastObservedAt,
 		ResetAt:                      resetAt,
 		Identity:                     identity,
 	}

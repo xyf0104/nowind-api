@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,12 +75,26 @@ func (r *forceRefreshAccountUsageRepo) UpdateExtra(_ context.Context, _ int64, u
 
 type forceRefreshWindowStatsRepo struct {
 	UsageLogRepository
-	calls int
-	stats *usagestats.AccountStats
+	calls      int
+	rangeCalls int
+	rangeStart time.Time
+	rangeEnd   time.Time
+	stats      *usagestats.AccountStats
+	rangeStats *usagestats.AccountStats
 }
 
 func (r *forceRefreshWindowStatsRepo) GetAccountWindowStats(_ context.Context, _ int64, _ time.Time) (*usagestats.AccountStats, error) {
 	r.calls++
+	return r.stats, nil
+}
+
+func (r *forceRefreshWindowStatsRepo) GetAccountWindowStatsRange(_ context.Context, _ int64, startTime, endTime time.Time) (*usagestats.AccountStats, error) {
+	r.rangeCalls++
+	r.rangeStart = startTime
+	r.rangeEnd = endTime
+	if r.rangeStats != nil {
+		return r.rangeStats, nil
+	}
 	return r.stats, nil
 }
 
@@ -236,8 +251,112 @@ func TestAccountUsageService_OpenAIForceRefreshReturnsMatchingQuotaAndCostSnapsh
 	if usage.SevenDay.WeeklyEstimateUSD != nil {
 		t.Fatalf("first forced refresh weekly estimate = %v, want collecting state", *usage.SevenDay.WeeklyEstimateUSD)
 	}
+	if windowRepo.rangeCalls != 1 {
+		t.Fatalf("point-in-time range stats queried %d times, want 1", windowRepo.rangeCalls)
+	}
+	if !windowRepo.rangeStart.Before(windowRepo.rangeEnd) {
+		t.Fatalf("invalid point-in-time range: %v -> %v", windowRepo.rangeStart, windowRepo.rangeEnd)
+	}
+	if snapshotAt, parseErr := time.Parse(time.RFC3339Nano, fmt.Sprint(shadow.Extra["codex_usage_updated_at"])); parseErr != nil || !windowRepo.rangeEnd.Equal(snapshotAt) {
+		t.Fatalf("range end = %v, want quota snapshot %v (parse error: %v)", windowRepo.rangeEnd, snapshotAt, parseErr)
+	}
 	if windowRepo.calls != 2 {
 		t.Fatalf("window stats queried %d times, want 2 for 5h and 7d", windowRepo.calls)
+	}
+}
+
+func TestAccountUsageService_OpenAIWeeklyEstimateUsesPointInTimeRangeCost(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	resetAt := now.Add(6 * 24 * time.Hour)
+	firstAt := now.Add(-2 * time.Minute)
+	secondAt := now.Add(-1 * time.Minute)
+	account := &Account{
+		ID:       77,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "point-in-time-account",
+		},
+		Extra: map[string]any{
+			"codex_7d_used_percent":  20.0,
+			"codex_7d_reset_at":      resetAt.Format(time.RFC3339Nano),
+			"codex_usage_updated_at": firstAt.Format(time.RFC3339Nano),
+		},
+	}
+	repo := &forceRefreshAccountUsageRepo{account: account}
+	windowRepo := &forceRefreshWindowStatsRepo{
+		stats:      &usagestats.AccountStats{Cost: 999},
+		rangeStats: &usagestats.AccountStats{Cost: 100},
+	}
+	svc := &AccountUsageService{
+		accountRepo:  repo,
+		usageLogRepo: windowRepo,
+		cache:        NewUsageCache(),
+	}
+
+	first, err := svc.GetUsage(context.Background(), account.ID)
+	if err != nil {
+		t.Fatalf("first usage query failed: %v", err)
+	}
+	if first == nil || first.SevenDay == nil || first.SevenDay.WeeklyEstimateUSD != nil {
+		t.Fatalf("first point-in-time sample should be collecting: %#v", first)
+	}
+
+	account.Extra["codex_7d_used_percent"] = 21.0
+	account.Extra["codex_usage_updated_at"] = secondAt.Format(time.RFC3339Nano)
+	windowRepo.rangeStats = &usagestats.AccountStats{Cost: 110}
+	second, err := svc.GetUsage(context.Background(), account.ID)
+	if err != nil {
+		t.Fatalf("second usage query failed: %v", err)
+	}
+	if second == nil || second.SevenDay == nil || second.SevenDay.WeeklyEstimateUSD == nil {
+		t.Fatalf("second point-in-time sample should complete the estimate: %#v", second)
+	}
+	if got := *second.SevenDay.WeeklyEstimateUSD; math.Abs(got-(110+79*10)) > 1e-9 {
+		t.Fatalf("estimate = %v, want %v from bounded range cost", got, 110+79*10)
+	}
+	if windowRepo.rangeCalls != 2 {
+		t.Fatalf("point-in-time range query count = %d, want 2", windowRepo.rangeCalls)
+	}
+}
+
+func TestAccountUsageService_OpenAIMissingSevenDaySnapshotDoesNotCreateEstimateBaseline(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	account := &Account{
+		ID:       78,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Extra: map[string]any{
+			"codex_5h_used_percent":  12.0,
+			"codex_usage_updated_at": now.Add(-time.Minute).Format(time.RFC3339Nano),
+		},
+	}
+	windowRepo := &forceRefreshWindowStatsRepo{stats: &usagestats.AccountStats{Cost: 120}}
+	svc := &AccountUsageService{
+		accountRepo:  &forceRefreshAccountUsageRepo{account: account},
+		usageLogRepo: windowRepo,
+		cache:        NewUsageCache(),
+	}
+
+	usage, err := svc.GetUsage(context.Background(), account.ID)
+	if err != nil {
+		t.Fatalf("usage query failed: %v", err)
+	}
+	if usage == nil || usage.SevenDay != nil {
+		t.Fatalf("missing official 7d window must stay absent, got %#v", usage)
+	}
+	if _, exists := account.Extra[openAIWeeklyEstimateBaselineKey]; exists {
+		t.Fatalf("missing official 7d window unexpectedly created estimate state: %#v", account.Extra[openAIWeeklyEstimateBaselineKey])
+	}
+	if windowRepo.rangeCalls != 0 {
+		t.Fatalf("missing official 7d window made %d point-in-time queries, want 0", windowRepo.rangeCalls)
+	}
+	if windowRepo.calls != 1 {
+		t.Fatalf("missing official 7d window made %d live-window queries, want only the 5h query", windowRepo.calls)
 	}
 }
 
