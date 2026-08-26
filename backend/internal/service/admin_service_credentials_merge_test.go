@@ -131,10 +131,14 @@ func TestUpdateAccount_OpenAIReauthorizationPreservesWeeklyEstimateForSameIdenti
 			},
 			Extra: map[string]any{
 				openAIWeeklyEstimateBaselineKey: map[string]any{
-					"percent":  10.0,
-					"cost":     100.0,
-					"reset_at": "2026-08-25T05:17:50Z",
-					"identity": "workspace-a",
+					"version":             13,
+					"percent_bucket":      10,
+					"snapshot_cost":       260.0,
+					"has_weekly_estimate": true,
+					"estimate_usd":        2888.8888888888887,
+					"reset_at":            "2099-08-25T05:17:50Z",
+					"identity":            "workspace-a",
+					"observed_at":         "2099-08-19T05:17:50Z",
 				},
 			},
 		},
@@ -168,10 +172,14 @@ func TestUpdateAccount_OpenAIReauthorizationClearsWeeklyEstimateForNewIdentity(t
 			},
 			Extra: map[string]any{
 				openAIWeeklyEstimateBaselineKey: map[string]any{
-					"percent":  10.0,
-					"cost":     100.0,
-					"reset_at": "2026-08-25T05:17:50Z",
-					"identity": "workspace-a",
+					"version":             13,
+					"percent_bucket":      10,
+					"snapshot_cost":       260.0,
+					"has_weekly_estimate": true,
+					"estimate_usd":        2888.8888888888887,
+					"reset_at":            "2099-08-25T05:17:50Z",
+					"identity":            "workspace-a",
+					"observed_at":         "2099-08-19T05:17:50Z",
 				},
 			},
 		},
@@ -205,10 +213,14 @@ func TestUpdateAccount_OpenAITokenRefreshPreservesWeeklyEstimateBaseline(t *test
 			},
 			Extra: map[string]any{
 				openAIWeeklyEstimateBaselineKey: map[string]any{
-					"percent":  10.0,
-					"cost":     100.0,
-					"reset_at": "2026-08-25T05:17:50Z",
-					"identity": "workspace-a",
+					"version":             13,
+					"percent_bucket":      10,
+					"snapshot_cost":       260.0,
+					"has_weekly_estimate": true,
+					"estimate_usd":        2888.8888888888887,
+					"reset_at":            "2099-08-25T05:17:50Z",
+					"identity":            "workspace-a",
+					"observed_at":         "2099-08-19T05:17:50Z",
 				},
 			},
 		},
@@ -224,9 +236,13 @@ func TestUpdateAccount_OpenAITokenRefreshPreservesWeeklyEstimateBaseline(t *test
 	})
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"percent":  10.0,
-		"cost":     100.0,
-		"reset_at": "2026-08-25T05:17:50Z",
-		"identity": "workspace-a",
+		"version":             13,
+		"percent_bucket":      10,
+		"snapshot_cost":       260.0,
+		"has_weekly_estimate": true,
+		"estimate_usd":        2888.8888888888887,
+		"reset_at":            "2099-08-25T05:17:50Z",
+		"identity":            "workspace-a",
+		"observed_at":         "2099-08-19T05:17:50Z",
 	}, repo.account.Extra[openAIWeeklyEstimateBaselineKey])
 }

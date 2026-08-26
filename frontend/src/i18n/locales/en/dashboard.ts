@@ -297,7 +297,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'Pairs account cost with the exact timestamp of the provider 7-day percentage. An estimate appears only after a complete real 1% interval; unaligned or incomplete samples stay in Collecting. Mid-window imports, reauthorization, identity changes, and window resets start a fresh sample, while 100% shows the current exact account cost.',
+    weeklyEstimateHint: 'Rule B: when the official 7-day window first enters P%, XIASS freezes the account cost from that same observation and estimates the weekly total as frozen cost divided by ((P - 1) / 100). The result does not change within the same integer percentage. For example, entering 10% with a frozen $260 cost shows about $2,888.89. Unaligned snapshots and values below 2% stay in Collecting. Reauthorizing the same ChatGPT account keeps the current-window result; a different account identity or weekly window starts a new sample. At 100%, the current exact account cost is shown.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

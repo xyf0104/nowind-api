@@ -896,7 +896,10 @@ const openAIWeeklyEstimateText = computed(() => {
     }).format(estimate)}`
   }
 
-  return `$${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(estimate))}`
+  return `$${new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(estimate)}`
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))

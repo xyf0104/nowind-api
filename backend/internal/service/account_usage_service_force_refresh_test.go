@@ -248,8 +248,11 @@ func TestAccountUsageService_OpenAIForceRefreshReturnsMatchingQuotaAndCostSnapsh
 	if usage.SevenDay.WindowStats.Cost != 413.92 {
 		t.Fatalf("forced refresh account cost = %v, want 413.92", usage.SevenDay.WindowStats.Cost)
 	}
-	if usage.SevenDay.WeeklyEstimateUSD != nil {
-		t.Fatalf("first forced refresh weekly estimate = %v, want collecting state", *usage.SevenDay.WeeklyEstimateUSD)
+	if usage.SevenDay.WeeklyEstimateUSD == nil {
+		t.Fatalf("first forced refresh weekly estimate is nil, want a frozen 13%% value")
+	}
+	if got := *usage.SevenDay.WeeklyEstimateUSD; math.Abs(got-(413.92*100/12)) > 1e-9 {
+		t.Fatalf("first forced refresh weekly estimate = %v, want %v", got, 413.92*100/12)
 	}
 	if windowRepo.rangeCalls != 1 {
 		t.Fatalf("point-in-time range stats queried %d times, want 1", windowRepo.rangeCalls)
@@ -300,8 +303,11 @@ func TestAccountUsageService_OpenAIWeeklyEstimateUsesPointInTimeRangeCost(t *tes
 	if err != nil {
 		t.Fatalf("first usage query failed: %v", err)
 	}
-	if first == nil || first.SevenDay == nil || first.SevenDay.WeeklyEstimateUSD != nil {
-		t.Fatalf("first point-in-time sample should be collecting: %#v", first)
+	if first == nil || first.SevenDay == nil || first.SevenDay.WeeklyEstimateUSD == nil {
+		t.Fatalf("first point-in-time sample should freeze the 20%% value: %#v", first)
+	}
+	if got := *first.SevenDay.WeeklyEstimateUSD; math.Abs(got-(100.0*100/19)) > 1e-9 {
+		t.Fatalf("first estimate = %v, want %v from bounded range cost", got, 100.0*100/19)
 	}
 
 	account.Extra["codex_7d_used_percent"] = 21.0
@@ -312,10 +318,10 @@ func TestAccountUsageService_OpenAIWeeklyEstimateUsesPointInTimeRangeCost(t *tes
 		t.Fatalf("second usage query failed: %v", err)
 	}
 	if second == nil || second.SevenDay == nil || second.SevenDay.WeeklyEstimateUSD == nil {
-		t.Fatalf("second point-in-time sample should complete the estimate: %#v", second)
+		t.Fatalf("second point-in-time sample should freeze the 21%% value: %#v", second)
 	}
-	if got := *second.SevenDay.WeeklyEstimateUSD; math.Abs(got-(110+79*10)) > 1e-9 {
-		t.Fatalf("estimate = %v, want %v from bounded range cost", got, 110+79*10)
+	if got := *second.SevenDay.WeeklyEstimateUSD; math.Abs(got-(110.0*100/20)) > 1e-9 {
+		t.Fatalf("estimate = %v, want %v from bounded range cost", got, 110.0*100/20)
 	}
 	if windowRepo.rangeCalls != 2 {
 		t.Fatalf("point-in-time range query count = %d, want 2", windowRepo.rangeCalls)

@@ -635,14 +635,14 @@ describe('AccountUsageCell', () => {
   expect(wrapper.text()).toContain('7d|100|106540000')
   })
 
-  it('OpenAI OAuth 保留原版用量布局并让周额度跨第二、三行显示', async () => {
+  it('OpenAI OAuth 保留原版用量布局并以两位小数显示冻结周额度', async () => {
     getUsage.mockResolvedValue({
       five_hour: null,
       seven_day: {
         utilization: 6,
         resets_at: '2099-03-13T12:00:00Z',
         remaining_seconds: 3600,
-        weekly_estimate_usd: 2977,
+        weekly_estimate_usd: 260 / 0.09,
         window_stats: {
           requests: 1500,
           tokens: 1_000_000,
@@ -691,12 +691,12 @@ describe('AccountUsageCell', () => {
     expect(wrapper.get('[data-test="stub-footer"]').findComponent({ name: 'OpenAIQuotaResetCell' }).exists()).toBe(true)
     expect(wrapper.get('[data-test="stub-aside"]').find('[data-test="oauth-weekly-estimate"]').exists()).toBe(true)
     expect(estimate.text()).toContain('usage.weeklyEstimate')
-    expect(estimate.text()).toContain('$2,977')
+    expect(estimate.text()).toContain('$2,888.89')
     expect(estimate.get('span:last-child').classes()).toContain('text-emerald-600')
     expect(estimate.get('span:last-child').classes()).toContain('dark:text-emerald-400')
   })
 
-  it('OpenAI OAuth 刷新后展示后端按最近完整 1% 计算的周额度', async () => {
+  it('OpenAI OAuth 只展示后端在新整数百分点冻结后的周额度', async () => {
     getUsage
       .mockResolvedValueOnce({
         seven_day: {
@@ -715,7 +715,7 @@ describe('AccountUsageCell', () => {
       })
       .mockResolvedValueOnce({
         seven_day: {
-          utilization: 12.935,
+          utilization: 13,
           resets_at: '2099-03-13T12:00:00Z',
           remaining_seconds: 3500,
           weekly_estimate_usd: 5000,
@@ -745,14 +745,14 @@ describe('AccountUsageCell', () => {
 
     await flushPromises()
     expect(getUsage).toHaveBeenCalledTimes(1)
-    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,000')
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,000.00')
 
     await wrapper.setProps({ manualRefreshToken: 1 })
     await flushPromises()
 
     expect(getUsage).toHaveBeenCalledTimes(2)
     expect(getUsage).toHaveBeenNthCalledWith(2, 2104, undefined, true)
-    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$5,000')
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$5,000.00')
   })
 
   it('OpenAI OAuth 强制刷新失败时保留上一份完整周额度快照', async () => {
@@ -789,16 +789,16 @@ describe('AccountUsageCell', () => {
     })
 
     await flushPromises()
-    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184.00')
 
     await wrapper.setProps({ manualRefreshToken: 1 })
     await flushPromises()
 
     expect(getUsage).toHaveBeenNthCalledWith(2, 2106, undefined, true)
-    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184')
+    expect(wrapper.get('[data-test="oauth-weekly-estimate"]').text()).toContain('$3,184.00')
   })
 
-  it('OpenAI OAuth 尚未形成首个额度差值时显示统计中', async () => {
+  it('OpenAI OAuth 后端尚未返回冻结额度时显示统计中', async () => {
     getUsage.mockResolvedValue({
       seven_day: {
         utilization: 37,

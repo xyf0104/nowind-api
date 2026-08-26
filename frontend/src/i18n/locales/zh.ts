@@ -897,7 +897,7 @@ export default {
     requestCountUnit: '次请求',
     openBillingBreakdown: '查看用户与模型扣费明细',
     weeklyEstimate: '周额度约',
-    weeklyEstimateHint: '只使用与官方 7 天百分比同一时刻的账号已用；最近一个完整实际 1% 区间完成后才估算，区间未完成或时间无法对齐时显示统计中。中途接入、401 重新授权、账号身份或周窗口变化后重新采样，100% 时显示当前实际账号已用。',
+    weeklyEstimateHint: '规则 B：官方 7 天窗口首次进入 P% 时，冻结该时刻的账号已用，并按“冻结账号已用 ÷ ((P - 1) / 100)”推算周额度；同一整数百分点内不会随成本波动。例：刚进入 10% 且冻结 $260，显示约 $2,888.89。无法对齐快照或不足 2% 时显示统计中；同一 ChatGPT 账号 401 重新授权保留本窗口结果，账号身份或周窗口变化后重新采样，100% 时显示当前实际账号已用。',
     weeklyEstimatePending: '统计中',
     oauthBillingDetails: '账号扣费明细',
     currentUsageWindow: '当前 {window} 窗口',
