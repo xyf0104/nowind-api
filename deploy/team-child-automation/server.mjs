@@ -834,6 +834,62 @@ async function clickText(current, pattern, options = {}) {
   await textLocator.click(options)
 }
 
+async function firstVisibleAction(scope, patterns, roles = ['button']) {
+  for (const pattern of patterns) {
+    for (const role of roles) {
+      const candidates = scope.getByRole(role, { name: pattern })
+      const count = await candidates.count().catch(() => 0)
+      for (let index = 0; index < count; index += 1) {
+        const candidate = candidates.nth(index)
+        if (!(await candidate.isVisible().catch(() => false))) continue
+        if (await candidate.isDisabled().catch(() => false)) continue
+        return candidate
+      }
+    }
+
+    const texts = scope.getByText(pattern)
+    const count = await texts.count().catch(() => 0)
+    for (let index = 0; index < count; index += 1) {
+      const candidate = texts.nth(index)
+      if (await candidate.isVisible().catch(() => false)) return candidate
+    }
+  }
+  return null
+}
+
+async function clickRemoveMemberMenuAction(current) {
+  const menus = current.locator('[role="menu"]:visible')
+  const menuCount = await menus.count().catch(() => 0)
+  const menu = menuCount > 0 ? menus.nth(menuCount - 1) : null
+  const patterns = [/^(?:remove member|移除成员)$/i]
+  let action = menu ? await firstVisibleAction(menu, patterns, ['menuitem', 'button']) : null
+  if (!action) action = await firstVisibleAction(current, patterns, ['menuitem', 'button'])
+  if (!action) throw new Error('成员操作菜单中找不到移除成员操作')
+  await action.click()
+}
+
+async function officialRemoveMemberConfirmationButton(current) {
+  const dialogs = current.locator('[role="dialog"]:visible, [role="alertdialog"]:visible')
+  const dialogCount = await dialogs.count().catch(() => 0)
+  const patterns = [/^remove from workspace[.!]?$/i, /^(?:从工作空间移除|从工作区移除)[。！]?$/i]
+  for (let index = dialogCount - 1; index >= 0; index -= 1) {
+    const dialog = dialogs.nth(index)
+    const action = await firstVisibleAction(dialog, patterns)
+    if (action) return action
+  }
+  return null
+}
+
+async function confirmOfficialMemberRemoval(current) {
+  let confirmationButton = null
+  await waitUntil('ChatGPT 官方“Remove from workspace”确认弹窗未出现', async () => {
+    confirmationButton = await officialRemoveMemberConfirmationButton(current)
+    return Boolean(confirmationButton)
+  })
+  if (!confirmationButton) throw new Error('ChatGPT 官方移除成员确认按钮未出现')
+  await confirmationButton.click()
+}
+
 async function visibleInviteDialog(current) {
   const dialog = current.locator('[data-testid="modal-invite-users-to-workspace"]').last()
   if ((await dialog.count()) > 0 && await dialog.isVisible().catch(() => false)) return dialog
@@ -1102,8 +1158,10 @@ async function removeMember(email) {
   const record = await memberRecord(current, normalized)
   assertRemovableMember(record.member)
   await clickMemberMenu(current, normalized)
-  await clickText(current, /remove member|移除成员/i)
-  await clickText(current, /remove from workspace|从工作空间移除|remove/i)
+  await clickRemoveMemberMenuAction(current)
+  // ChatGPT renders a second destructive confirmation in a modal. Keep this
+  // click dialog-scoped so a lingering menu action can never impersonate it.
+  await confirmOfficialMemberRemoval(current)
 
   await waitUntil('移除操作已提交但成员仍存在', async () => !(await memberRow(current, normalized, false)))
   const result = await readMembers(current)
@@ -2751,6 +2809,7 @@ export {
   activateBrowserPage,
   callbackURLFromNavigationEntries,
   cancelWorkflowState,
+  confirmOfficialMemberRemoval,
   completeReauthorizationOnlyNodes,
   completeWorkflowNode,
   createReauthorizationWorkflow,

@@ -284,6 +284,12 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err != nil {
 		return nil, fmt.Errorf("clone account credentials: %w", err)
 	}
+	// Login-only reauthorization material belongs to one account identity. A
+	// duplicate must never inherit a password or mailbox binding that would let
+	// it impersonate the source account through the private browser runner.
+	delete(credentials, OpenAITeamChildPasswordCredentialKey)
+	delete(credentials, OpenAIOAuthReauthorizationEmailCredentialKey)
+	delete(credentials, OpenAIOAuthReauthorizationPasswordCredentialKey)
 	extra, err := duplicateAccountExtra(source.Extra)
 	if err != nil {
 		return nil, fmt.Errorf("clone account extra configuration: %w", err)
@@ -494,6 +500,9 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Status:      StatusActive,
 		Schedulable: true,
 	}
+	if input.Schedulable != nil {
+		account.Schedulable = *input.Schedulable
+	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
@@ -535,7 +544,44 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	return account, nil
 }
 
+func containsOpenAIReauthorizationCredentials(credentials map[string]any) bool {
+	if credentials == nil {
+		return false
+	}
+	for _, key := range []string{
+		OpenAITeamChildPasswordCredentialKey,
+		OpenAIOAuthReauthorizationEmailCredentialKey,
+		OpenAIOAuthReauthorizationPasswordCredentialKey,
+	} {
+		if _, exists := credentials[key]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func stripOpenAIReauthorizationCredentials(credentials map[string]any) map[string]any {
+	if credentials == nil {
+		return nil
+	}
+	filtered := make(map[string]any, len(credentials))
+	for key, value := range credentials {
+		switch key {
+		case OpenAITeamChildPasswordCredentialKey,
+			OpenAIOAuthReauthorizationEmailCredentialKey,
+			OpenAIOAuthReauthorizationPasswordCredentialKey:
+			continue
+		default:
+			filtered[key] = value
+		}
+	}
+	return filtered
+}
+
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if !input.AllowOpenAIReauthorizationCredentials && containsOpenAIReauthorizationCredentials(input.Credentials) {
+		return nil, infraerrors.BadRequest("OPENAI_REAUTH_CREDENTIALS_MANAGED", "OpenAI reauthorization credentials must be saved through the dedicated encrypted endpoint")
+	}
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, err
@@ -586,12 +632,12 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
 			return nil, err
 		}
-		// Create returns the account object used directly by the OAuth and Team
-		// import responses. Reflect the durable bindings here so a caller cannot
-		// mistake a newly grouped account for an ungrouped one and clear it on a
-		// subsequent configuration save.
-		account.GroupIDs = append([]int64(nil), groupIDs...)
 	}
+	// Create returns the account object used directly by OAuth and Team import
+	// responses. Always reflect the durable binding state, including the
+	// intentional empty set, so the next configuration save cannot replace a
+	// user-selected group list with stale client-side defaults.
+	account.GroupIDs = append([]int64(nil), groupIDs...)
 
 	// OAuth 账号：创建后异步设置隐私。
 	// 使用 Ensure（幂等）而非 Force：新建账号 Extra 为空时效果相同，但更安全。
@@ -686,14 +732,21 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if account.IsCredentialShadow() && input.Credentials != nil {
 		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
 	} else if len(input.Credentials) > 0 {
-		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
-		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
-		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
-		// 校验并规范化请求头覆写配置（header 名小写化、格式检查）
-		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
-			return nil, err
+		credentials := input.Credentials
+		if !input.AllowOpenAIReauthorizationCredentials {
+			credentials = stripOpenAIReauthorizationCredentials(credentials)
+		}
+		if len(credentials) > 0 {
+			// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
+			// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
+			account.Credentials = MergePreservingSensitiveCreds(account.Credentials, credentials)
+			// 校验并规范化请求头覆写配置（header 名小写化、格式检查）
+			if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
+				return nil, err
+			}
 		}
 	}
+
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
 	requestedProbeEnabledUpdate := input.ProbeEnabled
@@ -1125,6 +1178,9 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
 	// Managed probe/session state may only enter through dedicated typed endpoints.
+	// Login-only reauthorization keys are deliberately unavailable to bulk edit:
+	// preserve any existing encrypted binding, but never copy or overwrite it.
+	input.Credentials = stripOpenAIReauthorizationCredentials(input.Credentials)
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	fingerprintModeValue, hasFingerprintModeUpdate := input.Extra[codexFingerprintModeExtraKey]
 	if hasFingerprintModeUpdate {

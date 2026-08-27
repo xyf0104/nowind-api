@@ -41,6 +41,11 @@ export interface TeamChildLoginSecret {
   password: string
 }
 
+export interface OpenAIAccountReauthorizationCredentialsRequest {
+  email: string
+  password: string
+}
+
 export interface TeamChildMailboxCode {
   status: 'waiting' | 'received'
   code?: string
@@ -64,6 +69,10 @@ export interface TeamChildCreateAccountRequest {
   concurrency: number
   priority: number
   group_ids: number[]
+  /** Preserve the exact group selection, including an intentionally empty one. */
+  skip_default_group_bind: true
+  /** New workflow imports must be immediately eligible for scheduler selection. */
+  schedulable: true
   /** Marks the imported account for the Team-child 401 reminder. */
   team_child?: boolean
   /** Binds the encrypted generated password to this exact protocol-2 import. */
@@ -310,6 +319,25 @@ export async function reauthorizeTeamChildAccount(accountID: number, authURL: st
   return requireCurrentTeamChildWorkflow(data)
 }
 
+export async function saveOpenAIAccountReauthorizationCredentials(
+  accountID: number,
+  payload: OpenAIAccountReauthorizationCredentialsRequest
+): Promise<Account> {
+  const { data } = await apiClient.post<Account>(
+    `/admin/openai/accounts/${encodeURIComponent(String(accountID))}/reauthorization-credentials`,
+    payload
+  )
+  return data
+}
+
+export async function reauthorizeOpenAIAccount(accountID: number, authURL: string, oauthSessionID: string): Promise<TeamChildWorkflow> {
+  const { data } = await apiClient.post<TeamChildWorkflow>(
+    `/admin/openai/accounts/${encodeURIComponent(String(accountID))}/reauthorize`,
+    { auth_url: authURL, oauth_session_id: oauthSessionID }
+  )
+  return requireCurrentTeamChildWorkflow(data)
+}
+
 export async function submitTeamChildWorkflowEmailCode(workflowID: string, code: string): Promise<TeamChildWorkflow> {
   const { data } = await apiClient.post<TeamChildWorkflow>(
     `/admin/openai/team-child/workflows/${encodeURIComponent(workflowID)}/email-code`,
@@ -395,6 +423,8 @@ export const teamChildAPI = {
   submitTeamChildWorkflowCallback,
   restartTeamChildWorkflowOAuth,
   reauthorizeTeamChildAccount,
+  saveOpenAIAccountReauthorizationCredentials,
+  reauthorizeOpenAIAccount,
   submitTeamChildWorkflowEmailCode,
   submitTeamChildWorkflowPhone,
   submitTeamChildWorkflowSMSCode,

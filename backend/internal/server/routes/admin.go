@@ -439,6 +439,8 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers, step
 		openai.POST("/exchange-code", h.Admin.OpenAIOAuth.ExchangeCode)
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
+		openai.POST("/accounts/:id/reauthorization-credentials", h.Admin.OpenAIOAuth.SaveOpenAIAccountReauthorizationCredentials)
+		openai.POST("/accounts/:id/reauthorize", h.Admin.OpenAIOAuth.ReauthorizeOpenAIAccount)
 		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
 		openai.POST("/create-from-codex-pat", h.Admin.OpenAIOAuth.CreateAccountFromCodexPAT)
 		openai.GET("/team-child/mailbox-status", h.Admin.OpenAIOAuth.TeamChildMailboxStatus)

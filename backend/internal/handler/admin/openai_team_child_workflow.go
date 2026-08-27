@@ -342,17 +342,30 @@ func (h *OpenAIOAuthHandler) RestartTeamChildWorkflowOAuth(c *gin.Context) {
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/restart-oauth", req)
 }
 
-// ReauthorizeTeamChildAccount starts the narrow login-only OAuth workflow for
-// an existing Team child. The saved password is decrypted only on the XIASS
-// server and sent to the private automation service; it is never returned to
-// the browser or included in the workflow summary.
+// ReauthorizeTeamChildAccount preserves the legacy Team-only route. Existing
+// account-management links continue to work while the shared implementation
+// below also serves ordinary OpenAI OAuth accounts with an explicitly saved
+// login credential.
 func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
+	h.reauthorizeOpenAIAccount(c, true)
+}
+
+// ReauthorizeOpenAIAccount starts the login-only OAuth workflow for any
+// eligible OpenAI OAuth account that has an administrator-saved login email
+// and password. It never enters Team member, invitation, SMS, profile, or
+// signup nodes.
+// POST /api/v1/admin/openai/accounts/:id/reauthorize
+func (h *OpenAIOAuthHandler) ReauthorizeOpenAIAccount(c *gin.Context) {
+	h.reauthorizeOpenAIAccount(c, false)
+}
+
+func (h *OpenAIOAuthHandler) reauthorizeOpenAIAccount(c *gin.Context, teamChildOnly bool) {
 	if !requireTeamChildAdminSession(c) {
 		return
 	}
-	accountID, err := strconv.ParseInt(strings.TrimSpace(c.Param("account_id")), 10, 64)
+	accountID, err := parseOpenAIAccountRouteID(c)
 	if err != nil || accountID <= 0 {
-		response.BadRequest(c, "Team 子号账号 ID 无效")
+		response.BadRequest(c, "OpenAI OAuth 账号 ID 无效")
 		return
 	}
 	var req teamChildAccountReauthorizeRequest
@@ -371,7 +384,7 @@ func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
 		return
 	}
 	if h == nil || h.adminService == nil || h.secretEncryptor == nil {
-		response.InternalError(c, "Team 子号重新授权服务不可用")
+		response.InternalError(c, "OpenAI 重新授权服务不可用")
 		return
 	}
 	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
@@ -379,15 +392,18 @@ func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	email, teamChild := teamChildAccountWorkflowEmail(account)
-	ciphertext, _ := account.Credentials[service.OpenAITeamChildPasswordCredentialKey].(string)
-	if !teamChild || strings.TrimSpace(ciphertext) == "" {
+	email, ciphertext, credentialKind := openAIAccountReauthorizationLogin(account)
+	if teamChildOnly && credentialKind != "team_child" {
 		response.BadRequest(c, "该账号不是可自动重新授权的 Team 子号")
+		return
+	}
+	if email == "" || strings.TrimSpace(ciphertext) == "" {
+		response.BadRequest(c, "该账号尚未保存 OpenAI 登录邮箱和密码")
 		return
 	}
 	password, err := h.secretEncryptor.Decrypt(ciphertext)
 	if err != nil || len(password) < 8 || len(password) > 256 {
-		response.InternalError(c, "Team 子号登录密码无法解密")
+		response.InternalError(c, "OpenAI 登录密码无法解密")
 		return
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/reauthorize", teamChildAutomationReauthorizeRequest{
@@ -397,6 +413,37 @@ func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
 		AuthURL:        req.AuthURL,
 		OAuthSessionID: req.OAuthSessionID,
 	})
+}
+
+// parseOpenAIAccountRouteID accepts the canonical generic :id route plus the
+// long-standing Team-child :account_id route that shares the same handlers.
+func parseOpenAIAccountRouteID(c *gin.Context) (int64, error) {
+	raw := strings.TrimSpace(c.Param("account_id"))
+	if raw == "" {
+		raw = strings.TrimSpace(c.Param("id"))
+	}
+	return strconv.ParseInt(raw, 10, 64)
+}
+
+// openAIAccountReauthorizationLogin resolves the only credentials the private
+// login-only runner may receive. Team-child credentials retain precedence and
+// use the verified mailbox identity; ordinary OpenAI OAuth accounts must have
+// used the dedicated encrypted-credential endpoint first.
+func openAIAccountReauthorizationLogin(account *service.Account) (email, ciphertext, kind string) {
+	if account == nil || account.Platform != service.PlatformOpenAI || !account.IsOAuth() || account.IsCredentialShadow() {
+		return "", "", ""
+	}
+	if teamEmail, teamChild := teamChildAccountWorkflowEmail(account); teamChild {
+		teamCiphertext, _ := account.Credentials[service.OpenAITeamChildPasswordCredentialKey].(string)
+		return teamEmail, teamCiphertext, "team_child"
+	}
+	email, _ = account.Credentials[service.OpenAIOAuthReauthorizationEmailCredentialKey].(string)
+	email = normalizeTeamChildWorkflowEmail(email)
+	if !validTeamChildWorkflowEmail(email) {
+		return "", "", ""
+	}
+	ciphertext, _ = account.Credentials[service.OpenAIOAuthReauthorizationPasswordCredentialKey].(string)
+	return email, ciphertext, "openai_oauth"
 }
 
 // CancelTeamChildWorkflow stops the current workflow at its next node boundary.

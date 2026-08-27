@@ -29,6 +29,8 @@ const { teamChildAPI, accountsAPI, groupsAPI, proxiesAPI, appStore, nativeGenera
     submitTeamChildWorkflowCallback: vi.fn(),
     restartTeamChildWorkflowOAuth: vi.fn(),
     reauthorizeTeamChildAccount: vi.fn(),
+    saveOpenAIAccountReauthorizationCredentials: vi.fn(),
+    reauthorizeOpenAIAccount: vi.fn(),
     submitTeamChildWorkflowEmailCode: vi.fn(),
     submitTeamChildWorkflowPhone: vi.fn(),
     submitTeamChildWorkflowSMSCode: vi.fn(),
@@ -267,6 +269,13 @@ describe('TeamChildCreationView', () => {
       manual_required: false,
       current_node: 'oauth'
     }))
+    teamChildAPI.reauthorizeOpenAIAccount.mockResolvedValue(currentWorkflow({
+      mode: 'reauthorization',
+      target_account_id: 415,
+      status: 'running',
+      manual_required: false,
+      current_node: 'oauth'
+    }))
     teamChildAPI.submitTeamChildWorkflowEmailCode.mockResolvedValue(currentWorkflow({ status: 'running', manual_required: false, current_node: 'email_code' }))
     teamChildAPI.submitTeamChildWorkflowPhone.mockResolvedValue(currentWorkflow({ status: 'running', manual_required: false, current_node: 'phone_submit' }))
     teamChildAPI.submitTeamChildWorkflowSMSCode.mockResolvedValue(currentWorkflow({ status: 'running', manual_required: false, current_node: 'sms_code' }))
@@ -363,7 +372,7 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
-  it('starts the login-only OAuth workflow when the 401 Team entry is opened from account management', async () => {
+  it('requires confirmation before starting the login-only OAuth workflow opened from account management', async () => {
     window.history.replaceState({}, '', '/admin/team-child-creation?reauthorize=317')
     accountsAPI.list.mockResolvedValue({
       items: [{
@@ -394,6 +403,15 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
+    expect(wrapper.find('[data-testid="confirm-dialog"]').exists()).toBe(true)
+    expect(teamChildAPI.selectMailbox).not.toHaveBeenCalled()
+    expect(nativeGenerateAuthUrl).not.toHaveBeenCalled()
+    expect(teamChildAPI.reauthorizeTeamChildAccount).not.toHaveBeenCalled()
+    expect(teamChildAPI.startTeamChildWorkflow).not.toHaveBeenCalled()
+    expect(window.location.search).toBe('')
+
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
     expect(teamChildAPI.selectMailbox).toHaveBeenCalledWith('team1004@example.test')
     expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.reauthorizeTeamChildAccount).toHaveBeenCalledWith(317, testAuthURL, 'oauth-session')
@@ -427,7 +445,7 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(accountsAPI.getUsage).toHaveBeenCalledWith(319)
+    expect(accountsAPI.getUsage).toHaveBeenCalledWith(319, 'active', true)
     expect(wrapper.text()).toContain('7%')
     expect(wrapper.text()).toContain('33%')
     expect(wrapper.text()).toContain('$138.00')
@@ -468,6 +486,11 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-testid="team-history-reauthorize-317"]').trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.cancelTeamChildWorkflow).not.toHaveBeenCalled()
+    expect(teamChildAPI.reauthorizeTeamChildAccount).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
     expect(teamChildAPI.cancelTeamChildWorkflow).toHaveBeenCalledWith(failedWorkflow.id)
@@ -518,11 +541,57 @@ describe('TeamChildCreationView', () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-testid="team-history-delete-317"]').trigger('click')
-    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
     await flushPromises()
 
     expect(accountsAPI.delete).toHaveBeenCalledWith(317)
     expect(teamChildAPI.listMailboxes).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('stores ordinary OpenAI OAuth login details and only starts reauthorization after an explicit click', async () => {
+    const account = {
+      id: 415,
+      name: 'ordinary@example.test',
+      platform: 'openai',
+      type: 'oauth',
+      status: 'error',
+      schedulable: true,
+      proxy_id: null,
+      concurrency: 10,
+      priority: 1,
+      group_ids: [19],
+      parent_account_id: null,
+      credentials: { email: 'ordinary@example.test' },
+      credentials_status: {},
+      extra: {}
+    }
+    accountsAPI.list.mockResolvedValue({ items: [account], total: 1 })
+    teamChildAPI.saveOpenAIAccountReauthorizationCredentials.mockResolvedValue({
+      ...account,
+      credentials_status: { has_xiass_openai_oauth_reauth_password_encrypted: true }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(teamChildAPI.reauthorizeOpenAIAccount).not.toHaveBeenCalled()
+    await wrapper.get('#openai-reauth-email').setValue('ordinary@example.test')
+    await wrapper.get('#openai-reauth-password').setValue('Abc123456789!')
+    const saveButton = wrapper.findAll('button').find((button) => button.text().includes('保存登录信息'))
+    await saveButton!.trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.saveOpenAIAccountReauthorizationCredentials).toHaveBeenCalledWith(415, {
+      email: 'ordinary@example.test',
+      password: 'Abc123456789!'
+    })
+    expect(teamChildAPI.reauthorizeOpenAIAccount).not.toHaveBeenCalled()
+
+    const reauthorizeButton = wrapper.findAll('button').find((button) => button.text().includes('一键重新授权'))
+    await reauthorizeButton!.trigger('click')
+    await flushPromises()
+    expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
+    expect(teamChildAPI.reauthorizeOpenAIAccount).toHaveBeenCalledWith(415, testAuthURL, 'oauth-session')
     wrapper.unmount()
   })
 
@@ -789,6 +858,8 @@ describe('TeamChildCreationView', () => {
       code: 'callback-code',
       state: 'team-state',
       name: 'team-child@example.test',
+      skip_default_group_bind: true,
+      schedulable: true,
       team_child: true,
       workflow_id: 'workflow-token-abcdefghijklmnop'
     }))
@@ -844,13 +915,41 @@ describe('TeamChildCreationView', () => {
     wrapper.unmount()
   })
 
-  it('keeps the pre-import group checked when an older create response omits group_ids', async () => {
+  it('uses an explicit empty group_ids response instead of a stale pre-import selection', async () => {
     teamChildAPI.createOpenAIAccountFromOAuth.mockResolvedValue({
       id: 300,
       name: 'team-child@example.test',
       concurrency: 10,
       priority: 1,
       group_ids: []
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="group-selector"]').trigger('click')
+    await wrapper.get('[data-testid="team-one-click-authorize"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="confirm-dialog"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea[placeholder^="http://localhost"]').setValue('http://localhost:1455/auth/callback?code=callback-code&state=team-state')
+    const confirmCallback = wrapper.findAll('button').find((button) => button.text().includes('确认回调状态'))
+    await confirmCallback!.trigger('click')
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('校验并导入'))
+    await importButton!.trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.createOpenAIAccountFromOAuth).toHaveBeenCalledWith(expect.objectContaining({ group_ids: [19] }))
+    expect(wrapper.get('[data-testid="success-dialog-group-ids"]').text()).toBe('')
+    wrapper.unmount()
+  })
+
+  it('keeps the pre-import group checked when an older create response omits group_ids', async () => {
+    teamChildAPI.createOpenAIAccountFromOAuth.mockResolvedValue({
+      id: 300,
+      name: 'team-child@example.test',
+      concurrency: 10,
+      priority: 1
     })
     accountsAPI.update.mockResolvedValue({
       id: 300,

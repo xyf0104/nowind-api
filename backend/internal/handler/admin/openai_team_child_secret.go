@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,83 @@ const teamChildSecretBodyLimit = 8 * 1024
 type openAITeamChildWorkflowSecret struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+type openAIAccountReauthorizationCredentialsRequest struct {
+	Email    string `json:"email" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+// SaveOpenAIAccountReauthorizationCredentials saves an administrator-provided
+// OpenAI OAuth login only for the private reauthorization runner. It does not
+// expose the password through Account DTOs or accept arbitrary account fields.
+// POST /api/v1/admin/openai/accounts/:id/reauthorization-credentials
+func (h *OpenAIOAuthHandler) SaveOpenAIAccountReauthorizationCredentials(c *gin.Context) {
+	if !requireTeamChildAdminSession(c) {
+		return
+	}
+	if h == nil || h.adminService == nil || h.secretEncryptor == nil {
+		response.InternalError(c, "OpenAI 重新授权密码服务不可用")
+		return
+	}
+	accountID, err := parseOpenAIAccountRouteID(c)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "OpenAI OAuth 账号 ID 无效")
+		return
+	}
+	var req openAIAccountReauthorizationCredentialsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "登录邮箱和密码无效")
+		return
+	}
+	email := normalizeTeamChildWorkflowEmail(req.Email)
+	if !validTeamChildWorkflowEmail(email) {
+		response.BadRequest(c, "登录邮箱格式无效")
+		return
+	}
+	// Preserve the exact password submitted by the administrator. Leading or
+	// trailing spaces can be a valid password character; only reject an empty or
+	// implausibly large value without ever echoing it in an error or log.
+	if len(req.Password) < 8 || len(req.Password) > 256 || strings.TrimSpace(req.Password) == "" {
+		response.BadRequest(c, "登录密码长度无效")
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if account.Platform != service.PlatformOpenAI || !account.IsOAuth() {
+		response.BadRequest(c, "仅支持普通 OpenAI OAuth 账号")
+		return
+	}
+	if account.IsCredentialShadow() {
+		response.BadRequest(c, "Spark 影子账号使用母账号凭据，不能保存独立登录信息")
+		return
+	}
+	if _, teamChild := teamChildAccountWorkflowEmail(account); teamChild {
+		response.BadRequest(c, "Team 子号使用工作流生成的登录信息，不能覆盖")
+		return
+	}
+
+	ciphertext, err := h.secretEncryptor.Encrypt(req.Password)
+	if err != nil {
+		response.InternalError(c, "登录密码加密失败")
+		return
+	}
+	updated, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+		Credentials: map[string]any{
+			service.OpenAIOAuthReauthorizationEmailCredentialKey:    email,
+			service.OpenAIOAuthReauthorizationPasswordCredentialKey: ciphertext,
+		},
+		AllowOpenAIReauthorizationCredentials: true,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.AccountFromService(updated))
 }
 
 // fetchTeamChildWorkflowSecret is the only bridge from the isolated browser

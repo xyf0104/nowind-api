@@ -79,7 +79,7 @@
               class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs text-red-600 hover:text-red-700 dark:text-red-400"
               :disabled="deletingAccountID === entry.account.id"
               :data-testid="`team-history-delete-${entry.account.id}`"
-              @click="deletingEntry = entry"
+              @click="emit('delete-account', entry)"
             >
               <Icon name="trash" size="xs" :class="deletingAccountID === entry.account.id ? 'animate-pulse' : ''" :stroke-width="2" />
               <span>{{ deletingAccountID === entry.account.id ? '删除中' : '删除账号' }}</span>
@@ -115,23 +115,12 @@
         </div>
       </article>
     </div>
-    <ConfirmDialog
-      :show="Boolean(deletingEntry?.account)"
-      title="删除 Team 账号"
-      :message="`确定从 XIASS 账号管理中删除 ${deletingEntry?.email || '该 Team 账号'} 吗？历史邮箱仍会保留，可继续接收验证码。`"
-      confirm-text="删除账号"
-      cancel-text="取消"
-      danger
-      @confirm="confirmDelete"
-      @cancel="deletingEntry = null"
-    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { Icon } from '@/components/icons'
-import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { Account, AccountUsageInfo } from '@/types'
 
 interface TeamChildHistoryEntry {
@@ -170,13 +159,6 @@ const emit = defineEmits<{
 }>()
 
 const normalizedActiveEmail = computed(() => normalizeEmail(props.activeMailboxEmail))
-const deletingEntry = ref<TeamChildHistoryEntry | null>(null)
-
-function confirmDelete() {
-  if (!deletingEntry.value?.account) return
-  emit('delete-account', deletingEntry.value)
-  deletingEntry.value = null
-}
 
 function normalizeEmail(value: string): string {
   return String(value || '').trim().toLowerCase()

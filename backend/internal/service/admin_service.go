@@ -381,6 +381,14 @@ type CreateAccountInput struct {
 	ExpiresAt          *int64
 	AutoPauseOnExpired *bool
 	ProbeEnabled       *bool
+	// Schedulable is optional so existing creation paths keep their current
+	// enabled-by-default behavior. Callers that import an account through a
+	// workflow can still make the intended initial scheduler state explicit.
+	Schedulable *bool
+	// AllowOpenAIReauthorizationCredentials is an internal capability used only
+	// by the state-bound Team OAuth import. Generic account creation must not
+	// accept private login-only credentials from arbitrary import payloads.
+	AllowOpenAIReauthorizationCredentials bool
 	// SkipDefaultGroupBind prevents auto-binding to platform default group when GroupIDs is empty.
 	SkipDefaultGroupBind bool
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
@@ -417,6 +425,10 @@ type UpdateAccountInput struct {
 	// 交互式重新授权/导入后核对 OpenAI 身份；同一账号保留周额度基线，身份变化才重建。
 	ResetOpenAIWeeklyEstimate bool
 	SkipMixedChannelCheck     bool // 跳过混合渠道检查（用户已确认风险）
+	// AllowOpenAIReauthorizationCredentials is an internal capability used only
+	// by the dedicated encrypted credential endpoint. Generic account edits must
+	// preserve rather than write login-only credential keys.
+	AllowOpenAIReauthorizationCredentials bool
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.

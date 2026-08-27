@@ -108,7 +108,9 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 			Type:     service.AccountTypeOAuth,
 			Credentials: map[string]any{
 				"token": "secret",
-				service.OpenAITeamChildPasswordCredentialKey: "encrypted-password",
+				service.OpenAITeamChildPasswordCredentialKey:            "encrypted-password",
+				service.OpenAIOAuthReauthorizationEmailCredentialKey:    "ordinary@example.test",
+				service.OpenAIOAuthReauthorizationPasswordCredentialKey: "encrypted-ordinary-password",
 			},
 			Extra: map[string]any{
 				"note":                               "x",
@@ -140,6 +142,8 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	require.Len(t, resp.Data.Accounts, 1)
 	require.Equal(t, "secret", resp.Data.Accounts[0].Credentials["token"])
 	require.NotContains(t, resp.Data.Accounts[0].Credentials, service.OpenAITeamChildPasswordCredentialKey)
+	require.NotContains(t, resp.Data.Accounts[0].Credentials, service.OpenAIOAuthReauthorizationEmailCredentialKey)
+	require.NotContains(t, resp.Data.Accounts[0].Credentials, service.OpenAIOAuthReauthorizationPasswordCredentialKey)
 	require.NotContains(t, resp.Data.Accounts[0].Extra, service.OpenAITeamChildExtraKey)
 	require.NotContains(t, resp.Data.Accounts[0].Extra, service.OpenAITeamChildEmailExtraKey)
 }
@@ -311,7 +315,9 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 					"type":     service.AccountTypeOAuth,
 					"credentials": map[string]any{
 						"token": "x",
-						service.OpenAITeamChildPasswordCredentialKey: "copied-ciphertext",
+						service.OpenAITeamChildPasswordCredentialKey:            "copied-ciphertext",
+						service.OpenAIOAuthReauthorizationEmailCredentialKey:    "ordinary@example.test",
+						service.OpenAIOAuthReauthorizationPasswordCredentialKey: "copied-ordinary-ciphertext",
 					},
 					"extra": map[string]any{
 						service.OpenAITeamChildExtraKey:      true,
@@ -337,6 +343,8 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
 	require.NotContains(t, adminSvc.createdAccounts[0].Credentials, service.OpenAITeamChildPasswordCredentialKey)
+	require.NotContains(t, adminSvc.createdAccounts[0].Credentials, service.OpenAIOAuthReauthorizationEmailCredentialKey)
+	require.NotContains(t, adminSvc.createdAccounts[0].Credentials, service.OpenAIOAuthReauthorizationPasswordCredentialKey)
 	require.NotContains(t, adminSvc.createdAccounts[0].Extra, service.OpenAITeamChildExtraKey)
 	require.NotContains(t, adminSvc.createdAccounts[0].Extra, service.OpenAITeamChildEmailExtraKey)
 }

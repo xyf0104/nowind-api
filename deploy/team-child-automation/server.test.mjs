@@ -8,6 +8,7 @@ const {
   activateBrowserPage,
   callbackURLFromNavigationEntries,
   cancelWorkflowState,
+  confirmOfficialMemberRemoval,
   completeReauthorizationOnlyNodes,
   completeWorkflowNode,
   createReauthorizationWorkflow,
@@ -111,6 +112,39 @@ describe('Team child OAuth automation state', () => {
     await submitInviteDialog(scope, 'child@example.test')
     assert.equal(observed.email, 'child@example.test')
     assert.equal(observed.clicked, 1)
+  })
+
+  it('clicks the official Remove from workspace confirmation only inside its dialog', async () => {
+    const clicked = []
+    const button = (label) => ({
+      isVisible: async () => true,
+      isDisabled: async () => false,
+      click: async () => { clicked.push(label) }
+    })
+    const removeMember = button('Remove member')
+    const removeFromWorkspace = button('Remove from workspace')
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const dialog = {
+      getByRole: (role, options) => collection(
+        role === 'button'
+          ? ['Remove member', 'Remove from workspace'].filter((label) => options.name.test(label)).map((label) => label === 'Remove member' ? removeMember : removeFromWorkspace)
+          : []
+      ),
+      getByText: () => collection([])
+    }
+    const page = {
+      locator: (selector) => {
+        assert.equal(selector, '[role="dialog"]:visible, [role="alertdialog"]:visible')
+        return collection([dialog])
+      }
+    }
+
+    await confirmOfficialMemberRemoval(page)
+
+    assert.deepEqual(clicked, ['Remove from workspace'])
   })
 
   it('records Send invites exactly once for workflow continuations', () => {

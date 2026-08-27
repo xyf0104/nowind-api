@@ -446,8 +446,15 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Concurrency int     `json:"concurrency"`
 		Priority    int     `json:"priority"`
 		GroupIDs    []int64 `json:"group_ids"`
-		TeamChild   bool    `json:"team_child"`
-		WorkflowID  string  `json:"workflow_id"`
+		// Team imports own their group binding. When the selected list is empty,
+		// it means intentionally ungrouped rather than "bind a platform default".
+		SkipDefaultGroupBind *bool `json:"skip_default_group_bind"`
+		// New Team imports are usable immediately unless an explicit caller opts
+		// out. Keep this pointer so other OAuth creation paths retain their
+		// established default behavior.
+		Schedulable *bool  `json:"schedulable"`
+		TeamChild   bool   `json:"team_child"`
+		WorkflowID  string `json:"workflow_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -529,18 +536,29 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 			service.OpenAITeamChildEmailExtraKey: teamSecret.Email,
 		}
 	}
+	skipDefaultGroupBind := req.TeamChild
+	if req.SkipDefaultGroupBind != nil {
+		skipDefaultGroupBind = *req.SkipDefaultGroupBind
+	}
+	schedulable := true
+	if req.Schedulable != nil {
+		schedulable = *req.Schedulable
+	}
 
 	// Create account
 	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
-		Name:        name,
-		Platform:    platform,
-		Type:        "oauth",
-		Credentials: credentials,
-		Extra:       extra,
-		ProxyID:     req.ProxyID,
-		Concurrency: req.Concurrency,
-		Priority:    req.Priority,
-		GroupIDs:    req.GroupIDs,
+		Name:                                  name,
+		Platform:                              platform,
+		Type:                                  "oauth",
+		Credentials:                           credentials,
+		Extra:                                 extra,
+		ProxyID:                               req.ProxyID,
+		Concurrency:                           req.Concurrency,
+		Priority:                              req.Priority,
+		GroupIDs:                              req.GroupIDs,
+		Schedulable:                           &schedulable,
+		AllowOpenAIReauthorizationCredentials: teamSecret != nil,
+		SkipDefaultGroupBind:                  skipDefaultGroupBind,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
