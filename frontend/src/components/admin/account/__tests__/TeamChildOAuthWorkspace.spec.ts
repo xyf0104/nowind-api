@@ -30,7 +30,7 @@ function workflow(overrides: Record<string, unknown> = {}) {
   const currentIndex = nodeDefinitions.findIndex(([key]) => key === currentNode)
   const workflowStatus = String(overrides.status || 'manual_required')
   return {
-    schema_version: 2,
+    schema_version:  3,
     id: 'workflow-token-abcdefghijklmnop',
     status: workflowStatus,
     manual_required: workflowStatus === 'manual_required',
@@ -217,6 +217,27 @@ describe('TeamChildOAuthWorkspace', () => {
     expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
     await wrapper.get('[data-testid="team-reset-workflow"]').trigger('click')
     expect(wrapper.emitted('reset-workflow')).toHaveLength(1)
+  })
+
+  it('offers explicit continuation after manual OpenAI reauthorization login', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow({
+          mode: 'reauthorization',
+          status: 'manual_required',
+          current_node: 'password'
+        }),
+        automationEnabled: true
+      },
+      global: {
+        plugins: [i18n],
+        stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="team-oauth-current-node"]').text()).toContain('判断是否需要登录密码')
+    await wrapper.get('[data-testid="team-resume-workflow"]').trigger('click')
+    expect(wrapper.emitted('continue-workflow')).toHaveLength(1)
   })
 
   it('forwards an embedded browser member-page refresh to the Team workspace', async () => {

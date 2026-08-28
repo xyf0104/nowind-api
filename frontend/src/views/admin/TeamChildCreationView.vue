@@ -451,7 +451,7 @@ const preflightWorkflow = computed<TeamChildWorkflow>(() => {
   const currentIndex = workflowNodeDefinitions.findIndex(([key]) => key === currentKey)
   const failed = status.value === 'error'
   return {
-    schema_version: 2,
+    schema_version: 3,
     id: 'team-child-preflight',
     status: failed ? 'failed' : 'manual_required',
     expires_at: mailbox.value?.expires_at || '',
@@ -706,8 +706,8 @@ async function saveOpenAIAccountReauthorizationCredentials(payload: { account: A
 
 async function startOrdinaryOpenAIReauthorization(account: Account) {
   if (otherOpenAIReauthorizingAccountID.value !== null) return
-  if (account.credentials_status?.has_xiass_openai_oauth_reauth_password_encrypted !== true) {
-    appStore.showError('请先保存该账号的登录邮箱和密码')
+  if (account.credentials_status?.has_xiass_openai_oauth_reauth_email !== true) {
+    appStore.showError('请先保存该账号的登录邮箱')
     return
   }
   if (teamWorkflow.value && ['running', 'manual_required', 'callback_ready', 'paused'].includes(teamWorkflow.value.status)) {
@@ -869,10 +869,6 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
   const account = entry.account
   if (!account || historyReauthorizingAccountID.value !== null) return
   const detected401 = historyEntryNeedsReauth(entry)
-  if (!entry.passwordAvailable) {
-    appStore.showError('该 Team 账号没有保存的登录密码，无法自动重新授权')
-    return
-  }
   if (teamWorkflow.value && ['running', 'manual_required', 'callback_ready', 'paused'].includes(teamWorkflow.value.status)) {
     if (teamWorkflow.value.mode === 'reauthorization' && teamWorkflow.value.target_account_id === account.id) {
       appStore.showInfo('该账号的重新授权工作流已经在运行')
@@ -926,10 +922,6 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
 
 function requestHistoryReauthorization(entry: TeamChildHistoryEntry) {
   if (!entry.account) return
-  if (!entry.passwordAvailable) {
-    appStore.showError('该 Team 账号没有保存的登录密码，无法自动重新授权')
-    return
-  }
   pendingHistoryReauthorization.value = entry
 }
 
@@ -1313,10 +1305,14 @@ async function continueWorkflow() {
     status.value = teamWorkflow.value.status === 'running' ? 'workflow' : 'waiting'
     scheduleWorkflowPoll(250)
     if (teamWorkflow.value.status === 'manual_required' && !mailboxCode.value) schedulePoll(250)
-    appStore.showInfo('已继续当前自动化')
-    return
+    if (teamWorkflow.value.status !== 'manual_required' || teamWorkflow.value.mode !== 'reauthorization') {
+      appStore.showInfo('已继续当前自动化')
+      return
+    }
   }
-  if (!['failed', 'paused'].includes(teamWorkflow.value.status)) return
+  const canResumeBrowserState = teamWorkflow.value.status === 'manual_required'
+    && teamWorkflow.value.mode === 'reauthorization'
+  if (!canResumeBrowserState && !['failed', 'paused'].includes(teamWorkflow.value.status)) return
   workflowContinuing.value = true
   errorMessage.value = ''
   try {

@@ -120,7 +120,7 @@ function currentWorkflow(overrides: Record<string, unknown> = {}) {
   const currentIndex = workflowNodeDefinitions.findIndex(([key]) => key === currentNode)
   const workflowStatus = String(overrides.status || 'manual_required')
   return {
-    schema_version: 2,
+    schema_version:  3,
     id: 'workflow-token-abcdefghijklmnop',
     status: workflowStatus,
     manual_required: workflowStatus === 'manual_required',
@@ -568,7 +568,10 @@ describe('TeamChildCreationView', () => {
     accountsAPI.list.mockResolvedValue({ items: [account], total: 1 })
     teamChildAPI.saveOpenAIAccountReauthorizationCredentials.mockResolvedValue({
       ...account,
-      credentials_status: { has_xiass_openai_oauth_reauth_password_encrypted: true }
+      credentials_status: {
+        has_xiass_openai_oauth_reauth_email: true,
+        has_xiass_openai_oauth_reauth_password_encrypted: true
+      }
     })
 
     const wrapper = mountView()
@@ -592,6 +595,48 @@ describe('TeamChildCreationView', () => {
     await flushPromises()
     expect(nativeGenerateAuthUrl).toHaveBeenCalledTimes(1)
     expect(teamChildAPI.reauthorizeOpenAIAccount).toHaveBeenCalledWith(415, testAuthURL, 'oauth-session')
+    wrapper.unmount()
+  })
+
+  it('allows ordinary OpenAI OAuth reauthorization with only a saved login email', async () => {
+    const account = {
+      id: 416,
+      name: 'passwordless@example.test',
+      platform: 'openai',
+      type: 'oauth',
+      status: 'error',
+      schedulable: true,
+      proxy_id: null,
+      concurrency: 10,
+      priority: 1,
+      group_ids: [19],
+      parent_account_id: null,
+      credentials: { email: 'passwordless@example.test' },
+      credentials_status: {},
+      extra: {}
+    }
+    accountsAPI.list.mockResolvedValue({ items: [account], total: 1 })
+    teamChildAPI.saveOpenAIAccountReauthorizationCredentials.mockResolvedValue({
+      ...account,
+      credentials_status: { has_xiass_openai_oauth_reauth_email: true }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#openai-reauth-email').setValue('passwordless@example.test')
+    const saveButton = wrapper.findAll('button').find((button) => button.text().includes('保存登录信息'))
+    await saveButton!.trigger('click')
+    await flushPromises()
+
+    expect(teamChildAPI.saveOpenAIAccountReauthorizationCredentials).toHaveBeenCalledWith(416, {
+      email: 'passwordless@example.test',
+      password: ''
+    })
+    const reauthorizeButton = wrapper.findAll('button').find((button) => button.text().includes('一键重新授权'))
+    await reauthorizeButton!.trigger('click')
+    await flushPromises()
+    expect(teamChildAPI.reauthorizeOpenAIAccount).toHaveBeenCalledWith(416, testAuthURL, 'oauth-session')
     wrapper.unmount()
   })
 

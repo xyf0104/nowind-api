@@ -2,13 +2,18 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
-const contentModerationFlaggedHashSetKey = "content_moderation:flagged_hashes"
+const (
+	contentModerationFlaggedHashSetKey           = "content_moderation:flagged_hashes"
+	contentModerationNotificationDedupeKeyPrefix = "content_moderation:notification_dedupe:"
+)
 
 type contentModerationHashCache struct {
 	rdb *redis.Client
@@ -68,4 +73,21 @@ func (c *contentModerationHashCache) CountFlaggedInputHashes(ctx context.Context
 		return 0, nil
 	}
 	return c.rdb.SCard(ctx, contentModerationFlaggedHashSetKey).Result()
+}
+
+// ReserveFlaggedNotification atomically reserves a short-lived opaque key.
+// The service already hashes all request/user material before it reaches this
+// boundary, so neither Redis keys nor values expose prompt content.
+func (c *contentModerationHashCache) ReserveFlaggedNotification(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	key = strings.TrimSpace(key)
+	if c == nil || c.rdb == nil {
+		return false, errors.New("content moderation redis cache unavailable")
+	}
+	if key == "" {
+		return false, errors.New("content moderation notification key is empty")
+	}
+	if ttl <= 0 {
+		return false, errors.New("content moderation notification ttl is invalid")
+	}
+	return c.rdb.SetNX(ctx, contentModerationNotificationDedupeKeyPrefix+key, "1", ttl).Result()
 }

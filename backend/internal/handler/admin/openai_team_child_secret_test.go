@@ -68,7 +68,7 @@ func teamChildAdminTestRouter(handler *OpenAIOAuthHandler) *gin.Engine {
 	return router
 }
 
-func TestRevealTeamChildWorkflowPasswordUsesAuthenticatedProtocolTwoService(t *testing.T) {
+func TestRevealTeamChildWorkflowPasswordUsesAuthenticatedCurrentProtocolService(t *testing.T) {
 	const workflowID = "workflow_1234567890"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/workflows/"+workflowID+"/secret", r.URL.Path)
@@ -140,12 +140,12 @@ func TestReauthorizeTeamChildAccountDecryptsPasswordOnlyForPrivateAutomation(t *
 		w.Header().Set(teamChildWorkflowProtocolHeader, teamChildWorkflowProtocolVersion)
 		switch r.URL.Path {
 		case "/healthz":
-			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version":2}`))
+			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version": 3}`))
 		case "/workflows/reauthorize":
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "service-token", r.Header.Get("X-XIASS-Team-Child-Token"))
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&automationPayload))
-			_, _ = w.Write([]byte(`{"schema_version":2,"id":"workflow_1234567890","status":"running","mode":"reauthorization","target_account_id":91,"nodes":[]}`))
+			_, _ = w.Write([]byte(`{"schema_version": 3,"id":"workflow_1234567890","status":"running","mode":"reauthorization","target_account_id":91,"nodes":[]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -211,6 +211,34 @@ func TestSaveOpenAIAccountReauthorizationCredentialsEncryptsAndRedactsPassword(t
 	require.NotContains(t, recorder.Body.String(), "encrypted:"+password)
 }
 
+func TestSaveOpenAIAccountReauthorizationCredentialsAllowsPasswordlessLogin(t *testing.T) {
+	adminService := newStubAdminService()
+	adminService.getAccountResult = &service.Account{
+		ID:       93,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email": "ordinary@example.test",
+			service.OpenAIOAuthReauthorizationPasswordCredentialKey: "encrypted:old-password",
+		},
+	}
+	handler := &OpenAIOAuthHandler{adminService: adminService, secretEncryptor: teamChildTestEncryptor{}}
+	router := teamChildAdminTestRouter(handler)
+	router.POST("/accounts/:account_id/reauthorization-credentials", handler.SaveOpenAIAccountReauthorizationCredentials)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/accounts/93/reauthorization-credentials", strings.NewReader(`{"email":"ordinary@example.test","password":""}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, "ordinary@example.test", adminService.lastUpdateAccountInput.Credentials[service.OpenAIOAuthReauthorizationEmailCredentialKey])
+	_, passwordProvided := adminService.lastUpdateAccountInput.Credentials[service.OpenAIOAuthReauthorizationPasswordCredentialKey]
+	require.True(t, passwordProvided)
+	require.Nil(t, adminService.lastUpdateAccountInput.Credentials[service.OpenAIOAuthReauthorizationPasswordCredentialKey])
+	require.True(t, adminService.lastUpdateAccountInput.AllowOpenAIReauthorizationCredentials)
+}
+
 func TestReauthorizeOpenAIAccountUsesOnlyDedicatedEncryptedCredentials(t *testing.T) {
 	const password = "Abc123456789!"
 	var automationPayload map[string]any
@@ -218,11 +246,11 @@ func TestReauthorizeOpenAIAccountUsesOnlyDedicatedEncryptedCredentials(t *testin
 		w.Header().Set(teamChildWorkflowProtocolHeader, teamChildWorkflowProtocolVersion)
 		switch r.URL.Path {
 		case "/healthz":
-			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version":2}`))
+			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version": 3}`))
 		case "/workflows/reauthorize":
 			require.Equal(t, http.MethodPost, r.Method)
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&automationPayload))
-			_, _ = w.Write([]byte(`{"schema_version":2,"id":"workflow_1234567890","status":"running","mode":"reauthorization","target_account_id":92,"nodes":[]}`))
+			_, _ = w.Write([]byte(`{"schema_version": 3,"id":"workflow_1234567890","status":"running","mode":"reauthorization","target_account_id":92,"nodes":[]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -256,6 +284,50 @@ func TestReauthorizeOpenAIAccountUsesOnlyDedicatedEncryptedCredentials(t *testin
 	require.Equal(t, "ordinary@example.test", automationPayload["email"])
 	require.Equal(t, password, automationPayload["password"])
 	require.NotContains(t, recorder.Body.String(), password)
+}
+
+func TestReauthorizeOpenAIAccountAllowsPasswordlessLogin(t *testing.T) {
+	var automationPayload map[string]any
+	automation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(teamChildWorkflowProtocolHeader, teamChildWorkflowProtocolVersion)
+		switch r.URL.Path {
+		case "/healthz":
+			_, _ = w.Write([]byte(`{"ok":true,"workflow_schema_version":3}`))
+		case "/workflows/reauthorize":
+			require.Equal(t, http.MethodPost, r.Method)
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&automationPayload))
+			_, _ = w.Write([]byte(`{"schema_version":3,"id":"workflow_1234567890","status":"running","mode":"reauthorization","target_account_id":93,"nodes":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(automation.Close)
+	t.Setenv("TEAM_CHILD_AUTOMATION_URL", automation.URL)
+	t.Setenv("TEAM_CHILD_AUTOMATION_TOKEN", "service-token")
+
+	adminService := newStubAdminService()
+	adminService.getAccountResult = &service.Account{
+		ID:       93,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			service.OpenAIOAuthReauthorizationEmailCredentialKey: "ordinary@example.test",
+		},
+	}
+	handler := &OpenAIOAuthHandler{adminService: adminService, secretEncryptor: teamChildTestEncryptor{}}
+	router := teamChildAdminTestRouter(handler)
+	router.POST("/accounts/:account_id/reauthorize", handler.ReauthorizeOpenAIAccount)
+
+	recorder := httptest.NewRecorder()
+	body := `{"auth_url":"` + testTeamChildAuthURL + `","oauth_session_id":"` + testTeamChildOAuthSessionID + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/accounts/93/reauthorize", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, float64(93), automationPayload["account_id"])
+	require.Equal(t, "ordinary@example.test", automationPayload["email"])
+	require.Equal(t, "", automationPayload["password"])
 }
 
 func TestCreateAccountFromOAuthEncryptsAndBindsTeamWorkflowPassword(t *testing.T) {

@@ -25,8 +25,11 @@ type openAITeamChildWorkflowSecret struct {
 }
 
 type openAIAccountReauthorizationCredentialsRequest struct {
-	Email    string `json:"email" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Email string `json:"email" binding:"required"`
+	// Password is optional because some OpenAI accounts transition directly from
+	// email to an email challenge, workspace choice, or OAuth callback.
+	// An explicit empty value clears any previously saved password.
+	Password string `json:"password"`
 }
 
 // SaveOpenAIAccountReauthorizationCredentials saves an administrator-provided
@@ -48,7 +51,7 @@ func (h *OpenAIOAuthHandler) SaveOpenAIAccountReauthorizationCredentials(c *gin.
 	}
 	var req openAIAccountReauthorizationCredentialsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "登录邮箱和密码无效")
+		response.BadRequest(c, "登录邮箱无效")
 		return
 	}
 	email := normalizeTeamChildWorkflowEmail(req.Email)
@@ -57,9 +60,10 @@ func (h *OpenAIOAuthHandler) SaveOpenAIAccountReauthorizationCredentials(c *gin.
 		return
 	}
 	// Preserve the exact password submitted by the administrator. Leading or
-	// trailing spaces can be a valid password character; only reject an empty or
-	// implausibly large value without ever echoing it in an error or log.
-	if len(req.Password) < 8 || len(req.Password) > 256 || strings.TrimSpace(req.Password) == "" {
+	// trailing spaces can be a valid password character. A deliberately empty
+	// value means this account should wait for manual entry if OpenAI asks for a
+	// password, so only validate a non-empty submitted password.
+	if req.Password != "" && (len(req.Password) < 8 || len(req.Password) > 256 || strings.TrimSpace(req.Password) == "") {
 		response.BadRequest(c, "登录密码长度无效")
 		return
 	}
@@ -82,16 +86,24 @@ func (h *OpenAIOAuthHandler) SaveOpenAIAccountReauthorizationCredentials(c *gin.
 		return
 	}
 
-	ciphertext, err := h.secretEncryptor.Encrypt(req.Password)
-	if err != nil {
-		response.InternalError(c, "登录密码加密失败")
-		return
+	credentials := map[string]any{
+		service.OpenAIOAuthReauthorizationEmailCredentialKey: email,
+	}
+	if req.Password == "" {
+		// UpdateAccount preserves sensitive values that are omitted from an
+		// ordinary update. The dedicated endpoint must explicitly overwrite this
+		// key so an administrator can intentionally remove an old password.
+		credentials[service.OpenAIOAuthReauthorizationPasswordCredentialKey] = nil
+	} else {
+		ciphertext, err := h.secretEncryptor.Encrypt(req.Password)
+		if err != nil {
+			response.InternalError(c, "登录密码加密失败")
+			return
+		}
+		credentials[service.OpenAIOAuthReauthorizationPasswordCredentialKey] = ciphertext
 	}
 	updated, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Credentials: map[string]any{
-			service.OpenAIOAuthReauthorizationEmailCredentialKey:    email,
-			service.OpenAIOAuthReauthorizationPasswordCredentialKey: ciphertext,
-		},
+		Credentials:                           credentials,
 		AllowOpenAIReauthorizationCredentials: true,
 	})
 	if err != nil {

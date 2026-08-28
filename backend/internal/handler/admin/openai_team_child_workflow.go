@@ -351,8 +351,9 @@ func (h *OpenAIOAuthHandler) ReauthorizeTeamChildAccount(c *gin.Context) {
 }
 
 // ReauthorizeOpenAIAccount starts the login-only OAuth workflow for any
-// eligible OpenAI OAuth account that has an administrator-saved login email
-// and password. It never enters Team member, invitation, SMS, profile, or
+// eligible OpenAI OAuth account that has an administrator-saved login email.
+// A saved password is optional and is used only if the official page renders a
+// password field. It never enters Team member, invitation, SMS, profile, or
 // signup nodes.
 // POST /api/v1/admin/openai/accounts/:id/reauthorize
 func (h *OpenAIOAuthHandler) ReauthorizeOpenAIAccount(c *gin.Context) {
@@ -397,14 +398,17 @@ func (h *OpenAIOAuthHandler) reauthorizeOpenAIAccount(c *gin.Context, teamChildO
 		response.BadRequest(c, "该账号不是可自动重新授权的 Team 子号")
 		return
 	}
-	if email == "" || strings.TrimSpace(ciphertext) == "" {
-		response.BadRequest(c, "该账号尚未保存 OpenAI 登录邮箱和密码")
+	if email == "" {
+		response.BadRequest(c, "该账号尚未保存 OpenAI 登录邮箱")
 		return
 	}
-	password, err := h.secretEncryptor.Decrypt(ciphertext)
-	if err != nil || len(password) < 8 || len(password) > 256 {
-		response.InternalError(c, "OpenAI 登录密码无法解密")
-		return
+	password := ""
+	if strings.TrimSpace(ciphertext) != "" {
+		password, err = h.secretEncryptor.Decrypt(ciphertext)
+		if err != nil || len(password) < 8 || len(password) > 256 {
+			response.InternalError(c, "OpenAI 登录密码无法解密")
+			return
+		}
 	}
 	h.teamChildMemberAutomationRequest(c, http.MethodPost, "/workflows/reauthorize", teamChildAutomationReauthorizeRequest{
 		AccountID:      accountID,
@@ -428,7 +432,8 @@ func parseOpenAIAccountRouteID(c *gin.Context) (int64, error) {
 // openAIAccountReauthorizationLogin resolves the only credentials the private
 // login-only runner may receive. Team-child credentials retain precedence and
 // use the verified mailbox identity; ordinary OpenAI OAuth accounts must have
-// used the dedicated encrypted-credential endpoint first.
+// used the dedicated login-email endpoint first. The password ciphertext is
+// intentionally optional because the official page may not request one.
 func openAIAccountReauthorizationLogin(account *service.Account) (email, ciphertext, kind string) {
 	if account == nil || account.Platform != service.PlatformOpenAI || !account.IsOAuth() || account.IsCredentialShadow() {
 		return "", "", ""

@@ -1025,6 +1025,9 @@
               <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.riskControl.blockedKeywordsLimit', { max: blockedKeywordMax }) }}
               </p>
+              <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                {{ t('admin.riskControl.blockedKeywordsContextHint') }}
+              </p>
             </div>
           </div>
 

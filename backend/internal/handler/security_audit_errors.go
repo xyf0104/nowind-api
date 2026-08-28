@@ -18,6 +18,16 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 	if decision == nil {
 		return
 	}
+	if securityAuditNeedsCompletedResponse(decision) {
+		switch {
+		case inboundIsResponsesCompletionRoute(c):
+			writeResponsesSecurityAuditCompletion(c, securityAuditMessage(decision))
+			return
+		case inboundIsChatCompletionsRoute(c):
+			writeChatCompletionsSecurityAuditCompletion(c, securityAuditMessage(decision))
+			return
+		}
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.errorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -35,6 +45,10 @@ func (h *GatewayHandler) openAISecurityAuditError(c *gin.Context, decision *secu
 	if decision == nil {
 		return
 	}
+	if securityAuditNeedsCompletedResponse(decision) && inboundIsChatCompletionsRoute(c) {
+		writeChatCompletionsSecurityAuditCompletion(c, securityAuditMessage(decision))
+		return
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.chatCompletionsErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -50,6 +64,10 @@ func (h *GatewayHandler) openAISecurityAuditError(c *gin.Context, decision *secu
 
 func (h *GatewayHandler) responsesSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
 	if decision == nil {
+		return
+	}
+	if securityAuditNeedsCompletedResponse(decision) && inboundIsResponsesCompletionRoute(c) {
+		writeResponsesSecurityAuditCompletion(c, securityAuditMessage(decision))
 		return
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {

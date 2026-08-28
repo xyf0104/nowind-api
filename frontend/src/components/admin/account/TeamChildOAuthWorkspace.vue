@@ -81,7 +81,7 @@
             <span>{{ workflow.pause_requested ? '正在暂停' : '暂停自动化' }}</span>
           </button>
           <button
-            v-if="!preflight && (workflow.status === 'paused' || (!automationEnabled && ['running', 'manual_required'].includes(workflow.status)))"
+            v-if="!preflight && (workflow.status === 'paused' || (workflow.status === 'manual_required' && workflow.mode === 'reauthorization') || (!automationEnabled && ['running', 'manual_required'].includes(workflow.status)))"
             type="button"
             data-testid="team-resume-workflow"
             class="btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap"
@@ -490,10 +490,10 @@ function cardClass(node: TeamChildWorkflowNode, stackIndex: number): string {
 function displayNodeLabel(node: { key: string; label: string }) {
   if (props.workflow.mode === 'reauthorization') {
     if (node.key === 'signup') return '进入已有账号登录'
-    if (node.key === 'email') return '填入历史 Team 邮箱'
-    if (node.key === 'password') return '填入保存的登录密码'
+    if (node.key === 'email') return '填入目标登录邮箱'
+    if (node.key === 'password') return '判断是否需要登录密码'
     if (node.key === 'mail') return '判断是否需要邮箱验证码'
-    if (node.key === 'mailbox') return '读取历史 Team 邮箱验证码'
+    if (node.key === 'mailbox') return '轮询登录邮箱验证码'
     if (node.key === 'email_code') return '自动填入邮箱验证码'
     if (node.key === 'workspace') return '选择默认工作空间'
     if (node.key === 'import') return '覆盖导入原 Team 账号'

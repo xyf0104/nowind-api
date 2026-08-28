@@ -155,6 +155,7 @@ type contentModerationTestHashCache struct {
 	recorded      []string
 	checked       []string
 	deleted       []string
+	notifications map[string]time.Time
 	hasResult     bool
 	hasResultUsed bool
 }
@@ -373,6 +374,20 @@ func (c *contentModerationTestHashCache) CountFlaggedInputHashes(ctx context.Con
 	return int64(len(c.hashes)), nil
 }
 
+func (c *contentModerationTestHashCache) ReserveFlaggedNotification(_ context.Context, key string, ttl time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.notifications == nil {
+		c.notifications = make(map[string]time.Time)
+	}
+	now := time.Now()
+	if expiresAt, exists := c.notifications[key]; exists && expiresAt.After(now) {
+		return false, nil
+	}
+	c.notifications[key] = now.Add(ttl)
+	return true, nil
+}
+
 func (c *contentModerationTestHashCache) snapshotRecorded() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -445,16 +460,56 @@ func TestNormalizeBlockedKeywords_TrimsDedupesAndCaps(t *testing.T) {
 	require.Equal(t, []string{"foo", "bar", "baz"}, out)
 }
 
-func TestMatchBlockedKeyword_CaseInsensitiveSubstring(t *testing.T) {
-	keyword, hit := matchBlockedKeyword("Please ignore the BadWord here", []string{"badword"})
+func TestMatchBlockedKeyword_ExplicitContainsRule(t *testing.T) {
+	keyword, hit := matchBlockedKeyword("Please ignore the BadWord here", []string{"contains:badword"})
 	require.True(t, hit)
-	require.Equal(t, "badword", keyword)
+	require.Equal(t, "contains:badword", keyword)
 
-	_, hit = matchBlockedKeyword("clean prompt", []string{"badword"})
+	_, hit = matchBlockedKeyword("clean prompt", []string{"contains:badword"})
 	require.False(t, hit)
 
 	_, hit = matchBlockedKeyword("anything", nil)
 	require.False(t, hit)
+}
+
+func TestContentModerationDuplicateFlaggedRequestsSuppressSideEffects(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	cfg.AutoBanEnabled = false
+	cfg.EmailOnHit = false
+	cache := &contentModerationTestHashCache{}
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(nil, repo, cache, nil, nil, nil, nil, nil)
+	userID := int64(42)
+	newLog := func() *ContentModerationLog {
+		return &ContentModerationLog{
+			UserID:    &userID,
+			UserEmail: "retry@example.test",
+			Endpoint:  "/v1/responses",
+			Action:    ContentModerationActionKeywordBlock,
+			Flagged:   true,
+			CreatedAt: time.Now(),
+		}
+	}
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			svc.persistContentModerationLog(context.Background(), cfg, newLog(), "abcdef0123456789", false, true)
+		}()
+	}
+	wg.Wait()
+
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 2, "audit rows remain available for retry diagnostics")
+	counts := []int{logs[0].ViolationCount, logs[1].ViolationCount}
+	require.ElementsMatch(t, []int{0, 1}, counts, "only the first retry may affect account side effects")
+
+	dedupeKey := contentModerationNotificationDedupeKey(newLog(), "abcdef0123456789")
+	require.NotEmpty(t, dedupeKey)
+	require.NotContains(t, dedupeKey, "retry@example.test")
+	require.NotContains(t, dedupeKey, "abcdef0123456789")
 }
 
 func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T) {
@@ -470,7 +525,7 @@ func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
-	cfg.BlockedKeywords = []string{"secret-token"}
+	cfg.BlockedKeywords = []string{"contains:secret-token"}
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
 
@@ -505,7 +560,7 @@ func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T
 	require.True(t, logs[0].Flagged)
 	require.Equal(t, ContentModerationActionKeywordBlock, logs[0].Action)
 	require.Equal(t, contentModerationKeywordCategory, logs[0].HighestCategory)
-	require.Equal(t, "secret-token", logs[0].MatchedKeyword, "blocked log must record which keyword was hit")
+	require.Equal(t, "contains:secret-token", logs[0].MatchedKeyword, "blocked log must record which rule was hit")
 }
 
 func TestContentModerationCheck_KeywordsIgnoredInObserveMode(t *testing.T) {
@@ -521,7 +576,7 @@ func TestContentModerationCheck_KeywordsIgnoredInObserveMode(t *testing.T) {
 	cfg.Mode = ContentModerationModeObserve
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
-	cfg.BlockedKeywords = []string{"secret-token"}
+	cfg.BlockedKeywords = []string{"contains:secret-token"}
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
 
@@ -566,7 +621,7 @@ func TestContentModerationCheck_KeywordOnlyStrategySkipsAPIOnMiss(t *testing.T) 
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
-	cfg.BlockedKeywords = []string{"never-matches"}
+	cfg.BlockedKeywords = []string{"contains:never-matches"}
 	cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordOnly
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
@@ -613,7 +668,7 @@ func TestContentModerationCheck_APIOnlyStrategyIgnoresKeywordList(t *testing.T) 
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
-	cfg.BlockedKeywords = []string{"secret-token"}
+	cfg.BlockedKeywords = []string{"contains:secret-token"}
 	cfg.KeywordBlockingMode = ContentModerationKeywordModeAPIOnly
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
@@ -772,7 +827,7 @@ func defaultContentModerationModelFilterTestConfig() *ContentModerationConfig {
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
 	cfg.Mode = ContentModerationModePreBlock
-	cfg.BlockedKeywords = []string{"secret-token"}
+	cfg.BlockedKeywords = []string{"contains:secret-token"}
 	return cfg
 }
 
@@ -1261,7 +1316,7 @@ func TestContentModerationStatusTracksPreBlockLocalBlocks(t *testing.T) {
 	cfg.Enabled = true
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordOnly
-	cfg.BlockedKeywords = []string{"blocked"}
+	cfg.BlockedKeywords = []string{"contains:blocked"}
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
 

@@ -8,7 +8,7 @@
           </span>
           <div class="min-w-0">
             <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">其他 OpenAI OAuth 重新授权</h2>
-            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">为已有账号保存登录信息后，可在 401 时直接重新登录授权</p>
+            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">保存目标邮箱后，可在 401 时按 OpenAI 官方页面实际步骤重新授权</p>
           </div>
         </div>
       </div>
@@ -31,7 +31,7 @@
         />
         <p v-if="accounts.length === 0" class="mt-2 text-xs text-gray-500 dark:text-gray-400">暂无可配置的普通 OpenAI OAuth 账号。</p>
         <p v-else-if="selectedAccount" class="mt-2 text-xs" :class="credentialsConfigured ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'">
-          {{ credentialsConfigured ? '已保存登录信息，可直接重新授权。' : '尚未保存登录信息，请填写邮箱和密码。' }}
+          {{ credentialsConfigured ? '已保存目标邮箱，可直接重新授权。' : '尚未保存目标邮箱，请先填写邮箱。' }}
         </p>
       </div>
 
@@ -41,8 +41,9 @@
           <input id="openai-reauth-email" v-model.trim="loginEmail" type="email" autocomplete="username" class="input w-full" placeholder="name@example.com" :disabled="!selectedAccount || saving" />
         </div>
         <div class="min-w-0">
-          <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400" for="openai-reauth-password">登录密码</label>
-          <input id="openai-reauth-password" v-model="loginPassword" type="password" autocomplete="current-password" class="input w-full" placeholder="输入后加密保存" :disabled="!selectedAccount || saving" @keydown.enter.prevent="saveCredentials" />
+          <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400" for="openai-reauth-password">登录密码（可选）</label>
+          <input id="openai-reauth-password" v-model="loginPassword" type="password" autocomplete="current-password" class="input w-full" placeholder="仅在官方页面要求时使用" :disabled="!selectedAccount || saving" @keydown.enter.prevent="saveCredentials" />
+          <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">留空保存会清除旧密码；OpenAI 若出现密码框，自动化会在内嵌浏览器等待人工处理。</p>
         </div>
       </div>
     </div>
@@ -92,12 +93,11 @@ const accountOptions = computed<SelectOption[]>(() => props.accounts.map((accoun
   value: account.id,
   label: accountOptionLabel(account)
 })))
-const credentialsConfigured = computed(() => Boolean(selectedAccount.value?.credentials_status?.has_xiass_openai_oauth_reauth_password_encrypted))
+const credentialsConfigured = computed(() => Boolean(selectedAccount.value?.credentials_status?.has_xiass_openai_oauth_reauth_email))
 const reauthorizing = computed(() => selectedAccount.value?.id === props.reauthorizingAccountID)
 const canSaveCredentials = computed(() => Boolean(selectedAccount.value)
   && !props.saving
-  && /^\S+@\S+\.\S+$/.test(loginEmail.value)
-  && loginPassword.value.length >= 8)
+  && /^\S+@\S+\.\S+$/.test(loginEmail.value))
 const canReauthorize = computed(() => Boolean(selectedAccount.value)
   && credentialsConfigured.value
   && !props.saving

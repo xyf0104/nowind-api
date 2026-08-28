@@ -177,6 +177,19 @@ func TestUpdateAccount_ManagedOpenAIReauthorizationCredentialsRequireDedicatedCa
 	require.NoError(t, err)
 	require.Equal(t, "dedicated@example.test", repo.account.Credentials[OpenAIOAuthReauthorizationEmailCredentialKey])
 	require.Equal(t, "encrypted:dedicated-password", repo.account.Credentials[OpenAIOAuthReauthorizationPasswordCredentialKey])
+
+	_, err = svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Credentials: map[string]any{
+			OpenAIOAuthReauthorizationEmailCredentialKey:    "passwordless@example.test",
+			OpenAIOAuthReauthorizationPasswordCredentialKey: nil,
+		},
+		AllowOpenAIReauthorizationCredentials: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "passwordless@example.test", repo.account.Credentials[OpenAIOAuthReauthorizationEmailCredentialKey])
+	_, passwordConfigured := repo.account.Credentials[OpenAIOAuthReauthorizationPasswordCredentialKey]
+	require.True(t, passwordConfigured)
+	require.Nil(t, repo.account.Credentials[OpenAIOAuthReauthorizationPasswordCredentialKey])
 }
 
 func TestStripOpenAIReauthorizationCredentials_RemovesAllManagedKeys(t *testing.T) {

@@ -90,6 +90,31 @@ describe('TeamChildHistoryPanel', () => {
     expect(wrapper.emitted('reauthorize')?.[0]?.[0]).toMatchObject({ account })
   })
 
+  it('keeps reauthorization available when a Team account has no saved password', async () => {
+    const account = teamAccount({
+      status: 'error',
+      credentials_status: {},
+      error_message: 'OpenAI upstream returned HTTP 401 Unauthorized'
+    })
+    const wrapper = mount(TeamChildHistoryPanel, {
+      props: {
+        entries: [{
+          email: 'team1004@example.test',
+          account: account as never,
+          usage: { needs_reauth: true, error_code: 'unauthenticated', error: 'HTTP 401' } as never,
+          passwordAvailable: false
+        }]
+      },
+      global: { stubs: { Icon: IconStub, RouterLink: true } }
+    })
+
+    const button = wrapper.get('[data-testid="team-history-reauthorize-317"]')
+    expect(button.attributes('disabled')).toBeUndefined()
+    expect(button.attributes('title')).toContain('等待人工输入')
+    await button.trigger('click')
+    expect(wrapper.emitted('reauthorize')?.[0]?.[0]).toMatchObject({ account })
+  })
+
   it('links to the exact account and emits direct account deletion', async () => {
     const account = teamAccount({ status: 'active', error_message: '', schedulable: true })
     const wrapper = mount(TeamChildHistoryPanel, {

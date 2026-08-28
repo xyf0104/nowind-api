@@ -6,6 +6,7 @@ process.env.TEAM_CHILD_AUTOMATION_TOKEN = 'unit-test-team-child-token'
 
 const {
   activateBrowserPage,
+  advanceOAuthReauthorization,
   callbackURLFromNavigationEntries,
   cancelWorkflowState,
   confirmOfficialMemberRemoval,
@@ -20,9 +21,11 @@ const {
   markWorkflowInviteSubmitted,
   pauseWorkflowState,
   pendingInviteEmailsFromTexts,
+  reauthorizationNextState,
   recoverOpenAIPhoneEntry,
   reusableOAuthPage,
   resumePausedWorkflow,
+  selectLoginForAnotherAccount,
   setWorkflowNode,
   submitInviteDialog,
   validateOAuthSessionID,
@@ -62,8 +65,8 @@ describe('Team child OAuth automation state', () => {
   it('publishes only the current 22-node workflow protocol', () => {
     const workflow = createWorkflow('member@example.test', 'child@example.test', authURL, 'oauth-session-abcdefghijklmnop', false)
     const summary = workflowSummary(workflow)
-    assert.equal(workflowProtocolVersion, 2)
-    assert.equal(summary.schema_version, 2)
+    assert.equal(workflowProtocolVersion, 3)
+    assert.equal(summary.schema_version, 3)
     assert.equal(summary.nodes.length, 22)
     assert.equal('startStep' in workflow, false)
     assert.equal('runOnlyStep' in workflow, false)
@@ -85,6 +88,98 @@ describe('Team child OAuth automation state', () => {
 
     assert.equal(reusableOAuthPage({ pages: () => [members] }), undefined)
     assert.equal(reusableOAuthPage({ pages: () => [members, oauth] }), oauth)
+  })
+
+  it('classifies each official reauthorization page before taking the next action', async () => {
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const input = (attributes = {}) => ({
+      isVisible: async () => true,
+      getAttribute: async (name) => attributes[name] || null
+    })
+    const page = ({ url, body = '', inputs = [], verification = [] }) => ({
+      url: () => url,
+      locator: (selector) => {
+        if (selector === 'body') return { innerText: async () => body }
+        if (selector === 'input') return collection(inputs)
+        if (selector.includes('one-time-code')) return collection(verification)
+        return collection([])
+      },
+      getByRole: () => collection([])
+    })
+    const workflow = createReauthorizationWorkflow(317, 'child@example.test', '', authURL, 'oauth-session-abcdefghijklmnop')
+
+    assert.equal((await reauthorizationNextState(page({
+      url: 'https://auth.openai.com/log-in',
+      inputs: [input({ type: 'email', autocomplete: 'username' })]
+    }), workflow)).kind, 'email')
+    assert.equal((await reauthorizationNextState(page({
+      url: 'https://auth.openai.com/log-in/password',
+      inputs: [input({ type: 'password', autocomplete: 'current-password' })]
+    }), workflow)).kind, 'password')
+    assert.equal((await reauthorizationNextState(page({
+      url: 'https://auth.openai.com/verify',
+      body: 'Check your inbox for the verification code',
+      verification: [input({ autocomplete: 'one-time-code' })]
+    }), workflow)).kind, 'email_code')
+    assert.equal((await reauthorizationNextState(page({
+      url: 'https://auth.openai.com/sign-in-with-chatgpt/codex/consent',
+      body: 'Select a workspace Continue'
+    }), workflow)).kind, 'workspace')
+    assert.equal((await reauthorizationNextState(page({
+      url: 'https://accounts.google.com/signin'
+    }), workflow)).kind, 'external_provider')
+  })
+
+  it('never clicks a third-party identity-provider option', async () => {
+    let googleClicks = 0
+    const google = {
+      isVisible: async () => true,
+      click: async () => { googleClicks += 1 },
+      innerText: async () => 'Continue with Google'
+    }
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const page = {
+      url: () => 'https://auth.openai.com/log-in',
+      locator: (selector) => selector === 'body'
+        ? { innerText: async () => 'Choose a sign-in method' }
+        : collection([]),
+      getByRole: (role, options) => collection(
+        (role === 'button' && options.name.test('Continue with Google')) ? [google] : []
+      )
+    }
+    const workflow = createReauthorizationWorkflow(317, 'child@example.test', '', authURL, 'oauth-session-abcdefghijklmnop')
+    const state = await selectLoginForAnotherAccount(page, workflow)
+
+    assert.equal(state.kind, 'external_provider_choice')
+    assert.equal(googleClicks, 0)
+  })
+
+  it('pauses rather than authorizing a pre-existing workspace session', async () => {
+    const workflow = createReauthorizationWorkflow(317, 'child@example.test', '', authURL, 'oauth-session-abcdefghijklmnop')
+
+    await advanceOAuthReauthorization(workflow, {}, { kind: 'workspace' })
+
+    assert.equal(workflow.status, 'manual_required')
+    assert.equal(workflow.currentNodeKey, 'signup')
+    assert.equal(workflow.nodes.find((node) => node.key === 'email')?.status, 'pending')
+    assert.match(workflow.nodes.find((node) => node.key === 'signup')?.message || '', /非目标账号/)
+  })
+
+  it('allows a passwordless account and waits only if the official page asks for a password', async () => {
+    const workflow = createReauthorizationWorkflow(317, 'child@example.test', '', authURL, 'oauth-session-abcdefghijklmnop')
+    workflow.reauthorizationEmailSubmitted = true
+
+    await advanceOAuthReauthorization(workflow, {}, { kind: 'password' }, { operatorConfirmed: true })
+
+    assert.equal(workflow.status, 'manual_required')
+    assert.equal(workflow.currentNodeKey, 'password')
+    assert.match(workflow.nodes.find((node) => node.key === 'password')?.message || '', /未保存密码/)
   })
 
   it('fills the native invite Email input and clicks Send invites', async () => {
@@ -417,7 +512,7 @@ describe('Team child OAuth automation state', () => {
 
   it('encrypts persisted workflow passwords with authenticated ciphertext', () => {
     const password = generateWorkflowPassword()
-    const plaintext = JSON.stringify({ schema_version: 2, workflows: [{ generatedPassword: password }] })
+    const plaintext = JSON.stringify({ schema_version: 3, workflows: [{ generatedPassword: password }] })
     const encrypted = encryptWorkflowState(plaintext)
     assert.equal(encrypted.includes(password), false)
     assert.equal(decryptWorkflowState(encrypted), plaintext)
