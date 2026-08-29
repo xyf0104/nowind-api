@@ -52,6 +52,8 @@ type HistoryRepairer struct {
 type HistoryRepairResult struct {
 	TargetProvider      string                      `json:"target_provider"`
 	SourceProviders     []string                    `json:"source_providers,omitempty"`
+	Skipped             bool                        `json:"skipped,omitempty"`
+	SkipReason          string                      `json:"skip_reason,omitempty"`
 	ScannedSessionFiles int                         `json:"scanned_session_files"`
 	UpdatedSessionFiles int                         `json:"updated_session_files"`
 	SanitizedRecords    int                         `json:"sanitized_records"`
@@ -550,6 +552,32 @@ func (r *HistoryRepairer) ListBackups() ([]HistoryBackupInfo, error) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	return items, nil
+}
+
+func (r *HistoryRepairer) DeleteBackup(backupID string) error {
+	if filepath.Base(backupID) != backupID || backupID == "." {
+		return errors.New("invalid history backup ID")
+	}
+	return r.withLock(func() error {
+		data, err := os.ReadFile(filepath.Join(r.BackupRoot, backupID, "manifest.json"))
+		if err != nil {
+			return err
+		}
+		var manifest historyBackupManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return err
+		}
+		if manifest.Version != historyBackupVersion || manifest.ManagedBy != historyManagedBy || manifest.ID != backupID {
+			return errors.New("unsupported or mismatched history backup")
+		}
+		if manifest.Status != historyStatusCommitted {
+			return errors.New("only completed history backups can be deleted")
+		}
+		if err := r.validateBackupManifest(manifest); err != nil {
+			return err
+		}
+		return removeManagedBackupDirectory(r.BackupRoot, backupID)
+	})
 }
 
 func (r *HistoryRepairer) validateBackupManifest(manifest historyBackupManifest) error {

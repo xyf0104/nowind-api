@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,9 @@ type helperServer struct {
 	repairCompatibilityHistory func() (HistoryRepairResult, error)
 	restoreHistory             func(string) error
 	listHistoryBackups         func() ([]HistoryBackupInfo, error)
+	deleteConfigBackup         func(string) error
+	deleteHistoryBackup        func(string) error
+	listModels                 func(string, string) ([]string, error)
 	state                      string
 	operationMu                sync.Mutex
 	siteMu                     sync.RWMutex
@@ -106,6 +110,9 @@ func newHelperServer(manager *ConfigManager, site string, state string) (*helper
 		repairCompatibilityHistory: repairer.RepairCurrentProviderCompatibility,
 		restoreHistory:             repairer.RestoreBackup,
 		listHistoryBackups:         repairer.ListBackups,
+		deleteConfigBackup:         manager.DeleteBackup,
+		deleteHistoryBackup:        repairer.DeleteBackup,
+		listModels:                 discoverCompatibleModels,
 		state:                      state,
 		siteURL:                    parsedSite,
 		index:                      index,
@@ -127,6 +134,8 @@ func (s *helperServer) routes() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/backups", s.handleBackups)
 	mux.HandleFunc("GET /api/history-backups", s.handleHistoryBackups)
+	mux.HandleFunc("POST /api/delete-backup", s.handleDeleteBackup)
+	mux.HandleFunc("POST /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/site", s.handleSite)
 	mux.HandleFunc("POST /api/select-app", s.handleSelectApp)
 	mux.HandleFunc("POST /api/apply", s.handleApply)
@@ -291,6 +300,79 @@ func (s *helperServer) handleHistoryBackups(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, historyBackupsResponse{Items: backups})
 }
 
+func (s *helperServer) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.validState(r) {
+		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
+		return
+	}
+	var request struct {
+		Kind     string `json:"kind"`
+		BackupID string `json:"backup_id"`
+	}
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(request.BackupID) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("select a backup first"))
+		return
+	}
+	if !s.beginOperation(w) {
+		return
+	}
+	defer s.operationMu.Unlock()
+
+	var (
+		message string
+		err     error
+	)
+	switch strings.ToLower(strings.TrimSpace(request.Kind)) {
+	case "config":
+		err = s.deleteConfigBackup(request.BackupID)
+		message = "已删除所选配置备份；Codex 未重启。"
+	case "history":
+		err = s.deleteHistoryBackup(request.BackupID)
+		message = "已删除所选历史会话备份；Codex 未重启。"
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("invalid backup kind"))
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, operationResponse{OK: true, Message: message, BackupID: request.BackupID, ConfigVerified: true})
+}
+
+func (s *helperServer) handleModels(w http.ResponseWriter, r *http.Request) {
+	if !s.validState(r) {
+		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
+		return
+	}
+	var request struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+	}
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	normalized, err := normalizeApplyConfig(ApplyConfig{
+		BaseURL: request.BaseURL,
+		APIKey:  request.APIKey,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	models, err := s.listModels(normalized.BaseURL, normalized.APIKey)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
+}
+
 func (s *helperServer) handleApply(w http.ResponseWriter, r *http.Request) {
 	s.handleApplyRequest(w, r, false)
 }
@@ -352,6 +434,7 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("Codex could not be stopped safely; no configuration was changed: %w", err))
 		return
 	}
+	previousHistoryProvider := historyProviderForConfig(s.manager.ConfigPath)
 	result, err := s.applyConfig(input)
 	if err != nil {
 		if configRollbackFailed(err) {
@@ -366,7 +449,7 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, operationFailure("configuration was not changed", err, startErr))
 		return
 	}
-	history, err := s.repairHistory()
+	history, err := s.repairHistoryIfProviderChanged(previousHistoryProvider)
 	if err != nil {
 		historyRollbackUnsafe := historyRollbackFailed(err)
 		_, rollbackErr := s.restoreConfig(result.BackupID)
@@ -454,6 +537,66 @@ func parseSiteURL(value string) (*url.URL, error) {
 	parsed.Fragment = ""
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	return parsed, nil
+}
+
+func discoverCompatibleModels(baseURL, apiKey string) ([]string, error) {
+	endpoint, err := url.Parse(baseURL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return nil, errors.New("invalid compatible API base URL")
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/models"
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+
+	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("request compatible API models: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("compatible API model list returned HTTP %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode compatible API model list: %w", err)
+	}
+	modelSet := make(map[string]struct{}, len(payload.Data))
+	for _, item := range payload.Data {
+		model := strings.TrimSpace(item.ID)
+		if model == "" || len(model) > 200 || strings.ContainsAny(model, "\r\n\x00") {
+			continue
+		}
+		modelSet[model] = struct{}{}
+		if len(modelSet) > 256 {
+			return nil, errors.New("compatible API returned too many models")
+		}
+	}
+	if len(modelSet) == 0 {
+		return nil, errors.New("compatible API did not return any usable model IDs")
+	}
+	models := make([]string, 0, len(modelSet))
+	for model := range modelSet {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models, nil
 }
 
 func (s *helperServer) currentSiteURL() *url.URL {
@@ -583,6 +726,7 @@ func (s *helperServer) handleRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("Codex could not be stopped safely; no configuration was restored: %w", err))
 		return
 	}
+	previousHistoryProvider := historyProviderForConfig(s.manager.ConfigPath)
 	result, err := s.restoreConfig(request.BackupID)
 	if err != nil {
 		if configRollbackFailed(err) {
@@ -597,7 +741,8 @@ func (s *helperServer) handleRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, operationFailure("configuration was not restored", err, startErr))
 		return
 	}
-	if _, _, err := s.manager.UpgradeLegacyProvider(); err != nil {
+	_, upgradedLegacyProvider, err := s.manager.UpgradeLegacyProvider()
+	if err != nil {
 		_, rollbackErr := s.restoreConfig(result.SafetyBackupID)
 		if rollbackErr != nil {
 			writeJSON(w, http.StatusInternalServerError, operationResponse{
@@ -619,7 +764,12 @@ func (s *helperServer) handleRestore(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	history, err := s.repairHistory()
+	var history HistoryRepairResult
+	if upgradedLegacyProvider {
+		history, err = s.repairHistory()
+	} else {
+		history, err = s.repairHistoryIfProviderChanged(previousHistoryProvider)
+	}
 	if err != nil {
 		historyRollbackUnsafe := historyRollbackFailed(err)
 		_, rollbackErr := s.restoreConfig(result.SafetyBackupID)
@@ -871,7 +1021,30 @@ func configRollbackFailed(err error) bool {
 	return errors.As(err, &mutationErr) && mutationErr.RollbackErr != nil
 }
 
+func historyProviderForConfig(configPath string) string {
+	provider, err := readCurrentProvider(configPath)
+	if err != nil {
+		return ""
+	}
+	return provider
+}
+
+func (s *helperServer) repairHistoryIfProviderChanged(previousProvider string) (HistoryRepairResult, error) {
+	targetProvider := historyProviderForConfig(s.manager.ConfigPath)
+	if previousProvider != "" && targetProvider != "" && previousProvider == targetProvider {
+		return HistoryRepairResult{
+			TargetProvider: targetProvider,
+			Skipped:        true,
+			SkipReason:     "model provider unchanged",
+		}, nil
+	}
+	return s.repairHistory()
+}
+
 func historySummary(result HistoryRepairResult) string {
+	if result.Skipped {
+		return "模型 provider 未变化，已跳过全量历史迁移；会话和索引保持原样。"
+	}
 	workspaceSummary := "项目映射校验通过；"
 	if result.WorkspaceState != nil && result.WorkspaceState.Updated {
 		workspaceSummary = fmt.Sprintf("已修复 %d 个项目的路径映射；", result.WorkspaceState.ProjectCount)

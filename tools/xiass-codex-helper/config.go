@@ -27,7 +27,7 @@ const (
 	providerName                 = "XIASS API"
 	defaultModel                 = "gpt-5.6-sol"
 	defaultContextWindow         = int64(372000)
-	defaultAutoCompactTokenLimit = int64(372000)
+	defaultAutoCompactTokenLimit = defaultContextWindow * 9 / 10
 	minimumContextWindow         = int64(64000)
 	maximumContextWindow         = int64(1050000)
 	minimumAutoCompactTokenLimit = int64(16000)
@@ -47,6 +47,7 @@ type ApplyConfig struct {
 	APIKey                     string `json:"api_key"`
 	KeyName                    string `json:"key_name"`
 	Model                      string `json:"model,omitempty"`
+	ReviewModel                string `json:"review_model,omitempty"`
 	ProviderName               string `json:"provider_name,omitempty"`
 	ModelContextWindow         int64  `json:"model_context_window,omitempty"`
 	ModelAutoCompactTokenLimit int64  `json:"model_auto_compact_token_limit,omitempty"`
@@ -338,6 +339,22 @@ func (m *ConfigManager) ListBackups() ([]BackupInfo, error) {
 	return backups, nil
 }
 
+func (m *ConfigManager) DeleteBackup(backupID string) error {
+	return m.withLock(func() error {
+		if filepath.Base(backupID) != backupID || backupID == "." {
+			return errors.New("invalid backup ID")
+		}
+		manifest, err := m.readManifest(backupID)
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(manifest.ConfigPath) != filepath.Clean(m.ConfigPath) {
+			return errors.New("backup belongs to a different Codex config path")
+		}
+		return removeManagedBackupDirectory(m.BackupRoot, backupID)
+	})
+}
+
 func (m *ConfigManager) createBackup(data []byte, existed bool, mode fs.FileMode, reason string) (BackupManifest, error) {
 	id, err := newBackupID()
 	if err != nil {
@@ -399,6 +416,26 @@ func (m *ConfigManager) originalPath(id string) string {
 	return filepath.Join(m.BackupRoot, id, "config.toml")
 }
 
+func removeManagedBackupDirectory(root, backupID string) error {
+	if strings.TrimSpace(backupID) == "" || filepath.Base(backupID) != backupID || backupID == "." {
+		return errors.New("invalid backup ID")
+	}
+	root = filepath.Clean(root)
+	directory := filepath.Join(root, backupID)
+	relative, err := filepath.Rel(root, directory)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return errors.New("invalid backup path")
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("backup is not a managed directory")
+	}
+	return os.RemoveAll(directory)
+}
+
 func (m *ConfigManager) withLock(fn func() error) error {
 	release, err := acquireProcessLock(m.LockPath, "another XIASS Codex configuration operation is already running")
 	if err != nil {
@@ -413,6 +450,7 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.KeyName = strings.TrimSpace(input.KeyName)
 	input.Model = strings.TrimSpace(input.Model)
+	input.ReviewModel = strings.TrimSpace(input.ReviewModel)
 	input.ProviderName = strings.TrimSpace(input.ProviderName)
 	if input.APIKey == "" || len(input.APIKey) > 8192 || strings.ContainsAny(input.APIKey, "\r\n\x00") {
 		return input, errors.New("invalid API key")
@@ -420,11 +458,17 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	if input.Model == "" {
 		input.Model = defaultModel
 	}
+	if input.ReviewModel == "" {
+		input.ReviewModel = input.Model
+	}
 	if input.ProviderName == "" {
 		input.ProviderName = providerName
 	}
 	if len(input.Model) > 200 || strings.ContainsAny(input.Model, "\r\n\x00") {
 		return input, errors.New("invalid model name")
+	}
+	if len(input.ReviewModel) > 200 || strings.ContainsAny(input.ReviewModel, "\r\n\x00") {
+		return input, errors.New("invalid review model name")
 	}
 	if len(input.ProviderName) > 200 || strings.ContainsAny(input.ProviderName, "\r\n\x00") {
 		return input, errors.New("invalid provider name")
@@ -599,7 +643,7 @@ func patchConfig(original []byte, input ApplyConfig, managedProviderID string) [
 	top := []string{
 		`model_provider = "` + managedProviderID + `"`,
 		`model = "` + escapeTOML(input.Model) + `"`,
-		`review_model = "` + escapeTOML(input.Model) + `"`,
+		`review_model = "` + escapeTOML(input.ReviewModel) + `"`,
 		"model_context_window = " + strconv.FormatInt(input.ModelContextWindow, 10),
 		"model_auto_compact_token_limit = " + strconv.FormatInt(input.ModelAutoCompactTokenLimit, 10),
 		`web_search = "live"`,
@@ -645,7 +689,7 @@ func verifyManagedConfig(data []byte, expected ApplyConfig, managedProviderID st
 	checks := map[string]string{
 		"model_provider": managedProviderID,
 		"model":          expected.Model,
-		"review_model":   expected.Model,
+		"review_model":   expected.ReviewModel,
 		"web_search":     "live",
 	}
 	for key, want := range checks {

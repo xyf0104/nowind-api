@@ -25,6 +25,8 @@
     .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 	    .path-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; width: 100%; }
 	    .path-entry button { white-space: nowrap; }
+	    .model-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; width: 100%; }
+	    .model-entry button { white-space: nowrap; }
     button, .button { appearance: none; border: 1px solid #cbd3df; border-radius: 7px; padding: 10px 15px; background: #fff; color: #172033; cursor: pointer; text-decoration: none; font: inherit; font-weight: 600; }
     button:hover, .button:hover { background: #f2f5f9; }
     .primary { border-color: #1677ff; background: #1677ff; color: #fff; }
@@ -57,7 +59,7 @@
       #message.success { background: #123a2a; color: #a7e7c9; border-color: #246447; }
       #message.error { background: #431f20; color: #ffc2bd; border-color: #743536; }
     }
-	    @media (max-width: 560px) { main { margin-top: 20px; } .row { grid-template-columns: 1fr; gap: 4px; } .path-entry { grid-template-columns: 1fr; } .context-grid { grid-template-columns: 1fr; } .actions button { width: 100%; } }
+	    @media (max-width: 560px) { main { margin-top: 20px; } .row { grid-template-columns: 1fr; gap: 4px; } .path-entry, .model-entry { grid-template-columns: 1fr; } .context-grid { grid-template-columns: 1fr; } .actions button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -74,7 +76,7 @@
       <div class="row"><span class="label">程序位置</span><span id="codex-path" class="value">-</span></div>
       <div class="row"><span class="label">配置位置</span><span id="config-path" class="value">-</span></div>
       <div class="row"><span class="label">可恢复备份</span><span id="backup-count" class="value">0</span></div>
-		  <div class="row"><span class="label">历史会话保护</span><span class="value"><span class="status"><span class="dot ok"></span>每次助手重启前自动执行</span></span></div>
+		  <div class="row"><span class="label">历史会话保护</span><span class="value"><span class="status"><span class="dot ok"></span>切换 provider 或手动修复时完整校验</span></span></div>
 		  <div class="row">
 			<label class="label" for="codex-app-path">自定义程序路径</label>
 			<div class="path-entry">
@@ -91,7 +93,7 @@
         <button id="refresh-button" type="button">重新检测</button>
 		<button id="select-app-button" type="button">浏览选择 Codex App</button>
       </div>
-      <p class="hint">填写您当前使用的 XIASS API 网站地址。助手会先退出 Codex，再备份配置和会话索引，同步所有历史对话并校验会话数量；只有全部成功才会重新启动。</p>
+      <p class="hint">填写您当前使用的 XIASS API 网站地址。切换 model provider 时，助手会先退出 Codex，再备份配置和会话索引、同步历史对话并校验会话数量；只有全部成功才会重新启动。仅调整同一 provider 的模型、上下文或密钥时，会保留当前历史数据并跳过全量扫描。</p>
     </section>
 
 	<section class="panel">
@@ -114,13 +116,13 @@
 		</div>
 		<div class="context-field">
 		  <label for="auto-compact-limit">自动压缩阈值</label>
-		  <input id="auto-compact-limit" type="number" inputmode="numeric" min="16000" max="1050000" step="100" value="372000">
+		  <input id="auto-compact-limit" type="number" inputmode="numeric" min="16000" max="1050000" step="100" value="334800">
 		  <div class="token-unit">必须不大于上下文窗口</div>
 		</div>
 	  </div>
-	  <div id="context-current" class="context-current">本次配置将写入：上下文 372,000 tokens · 自动压缩 372,000 tokens</div>
+	  <div id="context-current" class="context-current">本次配置将写入：上下文 372,000 tokens · 自动压缩 334,800 tokens</div>
 	  <div id="context-warning" class="context-warning" hidden></div>
-	  <p class="hint">1M 档对应教程中的 <strong>1,000,000 / 900,000</strong> 配置，仅在当前模型、客户端版本和账号权限支持时生效。窗口越大，单次请求可能消耗更多额度；修改后助手会安全重启 Codex。</p>
+	  <p class="hint">每个档位的自动压缩阈值默认是上下文窗口的 <strong>90%</strong>。自定义时输入新的窗口值会自动重算，之后仍可单独修改。1M 档对应教程中的 <strong>1,000,000 / 900,000</strong> 配置，仅在当前模型、客户端版本和账号权限支持时生效。</p>
 	</section>
 
     <section class="panel">
@@ -134,13 +136,21 @@
         <input id="manual-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="请输入 API 密钥">
       </div>
       <div class="row">
-        <label class="label" for="manual-model">默认模型</label>
-        <input id="manual-model" type="text" autocomplete="off" spellcheck="false" value="gpt-5.6-sol" placeholder="gpt-5.6-sol">
-      </div>
+		<label class="label" for="manual-model">默认会话模型</label>
+		<div class="model-entry">
+		  <input id="manual-model" type="text" list="manual-model-options" autocomplete="off" spellcheck="false" value="gpt-5.6-sol" placeholder="选择或输入默认模型">
+		  <button id="load-manual-models-button" type="button">读取模型列表</button>
+		</div>
+	  </div>
+	  <div class="row">
+		<label class="label" for="manual-review-model">审查模型</label>
+		<input id="manual-review-model" type="text" list="manual-model-options" autocomplete="off" spellcheck="false" placeholder="留空则跟随默认会话模型">
+	  </div>
+	  <datalist id="manual-model-options"></datalist>
       <div class="actions">
         <button id="manual-apply-button" type="button">写入手动配置并重启 Codex</button>
       </div>
-      <p class="hint">支持任意兼容 Responses API 的 HTTPS 地址，也支持 localhost、127.0.0.0/8 和 ::1 的 HTTP 本地映射。API 密钥只会提交给本机配置助手并写入本地配置，不会发送到 XIASS API。</p>
+	  <p class="hint">默认会话模型与审查模型可以独立设置，不构成服务端模型白名单。点击“读取模型列表”会由本机助手使用当前 Base URL 和密钥读取兼容 API 的 <code>/v1/models</code>，也可以直接手动输入。API 密钥只会提交给本机配置助手并写入本地配置，不会发送到 XIASS API。</p>
     </section>
 
 	<section class="panel">
@@ -156,8 +166,9 @@
 	  </div>
 	  <div class="actions">
 		<button id="restore-history-button" type="button" class="danger">恢复所选历史会话备份</button>
+		<button id="delete-history-backup-button" type="button" class="danger">删除所选历史会话备份</button>
 	  </div>
-	  <p class="hint">只有尚未产生新会话内容的备份可以恢复；若 Codex 已写入后续内容，助手会拒绝覆盖。</p>
+	  <p class="hint">只有尚未产生新会话内容的备份可以恢复；若 Codex 已写入后续内容，助手会拒绝覆盖。删除备份不会关闭或重启 Codex。</p>
 	</section>
 
     <section class="panel">
@@ -165,8 +176,9 @@
       <select id="backup-select"><option value="">正在读取备份...</option></select>
       <div class="actions">
         <button id="restore-button" type="button" class="danger">恢复所选备份并重启 Codex</button>
+		<button id="delete-backup-button" type="button" class="danger">删除所选配置备份</button>
       </div>
-      <p class="hint">恢复前还会再次备份当前配置，因此即使选错备份也可以继续恢复回来。</p>
+	  <p class="hint">恢复前还会再次备份当前配置，因此即使选错备份也可以继续恢复回来。删除备份不会关闭或重启 Codex。</p>
     </section>
 
     <div class="actions">
@@ -178,9 +190,10 @@
 	const message = document.getElementById('message');
 	let keepHelperRunningForAuthorization = false;
 	let contextDirty = false;
+	let compactLimitManuallyEdited = false;
 	const contextPresets = {
-	  compat: { window: 235000, compact: 210000 },
-	  current: { window: 372000, compact: 372000 },
+	  compat: { window: 235000, compact: 211500 },
+	  current: { window: 372000, compact: 334800 },
 	  balanced: { window: 512000, compact: 460800 },
 	  large: { window: 1000000, compact: 900000 }
 	};
@@ -196,6 +209,10 @@
 
 	function matchingContextPreset(contextWindow, compactLimit) {
 	  return Object.entries(contextPresets).find(([, preset]) => preset.window === contextWindow && preset.compact === compactLimit)?.[0] || 'custom';
+	}
+
+	function defaultCompactLimit(contextWindow) {
+	  return Math.floor(contextWindow * 0.9);
 	}
 
 	function renderContextSummary() {
@@ -215,6 +232,7 @@
 	  const custom = contextPresetInput.value === 'custom';
 	  contextWindowInput.disabled = !custom;
 	  autoCompactInput.disabled = !custom;
+	  compactLimitManuallyEdited = false;
 	  if (markDirty) contextDirty = true;
 	  renderContextSummary();
 	}
@@ -236,21 +254,32 @@
 	  if (!preset) {
 		contextWindowInput.disabled = false;
 		autoCompactInput.disabled = false;
+		compactLimitManuallyEdited = false;
 		contextDirty = true;
 		renderContextSummary();
 		return;
 	  }
 	  setContextValues(preset.window, preset.compact, true);
 	});
-	for (const input of [contextWindowInput, autoCompactInput]) {
-	  input.addEventListener('input', () => {
-		contextPresetInput.value = 'custom';
-		contextWindowInput.disabled = false;
-		autoCompactInput.disabled = false;
-		contextDirty = true;
-		renderContextSummary();
-	  });
-	}
+	contextWindowInput.addEventListener('input', () => {
+	  const contextWindow = Number(contextWindowInput.value);
+	  if (!compactLimitManuallyEdited && Number.isSafeInteger(contextWindow)) {
+		autoCompactInput.value = String(defaultCompactLimit(contextWindow));
+	  }
+	  contextPresetInput.value = 'custom';
+	  contextWindowInput.disabled = false;
+	  autoCompactInput.disabled = false;
+	  contextDirty = true;
+	  renderContextSummary();
+	});
+	autoCompactInput.addEventListener('input', () => {
+	  compactLimitManuallyEdited = true;
+	  contextPresetInput.value = 'custom';
+	  contextWindowInput.disabled = false;
+	  autoCompactInput.disabled = false;
+	  contextDirty = true;
+	  renderContextSummary();
+	});
 
 	setContextValues(contextPresets.current.window, contextPresets.current.compact, false);
 
@@ -292,12 +321,21 @@
 	      if (!codexPathInput.value && data.codex.executable) codexPathInput.value = data.codex.executable;
       const siteInput = document.getElementById('site-url');
       if (!siteInput.value && data.site_url) siteInput.value = data.site_url;
+	  const legacyCurrentDefault = data.model_context_window === contextPresets.current.window
+		&& data.model_auto_compact_token_limit === contextPresets.current.window;
 	  if (!contextDirty && Number.isSafeInteger(data.model_context_window) && Number.isSafeInteger(data.model_auto_compact_token_limit)) {
-		setContextValues(data.model_context_window, data.model_auto_compact_token_limit, false);
+		const settings = legacyCurrentDefault ? contextPresets.current : {
+		  window: data.model_context_window,
+		  compact: data.model_auto_compact_token_limit
+		};
+		setContextValues(settings.window, settings.compact, false);
 	  }
 	  if (data.context_settings_warning) {
 		contextWarning.hidden = false;
 		contextWarning.textContent = `当前配置读取异常，暂显示兼容默认值：${data.context_settings_warning}`;
+	  } else if (legacyCurrentDefault) {
+		contextWarning.hidden = false;
+		contextWarning.textContent = '检测到旧版助手写入的 372,000 / 372,000 默认值；当前页面已按新的 90% 默认值准备为 372,000 / 334,800，下一次写入配置时会修正。若你确实需要 372,000，请选择“自定义”后单独修改。';
 	  } else {
 		contextWarning.hidden = true;
 		contextWarning.textContent = '';
@@ -326,6 +364,7 @@
         option.textContent = '暂无可恢复备份';
         select.append(option);
         document.getElementById('restore-button').disabled = true;
+		document.getElementById('delete-backup-button').disabled = true;
         return;
       }
       for (const item of items) {
@@ -336,6 +375,7 @@
         select.append(option);
       }
       document.getElementById('restore-button').disabled = false;
+	  document.getElementById('delete-backup-button').disabled = false;
     }
 
     async function loadHistoryBackups() {
@@ -349,6 +389,7 @@
         option.textContent = '暂无可恢复的历史会话备份';
         select.append(option);
         document.getElementById('restore-history-button').disabled = true;
+		document.getElementById('delete-history-backup-button').disabled = true;
         return;
       }
       for (const item of items) {
@@ -359,6 +400,7 @@
         select.append(option);
       }
       document.getElementById('restore-history-button').disabled = false;
+	  document.getElementById('delete-history-backup-button').disabled = false;
     }
 
     async function refresh() {
@@ -412,11 +454,42 @@
         button.disabled = false;
       }
     });
+	async function loadManualModels() {
+	  const baseURL = document.getElementById('manual-base-url').value.trim();
+	  const apiKey = document.getElementById('manual-api-key').value.trim();
+	  if (!baseURL || !apiKey) {
+		showMessage('读取模型列表前，请先填写 Base URL 和 API 密钥。', 'error');
+		return;
+	  }
+	  const button = document.getElementById('load-manual-models-button');
+	  button.disabled = true;
+	  try {
+		const data = await request('/api/models', {
+		  method: 'POST',
+		  body: JSON.stringify({ base_url: baseURL, api_key: apiKey })
+		});
+		const models = Array.isArray(data.models) ? data.models : [];
+		const options = document.getElementById('manual-model-options');
+		options.innerHTML = '';
+		for (const model of models) {
+		  const option = document.createElement('option');
+		  option.value = model;
+		  options.append(option);
+		}
+		showMessage(`已读取 ${models.length} 个模型。可以分别为默认会话和审查模型选择，或继续手动输入。`, 'success');
+	  } catch (error) {
+		showMessage(error.message, 'error');
+	  } finally {
+		button.disabled = false;
+	  }
+	}
+	document.getElementById('load-manual-models-button').addEventListener('click', loadManualModels);
     document.getElementById('manual-apply-button').addEventListener('click', async () => {
       const baseURL = document.getElementById('manual-base-url').value.trim();
       const apiKeyInput = document.getElementById('manual-api-key');
       const apiKey = apiKeyInput.value.trim();
       const model = document.getElementById('manual-model').value.trim();
+	  const reviewModel = document.getElementById('manual-review-model').value.trim() || model;
       if (!baseURL || !apiKey || !model) {
         showMessage('请完整填写 Base URL、API 密钥和默认模型。', 'error');
         return;
@@ -425,9 +498,10 @@
       button.disabled = true;
       try {
 		const context = readContextValues();
+		showMessage('正在安全写入配置并重启 Codex。模型 provider 未变化时会跳过全量历史扫描。', 'success');
         const data = await request('/api/apply-manual', {
           method: 'POST',
-          body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model, ...context })
+		  body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model, review_model: reviewModel, ...context })
         });
         apiKeyInput.value = '';
 		contextDirty = false;
@@ -445,6 +519,7 @@
       const button = document.getElementById('restore-button');
       button.disabled = true;
       try {
+		showMessage('正在恢复配置并重启 Codex。模型 provider 未变化时会跳过全量历史扫描。', 'success');
         const data = await request('/api/restore', { method: 'POST', body: JSON.stringify({ backup_id: backupID }) });
         showMessage(data.message, 'success');
         await refresh();
@@ -454,6 +529,33 @@
         button.disabled = false;
       }
     });
+	async function deleteSelectedBackup(kind) {
+	  const history = kind === 'history';
+	  const select = document.getElementById(history ? 'history-backup-select' : 'backup-select');
+	  const backupID = select.value;
+	  const button = document.getElementById(history ? 'delete-history-backup-button' : 'delete-backup-button');
+	  const label = history ? '历史会话备份' : '配置备份';
+	  if (!backupID) {
+		showMessage(`请先选择要删除的${label}。`, 'error');
+		return;
+	  }
+	  if (!confirm(`确定删除所选${label}吗？删除后不能恢复该备份，但不会影响当前 Codex 配置或会话。`)) return;
+	  button.disabled = true;
+	  try {
+		const data = await request('/api/delete-backup', {
+		  method: 'POST',
+		  body: JSON.stringify({ kind, backup_id: backupID })
+		});
+		showMessage(data.message, 'success');
+		await refresh();
+	  } catch (error) {
+		showMessage(error.message, 'error');
+	  } finally {
+		button.disabled = false;
+	  }
+	}
+	document.getElementById('delete-backup-button').addEventListener('click', () => deleteSelectedBackup('config'));
+	document.getElementById('delete-history-backup-button').addEventListener('click', () => deleteSelectedBackup('history'));
 	document.getElementById('repair-history-button').addEventListener('click', async () => {
 	  const button = document.getElementById('repair-history-button');
 	  button.disabled = true;
@@ -478,6 +580,7 @@
 	  const button = document.getElementById('restore-history-button');
 	  button.disabled = true;
 	  try {
+		showMessage('正在校验并恢复历史会话备份；为避免覆盖新的会话内容，此操作会完整验证数据库和索引。', 'success');
 		const data = await request('/api/restore-history', { method: 'POST', body: JSON.stringify({ backup_id: backupID }) });
 		showMessage(data.message, 'success');
 		await refresh();

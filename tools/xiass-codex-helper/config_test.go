@@ -103,6 +103,38 @@ func TestApplyAndRestorePreservesOriginalConfig(t *testing.T) {
 	}
 }
 
+func TestDeleteBackupRemovesOnlyItsValidatedManagedDirectory(t *testing.T) {
+	home := t.TempDir()
+	manager := NewConfigManager(home)
+	if err := os.WriteFile(manager.ConfigPath, []byte(testOriginalConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Apply(ApplyConfig{BaseURL: "https://gateway.example.com", APIKey: "sk-test-1234567890"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupDirectory := filepath.Join(manager.BackupRoot, result.BackupID)
+	if _, err := os.Stat(backupDirectory); err != nil {
+		t.Fatalf("backup missing before deletion: %v", err)
+	}
+	if err := manager.DeleteBackup(result.BackupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(backupDirectory); !os.IsNotExist(err) {
+		t.Fatalf("backup still exists after deletion: %v", err)
+	}
+	backups, err := manager.ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("deleted backup is still listed: %+v", backups)
+	}
+	if err := manager.DeleteBackup("../outside"); err == nil {
+		t.Fatal("backup deletion accepted a traversal ID")
+	}
+}
+
 func TestNormalizeApplyConfigSupportsHTTPSAndLoopbackHTTP(t *testing.T) {
 	tests := map[string]string{
 		"https":                   "https://gateway.example.com/v1",
@@ -149,6 +181,14 @@ func TestNormalizeApplyConfigRejectsRemoteHTTP(t *testing.T) {
 }
 
 func TestNormalizeContextSettingsSupportsPresetsAndRejectsUnsafeValues(t *testing.T) {
+	defaults, err := normalizeContextSettings(ContextSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.ModelContextWindow != 372000 || defaults.ModelAutoCompactTokenLimit != 334800 {
+		t.Fatalf("default context settings = %+v, want 372000/334800", defaults)
+	}
+
 	large, err := normalizeContextSettings(ContextSettings{
 		ModelContextWindow:         1000000,
 		ModelAutoCompactTokenLimit: 900000,
@@ -236,6 +276,7 @@ func TestApplySupportsCustomProviderAndModel(t *testing.T) {
 		BaseURL:      "http://127.0.0.1:54843/V1",
 		APIKey:       "local-key",
 		Model:        "local-codex-model",
+		ReviewModel:  "local-review-model",
 		ProviderName: "Custom API",
 	}
 	if _, err := manager.Apply(input); err != nil {
@@ -248,7 +289,7 @@ func TestApplySupportsCustomProviderAndModel(t *testing.T) {
 	text := string(written)
 	for _, expected := range []string{
 		`model = "local-codex-model"`,
-		`review_model = "local-codex-model"`,
+		`review_model = "local-review-model"`,
 		`name = "Custom API"`,
 		`base_url = "http://127.0.0.1:54843/V1"`,
 		`experimental_bearer_token = "local-key"`,

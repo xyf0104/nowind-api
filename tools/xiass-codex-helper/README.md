@@ -3,9 +3,17 @@
 XIASS Codex Helper is a portable local configurator for macOS and Windows. It
 binds only to a random `127.0.0.1` port. Users can connect to their own XIASS
 API website and select one of their own keys, or manually enter any compatible
-Responses API Base URL, API key, and model. The default XIASS site is
+Responses API Base URL, API key, default session model, and optional review
+model. The default XIASS site is
 `https://api.xiass.com`. Website-selected keys are returned through a URL
 fragment; manually entered keys are posted only to the loopback helper.
+
+For a compatible API, the local page can read that provider's standard
+`/v1/models` catalog using the Base URL and key entered on the page. The result
+is offered for both the default session model and review model, but is not
+treated as a hardcoded or persisted model whitelist: providers without a model
+catalog can still use manually entered model names. The key and discovered
+catalog remain on the local machine.
 
 Before applying a configuration, the helper:
 
@@ -60,11 +68,15 @@ Before applying a configuration, the helper:
     configuration.
 
 Restore operations validate the selected backup and create another safety
-backup before replacing the current configuration. The local page also exposes
-an immediate history-repair action. Compatibility-repair backups are listed
+backup before replacing the current configuration. A same-provider model,
+context, or key update leaves conversation history and its indexes untouched,
+so these common operations avoid the expensive full history scan. Changing the
+model provider, restoring a legacy XIASS provider configuration, and the
+explicit history-repair action still take verified history snapshots and run
+the full repair/rollback path. Compatibility-repair backups are listed
 separately and can be restored only while no newer local conversation data has
-been written. Every restart initiated by this helper runs history verification
-first; later normal Codex launches retain the synchronized provider metadata.
+been written. Both configuration and completed history backups can be deleted
+from the local page without restarting Codex.
 
 The repair behavior was cross-checked against public provider-sync approaches
 and the [Codex cross-provider history issue](https://github.com/openai/codex/issues/15494).

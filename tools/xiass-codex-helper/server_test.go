@@ -46,6 +46,78 @@ func TestHelperServerHistoryBackupsAlwaysReturnsJSONArray(t *testing.T) {
 	}
 }
 
+func TestHelperServerDeletesConfigurationBackupWithoutRestartingCodex(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	backup, err := manager.Apply(ApplyConfig{BaseURL: "https://gateway.example.com", APIKey: "sk-test-1234567890"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper, err := newTestHelperServer(manager, defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stops, starts atomic.Int32
+	helper.stop = func(CodexInstallation) error { stops.Add(1); return nil }
+	helper.start = func(CodexInstallation) error { starts.Add(1); return nil }
+
+	body, err := json.Marshal(map[string]string{"kind": "config", "backup_id": backup.BackupID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postHelperJSON(t, helper.routes(), "/api/delete-backup", helper.state, body, http.StatusOK)
+	if _, err := os.Stat(filepath.Join(manager.BackupRoot, backup.BackupID)); !os.IsNotExist(err) {
+		t.Fatalf("deleted backup remains on disk: %v", err)
+	}
+	if stops.Load() != 0 || starts.Load() != 0 {
+		t.Fatalf("backup deletion unexpectedly restarted Codex: stop=%d start=%d", stops.Load(), starts.Load())
+	}
+}
+
+func TestHelperServerListsCompatibleModelsFromLocalHelperOnly(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.listModels = func(baseURL, apiKey string) ([]string, error) {
+		if baseURL != "http://127.0.0.1:54843/v1" || apiKey != "local-key" {
+			t.Fatalf("model discovery input = %q / %q", baseURL, apiKey)
+		}
+		return []string{"gpt-5.6-luna", "gpt-5.6-sol"}, nil
+	}
+	body := []byte(`{"base_url":"127.0.0.1:54843","api_key":"local-key"}`)
+	response := postHelperJSON(t, helper.routes(), "/api/models", helper.state, body, http.StatusOK)
+	models, ok := response["models"].([]any)
+	if !ok || len(models) != 2 || models[0] != "gpt-5.6-luna" || models[1] != "gpt-5.6-sol" {
+		t.Fatalf("model response = %+v", response)
+	}
+	postHelperJSON(t, helper.routes(), "/api/models", "", body, http.StatusForbidden)
+}
+
+func TestDiscoverCompatibleModelsUsesStandardModelsEndpoint(t *testing.T) {
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6-sol"},{"id":"gpt-5.6-luna"},{"id":"gpt-5.6-sol"},{"id":""}]}`))
+	}))
+	defer server.Close()
+
+	models, err := discoverCompatibleModels(server.URL+"/v1", "local-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorization != "Bearer local-key" {
+		t.Fatalf("authorization header = %q", authorization)
+	}
+	if got := strings.Join(models, ","); got != "gpt-5.6-luna,gpt-5.6-sol" {
+		t.Fatalf("models = %q", got)
+	}
+}
+
 func TestHelperServerBrowserCloseRequiresLocalStateAndRequestsShutdown(t *testing.T) {
 	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
@@ -149,6 +221,58 @@ func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
 	}
 }
 
+func TestHelperServerSkipsFullHistoryRepairWhenProviderDoesNotChange(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfig(t, home, providerID)
+	helper, err := newTestHelperServer(NewConfigManager(home), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	var repairs atomic.Int32
+	helper.repairHistory = func() (HistoryRepairResult, error) {
+		repairs.Add(1)
+		return HistoryRepairResult{}, nil
+	}
+
+	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`), http.StatusOK)
+	if repairs.Load() != 0 {
+		t.Fatalf("same-provider configuration unexpectedly repaired history %d times", repairs.Load())
+	}
+	history, _ := response["history"].(map[string]any)
+	if skipped, _ := history["skipped"].(bool); !skipped {
+		t.Fatalf("same-provider history response did not report a fast-path skip: %+v", response)
+	}
+}
+
+func TestHelperServerRunsHistoryRepairWhenProviderChanges(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfig(t, home, legacyProviderID)
+	helper, err := newTestHelperServer(NewConfigManager(home), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	var repairs atomic.Int32
+	helper.repairHistory = func() (HistoryRepairResult, error) {
+		repairs.Add(1)
+		return HistoryRepairResult{TargetProvider: providerID}, nil
+	}
+
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`), http.StatusOK)
+	if repairs.Load() != 1 {
+		t.Fatalf("provider change repaired history %d times, want 1", repairs.Load())
+	}
+}
+
 func TestHelperServerRejectsMissingStateAndForeignBaseURL(t *testing.T) {
 	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
@@ -178,7 +302,7 @@ func TestHelperServerManualApplySupportsLoopbackAndRejectsRemoteHTTP(t *testing.
 	helper.start = func(CodexInstallation) error { started.Add(1); return nil }
 	handler := helper.routes()
 
-	body := []byte(`{"base_url":"127.0.0.1:54843/V1","api_key":"local-key","model":"local-codex-model"}`)
+	body := []byte(`{"base_url":"127.0.0.1:54843/V1","api_key":"local-key","model":"local-codex-model","review_model":"local-review-model"}`)
 	postHelperJSON(t, handler, "/api/apply-manual", "", body, http.StatusForbidden)
 	response := postHelperJSON(t, handler, "/api/apply-manual", helper.state, body, http.StatusOK)
 	if ok, _ := response["ok"].(bool); !ok {
@@ -190,6 +314,7 @@ func TestHelperServerManualApplySupportsLoopbackAndRejectsRemoteHTTP(t *testing.
 	}
 	for _, expected := range []string{
 		`model = "local-codex-model"`,
+		`review_model = "local-review-model"`,
 		`name = "Custom API"`,
 		`base_url = "http://127.0.0.1:54843/V1"`,
 	} {
@@ -444,8 +569,14 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	if !strings.Contains(body, `id="codex-app-path"`) || !strings.Contains(body, `id="use-app-path-button"`) {
 		t.Fatal("helper index does not expose a pasteable Codex App path")
 	}
-	if !strings.Contains(body, `id="repair-history-button"`) || !strings.Contains(body, `id="history-backup-select"`) {
+	if !strings.Contains(body, `id="repair-history-button"`) || !strings.Contains(body, `id="history-backup-select"`) || !strings.Contains(body, `id="delete-history-backup-button"`) {
 		t.Fatal("helper index does not expose history compatibility repair and recovery controls")
+	}
+	if !strings.Contains(body, `id="delete-backup-button"`) || !strings.Contains(body, `id="load-manual-models-button"`) || !strings.Contains(body, `id="manual-review-model"`) {
+		t.Fatal("helper index does not expose backup cleanup and multi-model manual configuration controls")
+	}
+	if !strings.Contains(body, "334800") || !strings.Contains(body, "defaultCompactLimit") {
+		t.Fatal("helper index does not expose the corrected 90% context defaults")
 	}
 	if strings.Contains(strings.ToLower(body), "codex++") {
 		t.Fatal("helper index contains an unrelated product name")
@@ -513,7 +644,8 @@ func TestHelperManualHistoryRepairStopsRepairsAndStarts(t *testing.T) {
 func TestHelperApplyRollsBackConfigWhenHistoryValidationFails(t *testing.T) {
 	home := t.TempDir()
 	manager := NewConfigManager(home)
-	if err := os.WriteFile(manager.ConfigPath, []byte(testOriginalConfig), 0o600); err != nil {
+	originalConfig := strings.Replace(testOriginalConfig, `model_provider = "official"`, `model_provider = "openai"`, 1)
+	if err := os.WriteFile(manager.ConfigPath, []byte(originalConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(home, "sqlite"), 0o700); err != nil {
@@ -545,7 +677,7 @@ func TestHelperApplyRollsBackConfigWhenHistoryValidationFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(restored) != testOriginalConfig {
+	if string(restored) != originalConfig {
 		t.Fatal("configuration was not rolled back after history validation failed")
 	}
 }

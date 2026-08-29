@@ -277,6 +277,46 @@ func TestHistoryRepairSanitizesIncompatibleResponsesForXIASSProvider(t *testing.
 	}
 }
 
+func TestHistoryRepairDeletesCompletedBackupWithoutTouchingCurrentHistory(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfig(t, home, providerID)
+	session := writeHistoryRollout(t, home, "sessions/rollout-delete.jsonl", legacyProviderID, "thread-delete")
+	createHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), map[string]string{"thread-delete": legacyProviderID})
+
+	repairer := NewHistoryRepairer(home)
+	result, err := repairer.RepairCurrentProvider()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BackupID == "" {
+		t.Fatalf("repair did not create a backup: %+v", result)
+	}
+	repaired, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repairer.DeleteBackup(result.BackupID); err != nil {
+		t.Fatal(err)
+	}
+	backups, err := repairer.ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("deleted history backup is still listed: %+v", backups)
+	}
+	afterDelete, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterDelete, repaired) {
+		t.Fatal("deleting a history backup changed the current session")
+	}
+	if err := repairer.DeleteBackup("../outside"); err == nil {
+		t.Fatal("history backup deletion accepted a traversal ID")
+	}
+}
+
 func TestHistoryRepairCompatibilityLeavesOfficialProviderContinuationUntouched(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, "openai")
