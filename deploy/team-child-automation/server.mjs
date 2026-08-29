@@ -1403,6 +1403,19 @@ function isReauthorizationWorkspacePage(body) {
   return /select\s+(?:a\s+)?(?:workspace|organization)|choose\s+(?:a\s+)?(?:workspace|organization)|continue\s+to\s+codex|authorize\s+codex|选择(?:工作空间|空间|组织)|(?:工作空间|空间|组织).*(?:继续|授权)/i.test(body)
 }
 
+function isReauthorizationAccountChooserPage(body) {
+  return /choose\s+(?:an?\s+)?account|(?:log\s*in|sign\s*in|login)\s+(?:(?:to|with)\s+)?(?:another|a\s+different)\s+account|use\s+(?:another|a\s+different)\s+account|选择(?:一个)?(?:账号|账户)|(?:登录|使用)(?:其他|另一个|不同)(?:账号|账户)/i.test(body)
+}
+
+const loginForAnotherAccountPatterns = [
+  /^(?:log\s*in|sign\s*in|login)\s+(?:(?:to|with)\s+)?(?:another|a\s+different)\s+account$/i,
+  /^use\s+(?:another|a\s+different)\s+account$/i,
+  /^登录(?:到)?(?:其他|另一个|不同)(?:账号|账户)$/i,
+  /^使用(?:其他|另一个|不同)(?:账号|账户)登录$/i
+]
+
+const normalLoginPatterns = [/^log\s*in$/i, /^sign\s*in$/i, /^登录$/i]
+
 function isReauthorizationEmailCodePage(body, inputs) {
   if (!inputs.length) return false
   if (/phone|text message|\bsms\b|mobile|手机号|短信/i.test(body)) return false
@@ -1423,6 +1436,7 @@ async function reauthorizationNextState(current, workflow) {
   const body = await oauthBody(current)
   if (isReauthorizationEmailCodePage(body, verification)) return { kind: 'email_code' }
 
+  if (isReauthorizationAccountChooserPage(body)) return { kind: 'account_chooser' }
   const emailInput = await firstVisibleInput(current, isEmailInputMetadata)
   if (emailInput) return { kind: 'email', input: emailInput }
   if (isReauthorizationWorkspacePage(body)) return { kind: 'workspace' }
@@ -1460,16 +1474,25 @@ async function selectLoginForAnotherAccount(current, workflow) {
   let lastActionKey = ''
   return waitForOAuthPage('OpenAI 登录页中找不到邮箱输入框或可识别的登录状态', async () => {
     const state = await reauthorizationNextState(current, workflow)
+    if (state.kind === 'account_chooser') {
+      if (actionClicks >= 3) return state
+      const otherAccount = await firstVisibleRole(current, 'button', loginForAnotherAccountPatterns)
+        || await firstVisibleRole(current, 'link', loginForAnotherAccountPatterns)
+      if (!otherAccount) return state
+      const actionKey = `${current.url()}|another-account|${await otherAccount.innerText().catch(() => '')}`
+      if (actionKey === lastActionKey) return null
+      lastActionKey = actionKey
+      actionClicks += 1
+      await otherAccount.click()
+      return null
+    }
     if (state.kind !== 'unknown') return state
     if (actionClicks >= 3) {
       const providerOption = await thirdPartyIdentityProviderOption(current)
       return providerOption ? { kind: 'external_provider_choice' } : null
     }
-    const otherAccount = await firstVisibleRole(current, 'button', [/log in (?:with|to) another account|use another account|登录.*(?:其他|另一个)账号/i])
-      || await firstVisibleRole(current, 'link', [/log in (?:with|to) another account|use another account|登录.*(?:其他|另一个)账号/i])
-    const login = otherAccount
-      || await firstVisibleRole(current, 'button', [/^log in$/i, /^sign in$/i, /^登录$/i])
-      || await firstVisibleRole(current, 'link', [/^log in$/i, /^sign in$/i, /^登录$/i])
+    const login = await firstVisibleRole(current, 'button', normalLoginPatterns)
+      || await firstVisibleRole(current, 'link', normalLoginPatterns)
     if (!login) {
       const providerOption = await thirdPartyIdentityProviderOption(current)
       return providerOption ? { kind: 'external_provider_choice' } : null

@@ -113,6 +113,7 @@ describe('Team child OAuth automation state', () => {
 
     assert.equal((await reauthorizationNextState(page({
       url: 'https://auth.openai.com/log-in',
+      body: 'Log in or sign up',
       inputs: [input({ type: 'email', autocomplete: 'username' })]
     }), workflow)).kind, 'email')
     assert.equal((await reauthorizationNextState(page({
@@ -129,8 +130,106 @@ describe('Team child OAuth automation state', () => {
       body: 'Select a workspace Continue'
     }), workflow)).kind, 'workspace')
     assert.equal((await reauthorizationNextState(page({
+      url: 'https://auth.openai.com/choose-an-account',
+      body: 'Welcome back Choose an account to continue to Codex Log in to another account'
+    }), workflow)).kind, 'account_chooser')
+    assert.equal((await reauthorizationNextState(page({
       url: 'https://accounts.google.com/signin'
     }), workflow)).kind, 'external_provider')
+  })
+
+  it('uses another-account login for a trusted browser session without clicking the saved account', async () => {
+    let screen = 'chooser'
+    let savedAccountClicks = 0
+    let otherAccountClicks = 0
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const emailInput = {
+      isVisible: async () => true,
+      getAttribute: async (name) => ({ type: 'email', autocomplete: 'username' })[name] || null
+    }
+    const savedAccount = {
+      label: 'remembered@example.test',
+      isVisible: async () => true,
+      innerText: async () => 'remembered@example.test',
+      click: async () => { savedAccountClicks += 1 }
+    }
+    const otherAccount = {
+      label: 'Log in to another account',
+      isVisible: async () => true,
+      innerText: async () => 'Log in to another account',
+      click: async () => {
+        otherAccountClicks += 1
+        screen = 'email'
+      }
+    }
+    const current = {
+      url: () => screen === 'chooser'
+        ? 'https://auth.openai.com/choose-an-account'
+        : 'https://auth.openai.com/log-in',
+      locator: (selector) => {
+        if (selector === 'body') {
+          return {
+            innerText: async () => screen === 'chooser'
+              ? 'Welcome back Choose an account to continue to Codex Log in to another account'
+              : 'Log in or sign up'
+          }
+        }
+        if (selector === 'input') return collection(screen === 'email' ? [emailInput] : [])
+        return collection([])
+      },
+      getByRole: (role, options) => {
+        if (role !== 'button' || screen !== 'chooser') return collection([])
+        return collection([savedAccount, otherAccount].filter((candidate) => options.name.test(candidate.label)))
+      }
+    }
+    const workflow = createReauthorizationWorkflow(317, 'child@example.test', '', authURL, 'oauth-session-abcdefghijklmnop')
+
+    const state = await selectLoginForAnotherAccount(current, workflow)
+
+    assert.equal(state.kind, 'email')
+    assert.equal(otherAccountClicks, 1)
+    assert.equal(savedAccountClicks, 0)
+  })
+
+  it('opens a normal Sign in page only when an email field is not yet available', async () => {
+    let screen = 'landing'
+    let signInClicks = 0
+    const collection = (items) => ({
+      count: async () => items.length,
+      nth: (index) => items[index]
+    })
+    const emailInput = {
+      isVisible: async () => true,
+      getAttribute: async (name) => ({ type: 'email', autocomplete: 'username' })[name] || null
+    }
+    const signIn = {
+      isVisible: async () => true,
+      innerText: async () => 'Sign in',
+      click: async () => {
+        signInClicks += 1
+        screen = 'email'
+      }
+    }
+    const current = {
+      url: () => 'https://auth.openai.com/log-in',
+      locator: (selector) => {
+        if (selector === 'body') return { innerText: async () => screen === 'landing' ? 'Welcome back' : 'Log in or sign up' }
+        if (selector === 'input') return collection(screen === 'email' ? [emailInput] : [])
+        return collection([])
+      },
+      getByRole: (role, options) => collection(
+        role === 'button' && screen === 'landing' && options.name.test('Sign in') ? [signIn] : []
+      )
+    }
+    const workflow = createReauthorizationWorkflow(317, 'child@example.test', '', authURL, 'oauth-session-abcdefghijklmnop')
+
+    const state = await selectLoginForAnotherAccount(current, workflow)
+
+    assert.equal(state.kind, 'email')
+    assert.equal(signInClicks, 1)
   })
 
   it('never clicks a third-party identity-provider option', async () => {
