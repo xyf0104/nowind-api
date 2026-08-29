@@ -22,10 +22,15 @@ import (
 )
 
 const (
-	providerID       = "codex_local_access"
-	legacyProviderID = "xiass"
-	providerName     = "XIASS API"
-	defaultModel     = "gpt-5.6-sol"
+	providerID                   = "codex_local_access"
+	legacyProviderID             = "xiass"
+	providerName                 = "XIASS API"
+	defaultModel                 = "gpt-5.6-sol"
+	defaultContextWindow         = int64(372000)
+	defaultAutoCompactTokenLimit = int64(372000)
+	minimumContextWindow         = int64(64000)
+	maximumContextWindow         = int64(1050000)
+	minimumAutoCompactTokenLimit = int64(16000)
 )
 
 var managedTopLevelKeys = map[string]struct{}{
@@ -38,11 +43,18 @@ var managedTopLevelKeys = map[string]struct{}{
 }
 
 type ApplyConfig struct {
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key"`
-	KeyName      string `json:"key_name"`
-	Model        string `json:"model,omitempty"`
-	ProviderName string `json:"provider_name,omitempty"`
+	BaseURL                    string `json:"base_url"`
+	APIKey                     string `json:"api_key"`
+	KeyName                    string `json:"key_name"`
+	Model                      string `json:"model,omitempty"`
+	ProviderName               string `json:"provider_name,omitempty"`
+	ModelContextWindow         int64  `json:"model_context_window,omitempty"`
+	ModelAutoCompactTokenLimit int64  `json:"model_auto_compact_token_limit,omitempty"`
+}
+
+type ContextSettings struct {
+	ModelContextWindow         int64 `json:"model_context_window"`
+	ModelAutoCompactTokenLimit int64 `json:"model_auto_compact_token_limit"`
 }
 
 type BackupManifest struct {
@@ -195,7 +207,16 @@ func (m *ConfigManager) UpgradeLegacyProvider() (ApplyResult, bool, error) {
 	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(apiKey) == "" {
 		return ApplyResult{}, false, errors.New("restored legacy XIASS provider is incomplete and cannot be upgraded safely")
 	}
-	result, err := m.Apply(ApplyConfig{BaseURL: baseURL, APIKey: apiKey})
+	contextSettings, err := readContextSettingsFromTOML(data)
+	if err != nil {
+		return ApplyResult{}, false, fmt.Errorf("read restored legacy context settings: %w", err)
+	}
+	result, err := m.Apply(ApplyConfig{
+		BaseURL:                    baseURL,
+		APIKey:                     apiKey,
+		ModelContextWindow:         contextSettings.ModelContextWindow,
+		ModelAutoCompactTokenLimit: contextSettings.ModelAutoCompactTokenLimit,
+	})
 	return result, true, err
 }
 
@@ -408,6 +429,15 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	if len(input.ProviderName) > 200 || strings.ContainsAny(input.ProviderName, "\r\n\x00") {
 		return input, errors.New("invalid provider name")
 	}
+	contextSettings, err := normalizeContextSettings(ContextSettings{
+		ModelContextWindow:         input.ModelContextWindow,
+		ModelAutoCompactTokenLimit: input.ModelAutoCompactTokenLimit,
+	})
+	if err != nil {
+		return input, err
+	}
+	input.ModelContextWindow = contextSettings.ModelContextWindow
+	input.ModelAutoCompactTokenLimit = contextSettings.ModelAutoCompactTokenLimit
 
 	if !strings.Contains(input.BaseURL, "://") {
 		loopbackCandidate, err := url.Parse("http://" + input.BaseURL)
@@ -431,6 +461,76 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	}
 	input.BaseURL = strings.TrimRight(parsed.String(), "/")
 	return input, nil
+}
+
+func defaultContextSettings() ContextSettings {
+	return ContextSettings{
+		ModelContextWindow:         defaultContextWindow,
+		ModelAutoCompactTokenLimit: defaultAutoCompactTokenLimit,
+	}
+}
+
+func normalizeContextSettings(input ContextSettings) (ContextSettings, error) {
+	contextWasProvided := input.ModelContextWindow != 0
+	if input.ModelContextWindow == 0 {
+		input.ModelContextWindow = defaultContextWindow
+	}
+	if input.ModelAutoCompactTokenLimit == 0 {
+		if contextWasProvided {
+			input.ModelAutoCompactTokenLimit = input.ModelContextWindow * 9 / 10
+		} else {
+			input.ModelAutoCompactTokenLimit = defaultAutoCompactTokenLimit
+		}
+	}
+	if input.ModelContextWindow < minimumContextWindow || input.ModelContextWindow > maximumContextWindow {
+		return input, fmt.Errorf("model context window must be between %d and %d tokens", minimumContextWindow, maximumContextWindow)
+	}
+	if input.ModelAutoCompactTokenLimit < minimumAutoCompactTokenLimit || input.ModelAutoCompactTokenLimit > input.ModelContextWindow {
+		return input, fmt.Errorf("automatic compact token limit must be between %d and the context window (%d) tokens", minimumAutoCompactTokenLimit, input.ModelContextWindow)
+	}
+	return input, nil
+}
+
+func (m *ConfigManager) ReadContextSettings() (ContextSettings, error) {
+	data, existed, _, err := readConfigFile(m.ConfigPath)
+	if err != nil {
+		return defaultContextSettings(), err
+	}
+	if !existed || len(strings.TrimSpace(string(data))) == 0 {
+		return defaultContextSettings(), nil
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return defaultContextSettings(), fmt.Errorf("read config.toml: %w", err)
+	}
+	return contextSettingsFromTOMLRoot(root)
+}
+
+func readContextSettingsFromTOML(data []byte) (ContextSettings, error) {
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return defaultContextSettings(), err
+	}
+	return contextSettingsFromTOMLRoot(root)
+}
+
+func contextSettingsFromTOMLRoot(root map[string]any) (ContextSettings, error) {
+	settings := defaultContextSettings()
+	if value, present := root["model_context_window"]; present {
+		parsed, ok := integerValue(value)
+		if !ok {
+			return defaultContextSettings(), errors.New("model_context_window is not a positive integer")
+		}
+		settings.ModelContextWindow = parsed
+	}
+	if value, present := root["model_auto_compact_token_limit"]; present {
+		parsed, ok := integerValue(value)
+		if !ok {
+			return defaultContextSettings(), errors.New("model_auto_compact_token_limit is not a positive integer")
+		}
+		settings.ModelAutoCompactTokenLimit = parsed
+	}
+	return normalizeContextSettings(settings)
 }
 
 func isLoopbackHostname(hostname string) bool {
@@ -500,8 +600,8 @@ func patchConfig(original []byte, input ApplyConfig, managedProviderID string) [
 		`model_provider = "` + managedProviderID + `"`,
 		`model = "` + escapeTOML(input.Model) + `"`,
 		`review_model = "` + escapeTOML(input.Model) + `"`,
-		"model_context_window = 372000",
-		"model_auto_compact_token_limit = 372000",
+		"model_context_window = " + strconv.FormatInt(input.ModelContextWindow, 10),
+		"model_auto_compact_token_limit = " + strconv.FormatInt(input.ModelAutoCompactTokenLimit, 10),
 		`web_search = "live"`,
 	}
 	provider := []string{
@@ -553,7 +653,7 @@ func verifyManagedConfig(data []byte, expected ApplyConfig, managedProviderID st
 			return fmt.Errorf("%s mismatch", key)
 		}
 	}
-	if !numberEquals(root["model_context_window"], 372000) || !numberEquals(root["model_auto_compact_token_limit"], 372000) {
+	if !numberEquals(root["model_context_window"], expected.ModelContextWindow) || !numberEquals(root["model_auto_compact_token_limit"], expected.ModelAutoCompactTokenLimit) {
 		return errors.New("context window settings mismatch")
 	}
 
@@ -626,18 +726,26 @@ func escapeTOML(value string) string {
 }
 
 func numberEquals(value any, want int64) bool {
+	parsed, ok := integerValue(value)
+	return ok && parsed == want
+}
+
+func integerValue(value any) (int64, bool) {
 	switch typed := value.(type) {
 	case int64:
-		return typed == want
+		return typed, true
 	case int:
-		return int64(typed) == want
+		return int64(typed), true
 	case float64:
-		return int64(typed) == want && typed == float64(want)
+		if typed != float64(int64(typed)) {
+			return 0, false
+		}
+		return int64(typed), true
 	case string:
 		parsed, err := strconv.ParseInt(typed, 10, 64)
-		return err == nil && parsed == want
+		return parsed, err == nil
 	default:
-		return false
+		return 0, false
 	}
 }
 

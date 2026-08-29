@@ -52,6 +52,12 @@ Before applying a configuration, the helper:
     (whose current desktop process is `ChatGPT.exe`) and rejects Antigravity,
     editor-extension, desktop-managed CLI, npm, Cargo, Scoop, and Chocolatey
     `codex.exe` paths as desktop App candidates.
+17. The local page supports compatible, balanced, and 1M context profiles, plus
+    validated custom values for `model_context_window` and
+    `model_auto_compact_token_limit`. The selected values are carried through
+    the XIASS key-selection redirect and are written with the same atomic
+    backup, read-back verification, and rollback guarantees as the provider
+    configuration.
 
 Restore operations validate the selected backup and create another safety
 backup before replacing the current configuration. The local page also exposes

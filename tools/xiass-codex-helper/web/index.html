@@ -32,6 +32,13 @@
     .danger { color: #b42318; }
     button:disabled { opacity: .55; cursor: wait; }
     input, select { width: 100%; border: 1px solid #cbd3df; border-radius: 7px; padding: 10px; background: #fff; color: inherit; font: inherit; }
+	.context-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+	.context-field { min-width: 0; }
+	.context-field label { display: block; margin-bottom: 6px; color: #667085; font-size: 13px; }
+	.context-field input:disabled { cursor: not-allowed; opacity: .62; }
+	.context-current { margin-top: 12px; border: 1px solid #d9e6f5; border-radius: 7px; padding: 10px 12px; background: #f5f9ff; color: #24466e; font-size: 13px; line-height: 1.55; }
+	.context-warning { margin-top: 10px; color: #8a5a00; font-size: 13px; line-height: 1.55; }
+	.token-unit { margin-top: 6px; color: #667085; font-size: 12px; }
     .hint { margin: 10px 0 0; color: #667085; font-size: 13px; line-height: 1.6; }
     #message { display: none; margin-bottom: 16px; border-radius: 7px; padding: 12px 14px; line-height: 1.5; }
     #message.show { display: block; }
@@ -45,10 +52,12 @@
       button, .button, input, select { background: #242c38; color: #eef2f8; border-color: #465163; }
       button:hover, .button:hover { background: #303a48; }
       .primary { background: #2586ff; border-color: #2586ff; }
+	  .context-current { background: #1c2d42; border-color: #315477; color: #c7e0ff; }
+	  .context-warning { color: #f5c76b; }
       #message.success { background: #123a2a; color: #a7e7c9; border-color: #246447; }
       #message.error { background: #431f20; color: #ffc2bd; border-color: #743536; }
     }
-	    @media (max-width: 560px) { main { margin-top: 20px; } .row { grid-template-columns: 1fr; gap: 4px; } .path-entry { grid-template-columns: 1fr; } }
+	    @media (max-width: 560px) { main { margin-top: 20px; } .row { grid-template-columns: 1fr; gap: 4px; } .path-entry { grid-template-columns: 1fr; } .context-grid { grid-template-columns: 1fr; } .actions button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -82,8 +91,37 @@
         <button id="refresh-button" type="button">重新检测</button>
 		<button id="select-app-button" type="button">浏览选择 Codex App</button>
       </div>
-	  <p class="hint">填写您当前使用的 XIASS API 网站地址。助手会先退出 Codex，再备份配置和会话索引，同步所有历史对话并校验会话数量；只有全部成功才会重新启动。</p>
+      <p class="hint">填写您当前使用的 XIASS API 网站地址。助手会先退出 Codex，再备份配置和会话索引，同步所有历史对话并校验会话数量；只有全部成功才会重新启动。</p>
     </section>
+
+	<section class="panel">
+	  <h2>上下文设置</h2>
+	  <div class="row">
+		<label class="label" for="context-preset">常用档位</label>
+		<select id="context-preset">
+		  <option value="compat">兼容档 · 235K</option>
+		  <option value="current">当前默认 · 372K</option>
+		  <option value="balanced">常用档 · 512K</option>
+		  <option value="large">长上下文 · 1M</option>
+		  <option value="custom">自定义</option>
+		</select>
+	  </div>
+	  <div class="context-grid">
+		<div class="context-field">
+		  <label for="context-window">模型上下文窗口</label>
+		  <input id="context-window" type="number" inputmode="numeric" min="64000" max="1050000" step="100" value="372000">
+		  <div class="token-unit">单位：tokens</div>
+		</div>
+		<div class="context-field">
+		  <label for="auto-compact-limit">自动压缩阈值</label>
+		  <input id="auto-compact-limit" type="number" inputmode="numeric" min="16000" max="1050000" step="100" value="372000">
+		  <div class="token-unit">必须不大于上下文窗口</div>
+		</div>
+	  </div>
+	  <div id="context-current" class="context-current">本次配置将写入：上下文 372,000 tokens · 自动压缩 372,000 tokens</div>
+	  <div id="context-warning" class="context-warning" hidden></div>
+	  <p class="hint">1M 档对应教程中的 <strong>1,000,000 / 900,000</strong> 配置，仅在当前模型、客户端版本和账号权限支持时生效。窗口越大，单次请求可能消耗更多额度；修改后助手会安全重启 Codex。</p>
+	</section>
 
     <section class="panel">
       <h2>手动配置其他 API</h2>
@@ -139,6 +177,82 @@
 	const helperState = document.querySelector('meta[name="xiass-helper-state"]').content;
 	const message = document.getElementById('message');
 	let keepHelperRunningForAuthorization = false;
+	let contextDirty = false;
+	const contextPresets = {
+	  compat: { window: 235000, compact: 210000 },
+	  current: { window: 372000, compact: 372000 },
+	  balanced: { window: 512000, compact: 460800 },
+	  large: { window: 1000000, compact: 900000 }
+	};
+	const contextWindowInput = document.getElementById('context-window');
+	const autoCompactInput = document.getElementById('auto-compact-limit');
+	const contextPresetInput = document.getElementById('context-preset');
+	const contextSummary = document.getElementById('context-current');
+	const contextWarning = document.getElementById('context-warning');
+
+	function formatTokenCount(value) {
+	  return new Intl.NumberFormat('zh-CN').format(value);
+	}
+
+	function matchingContextPreset(contextWindow, compactLimit) {
+	  return Object.entries(contextPresets).find(([, preset]) => preset.window === contextWindow && preset.compact === compactLimit)?.[0] || 'custom';
+	}
+
+	function renderContextSummary() {
+	  const contextWindow = Number(contextWindowInput.value);
+	  const compactLimit = Number(autoCompactInput.value);
+	  if (!Number.isSafeInteger(contextWindow) || !Number.isSafeInteger(compactLimit)) {
+		contextSummary.textContent = '请输入有效的整数 token 数值';
+		return;
+	  }
+	  contextSummary.textContent = `本次配置将写入：上下文 ${formatTokenCount(contextWindow)} tokens · 自动压缩 ${formatTokenCount(compactLimit)} tokens`;
+	}
+
+	function setContextValues(contextWindow, compactLimit, markDirty) {
+	  contextWindowInput.value = String(contextWindow);
+	  autoCompactInput.value = String(compactLimit);
+	  contextPresetInput.value = matchingContextPreset(contextWindow, compactLimit);
+	  const custom = contextPresetInput.value === 'custom';
+	  contextWindowInput.disabled = !custom;
+	  autoCompactInput.disabled = !custom;
+	  if (markDirty) contextDirty = true;
+	  renderContextSummary();
+	}
+
+	function readContextValues() {
+	  const contextWindow = Number(contextWindowInput.value);
+	  const compactLimit = Number(autoCompactInput.value);
+	  if (!Number.isSafeInteger(contextWindow) || contextWindow < 64000 || contextWindow > 1050000) {
+		throw new Error('模型上下文窗口必须是 64,000 到 1,050,000 之间的整数 tokens。');
+	  }
+	  if (!Number.isSafeInteger(compactLimit) || compactLimit < 16000 || compactLimit > contextWindow) {
+		throw new Error(`自动压缩阈值必须是 16,000 到 ${formatTokenCount(contextWindow)} 之间的整数 tokens。`);
+	  }
+	  return { model_context_window: contextWindow, model_auto_compact_token_limit: compactLimit };
+	}
+
+	contextPresetInput.addEventListener('change', () => {
+	  const preset = contextPresets[contextPresetInput.value];
+	  if (!preset) {
+		contextWindowInput.disabled = false;
+		autoCompactInput.disabled = false;
+		contextDirty = true;
+		renderContextSummary();
+		return;
+	  }
+	  setContextValues(preset.window, preset.compact, true);
+	});
+	for (const input of [contextWindowInput, autoCompactInput]) {
+	  input.addEventListener('input', () => {
+		contextPresetInput.value = 'custom';
+		contextWindowInput.disabled = false;
+		autoCompactInput.disabled = false;
+		contextDirty = true;
+		renderContextSummary();
+	  });
+	}
+
+	setContextValues(contextPresets.current.window, contextPresets.current.compact, false);
 
 	function releaseHelperOnPageClose() {
 	  if (keepHelperRunningForAuthorization) return;
@@ -178,6 +292,16 @@
 	      if (!codexPathInput.value && data.codex.executable) codexPathInput.value = data.codex.executable;
       const siteInput = document.getElementById('site-url');
       if (!siteInput.value && data.site_url) siteInput.value = data.site_url;
+	  if (!contextDirty && Number.isSafeInteger(data.model_context_window) && Number.isSafeInteger(data.model_auto_compact_token_limit)) {
+		setContextValues(data.model_context_window, data.model_auto_compact_token_limit, false);
+	  }
+	  if (data.context_settings_warning) {
+		contextWarning.hidden = false;
+		contextWarning.textContent = `当前配置读取异常，暂显示兼容默认值：${data.context_settings_warning}`;
+	  } else {
+		contextWarning.hidden = true;
+		contextWarning.textContent = '';
+	  }
       document.getElementById('codex-status').innerHTML = '';
       const status = document.createElement('span');
       status.className = 'status';
@@ -279,7 +403,8 @@
       const button = document.getElementById('connect-button');
       button.disabled = true;
       try {
-        const data = await request('/api/site', { method: 'POST', body: JSON.stringify({ site_url: siteURL }) });
+		const context = readContextValues();
+		const data = await request('/api/site', { method: 'POST', body: JSON.stringify({ site_url: siteURL, ...context }) });
 		keepHelperRunningForAuthorization = true;
         window.location.assign(data.connect_url);
       } catch (error) {
@@ -299,11 +424,13 @@
       const button = document.getElementById('manual-apply-button');
       button.disabled = true;
       try {
+		const context = readContextValues();
         const data = await request('/api/apply-manual', {
           method: 'POST',
-          body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model })
+          body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model, ...context })
         });
         apiKeyInput.value = '';
+		contextDirty = false;
         showMessage(data.message, 'success');
         await refresh();
       } catch (error) {

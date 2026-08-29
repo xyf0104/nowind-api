@@ -148,6 +148,88 @@ func TestNormalizeApplyConfigRejectsRemoteHTTP(t *testing.T) {
 	}
 }
 
+func TestNormalizeContextSettingsSupportsPresetsAndRejectsUnsafeValues(t *testing.T) {
+	large, err := normalizeContextSettings(ContextSettings{
+		ModelContextWindow:         1000000,
+		ModelAutoCompactTokenLimit: 900000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if large.ModelContextWindow != 1000000 || large.ModelAutoCompactTokenLimit != 900000 {
+		t.Fatalf("large context settings = %+v", large)
+	}
+
+	derived, err := normalizeContextSettings(ContextSettings{ModelContextWindow: 512000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived.ModelAutoCompactTokenLimit != 460800 {
+		t.Fatalf("derived compact limit = %d, want 460800", derived.ModelAutoCompactTokenLimit)
+	}
+
+	for _, test := range []ContextSettings{
+		{ModelContextWindow: 63999, ModelAutoCompactTokenLimit: 50000},
+		{ModelContextWindow: 1050001, ModelAutoCompactTokenLimit: 900000},
+		{ModelContextWindow: 1000000, ModelAutoCompactTokenLimit: 1000001},
+		{ModelContextWindow: 1000000, ModelAutoCompactTokenLimit: 15999},
+	} {
+		if _, err := normalizeContextSettings(test); err == nil {
+			t.Fatalf("unsafe context settings were accepted: %+v", test)
+		}
+	}
+}
+
+func TestApplyWritesAndReadsSelectedContextSettings(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	input := ApplyConfig{
+		BaseURL:                    "https://gateway.example.com",
+		APIKey:                     "sk-test-1234567890",
+		ModelContextWindow:         1000000,
+		ModelAutoCompactTokenLimit: 900000,
+	}
+	if _, err := manager.Apply(input); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(written)
+	for _, expected := range []string{
+		"model_context_window = 1000000",
+		"model_auto_compact_token_limit = 900000",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("selected context setting is missing %q", expected)
+		}
+	}
+	settings, err := manager.ReadContextSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ModelContextWindow != input.ModelContextWindow || settings.ModelAutoCompactTokenLimit != input.ModelAutoCompactTokenLimit {
+		t.Fatalf("read context settings = %+v, want %+v", settings, ContextSettings{
+			ModelContextWindow:         input.ModelContextWindow,
+			ModelAutoCompactTokenLimit: input.ModelAutoCompactTokenLimit,
+		})
+	}
+}
+
+func TestReadContextSettingsUsesCompatibilityDefaultsWhenAbsent(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	settings, err := manager.ReadContextSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings != (ContextSettings{
+		ModelContextWindow:         defaultContextWindow,
+		ModelAutoCompactTokenLimit: defaultAutoCompactTokenLimit,
+	}) {
+		t.Fatalf("default context settings = %+v", settings)
+	}
+}
+
 func TestApplySupportsCustomProviderAndModel(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
 	input := ApplyConfig{
@@ -229,6 +311,8 @@ experimental_bearer_token = "old-secret"
 func TestUpgradeLegacyProviderReusesConnectionUnderStableID(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
 	original := `model_provider = "xiass"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
 
 [model_providers.xiass]
 name = "XIASS API"
@@ -253,6 +337,14 @@ experimental_bearer_token = "sk-test-1234567890"
 	}
 	if strings.Contains(string(written), "[model_providers.xiass]") || !strings.Contains(string(written), "[model_providers.codex_local_access]") {
 		t.Fatal("legacy provider was not upgraded to the stable provider ID")
+	}
+	for _, expected := range []string{
+		"model_context_window = 1000000",
+		"model_auto_compact_token_limit = 900000",
+	} {
+		if !strings.Contains(string(written), expected) {
+			t.Errorf("legacy migration did not preserve %q", expected)
+		}
 	}
 }
 

@@ -237,6 +237,122 @@ func TestHelperServerSelectsSiteAtRuntime(t *testing.T) {
 	}
 }
 
+func TestHelperStatusReportsStoredContextSettings(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	if err := os.WriteFile(manager.ConfigPath, []byte("model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := newTestHelperServer(manager, defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := getJSON(t, helper.routes(), "/api/status")
+	if status["model_context_window"] != float64(1000000) || status["model_auto_compact_token_limit"] != float64(900000) {
+		t.Fatalf("status context settings = %v/%v", status["model_context_window"], status["model_auto_compact_token_limit"])
+	}
+}
+
+func TestHelperCarriesContextSelectionThroughSiteCallback(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	var applied ApplyConfig
+	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
+		applied = input
+		return ApplyResult{BackupID: "unused"}, nil
+	}
+
+	body := []byte(`{"site_url":"https://gateway.example.com","model_context_window":1000000,"model_auto_compact_token_limit":900000}`)
+	postHelperJSON(t, helper.routes(), "/api/site", helper.state, body, http.StatusOK)
+	callbackBody := []byte(`{"base_url":"https://gateway.example.com/v1","api_key":"sk-test-1234567890","key_name":"Codex"}`)
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, callbackBody, http.StatusOK)
+	if applied.ModelContextWindow != 1000000 || applied.ModelAutoCompactTokenLimit != 900000 {
+		t.Fatalf("callback applied context = %d/%d, want 1000000/900000", applied.ModelContextWindow, applied.ModelAutoCompactTokenLimit)
+	}
+	if helper.pendingContextSettings() != nil {
+		t.Fatal("pending context settings were not cleared after a successful callback")
+	}
+}
+
+func TestHelperDerivesCompactLimitWhenOnlyContextWindowIsProvided(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := helper.resolveRequestedContext(ContextSettings{ModelContextWindow: 1000000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ModelAutoCompactTokenLimit != 900000 {
+		t.Fatalf("derived site compact limit = %d, want 900000", settings.ModelAutoCompactTokenLimit)
+	}
+
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	var applied ApplyConfig
+	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
+		applied = input
+		return ApplyResult{BackupID: "unused"}, nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"base_url":             defaultXIASSAPIURL + "/v1",
+		"api_key":              "sk-test-1234567890",
+		"key_name":             "Codex",
+		"model_context_window": 512000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusOK)
+	if applied.ModelAutoCompactTokenLimit != 460800 {
+		t.Fatalf("derived callback compact limit = %d, want 460800", applied.ModelAutoCompactTokenLimit)
+	}
+}
+
+func TestHelperCallbackContextOverridesPendingSelection(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	var applied ApplyConfig
+	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
+		applied = input
+		return ApplyResult{BackupID: "unused"}, nil
+	}
+	helper.setPendingContext(ContextSettings{ModelContextWindow: 1000000, ModelAutoCompactTokenLimit: 900000})
+	body, err := json.Marshal(map[string]any{
+		"base_url":                       defaultXIASSAPIURL + "/v1",
+		"api_key":                        "sk-test-1234567890",
+		"key_name":                       "Codex",
+		"model_context_window":           512000,
+		"model_auto_compact_token_limit": 460800,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusOK)
+	if applied.ModelContextWindow != 512000 || applied.ModelAutoCompactTokenLimit != 460800 {
+		t.Fatalf("explicit callback context = %d/%d, want 512000/460800", applied.ModelContextWindow, applied.ModelAutoCompactTokenLimit)
+	}
+}
+
 func TestHelperServerSelectsCodexAppAtRuntime(t *testing.T) {
 	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {

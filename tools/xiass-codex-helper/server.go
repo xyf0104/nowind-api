@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ type helperServer struct {
 	operationMu                sync.Mutex
 	siteMu                     sync.RWMutex
 	siteURL                    *url.URL
+	contextMu                  sync.RWMutex
+	pendingContext             *ContextSettings
 	codexMu                    sync.RWMutex
 	selectedCodex              *CodexInstallation
 	index                      *template.Template
@@ -48,12 +51,15 @@ type helperServer struct {
 }
 
 type statusResponse struct {
-	Version     string            `json:"version"`
-	ConfigPath  string            `json:"config_path"`
-	Codex       CodexInstallation `json:"codex"`
-	ConnectURL  string            `json:"connect_url"`
-	SiteURL     string            `json:"site_url"`
-	BackupCount int               `json:"backup_count"`
+	Version                    string            `json:"version"`
+	ConfigPath                 string            `json:"config_path"`
+	Codex                      CodexInstallation `json:"codex"`
+	ConnectURL                 string            `json:"connect_url"`
+	SiteURL                    string            `json:"site_url"`
+	BackupCount                int               `json:"backup_count"`
+	ModelContextWindow         int64             `json:"model_context_window"`
+	ModelAutoCompactTokenLimit int64             `json:"model_auto_compact_token_limit"`
+	ContextSettingsWarning     string            `json:"context_settings_warning,omitempty"`
 }
 
 type operationResponse struct {
@@ -153,13 +159,26 @@ func (s *helperServer) handleCallback(w http.ResponseWriter, _ *http.Request) {
 func (s *helperServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	backups, _ := s.manager.ListBackups()
 	connectURL, siteURL := s.connectionDetails(r.Host)
+	contextSettings, contextErr := s.manager.ReadContextSettings()
+	contextWarning := ""
+	if contextErr != nil {
+		contextSettings = defaultContextSettings()
+		contextWarning = contextErr.Error()
+	}
+	if pending := s.pendingContextSettings(); pending != nil {
+		contextSettings = *pending
+		contextWarning = ""
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
-		Version:     version,
-		ConfigPath:  s.manager.ConfigPath,
-		Codex:       s.codexInstallation(),
-		ConnectURL:  connectURL,
-		SiteURL:     siteURL,
-		BackupCount: len(backups),
+		Version:                    version,
+		ConfigPath:                 s.manager.ConfigPath,
+		Codex:                      s.codexInstallation(),
+		ConnectURL:                 connectURL,
+		SiteURL:                    siteURL,
+		BackupCount:                len(backups),
+		ModelContextWindow:         contextSettings.ModelContextWindow,
+		ModelAutoCompactTokenLimit: contextSettings.ModelAutoCompactTokenLimit,
+		ContextSettingsWarning:     contextWarning,
 	})
 }
 
@@ -169,7 +188,9 @@ func (s *helperServer) handleSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		SiteURL string `json:"site_url"`
+		SiteURL                    string `json:"site_url"`
+		ModelContextWindow         int64  `json:"model_context_window,omitempty"`
+		ModelAutoCompactTokenLimit int64  `json:"model_auto_compact_token_limit,omitempty"`
 	}
 	if err := decodeJSONBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -180,9 +201,18 @@ func (s *helperServer) handleSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	contextSettings, err := s.resolveRequestedContext(ContextSettings{
+		ModelContextWindow:         request.ModelContextWindow,
+		ModelAutoCompactTokenLimit: request.ModelAutoCompactTokenLimit,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	s.siteMu.Lock()
 	s.siteURL = parsed
 	s.siteMu.Unlock()
+	s.setPendingContext(contextSettings)
 	connectURL, siteURL := s.connectionDetails(r.Host)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
@@ -282,6 +312,7 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 	if manual {
 		input.ProviderName = "Custom API"
 	}
+	input = s.fillMissingContext(input)
 	normalized, err := normalizeApplyConfig(input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -405,12 +436,13 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, operationResponse{
 		OK:             true,
-		Message:        configurationName + " 配置已写入；" + historySummary(history) + " Codex 已重新启动。",
+		Message:        configurationName + " 配置已写入（上下文 " + formatTokenCount(input.ModelContextWindow) + "，自动压缩 " + formatTokenCount(input.ModelAutoCompactTokenLimit) + "）；" + historySummary(history) + " Codex 已重新启动。",
 		BackupID:       result.BackupID,
 		Restarted:      true,
 		ConfigVerified: true,
 		History:        &history,
 	})
+	s.clearPendingContext()
 }
 
 func parseSiteURL(value string) (*url.URL, error) {
@@ -432,6 +464,76 @@ func (s *helperServer) currentSiteURL() *url.URL {
 	}
 	copy := *s.siteURL
 	return &copy
+}
+
+func (s *helperServer) resolveRequestedContext(requested ContextSettings) (ContextSettings, error) {
+	current := defaultContextSettings()
+	if configured, err := s.manager.ReadContextSettings(); err == nil {
+		current = configured
+	}
+	if requested.ModelContextWindow == 0 {
+		requested.ModelContextWindow = current.ModelContextWindow
+		if requested.ModelAutoCompactTokenLimit == 0 {
+			requested.ModelAutoCompactTokenLimit = current.ModelAutoCompactTokenLimit
+		}
+	}
+	return normalizeContextSettings(requested)
+}
+
+func (s *helperServer) fillMissingContext(input ApplyConfig) ApplyConfig {
+	if input.ModelContextWindow != 0 && input.ModelAutoCompactTokenLimit != 0 {
+		return input
+	}
+	if input.ModelContextWindow != 0 {
+		// Preserve the zero compact limit so normalization derives a 90% limit.
+		return input
+	}
+	settings := s.pendingContextSettings()
+	if settings == nil {
+		resolved := defaultContextSettings()
+		if configured, err := s.manager.ReadContextSettings(); err == nil {
+			resolved = configured
+		}
+		settings = &resolved
+	}
+	if input.ModelContextWindow == 0 {
+		input.ModelContextWindow = settings.ModelContextWindow
+	}
+	if input.ModelAutoCompactTokenLimit == 0 {
+		input.ModelAutoCompactTokenLimit = settings.ModelAutoCompactTokenLimit
+	}
+	return input
+}
+
+func (s *helperServer) setPendingContext(settings ContextSettings) {
+	s.contextMu.Lock()
+	copy := settings
+	s.pendingContext = &copy
+	s.contextMu.Unlock()
+}
+
+func (s *helperServer) pendingContextSettings() *ContextSettings {
+	s.contextMu.RLock()
+	defer s.contextMu.RUnlock()
+	if s.pendingContext == nil {
+		return nil
+	}
+	copy := *s.pendingContext
+	return &copy
+}
+
+func (s *helperServer) clearPendingContext() {
+	s.contextMu.Lock()
+	s.pendingContext = nil
+	s.contextMu.Unlock()
+}
+
+func formatTokenCount(value int64) string {
+	formatted := strconv.FormatInt(value, 10)
+	for index := len(formatted) - 3; index > 0; index -= 3 {
+		formatted = formatted[:index] + "," + formatted[index:]
+	}
+	return formatted
 }
 
 func (s *helperServer) connectionDetails(callbackHost string) (string, string) {
