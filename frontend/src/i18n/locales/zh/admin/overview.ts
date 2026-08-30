@@ -175,6 +175,23 @@ export default {
         deleteConfirm: '确定要删除此备份吗？',
         deleted: '备份已删除'
       },
+      runtimeExport: {
+        title: '完整迁移包',
+        description: '数据库、缓存、站内数据与 Team 浏览器配置',
+        create: '创建迁移包',
+        creating: '正在创建',
+        started: '已开始创建迁移包',
+        empty: '暂无迁移包',
+        failed: '迁移包创建失败',
+        deleteConfirm: '确定要删除此迁移包吗？',
+        deleted: '迁移包已删除',
+        status: {
+          queued: '等待中',
+          running: '正在导出',
+          completed: '已完成',
+          failed: '失败'
+        }
+      },
       r2Guide: {
         title: 'Cloudflare R2 配置教程',
         intro: 'Cloudflare R2 提供 S3 兼容的对象存储，免费额度为 10GB 存储 + 每月 100 万次 A 类请求，非常适合数据库备份。',
