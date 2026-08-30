@@ -85,9 +85,9 @@
 
         <UsageFilters v-model="filters" ref="usageFiltersRef" flat :mode="activeTab" class="border-b border-gray-100 dark:border-dark-700/50" :start-date="startDate" :end-date="endDate" :exporting="exporting" :model-options="modelNameOptions" @change="applyFilters" @refresh="refreshData" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel">
           <template #after-reset>
-            <div v-if="activeTab !== 'ranking'" class="relative" ref="columnDropdownRef">
+            <div v-if="activeTab !== 'ranking'" ref="columnDropdownRef">
               <button
-                @click="showColumnDropdown = !showColumnDropdown"
+                @click="toggleColumnDropdown"
                 class="btn btn-secondary px-2 md:px-3"
                 :title="t('admin.users.columnSettings')"
               >
@@ -96,26 +96,6 @@
                 </svg>
                 <span class="hidden md:inline">{{ t('admin.users.columnSettings') }}</span>
               </button>
-              <div
-                v-if="showColumnDropdown"
-                class="absolute right-0 top-full z-50 mt-1 max-h-80 w-48 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
-              >
-                <button
-                  v-for="col in currentToggleableColumns"
-                  :key="col.key"
-                  @click="toggleCurrentColumn(col.key)"
-                  class="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
-                >
-                  <span>{{ col.label }}</span>
-                  <Icon
-                    v-if="isCurrentColumnVisible(col.key)"
-                    name="check"
-                    size="sm"
-                    class="text-primary-500"
-                    :stroke-width="2"
-                  />
-                </button>
-              </div>
             </div>
           </template>
         </UsageFilters>
@@ -179,10 +159,35 @@
     :hide-actions="true"
     @close="showBalanceHistoryModal = false; balanceHistoryUser = null"
   />
+  <Teleport to="body">
+    <div
+      v-if="showColumnDropdown"
+      ref="columnDropdownMenuRef"
+      class="fixed z-[100000020] w-52 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-dark-600 dark:bg-dark-800"
+      :style="columnDropdownStyle"
+    >
+      <button
+        v-for="col in currentToggleableColumns"
+        :key="col.key"
+        type="button"
+        @click="toggleCurrentColumn(col.key)"
+        class="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+      >
+        <span class="min-w-0 flex-1 truncate">{{ col.label }}</span>
+        <Icon
+          v-if="isCurrentColumnVisible(col.key)"
+          name="check"
+          size="sm"
+          class="shrink-0 text-primary-500"
+          :stroke-width="2"
+        />
+      </button>
+    </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { saveAs } from 'file-saver'
 import { useRoute } from 'vue-router'
@@ -835,11 +840,59 @@ const openError = (id: number) => { selectedErrorId.value = id; showErrorModal.v
 
 const showColumnDropdown = ref(false)
 const columnDropdownRef = ref<HTMLElement | null>(null)
+const columnDropdownMenuRef = ref<HTMLElement | null>(null)
+const columnDropdownStyle = ref<Record<string, string>>({})
+
+const COLUMN_DROPDOWN_GAP = 6
+const COLUMN_DROPDOWN_VIEWPORT_PADDING = 8
+const COLUMN_DROPDOWN_WIDTH = 208
+
+const updateColumnDropdownPosition = () => {
+  const trigger = columnDropdownRef.value
+  if (!trigger) return
+
+  const rect = trigger.getBoundingClientRect()
+  const viewport = window.visualViewport
+  const viewportLeft = viewport?.offsetLeft ?? 0
+  const viewportTop = viewport?.offsetTop ?? 0
+  const viewportWidth = viewport?.width ?? window.innerWidth
+  const viewportHeight = viewport?.height ?? window.innerHeight
+  const viewportRight = viewportLeft + viewportWidth
+  const viewportBottom = viewportTop + viewportHeight
+  const width = Math.min(COLUMN_DROPDOWN_WIDTH, Math.max(0, viewportWidth - COLUMN_DROPDOWN_VIEWPORT_PADDING * 2))
+  const left = Math.max(
+    viewportLeft + COLUMN_DROPDOWN_VIEWPORT_PADDING,
+    Math.min(rect.right - width, viewportRight - width - COLUMN_DROPDOWN_VIEWPORT_PADDING)
+  )
+  const availableHeight = Math.max(
+    0,
+    viewportBottom - rect.bottom - COLUMN_DROPDOWN_GAP - COLUMN_DROPDOWN_VIEWPORT_PADDING
+  )
+
+  columnDropdownStyle.value = {
+    top: `${Math.round(rect.bottom + COLUMN_DROPDOWN_GAP)}px`,
+    left: `${Math.round(left)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.floor(availableHeight)}px`
+  }
+}
+
+const toggleColumnDropdown = () => {
+  showColumnDropdown.value = !showColumnDropdown.value
+  if (showColumnDropdown.value) void nextTick(updateColumnDropdownPosition)
+}
 
 const handleColumnClickOutside = (event: MouseEvent) => {
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(event.target as HTMLElement)) {
+  const target = event.target as HTMLElement
+  const inTrigger = columnDropdownRef.value?.contains(target)
+  const inMenu = columnDropdownMenuRef.value?.contains(target)
+  if (!inTrigger && !inMenu) {
     showColumnDropdown.value = false
   }
+}
+
+const handleColumnDropdownViewportChange = () => {
+  if (showColumnDropdown.value) updateColumnDropdownPosition()
 }
 
 onMounted(() => {
@@ -854,8 +907,20 @@ onMounted(() => {
   loadSavedColumns()
   loadSavedErrColumns()
   document.addEventListener('click', handleColumnClickOutside)
+  window.addEventListener('scroll', handleColumnDropdownViewportChange, true)
+  window.addEventListener('resize', handleColumnDropdownViewportChange)
+  window.visualViewport?.addEventListener('resize', handleColumnDropdownViewportChange)
+  window.visualViewport?.addEventListener('scroll', handleColumnDropdownViewportChange)
 })
-onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
+onUnmounted(() => {
+  abortController?.abort()
+  exportAbortController?.abort()
+  document.removeEventListener('click', handleColumnClickOutside)
+  window.removeEventListener('scroll', handleColumnDropdownViewportChange, true)
+  window.removeEventListener('resize', handleColumnDropdownViewportChange)
+  window.visualViewport?.removeEventListener('resize', handleColumnDropdownViewportChange)
+  window.visualViewport?.removeEventListener('scroll', handleColumnDropdownViewportChange)
+})
 
 watch(modelDistributionSource, (source) => {
   void loadModelStats(source)

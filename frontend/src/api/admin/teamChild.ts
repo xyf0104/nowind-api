@@ -53,6 +53,17 @@ export interface TeamChildMailboxCode {
   expires_at: string
 }
 
+export interface TeamChildMailboxShareStatus {
+  active: boolean
+  email: string
+  created_at?: string
+}
+
+export interface TeamChildMailboxShareLink extends TeamChildMailboxShareStatus {
+  /** Returned only when a link is newly created or explicitly replaced. */
+  token: string
+}
+
 export interface TeamChildMailboxConfigImportResult {
   configured: boolean
   auth_mode: string
@@ -400,6 +411,53 @@ export async function deleteMailboxSession(sessionId: string): Promise<void> {
   await apiClient.delete(`/admin/openai/team-child/mailboxes/${encodeURIComponent(sessionId)}`)
 }
 
+export async function getTeamChildMailboxShare(accountID: number): Promise<TeamChildMailboxShareStatus> {
+  const { data } = await apiClient.get<TeamChildMailboxShareStatus>(
+    `/admin/openai/team-child/accounts/${encodeURIComponent(String(accountID))}/mailbox-share`
+  )
+  return data
+}
+
+export async function createTeamChildMailboxShare(accountID: number, replace = false): Promise<TeamChildMailboxShareLink> {
+  const { data } = await apiClient.post<TeamChildMailboxShareLink>(
+    `/admin/openai/team-child/accounts/${encodeURIComponent(String(accountID))}/mailbox-share`,
+    { replace }
+  )
+  return data
+}
+
+export async function revokeTeamChildMailboxShare(accountID: number): Promise<void> {
+  await apiClient.delete(`/admin/openai/team-child/accounts/${encodeURIComponent(String(accountID))}/mailbox-share`)
+}
+
+export async function getPendingTeamChildMailboxShare(email: string, accountID?: number): Promise<TeamChildMailboxShareStatus> {
+  const { data } = await apiClient.get<TeamChildMailboxShareStatus>('/admin/openai/team-child/mailbox-share', {
+    params: {
+      email,
+      ...(accountID ? { account_id: accountID } : {})
+    }
+  })
+  return data
+}
+
+export async function createPendingTeamChildMailboxShare(email: string, replace = false, accountID?: number): Promise<TeamChildMailboxShareLink> {
+  const { data } = await apiClient.post<TeamChildMailboxShareLink>('/admin/openai/team-child/mailbox-share', {
+    email,
+    replace,
+    ...(accountID ? { account_id: accountID } : {})
+  })
+  return data
+}
+
+export async function revokePendingTeamChildMailboxShare(email: string, accountID?: number): Promise<void> {
+  await apiClient.delete('/admin/openai/team-child/mailbox-share', {
+    data: {
+      email,
+      ...(accountID ? { account_id: accountID } : {})
+    }
+  })
+}
+
 export async function createOpenAIAccountFromOAuth(payload: TeamChildCreateAccountRequest): Promise<Account> {
   const { data } = await apiClient.post<Account>('/admin/openai/create-from-oauth', payload)
   return data
@@ -410,6 +468,12 @@ export const teamChildAPI = {
   createBrowserSession,
   heartbeatTeamChildBrowserControl,
   releaseTeamChildBrowserControl,
+  getTeamChildMailboxShare,
+  createTeamChildMailboxShare,
+  revokeTeamChildMailboxShare,
+  getPendingTeamChildMailboxShare,
+  createPendingTeamChildMailboxShare,
+  revokePendingTeamChildMailboxShare,
   listTeamChildMembers,
   refreshTeamChildMembers,
   inspectTeamChildSeat,

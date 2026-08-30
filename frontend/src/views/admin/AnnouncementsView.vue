@@ -82,10 +82,12 @@
                 'badge',
                 row.notify_mode === 'popup'
                   ? 'badge-warning'
-                  : 'badge-gray'
+                  : row.notify_mode === 'email'
+                    ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+                    : 'badge-gray'
               ]"
             >
-              {{ row.notify_mode === 'popup' ? t('admin.announcements.notifyModeLabels.popup') : t('admin.announcements.notifyModeLabels.silent') }}
+              {{ notifyModeLabel(row.notify_mode) }}
             </span>
           </template>
 
@@ -115,6 +117,17 @@
           <template #cell-actions="{ row }">
             <div class="flex items-center space-x-1">
               <button
+                v-if="row.notify_mode === 'email'"
+                type="button"
+                data-testid="announcement-email-dispatch"
+                class="flex items-center justify-center rounded-lg p-1.5 text-sky-600 transition-colors hover:bg-sky-50 hover:text-sky-700 dark:text-sky-400 dark:hover:bg-sky-900/25 dark:hover:text-sky-200"
+                :title="t('admin.announcements.emailDispatch.open')"
+                @click="openEmailDispatch(row)"
+              >
+                <Icon name="mail" size="sm" />
+              </button>
+              <button
+                type="button"
                 @click="openPreview(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
                 :title="t('admin.announcements.preview')"
@@ -248,6 +261,12 @@
       @close="showReadStatusDialog = false"
     />
 
+    <AnnouncementEmailDispatchDialog
+      :show="showEmailDispatchDialog"
+      :announcement="emailDispatchAnnouncement"
+      @close="closeEmailDispatch"
+    />
+
     <AnnouncementPopup
       :announcement="previewAnnouncement"
       preview
@@ -278,6 +297,7 @@ import Icon from '@/components/icons/Icon.vue'
 
 import AnnouncementTargetingEditor from '@/components/admin/announcements/AnnouncementTargetingEditor.vue'
 import AnnouncementReadStatusDialog from '@/components/admin/announcements/AnnouncementReadStatusDialog.vue'
+import AnnouncementEmailDispatchDialog from '@/components/admin/announcements/AnnouncementEmailDispatchDialog.vue'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
 
 const { t } = useI18n()
@@ -318,7 +338,8 @@ const statusOptions = computed(() => [
 
 const notifyModeOptions = computed(() => [
   { value: 'silent', label: t('admin.announcements.notifyModeLabels.silent') },
-  { value: 'popup', label: t('admin.announcements.notifyModeLabels.popup') }
+  { value: 'popup', label: t('admin.announcements.notifyModeLabels.popup') },
+  { value: 'email', label: t('admin.announcements.notifyModeLabels.email') }
 ])
 
 const columns = computed<Column[]>(() => [
@@ -336,6 +357,12 @@ const statusLabel = (status: string) => {
   if (status === 'active') return t('admin.announcements.statusLabels.active')
   if (status === 'archived') return t('admin.announcements.statusLabels.archived')
   return status
+}
+
+const notifyModeLabel = (mode: string) => {
+  if (mode === 'popup') return t('admin.announcements.notifyModeLabels.popup')
+  if (mode === 'email') return t('admin.announcements.notifyModeLabels.email')
+  return t('admin.announcements.notifyModeLabels.silent')
 }
 
 const targetingSummary = (targeting: AnnouncementTargeting) => {
@@ -603,6 +630,8 @@ async function confirmDelete() {
 const showReadStatusDialog = ref(false)
 const readStatusAnnouncementId = ref<number | null>(null)
 const previewAnnouncement = ref<Announcement | null>(null)
+const showEmailDispatchDialog = ref(false)
+const emailDispatchAnnouncement = ref<Announcement | null>(null)
 
 function openPreview(row: Announcement) {
   previewAnnouncement.value = row
@@ -611,6 +640,16 @@ function openPreview(row: Announcement) {
 function openReadStatus(row: Announcement) {
   readStatusAnnouncementId.value = row.id
   showReadStatusDialog.value = true
+}
+
+function openEmailDispatch(row: Announcement) {
+  emailDispatchAnnouncement.value = row
+  showEmailDispatchDialog.value = true
+}
+
+function closeEmailDispatch() {
+  showEmailDispatchDialog.value = false
+  emailDispatchAnnouncement.value = null
 }
 
 onMounted(async () => {

@@ -141,4 +141,22 @@ describe('TeamChildHistoryPanel', () => {
     await wrapper.get('[data-testid="team-history-delete-317"]').trigger('click')
     expect(wrapper.emitted('delete-account')?.[0]?.[0]).toMatchObject({ account })
   })
+
+  it('opens the independent mailbox-link manager for the exact Team account', async () => {
+    const account = teamAccount({ status: 'active', error_message: '', schedulable: true })
+    const wrapper = mount(TeamChildHistoryPanel, {
+      props: {
+        entries: [{
+          email: 'team1004@example.test',
+          account: account as never,
+          usage: null,
+          passwordAvailable: true
+        }]
+      },
+      global: { stubs: { Icon: IconStub, RouterLink: true } }
+    })
+
+    await wrapper.get('[data-testid="team-history-mailbox-share-317"]').trigger('click')
+    expect(wrapper.emitted('share-mailbox')?.[0]?.[0]).toMatchObject({ email: 'team1004@example.test', account })
+  })
 })

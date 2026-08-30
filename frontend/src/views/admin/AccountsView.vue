@@ -12,6 +12,7 @@
             @update:searchQuery="debouncedReload"
           />
           <AccountTableActions
+            v-if="teamChildSettingsReady"
             :loading="loading"
             @refresh="handleManualRefresh"
             @create="showCreate = true"
@@ -174,6 +175,18 @@
               </div>
             </template>
           </AccountTableActions>
+          <div
+            v-else
+            data-testid="account-toolbar-loading"
+            class="flex h-10 max-w-full items-center gap-3"
+            aria-busy="true"
+            aria-label="正在加载账号操作"
+          >
+            <span class="h-10 w-10 shrink-0 animate-pulse rounded-xl bg-gray-200 dark:bg-dark-700"></span>
+            <span class="hidden h-10 w-28 animate-pulse rounded-xl bg-gray-200 dark:bg-dark-700 sm:block"></span>
+            <span class="h-10 w-28 shrink-0 animate-pulse rounded-xl bg-gray-200 dark:bg-dark-700"></span>
+            <span class="h-10 w-24 shrink-0 animate-pulse rounded-xl bg-gray-200 dark:bg-dark-700"></span>
+          </div>
         </div>
         <div
           v-if="hasPendingListSync"
@@ -702,6 +715,7 @@ const selTypes = computed<AccountType[]>(() => {
 })
 const showCreate = ref(false)
 const teamChildCreationEnabled = ref(false)
+const teamChildSettingsReady = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
 const showImportData = ref(false)
@@ -2545,6 +2559,11 @@ onMounted(async () => {
     if (settings.status === 'fulfilled') teamChildCreationEnabled.value = settings.value.team_child_creation_enabled === true
   } catch (error) {
     console.error('Failed to load proxies/groups:', error)
+  } finally {
+    // The Team entry is feature-gated by the same settings response. Keep the
+    // whole action group in one loading state so "创建 Team 子号" and "添加账号"
+    // never pop into the toolbar at different times.
+    teamChildSettingsReady.value = true
   }
   window.addEventListener('scroll', handleScroll, true)
   window.addEventListener('resize', handleViewportResize)

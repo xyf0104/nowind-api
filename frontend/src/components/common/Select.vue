@@ -160,6 +160,11 @@ interface Props {
   remote?: boolean
   /** Loading state used by remote option providers. */
   loading?: boolean
+  /**
+   * Preferred dropdown direction. Most fields retain the adaptive default;
+   * compact workflow panels may explicitly keep their choices below the input.
+   */
+  placement?: 'auto' | 'bottom' | 'top'
 }
 
 interface Emits {
@@ -178,7 +183,8 @@ const props = withDefaults(defineProps<Props>(), {
   valueKey: 'value',
   labelKey: 'label',
   remote: false,
-  loading: false
+  loading: false,
+  placement: 'auto'
 })
 
 const emit = defineEmits<Emits>()
@@ -407,7 +413,8 @@ const calculateDropdownPosition = () => {
       0,
       triggerRect.value.top - viewport.top - dropdownGap - dropdownViewportPadding
     )
-    const openAbove = spaceBelow < dropdownHeight && spaceAbove > spaceBelow
+    const openAbove = props.placement === 'top'
+      || (props.placement === 'auto' && spaceBelow < dropdownHeight && spaceAbove > spaceBelow)
 
     dropdownMeasuredHeight.value = dropdownHeight
     dropdownPosition.value = openAbove ? 'top' : 'bottom'

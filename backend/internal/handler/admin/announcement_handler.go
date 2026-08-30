@@ -30,7 +30,7 @@ type CreateAnnouncementRequest struct {
 	Title      string                        `json:"title" binding:"required"`
 	Content    string                        `json:"content" binding:"required"`
 	Status     string                        `json:"status" binding:"omitempty,oneof=draft active archived"`
-	NotifyMode string                        `json:"notify_mode" binding:"omitempty,oneof=silent popup"`
+	NotifyMode string                        `json:"notify_mode" binding:"omitempty,oneof=silent popup email"`
 	Targeting  service.AnnouncementTargeting `json:"targeting"`
 	StartsAt   *int64                        `json:"starts_at"` // Unix seconds, 0/empty = immediate
 	EndsAt     *int64                        `json:"ends_at"`   // Unix seconds, 0/empty = never
@@ -40,10 +40,15 @@ type UpdateAnnouncementRequest struct {
 	Title      *string                        `json:"title"`
 	Content    *string                        `json:"content"`
 	Status     *string                        `json:"status" binding:"omitempty,oneof=draft active archived"`
-	NotifyMode *string                        `json:"notify_mode" binding:"omitempty,oneof=silent popup"`
+	NotifyMode *string                        `json:"notify_mode" binding:"omitempty,oneof=silent popup email"`
 	Targeting  *service.AnnouncementTargeting `json:"targeting"`
 	StartsAt   *int64                         `json:"starts_at"` // Unix seconds, 0 = clear
 	EndsAt     *int64                         `json:"ends_at"`   // Unix seconds, 0 = clear
+}
+
+type DispatchAnnouncementEmailRequest struct {
+	Scope   string  `json:"scope" binding:"required,oneof=all selected"`
+	UserIDs []int64 `json:"user_ids"`
 }
 
 // List handles listing announcements with filters
@@ -253,4 +258,48 @@ func (h *AnnouncementHandler) ListReadStatus(c *gin.Context) {
 	}
 
 	response.Paginated(c, items, paginationResult.Total, page, pageSize)
+}
+
+// DispatchEmailNotifications sends a saved email announcement once to the
+// selected active users. The service owns persistent deduplication.
+// POST /api/v1/admin/announcements/:id/email-notifications
+func (h *AnnouncementHandler) DispatchEmailNotifications(c *gin.Context) {
+	announcementID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || announcementID <= 0 {
+		response.BadRequest(c, "Invalid announcement ID")
+		return
+	}
+
+	var req DispatchAnnouncementEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	result, err := h.announcementService.DispatchEmailNotifications(c.Request.Context(), announcementID, service.DispatchAnnouncementEmailInput{
+		Scope:   req.Scope,
+		UserIDs: req.UserIDs,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+// GetEmailDeliverySummary returns durable delivery status for the mail action.
+// GET /api/v1/admin/announcements/:id/email-delivery-summary
+func (h *AnnouncementHandler) GetEmailDeliverySummary(c *gin.Context) {
+	announcementID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || announcementID <= 0 {
+		response.BadRequest(c, "Invalid announcement ID")
+		return
+	}
+
+	summary, err := h.announcementService.AnnouncementEmailDeliverySummary(c.Request.Context(), announcementID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, summary)
 }

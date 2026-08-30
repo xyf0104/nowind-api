@@ -10,6 +10,7 @@ const {
   getUpstreamBillingProbeSettings,
   getAllProxies,
   getAllGroups,
+  getSettings,
   getConcurrencyStats,
   routeState,
   routerReplace
@@ -20,6 +21,7 @@ const {
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
+  getSettings: vi.fn(),
   getConcurrencyStats: vi.fn(),
   routeState: { query: {} as Record<string, string> },
   routerReplace: vi.fn()
@@ -49,7 +51,7 @@ vi.mock('@/api/admin', () => ({
     ops: { getConcurrencyStats },
     proxies: { getAll: getAllProxies },
     groups: { getAll: getAllGroups },
-    settings: { getSettings: vi.fn().mockResolvedValue({ team_child_creation_enabled: true }) }
+    settings: { getSettings }
   }
 }))
 
@@ -79,8 +81,14 @@ const DataTableStub = {
 }
 
 const AccountTableActionsStub = {
-  emits: ['refresh'],
-  template: '<button data-test="manual-refresh" @click="$emit(\'refresh\')">refresh</button>'
+  emits: ['refresh', 'create'],
+  template: `
+    <div data-test="account-actions">
+      <slot name="beforeCreate" />
+      <button data-test="manual-refresh" @click="$emit('refresh')">refresh</button>
+      <button data-test="create-account" @click="$emit('create')">create</button>
+    </div>
+  `
 }
 
 const mountView = () => mount(AccountsView, {
@@ -177,6 +185,7 @@ describe('admin AccountsView initial data synchronization', () => {
     getUpstreamBillingProbeSettings.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
+    getSettings.mockReset()
     getConcurrencyStats.mockReset()
     routerReplace.mockReset()
     routeState.query = {}
@@ -193,6 +202,7 @@ describe('admin AccountsView initial data synchronization', () => {
     getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: true, interval_minutes: 30 })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([{ id: 7, name: 'ChatGPT Team' }])
+    getSettings.mockResolvedValue({ team_child_creation_enabled: true })
     getConcurrencyStats.mockResolvedValue({ enabled: true, account: {} })
   })
 
@@ -226,6 +236,23 @@ describe('admin AccountsView initial data synchronization', () => {
     expect(tableAccount(secondVisit)).toMatchObject(completeAccount)
     expect(getBatchTodayStats).toHaveBeenLastCalledWith([224])
     secondVisit.unmount()
+  })
+
+  it('shows the Team action and native create action together after the feature setting resolves', async () => {
+    let resolveSettings!: (value: { team_child_creation_enabled: boolean }) => void
+    getSettings.mockReturnValue(new Promise((resolve) => { resolveSettings = resolve }))
+
+    const wrapper = mountView()
+    expect(wrapper.find('[data-testid="account-toolbar-loading"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="account-actions"]').exists()).toBe(false)
+
+    resolveSettings({ team_child_creation_enabled: true })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="account-toolbar-loading"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-team-child"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="create-account"]').exists()).toBe(true)
+    wrapper.unmount()
   })
 
   it('updates the visible concurrency badge from the realtime snapshot without reloading the table', async () => {

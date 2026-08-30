@@ -12,10 +12,12 @@ import (
 )
 
 type AnnouncementService struct {
-	announcementRepo AnnouncementRepository
-	readRepo         AnnouncementReadRepository
-	userRepo         UserRepository
-	userSubRepo      UserSubscriptionRepository
+	announcementRepo  AnnouncementRepository
+	readRepo          AnnouncementReadRepository
+	userRepo          UserRepository
+	userSubRepo       UserSubscriptionRepository
+	emailSender       AnnouncementEmailSender
+	emailDeliveryRepo AnnouncementEmailDeliveryRepository
 }
 
 func NewAnnouncementService(
@@ -30,6 +32,44 @@ func NewAnnouncementService(
 		userRepo:         userRepo,
 		userSubRepo:      userSubRepo,
 	}
+}
+
+// AnnouncementEmailSender is the narrowly-scoped email port used for manual
+// announcement delivery. Keeping it here makes the announcement service easy
+// to test without coupling it to SMTP implementation details.
+type AnnouncementEmailSender interface {
+	CheckDelivery(ctx context.Context) error
+	LoginURL(ctx context.Context) string
+	Send(ctx context.Context, input NotificationEmailSendInput) error
+}
+
+// SetEmailNotificationDependencies wires durable delivery state and the email
+// sender after the core announcement service is constructed. The setter keeps
+// existing callers of NewAnnouncementService source-compatible.
+func (s *AnnouncementService) SetEmailNotificationDependencies(
+	sender AnnouncementEmailSender,
+	deliveryRepo AnnouncementEmailDeliveryRepository,
+) {
+	if s == nil {
+		return
+	}
+	s.emailSender = sender
+	s.emailDeliveryRepo = deliveryRepo
+}
+
+// ProvideAnnouncementService is the production provider. Unit tests may keep
+// using NewAnnouncementService when they do not need email delivery.
+func ProvideAnnouncementService(
+	announcementRepo AnnouncementRepository,
+	readRepo AnnouncementReadRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	emailSender *NotificationEmailService,
+	deliveryRepo AnnouncementEmailDeliveryRepository,
+) *AnnouncementService {
+	svc := NewAnnouncementService(announcementRepo, readRepo, userRepo, userSubRepo)
+	svc.SetEmailNotificationDependencies(emailSender, deliveryRepo)
+	return svc
 }
 
 type CreateAnnouncementInput struct {
@@ -398,7 +438,7 @@ func isValidAnnouncementStatus(status string) bool {
 
 func isValidAnnouncementNotifyMode(mode string) bool {
 	switch mode {
-	case AnnouncementNotifyModeSilent, AnnouncementNotifyModePopup:
+	case AnnouncementNotifyModeSilent, AnnouncementNotifyModePopup, AnnouncementNotifyModeEmail:
 		return true
 	default:
 		return false

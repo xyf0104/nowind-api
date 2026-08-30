@@ -193,6 +193,17 @@
               <Icon name="mail" size="sm" :stroke-width="2" />
             </span>
             <h3 id="team-mailbox-tools-title">邮箱与验证码</h3>
+            <button
+              type="button"
+              data-testid="team-open-mailbox-share"
+              class="btn btn-secondary ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap !px-2 !py-1 text-xs"
+              :disabled="!mailboxActionEmail || mailboxSelecting"
+              title="生成或管理当前邮箱的接码链接"
+              @click="mailboxActionEmail && emit('open-mailbox-share', mailboxActionEmail)"
+            >
+              <Icon name="link" size="xs" :stroke-width="2" />
+              <span>接码链接</span>
+            </button>
           </div>
 
           <label class="team-oauth-side-label" for="team-history-mailbox">历史邮箱</label>
@@ -204,6 +215,7 @@
             :options="historyMailboxOptions"
             :disabled="mailboxSelecting || historyMailboxes.length === 0"
             placeholder="请选择历史邮箱"
+            placement="bottom"
             searchable
             search-placeholder="搜索邮箱..."
             empty-text="暂无历史邮箱"
@@ -408,6 +420,7 @@ const emit = defineEmits<{
   'create-mailbox': []
   'open-mailbox': [email: string]
   'poll-mailbox': []
+  'open-mailbox-share': [email: string]
   'copy-mailbox': [email: string]
   'copy-mailbox-code': [code: string]
   'open-history': [],

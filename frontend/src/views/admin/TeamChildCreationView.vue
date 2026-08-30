@@ -80,6 +80,7 @@
         @select-mailbox="selectedMailboxEmail = $event"
         @create-mailbox="startFlow"
         @open-mailbox="openHistoryMailbox"
+        @open-mailbox-share="openCurrentMailboxShare"
         @poll-mailbox="requestMailboxPoll"
         @copy-mailbox="copyText"
         @open-history="scrollToTeamChildHistory"
@@ -201,6 +202,7 @@
         @open-mailbox="openHistoryMailbox"
         @toggle-password="toggleHistoryPassword"
         @copy-password="copyText"
+        @share-mailbox="openTeamChildMailboxShare"
         @reauthorize="requestHistoryReauthorization"
         @delete-account="deleteHistoryTeamAccount"
       />
@@ -245,6 +247,13 @@
       @cancel="pendingHistoryReauthorization = null"
     />
     <TotpStepUpDialog :controller="passwordStepUp" />
+    <TeamChildMailboxShareDialog
+      :show="Boolean(mailboxShareHistoryEntry || mailboxShareCurrentEmail)"
+      :account-id="mailboxShareHistoryEntry?.account?.id || null"
+      :email="mailboxShareHistoryEntry?.email || mailboxShareCurrentEmail"
+      :scope="mailboxShareHistoryEntry ? 'account' : 'mailbox'"
+      @close="closeTeamMailboxShareDialog"
+    />
     <TeamChildAccountSuccessDialog
       :show="successAccountDialogOpen"
       :account="createdAccount"
@@ -268,6 +277,7 @@ import { Icon } from '@/components/icons'
 import TeamChildOAuthWorkspace from '@/components/admin/account/TeamChildOAuthWorkspace.vue'
 import TeamChildMembersWorkspace from '@/components/admin/account/TeamChildMembersWorkspace.vue'
 import TeamChildHistoryPanel from '@/components/admin/account/TeamChildHistoryPanel.vue'
+import TeamChildMailboxShareDialog from '@/components/admin/account/TeamChildMailboxShareDialog.vue'
 import TeamChildAccountSuccessDialog from '@/components/admin/account/TeamChildAccountSuccessDialog.vue'
 import OpenAIOAuthReauthorizationPanel from '@/components/admin/account/OpenAIOAuthReauthorizationPanel.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -327,6 +337,8 @@ const historyReauthorizingAccountID = ref<number | null>(null)
 const historyDeletingAccountID = ref<number | null>(null)
 const revealedHistoryPasswords = ref<Record<number, string>>({})
 const pendingHistoryReauthorization = ref<TeamChildHistoryEntry | null>(null)
+const mailboxShareHistoryEntry = ref<TeamChildHistoryEntry | null>(null)
+const mailboxShareCurrentEmail = ref('')
 const openAIReauthorizationSaving = ref(false)
 const otherOpenAIReauthorizingAccountID = ref<number | null>(null)
 const selectedMailboxEmail = ref('')
@@ -923,6 +935,30 @@ async function startHistoryReauthorization(entry: TeamChildHistoryEntry) {
 function requestHistoryReauthorization(entry: TeamChildHistoryEntry) {
   if (!entry.account) return
   pendingHistoryReauthorization.value = entry
+}
+
+function openTeamChildMailboxShare(entry: TeamChildHistoryEntry) {
+  if (!entry.account) return
+  mailboxShareCurrentEmail.value = ''
+  mailboxShareHistoryEntry.value = entry
+}
+
+function openCurrentMailboxShare(email: string) {
+  const normalized = normalizeTeamChildEmail(email)
+  if (!normalized) return
+  // The same header button is available before and after import. Once this
+  // mailbox belongs to an imported Team account, use the account-bound route
+  // so deleting that account also invalidates its shared inbox link.
+  const historyEntry = teamChildHistory.value.find((entry) => {
+    return normalizeTeamChildEmail(entry.email) === normalized && Boolean(entry.account)
+  })
+  mailboxShareHistoryEntry.value = historyEntry || null
+  mailboxShareCurrentEmail.value = historyEntry ? '' : normalized
+}
+
+function closeTeamMailboxShareDialog() {
+  mailboxShareHistoryEntry.value = null
+  mailboxShareCurrentEmail.value = ''
 }
 
 async function confirmHistoryReauthorization() {

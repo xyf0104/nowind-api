@@ -275,7 +275,7 @@ func TestTeamChildMailboxPollSupportsNestedMessagesAndRecipientAliases(t *testin
 		case "/api/new_address":
 			_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
 		case "/api/mails":
-			_, _ = w.Write([]byte(`{"data":{"items":[{"id":"nested-1","recipient_email":"team1000@example.test","body":{"html":"<p>Your security code is <strong>4 182 04</strong></p>"}}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"items":[{"id":"nested-1","recipient_email":"team1000@example.test","from":{"name":"OpenAI","address":"noreply@openai.com"},"body":{"html":"<p>Your security code is <strong>4 182 04</strong></p>"}}]}}`))
 		default:
 			t.Fatalf("unexpected request to %s", r.URL.Path)
 		}
@@ -326,6 +326,84 @@ func TestTeamMailboxCodeExtractionFallsBackForAnySender(t *testing.T) {
 		"text":    "Private test message with a standalone number: 418204",
 	}
 	require.Equal(t, "418204", extractTeamMailboxVerificationCodeFromMessage(message))
+}
+
+func TestTeamChildMailboxPollUsesOnlyOfficialOpenAIMail(t *testing.T) {
+	_, router := setupTeamMailboxTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/new_address":
+			_, _ = w.Write([]byte(`{"address":"team1000@example.test","jwt":"mailbox-jwt-secret"}`))
+		case "/api/mails":
+			_, _ = w.Write([]byte(`{"messages":[
+				{"id":"family-code","to_email":"team1000@example.test","from":"Family <family@example.test>","subject":"Dinner update","text":"The entry code is 654321."},
+				{"id":"openai-code","to_email":"team1000@example.test","from":{"name":"OpenAI","address":"noreply@openai.com"},"subject":"Your verification code","text":"Your verification code is 418204."}
+			]}`))
+		default:
+			t.Fatalf("unexpected request to %s", r.URL.Path)
+		}
+	})
+
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/mailboxes", nil))
+	var created struct {
+		Data openAITeamMailboxCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &created))
+
+	pollRec := httptest.NewRecorder()
+	router.ServeHTTP(pollRec, httptest.NewRequest(http.MethodGet, "/mailboxes/"+created.Data.SessionID+"/code", nil))
+	require.Equal(t, http.StatusOK, pollRec.Code)
+	var result struct {
+		Data openAITeamMailboxCodeResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(pollRec.Body.Bytes(), &result))
+	require.Equal(t, "received", result.Data.Status)
+	require.Equal(t, "418204", result.Data.Code)
+}
+
+func TestTeamMailboxOfficialOpenAIIdentityDetection(t *testing.T) {
+	testCases := []struct {
+		name    string
+		message map[string]any
+		want    bool
+	}{
+		{
+			name:    "OpenAI domain",
+			message: map[string]any{"from": "OpenAI <noreply@openai.com>"},
+			want:    true,
+		},
+		{
+			name:    "ChatGPT subdomain",
+			message: map[string]any{"from": map[string]any{"address": "mailer@notify.chatgpt.com"}},
+			want:    true,
+		},
+		{
+			name:    "Nested sender metadata",
+			message: map[string]any{"headers": map[string]any{"from": map[string]any{"name": "OpenAI", "email": "noreply@mailer.openai.com"}}},
+			want:    true,
+		},
+		{
+			name:    "Known non OpenAI sender wins over subject",
+			message: map[string]any{"from": "Family <family@example.test>", "subject": "OpenAI verification code"},
+			want:    false,
+		},
+		{
+			name:    "Missing summary sender may use official subject",
+			message: map[string]any{"subject": "OpenAI verification code"},
+			want:    true,
+		},
+		{
+			name:    "Unrelated mail",
+			message: map[string]any{"from": "Family <family@example.test>", "subject": "Dinner update"},
+			want:    false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.Equal(t, testCase.want, teamMailboxMessageIsOfficialOpenAI(testCase.message))
+		})
+	}
 }
 
 func TestTeamChildMailboxExpiredSessionIsRejectedAndCanBeDeleted(t *testing.T) {

@@ -33,6 +33,7 @@ const (
 	NotificationEmailEventCyberPolicyNotice           = "content_moderation.cyber_policy_notice"
 	NotificationEmailEventOpsAlert                    = "ops.alert"
 	NotificationEmailEventOpsScheduledReport          = "ops.scheduled_report"
+	NotificationEmailEventAnnouncementPublished       = "announcement.published"
 
 	notificationEmailTemplateKeyPrefix    = "notification_email_template:"
 	notificationEmailPreferenceKeyPrefix  = "notification_email_preference:"
@@ -436,6 +437,35 @@ func (s *NotificationEmailService) Send(ctx context.Context, input NotificationE
 	return nil
 }
 
+// CheckDelivery verifies that a notification sender has a usable SMTP
+// configuration before callers claim a durable one-time delivery record.
+func (s *NotificationEmailService) CheckDelivery(ctx context.Context) error {
+	if s == nil || s.emailService == nil {
+		return errors.New("email service is not configured")
+	}
+	_, err := s.emailService.GetSMTPConfig(ctx)
+	return err
+}
+
+// LoginURL returns the human-facing XIASS login address for email calls to
+// action. Prefer the configured frontend address over the API base URL.
+func (s *NotificationEmailService) LoginURL(ctx context.Context) string {
+	if s == nil || s.settingRepo == nil {
+		return "/login"
+	}
+	for _, key := range []string{SettingKeyFrontendURL, SettingKeyAPIBaseURL} {
+		value, err := s.settingRepo.GetValue(ctx, key)
+		if err != nil || strings.TrimSpace(value) == "" {
+			continue
+		}
+		base := strings.TrimRight(strings.TrimSpace(value), "/")
+		if isSafeNotificationEmailURL(base) {
+			return base + "/login"
+		}
+	}
+	return "/login"
+}
+
 func (s *NotificationEmailService) RememberRecipientLocale(ctx context.Context, userID int64, email, acceptLanguage string) {
 	locale := normalizeNotificationLocale(acceptLanguage)
 	if strings.TrimSpace(acceptLanguage) == "" || s == nil || s.settingRepo == nil {
@@ -778,7 +808,8 @@ func renderNotificationEmailString(event, raw string, variables map[string]strin
 }
 
 func notificationEmailRawHTMLAllowed(event, placeholder string) bool {
-	return event == NotificationEmailEventOpsScheduledReport && placeholder == "report_html"
+	return (event == NotificationEmailEventOpsScheduledReport && placeholder == "report_html") ||
+		(event == NotificationEmailEventAnnouncementPublished && placeholder == "announcement_content_html")
 }
 
 func notificationEmailAllowedPlaceholderSet(event string) map[string]struct{} {
@@ -912,97 +943,103 @@ func isSafeNotificationEmailURL(raw string) bool {
 func notificationEmailSampleVariables(locale string) map[string]string {
 	if normalizeNotificationLocale(locale) == notificationEmailLocaleChinese {
 		variables := map[string]string{
-			"site_name":           defaultSiteName,
-			"recipient_name":      "张三",
-			"recipient_email":     "user@example.com",
-			"verification_code":   "123456",
-			"expires_in_minutes":  "15",
-			"reset_url":           "https://example.com/reset-password?token=preview",
-			"subscription_group":  "Claude Pro",
-			"subscription_days":   "30",
-			"expiry_time":         "2026-06-18 12:00",
-			"days_remaining":      "3",
-			"current_balance":     "12.34",
-			"threshold":           "20.00",
-			"recharge_url":        "https://example.com/recharge",
-			"recharge_amount":     "50.00",
-			"order_id":            "1024",
-			"unsubscribe_url":     "https://example.com/unsubscribe",
-			"account_id":          "1001",
-			"account_name":        "openai-main",
-			"platform":            "openai",
-			"quota_dimension":     "每日额度",
-			"quota_used":          "80.00",
-			"quota_limit":         "100.00",
-			"quota_remaining":     "20.00",
-			"quota_threshold":     "20%",
-			"triggered_at":        "2026-05-20 12:00:00",
-			"group_name":          "默认分组",
-			"moderation_category": "violence",
-			"moderation_score":    "0.982",
-			"violation_count":     "2",
-			"ban_threshold":       "3",
-			"rule_name":           "错误率过高",
-			"severity":            "critical",
-			"alert_status":        "firing",
-			"metric_type":         "error_rate",
-			"operator":            ">=",
-			"metric_value":        "12.50",
-			"threshold_value":     "10.00",
-			"alert_description":   "最近 10 分钟错误率超过阈值",
-			"report_name":         "日报",
-			"report_type":         "daily_summary",
-			"report_start_time":   "2026-07-18T01:00:26Z",
-			"report_end_time":     "2026-07-19T01:00:26Z",
-			"report_html":         "<h2>日报</h2><p>请求量：2,374</p>",
+			"site_name":                 defaultSiteName,
+			"recipient_name":            "张三",
+			"recipient_email":           "user@example.com",
+			"verification_code":         "123456",
+			"expires_in_minutes":        "15",
+			"reset_url":                 "https://example.com/reset-password?token=preview",
+			"subscription_group":        "Claude Pro",
+			"subscription_days":         "30",
+			"expiry_time":               "2026-06-18 12:00",
+			"days_remaining":            "3",
+			"current_balance":           "12.34",
+			"threshold":                 "20.00",
+			"recharge_url":              "https://example.com/recharge",
+			"recharge_amount":           "50.00",
+			"order_id":                  "1024",
+			"unsubscribe_url":           "https://example.com/unsubscribe",
+			"account_id":                "1001",
+			"account_name":              "openai-main",
+			"platform":                  "openai",
+			"quota_dimension":           "每日额度",
+			"quota_used":                "80.00",
+			"quota_limit":               "100.00",
+			"quota_remaining":           "20.00",
+			"quota_threshold":           "20%",
+			"triggered_at":              "2026-05-20 12:00:00",
+			"group_name":                "默认分组",
+			"moderation_category":       "violence",
+			"moderation_score":          "0.982",
+			"violation_count":           "2",
+			"ban_threshold":             "3",
+			"rule_name":                 "错误率过高",
+			"severity":                  "critical",
+			"alert_status":              "firing",
+			"metric_type":               "error_rate",
+			"operator":                  ">=",
+			"metric_value":              "12.50",
+			"threshold_value":           "10.00",
+			"alert_description":         "最近 10 分钟错误率超过阈值",
+			"report_name":               "日报",
+			"report_type":               "daily_summary",
+			"report_start_time":         "2026-07-18T01:00:26Z",
+			"report_end_time":           "2026-07-19T01:00:26Z",
+			"report_html":               "<h2>日报</h2><p>请求量：2,374</p>",
+			"announcement_title":        "限时活动公告",
+			"announcement_content_html": "<p>活动内容预览</p>",
+			"login_url":                 "https://example.com/login",
 		}
 		addNotificationEmailOpsSummarySampleVariables(variables)
 		return variables
 	}
 	variables := map[string]string{
-		"site_name":           defaultSiteName,
-		"recipient_name":      "Alex",
-		"recipient_email":     "user@example.com",
-		"verification_code":   "123456",
-		"expires_in_minutes":  "15",
-		"reset_url":           "https://example.com/reset-password?token=preview",
-		"subscription_group":  "Claude Pro",
-		"subscription_days":   "30",
-		"expiry_time":         "2026-06-18 12:00",
-		"days_remaining":      "3",
-		"current_balance":     "12.34",
-		"threshold":           "20.00",
-		"recharge_url":        "https://example.com/recharge",
-		"recharge_amount":     "50.00",
-		"order_id":            "1024",
-		"unsubscribe_url":     "https://example.com/unsubscribe",
-		"account_id":          "1001",
-		"account_name":        "openai-main",
-		"platform":            "openai",
-		"quota_dimension":     "Daily quota",
-		"quota_used":          "80.00",
-		"quota_limit":         "100.00",
-		"quota_remaining":     "20.00",
-		"quota_threshold":     "20%",
-		"triggered_at":        "2026-05-20 12:00:00",
-		"group_name":          "Default group",
-		"moderation_category": "violence",
-		"moderation_score":    "0.982",
-		"violation_count":     "2",
-		"ban_threshold":       "3",
-		"rule_name":           "High error rate",
-		"severity":            "critical",
-		"alert_status":        "firing",
-		"metric_type":         "error_rate",
-		"operator":            ">=",
-		"metric_value":        "12.50",
-		"threshold_value":     "10.00",
-		"alert_description":   "Error rate exceeded threshold in the last 10 minutes.",
-		"report_name":         "Daily summary",
-		"report_type":         "daily_summary",
-		"report_start_time":   "2026-07-18T01:00:26Z",
-		"report_end_time":     "2026-07-19T01:00:26Z",
-		"report_html":         "<h2>Daily summary</h2><p>Requests: 2,374</p>",
+		"site_name":                 defaultSiteName,
+		"recipient_name":            "Alex",
+		"recipient_email":           "user@example.com",
+		"verification_code":         "123456",
+		"expires_in_minutes":        "15",
+		"reset_url":                 "https://example.com/reset-password?token=preview",
+		"subscription_group":        "Claude Pro",
+		"subscription_days":         "30",
+		"expiry_time":               "2026-06-18 12:00",
+		"days_remaining":            "3",
+		"current_balance":           "12.34",
+		"threshold":                 "20.00",
+		"recharge_url":              "https://example.com/recharge",
+		"recharge_amount":           "50.00",
+		"order_id":                  "1024",
+		"unsubscribe_url":           "https://example.com/unsubscribe",
+		"account_id":                "1001",
+		"account_name":              "openai-main",
+		"platform":                  "openai",
+		"quota_dimension":           "Daily quota",
+		"quota_used":                "80.00",
+		"quota_limit":               "100.00",
+		"quota_remaining":           "20.00",
+		"quota_threshold":           "20%",
+		"triggered_at":              "2026-05-20 12:00:00",
+		"group_name":                "Default group",
+		"moderation_category":       "violence",
+		"moderation_score":          "0.982",
+		"violation_count":           "2",
+		"ban_threshold":             "3",
+		"rule_name":                 "High error rate",
+		"severity":                  "critical",
+		"alert_status":              "firing",
+		"metric_type":               "error_rate",
+		"operator":                  ">=",
+		"metric_value":              "12.50",
+		"threshold_value":           "10.00",
+		"alert_description":         "Error rate exceeded threshold in the last 10 minutes.",
+		"report_name":               "Daily summary",
+		"report_type":               "daily_summary",
+		"report_start_time":         "2026-07-18T01:00:26Z",
+		"report_end_time":           "2026-07-19T01:00:26Z",
+		"report_html":               "<h2>Daily summary</h2><p>Requests: 2,374</p>",
+		"announcement_title":        "Limited-time announcement",
+		"announcement_content_html": "<p>Announcement preview content</p>",
+		"login_url":                 "https://example.com/login",
 	}
 	addNotificationEmailOpsSummarySampleVariables(variables)
 	return variables
@@ -1048,6 +1085,7 @@ var notificationEmailEventOrder = []string{
 	NotificationEmailEventCyberPolicyNotice,
 	NotificationEmailEventOpsAlert,
 	NotificationEmailEventOpsScheduledReport,
+	NotificationEmailEventAnnouncementPublished,
 }
 
 var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
@@ -1165,6 +1203,15 @@ var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
 			),
 			append(append([]string{}, notificationEmailOpsSummaryPlaceholders...), "report_detail_display", "report_html")...,
 		),
+	},
+	NotificationEmailEventAnnouncementPublished: {
+		Event:       NotificationEmailEventAnnouncementPublished,
+		Label:       "Announcement published",
+		Description: "Sent once to each administrator-selected active user for an email announcement.",
+		Category:    "announcement",
+		Optional:    false,
+		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...),
+			"announcement_title", "announcement_content_html", "login_url"),
 	},
 }
 
@@ -1448,6 +1495,24 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		notificationEmailLocaleChinese: {
 			Subject: "[运维报表] {{report_name}}",
 			HTML:    notificationEmailOpsScheduledReportTemplate(notificationEmailLocaleChinese),
+		},
+	},
+	NotificationEmailEventAnnouncementPublished: {
+		notificationEmailDefaultLocale: {
+			Subject: "[{{site_name}}] {{announcement_title}}",
+			HTML: notificationEmailCard("#0ea5e9", "New announcement", `
+<p>Hello {{recipient_name}},</p>
+<div style="margin: 22px 0; border: 1px solid #dbeafe; border-radius: 10px; background: #f8fbff; padding: 20px;">{{announcement_content_html}}</div>
+<a class="button" href="{{login_url}}">Open {{site_name}}</a>
+<p class="muted">Use the button above to sign in and continue using your account.</p>`),
+		},
+		notificationEmailLocaleChinese: {
+			Subject: "[{{site_name}}] {{announcement_title}}",
+			HTML: notificationEmailCard("#0ea5e9", "活动公告", `
+<p>{{recipient_name}}，您好：</p>
+<div style="margin: 22px 0; border: 1px solid #dbeafe; border-radius: 10px; background: #f8fbff; padding: 20px;">{{announcement_content_html}}</div>
+<a class="button" href="{{login_url}}">登录 {{site_name}}</a>
+<p class="muted">点击上方按钮即可登录并继续使用您的账号。</p>`),
 		},
 	},
 }

@@ -44,6 +44,34 @@ func RegisterToolRoutes(
 			h.Admin.OpenAIOAuth.ExchangePublicToolCode,
 		)
 	}
+
+	// This is intentionally a separate, no-login surface rather than an
+	// extension of the XIASS admin UI. A long-lived random bearer token scopes
+	// each request to one Team mailbox; rate limits and no-store headers apply
+	// before any mailbox-provider request is made.
+	teamMailbox := v1.Group("/public/team-mailbox")
+	teamMailbox.Use(publicTeamMailboxShareSecurity())
+	teamMailbox.Use(panelRateLimiter.PublicIP())
+	{
+		teamMailbox.GET(
+			"/code",
+			rateLimiter.LimitWithOptions("public-team-mailbox-code", 30, time.Minute, strict),
+			rateLimiter.LimitWithOptions("public-team-mailbox-code-hourly", 1000, time.Hour, strict),
+			h.Admin.OpenAIOAuth.PollPublicTeamChildMailboxShare,
+		)
+		teamMailbox.GET(
+			"/messages",
+			rateLimiter.LimitWithOptions("public-team-mailbox-messages", 30, time.Minute, strict),
+			rateLimiter.LimitWithOptions("public-team-mailbox-messages-hourly", 1000, time.Hour, strict),
+			h.Admin.OpenAIOAuth.ListPublicTeamChildMailboxShare,
+		)
+		teamMailbox.GET(
+			"/messages/:message_id",
+			rateLimiter.LimitWithOptions("public-team-mailbox-message", 60, time.Minute, strict),
+			rateLimiter.LimitWithOptions("public-team-mailbox-message-hourly", 1000, time.Hour, strict),
+			h.Admin.OpenAIOAuth.GetPublicTeamChildMailboxShareMessage,
+		)
+	}
 }
 
 // publicOpenAIOAuthSecurity runs before every public OAuth limiter and handler.
@@ -63,6 +91,21 @@ func publicOpenAIOAuthSecurity() gin.HandlerFunc {
 			binding.UserAgent = existing.UserAgent
 		}
 		c.Request = c.Request.WithContext(service.WithSessionBinding(c.Request.Context(), binding))
+		c.Next()
+	}
+}
+
+// publicTeamMailboxShareSecurity keeps the independent mailbox page out of
+// browser and intermediary caches. Its bearer token is never read from a URL
+// path or query string, and this route does not need an XIASS user session.
+func publicTeamMailboxShareSecurity() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store, max-age=0")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Vary", "Authorization")
+		c.Header("Cross-Origin-Resource-Policy", "same-origin")
 		c.Next()
 	}
 }

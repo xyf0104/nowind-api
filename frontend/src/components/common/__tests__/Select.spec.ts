@@ -184,4 +184,31 @@ describe('Select dropdown viewport constraints', () => {
     expect(dropdown?.className).toContain('select-dropdown-portal')
     expect(dropdown?.querySelector('.select-options')).not.toBeNull()
   })
+
+  it('keeps a forced-bottom dropdown below its trigger even when the upper side has more room', async () => {
+    setViewportWidth(1024)
+    setVisualViewport({
+      offsetLeft: 0,
+      offsetTop: 100,
+      width: 320,
+      height: 240,
+    })
+    mockTriggerRect(20, 100, 250, 40)
+
+    const wrapper = mount(Select, {
+      props: {
+        modelValue: null,
+        placement: 'bottom',
+        options: [{ value: 'team101', label: 'team101@example.test' }],
+      },
+    })
+    unmountWrapper = () => wrapper.unmount()
+
+    await wrapper.get('button').trigger('click')
+    await nextTick()
+
+    const dropdown = document.body.querySelector<HTMLElement>('.select-dropdown-portal')
+    expect(dropdown?.style.top).toBe('294px')
+    expect(dropdown?.style.maxHeight).toBe('38px')
+  })
 })

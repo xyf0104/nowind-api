@@ -29,6 +29,7 @@ let themeObserver: MutationObserver | null = null
 // The SMS host is a standalone member workbench. Keep XIASS API's global
 // announcements and admin acknowledgement flow scoped to the main domain.
 const isStandaloneSMSHost = window.location.hostname.split('.')[0]?.toLowerCase() === 'sms'
+const isStandaloneTeamMailboxPage = computed(() => route.name === 'TeamMailboxShare')
 
 // These views already use AppLayout. Keeping one layout instance above the
 // routed content prevents a route change from recreating the video background,
@@ -236,7 +237,7 @@ onMounted(async () => {
     </AppLayout>
     <component :is="Component" v-else />
   </RouterView>
-  <Toast />
-  <AnnouncementPopup v-if="!isStandaloneSMSHost" />
-  <AdminComplianceDialog v-if="!isStandaloneSMSHost" />
+  <Toast v-if="!isStandaloneTeamMailboxPage" />
+  <AnnouncementPopup v-if="!isStandaloneSMSHost && !isStandaloneTeamMailboxPage" />
+  <AdminComplianceDialog v-if="!isStandaloneSMSHost && !isStandaloneTeamMailboxPage" />
 </template>

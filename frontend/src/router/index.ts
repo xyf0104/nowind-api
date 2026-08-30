@@ -215,6 +215,16 @@ const routes: RouteRecordRaw[] = [
       title: '授权接码'
     }
   },
+  {
+    path: '/team-mail',
+    name: 'TeamMailboxShare',
+    component: () => import('@/views/public/TeamMailboxShareView.vue'),
+    meta: {
+      requiresAuth: false,
+      requiresAdmin: false,
+      title: '邮箱收件箱'
+    }
+  },
 
   // ==================== User Routes ====================
   {
@@ -802,7 +812,7 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/token-converter', '/setup', '/payment/result', '/payment/airwallex', '/legal', '/ios']
+const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/token-converter', '/team-mail', '/setup', '/payment/result', '/payment/airwallex', '/legal', '/ios']
 const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/callback',
   '/auth/linuxdo/callback',

@@ -215,6 +215,24 @@ func TestPublicOpenAIOAuthSecurityHeadersCoverEarlyErrorsAndRateLimits(t *testin
 	})
 }
 
+func TestPublicTeamMailboxShareRoutesAreMountedWithoutAuthenticationAndNoStore(t *testing.T) {
+	router, _ := newPublicToolRouter(t)
+	for _, path := range []string{
+		"/api/v1/public/team-mailbox/code",
+		"/api/v1/public/team-mailbox/messages",
+		"/api/v1/public/team-mailbox/messages/message-1",
+	} {
+		recorder := performToolRequest(router, http.MethodGet, path, nil)
+
+		// The test handler has no Team account service, but an absent bearer
+		// token must still be handled as an opaque invalid-link response rather
+		// than an authentication redirect or an exposed service error.
+		require.Equal(t, http.StatusNotFound, recorder.Code, path)
+		requirePublicToolSecurityHeaders(t, recorder)
+		require.Equal(t, "Authorization", recorder.Header().Get("Vary"))
+	}
+}
+
 func TestPublicOpenAIOAuthAuthorizeIsStrictlyRateLimited(t *testing.T) {
 	router, _ := newPublicToolRouter(t)
 	for requestNumber := 1; requestNumber <= 6; requestNumber++ {

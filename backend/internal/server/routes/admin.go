@@ -429,6 +429,8 @@ func registerAnnouncementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		announcements.PUT("/:id", h.Admin.Announcement.Update)
 		announcements.DELETE("/:id", h.Admin.Announcement.Delete)
 		announcements.GET("/:id/read-status", h.Admin.Announcement.ListReadStatus)
+		announcements.POST("/:id/email-notifications", h.Admin.Announcement.DispatchEmailNotifications)
+		announcements.GET("/:id/email-delivery-summary", h.Admin.Announcement.GetEmailDeliverySummary)
 	}
 }
 
@@ -457,6 +459,12 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers, step
 		openai.DELETE("/team-child/members", h.Admin.OpenAIOAuth.RemoveTeamChildMember)
 		openai.POST("/team-child/workflows", h.Admin.OpenAIOAuth.StartTeamChildWorkflow)
 		openai.POST("/team-child/accounts/:account_id/reauthorize", h.Admin.OpenAIOAuth.ReauthorizeTeamChildAccount)
+		openai.GET("/team-child/mailbox-share", h.Admin.OpenAIOAuth.GetPendingTeamChildMailboxShare)
+		openai.POST("/team-child/mailbox-share", h.Admin.OpenAIOAuth.CreatePendingTeamChildMailboxShare)
+		openai.DELETE("/team-child/mailbox-share", h.Admin.OpenAIOAuth.RevokePendingTeamChildMailboxShare)
+		openai.GET("/team-child/accounts/:account_id/mailbox-share", h.Admin.OpenAIOAuth.GetTeamChildMailboxShare)
+		openai.POST("/team-child/accounts/:account_id/mailbox-share", h.Admin.OpenAIOAuth.CreateTeamChildMailboxShare)
+		openai.DELETE("/team-child/accounts/:account_id/mailbox-share", h.Admin.OpenAIOAuth.RevokeTeamChildMailboxShare)
 		openai.GET("/team-child/workflows/active", h.Admin.OpenAIOAuth.GetActiveTeamChildWorkflow)
 		openai.GET("/team-child/workflows/:workflow_id", h.Admin.OpenAIOAuth.GetTeamChildWorkflow)
 		openai.GET("/team-child/workflows/:workflow_id/password", gin.HandlerFunc(stepUpAuth), h.Admin.OpenAIOAuth.RevealTeamChildWorkflowPassword)

@@ -21,13 +21,15 @@ import (
 
 // OpenAIOAuthHandler handles OpenAI OAuth-related operations
 type OpenAIOAuthHandler struct {
-	openaiOAuthService *service.OpenAIOAuthService
-	adminService       service.AdminService
-	secretEncryptor    service.SecretEncryptor
-	quotaService       openAIQuotaService
-	rateLimitService   openAIAccountStateRecoverer
-	teamMailboxStore   *openAITeamMailboxStore
-	teamBrowserStore   *openAITeamBrowserStore
+	openaiOAuthService       *service.OpenAIOAuthService
+	adminService             service.AdminService
+	secretEncryptor          service.SecretEncryptor
+	quotaService             openAIQuotaService
+	rateLimitService         openAIAccountStateRecoverer
+	teamMailboxStore         *openAITeamMailboxStore
+	teamMailboxShareStore    *openAITeamMailboxShareStore
+	teamMailboxShareRegistry *openAITeamMailboxShareRegistry
+	teamBrowserStore         *openAITeamBrowserStore
 }
 
 // ConfigureTeamChildSecrets attaches the application encryption boundary used
@@ -110,10 +112,12 @@ func NewOpenAIOAuthHandler(
 	rateLimitService *service.RateLimitService,
 ) *OpenAIOAuthHandler {
 	h := &OpenAIOAuthHandler{
-		openaiOAuthService: openaiOAuthService,
-		adminService:       adminService,
-		teamMailboxStore:   newOpenAITeamMailboxStore(),
-		teamBrowserStore:   newOpenAITeamBrowserStore(),
+		openaiOAuthService:       openaiOAuthService,
+		adminService:             adminService,
+		teamMailboxStore:         newOpenAITeamMailboxStore(),
+		teamMailboxShareStore:    newOpenAITeamMailboxShareStore(),
+		teamMailboxShareRegistry: newOpenAITeamMailboxShareRegistry(),
+		teamBrowserStore:         newOpenAITeamBrowserStore(),
 	}
 	// Assign through explicit nil checks: storing a nil *Service in an interface
 	// field yields a non-nil interface, which would silently defeat the
@@ -563,6 +567,14 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if teamSecret != nil {
+		// A link can be generated while the mailbox is being used for OAuth.
+		// Once import succeeds, bind that durable capability to the new account
+		// without rotating its token or disturbing the administrator workflow.
+		if bindErr := h.ensureTeamMailboxShareRegistry().attachAccount(teamSecret.Email, account.ID); bindErr != nil {
+			slog.Warn("team_mailbox_share_account_bind_failed", "account_id", account.ID, "email", teamSecret.Email, "error", bindErr)
+		}
 	}
 
 	response.Success(c, dto.AccountFromService(account))

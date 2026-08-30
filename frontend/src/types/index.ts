@@ -316,7 +316,8 @@ export interface UpdateSubscriptionRequest {
 // ==================== Announcement Types ====================
 
 export type AnnouncementStatus = 'draft' | 'active' | 'archived'
-export type AnnouncementNotifyMode = 'silent' | 'popup'
+export type AnnouncementNotifyMode = 'silent' | 'popup' | 'email'
+export type AnnouncementEmailDispatchScope = 'all' | 'selected'
 
 export type AnnouncementConditionType = 'subscription' | 'balance'
 
@@ -391,6 +392,22 @@ export interface AnnouncementUserReadStatus {
   balance: number
   eligible: boolean
   read_at?: string
+}
+
+export interface AnnouncementEmailDispatchResult {
+  targeted: number
+  claimed: number
+  sent: number
+  failed: number
+  already_sent: number
+  skipped: number
+}
+
+export interface AnnouncementEmailDeliverySummary {
+  total: number
+  claimed: number
+  sent: number
+  failed: number
 }
 
 // ==================== Proxy Node Types ====================

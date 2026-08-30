@@ -394,14 +394,15 @@ export default {
       },
       notifyModeLabels: {
         silent: '静默',
-        popup: '弹窗'
+        popup: '弹窗',
+        email: '邮件通知'
       },
       form: {
         title: '标题',
         content: '内容（支持 Markdown）',
         status: '状态',
         notifyMode: '通知方式',
-        notifyModeHint: '弹窗模式会自动弹出通知给用户',
+        notifyModeHint: '弹窗模式会站内提醒用户；邮件模式需先保存，再在该公告的邮件按钮中选择用户并二次确认后仅发送一次。',
         startsAt: '开始时间',
         endsAt: '结束时间',
         startsAtHint: '留空表示立即生效',
@@ -440,7 +441,33 @@ export default {
       failedToUpdate: '更新公告失败',
       failedToDelete: '删除公告失败',
       failedToLoadReadStatus: '加载已读情况失败',
-      deleteConfirm: '确定要删除该公告吗？此操作无法撤销。'
+      deleteConfirm: '确定要删除该公告吗？此操作无法撤销。',
+      emailDispatch: {
+        title: '发送公告邮件',
+        deliveryRecorded: '同一公告对每位用户最多发送一次。',
+        deliverySummary: '已记录：成功 {sent}，失败 {failed}，处理中 {pending}',
+        allUsers: '所有活跃用户',
+        selectUsers: '手动选择用户',
+        activeUsers: '活跃用户',
+        searchUsers: '搜索邮箱或用户名...',
+        selectedCount: '已选择 {count} 人',
+        selectPage: '选择本页用户',
+        noActiveUsers: '没有匹配的活跃用户',
+        confirmNotify: '确认通知',
+        confirmTitle: '确认发送公告邮件？',
+        confirmMessage: '确定向 {count} 位用户发送这条公告吗？每位用户最多只会收到一次。',
+        sending: '正在发送...',
+        sendNow: '确认发送',
+        sentCount: '成功发送 {count} 封',
+        alreadySentCount: '已有 {count} 人收过',
+        failedCount: '发送失败 {count} 封',
+        skippedCount: '跳过 {count} 人',
+        sentResult: '已向 {count} 位用户发送公告',
+        failedToLoadUsers: '加载活跃用户失败',
+        failedToLoadSummary: '加载投递状态失败',
+        failedToSend: '发送公告邮件失败',
+        open: '发送邮件通知'
+      }
     },
 
     // Promo Codes

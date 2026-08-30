@@ -198,6 +198,10 @@ func (h *OpenAIOAuthHandler) ImportTeamChildMailboxConfig(c *gin.Context) {
 		response.InternalError(c, "无法保存邮箱配置，请检查服务器数据目录权限")
 		return
 	}
+	// The public mailbox page caches only a short-lived provider session. Clear
+	// that cache after a configuration import so its next poll uses the new
+	// provider configuration without touching an administrator's active session.
+	h.ensureTeamMailboxShareStore().reset()
 	response.Success(c, gin.H{
 		"configured":       true,
 		"auth_mode":        config.authMode,
@@ -713,6 +717,43 @@ func (s *openAITeamMailboxStore) known(ctx context.Context, ownerID int64) ([]st
 	return emails, nil
 }
 
+// isKnown is the authorization check used by the pre-import mailbox-link
+// manager. It avoids letting an administrator turn a guessed address from the
+// configured domain into a public inbox link; only a mailbox created or opened
+// through that administrator's XIASS Team flow qualifies here.
+func (s *openAITeamMailboxStore) isKnown(ctx context.Context, ownerID int64, email string) (bool, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if s == nil || ownerID <= 0 || email == "" {
+		return false, nil
+	}
+	now := s.now()
+	if redisClient := s.redisClient(); redisClient != nil {
+		key := teamMailboxKnownKeyPrefix + strconv.FormatInt(ownerID, 10)
+		score, err := redisClient.ZScore(ctx, key, email).Result()
+		if errors.Is(err, redisclient.Nil) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if time.Unix(int64(score), 0).Before(now.Add(-teamMailboxKnownTTL)) {
+			_ = redisClient.ZRem(ctx, key, email).Err()
+			return false, nil
+		}
+		return true, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seenAt, ok := s.knownByAdmin[ownerID][email]
+	if !ok || seenAt.Before(now.Add(-teamMailboxKnownTTL)) {
+		if ok {
+			delete(s.knownByAdmin[ownerID], email)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
 func (s *openAITeamMailboxStore) active(ctx context.Context, ownerID int64) (string, openAITeamMailboxSession, bool, error) {
 	if s == nil || ownerID <= 0 {
 		return "", openAITeamMailboxSession{}, false, nil
@@ -1122,9 +1163,21 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 		if !teamMailboxMessageMatchesAddress(message, session.email) {
 			continue
 		}
-		if code := extractTeamMailboxVerificationCodeFromMessage(message); code != "" {
-			return code, nil
+
+		// The Team workflow must only consume OpenAI authorization mail. The
+		// same mailbox can now be shared as a complete inbox, so an unrelated
+		// family, banking, or service email may legitimately contain six digits.
+		// Never let that number advance the OpenAI browser flow.
+		if teamMailboxMessageIsOfficialOpenAI(message) {
+			if code := extractTeamMailboxVerificationCodeFromMessage(message); code != "" {
+				return code, nil
+			}
+		} else if teamMailboxShareMessageSender(message) != "" {
+			// A known non-OpenAI sender cannot become an OAuth code just because
+			// its full message body happens to include a short numeric value.
+			continue
 		}
+
 		messageID := strings.TrimSpace(teamMailboxString(message["id"]))
 		if messageID == "" {
 			messageID = strings.TrimSpace(teamMailboxString(message["msgid"]))
@@ -1133,8 +1186,10 @@ func (h *OpenAIOAuthHandler) findTeamChildVerificationCode(ctx context.Context, 
 			continue
 		}
 		if detail, detailErr := h.fetchTeamMailboxMessage(ctx, session, messageID); detailErr == nil {
-			if code := extractTeamMailboxVerificationCodeFromMessage(detail); code != "" {
-				return code, nil
+			if teamMailboxMessageIsOfficialOpenAI(detail) {
+				if code := extractTeamMailboxVerificationCodeFromMessage(detail); code != "" {
+					return code, nil
+				}
 			}
 		}
 	}
@@ -1467,10 +1522,44 @@ func extractTeamMailboxVerificationCode(text string) string {
 	return ""
 }
 
+// teamMailboxMessageIsOfficialOpenAI validates the message identity before the
+// local Team automation can use a code. It intentionally accepts OpenAI and
+// ChatGPT domains, including their operational subdomains. Some providers omit
+// sender metadata in list responses, so an explicit OpenAI/ChatGPT subject is
+// a narrow compatibility fallback only when there is no conflicting sender.
+func teamMailboxMessageIsOfficialOpenAI(message map[string]any) bool {
+	sender := strings.ToLower(strings.TrimSpace(teamMailboxShareMessageSender(message)))
+	if sender != "" {
+		addresses := teamMailboxAddressRE.FindAllString(sender, -1)
+		if len(addresses) > 0 {
+			for _, address := range addresses {
+				at := strings.LastIndex(address, "@")
+				if at < 1 || at == len(address)-1 {
+					continue
+				}
+				domain := strings.ToLower(strings.TrimSpace(address[at+1:]))
+				if domain == "openai.com" || domain == "chatgpt.com" ||
+					strings.HasSuffix(domain, ".openai.com") || strings.HasSuffix(domain, ".chatgpt.com") {
+					return true
+				}
+			}
+			return false
+		}
+
+		// A few mailbox providers only retain the trusted display name. Do not
+		// treat arbitrary names containing "openai" as official, and never let
+		// this path override an explicitly non-OpenAI email address above.
+		return sender == "openai" || sender == "chatgpt"
+	}
+
+	identity := strings.ToLower(teamMailboxShareMessageField(message, "subject", "title", "headline"))
+	return strings.Contains(identity, "openai") || strings.Contains(identity, "chatgpt")
+}
+
 // A provider can omit the visible "code" label from a localized or
-// template-driven body. The caller has already matched the message to the
-// current mailbox session, so allow this fallback for any sender; this also
-// keeps private test emails usable without weakening cross-mailbox isolation.
+// template-driven body. Identity validation belongs to the caller: the local
+// Team workflow first restricts this helper to official OpenAI mail, whereas
+// the deliberately full-featured shared inbox may display any sender's code.
 func extractTeamMailboxVerificationCodeFromMessage(message map[string]any) string {
 	text := teamMailboxReadableText(message)
 	if code := extractTeamMailboxVerificationCode(text); code != "" {

@@ -69,6 +69,16 @@
               <Icon name="mail" size="xs" :class="openingEmail === entry.email ? 'animate-pulse' : ''" :stroke-width="2" />
               <span>{{ openingEmail === entry.email ? '打开中' : '接收验证码' }}</span>
             </button>
+            <button
+              v-if="entry.account"
+              type="button"
+              class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs"
+              :data-testid="`team-history-mailbox-share-${entry.account.id}`"
+              @click="emit('share-mailbox', entry)"
+            >
+              <Icon name="link" size="xs" :stroke-width="2" />
+              <span>接码链接</span>
+            </button>
             <router-link v-if="entry.account" :to="{ name: 'AdminAccounts', query: { account_id: String(entry.account.id) } }" class="btn btn-secondary flex items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1.5 text-xs" :data-testid="`team-history-manage-${entry.account.id}`">
               <Icon name="arrowRight" size="xs" :stroke-width="2" />
               <span>账号管理</span>
@@ -154,6 +164,7 @@ const emit = defineEmits<{
   'open-mailbox': [email: string]
   'toggle-password': [entry: TeamChildHistoryEntry]
   'copy-password': [password: string]
+  'share-mailbox': [entry: TeamChildHistoryEntry]
   reauthorize: [entry: TeamChildHistoryEntry]
   'delete-account': [entry: TeamChildHistoryEntry]
 }>()

@@ -397,14 +397,15 @@ export default {
       },
       notifyModeLabels: {
         silent: 'Silent',
-        popup: 'Popup'
+        popup: 'Popup',
+        email: 'Email notification'
       },
       form: {
         title: 'Title',
         content: 'Content (Markdown supported)',
         status: 'Status',
         notifyMode: 'Notify Mode',
-        notifyModeHint: 'Popup mode will show a popup notification to users',
+        notifyModeHint: 'Popup mode shows an in-app notice. Email mode is sent once after you save, choose recipients, and confirm from the mail action.',
         startsAt: 'Starts At',
         endsAt: 'Ends At',
         startsAtHint: 'Leave empty to start immediately',
@@ -443,7 +444,33 @@ export default {
       failedToUpdate: 'Failed to update announcement',
       failedToDelete: 'Failed to delete announcement',
       failedToLoadReadStatus: 'Failed to load read status',
-      deleteConfirm: 'Are you sure you want to delete this announcement? This action cannot be undone.'
+      deleteConfirm: 'Are you sure you want to delete this announcement? This action cannot be undone.',
+      emailDispatch: {
+        title: 'Send announcement email',
+        deliveryRecorded: 'Each recipient can receive this announcement only once.',
+        deliverySummary: 'Recorded: {sent} sent, {failed} failed, {pending} pending',
+        allUsers: 'All active users',
+        selectUsers: 'Select users',
+        activeUsers: 'Active users',
+        searchUsers: 'Search by email or username...',
+        selectedCount: '{count} selected',
+        selectPage: 'Select this page',
+        noActiveUsers: 'No matching active users',
+        confirmNotify: 'Confirm notification',
+        confirmTitle: 'Send announcement email?',
+        confirmMessage: 'Send this announcement to {count} recipient(s)? Each recipient will receive it at most once.',
+        sending: 'Sending...',
+        sendNow: 'Send now',
+        sentCount: '{count} sent',
+        alreadySentCount: '{count} already sent',
+        failedCount: '{count} failed',
+        skippedCount: '{count} skipped',
+        sentResult: 'Sent to {count} recipient(s)',
+        failedToLoadUsers: 'Failed to load active users',
+        failedToLoadSummary: 'Failed to load delivery status',
+        failedToSend: 'Failed to send announcement email',
+        open: 'Send email notification'
+      }
     },
 
     // Promo Codes

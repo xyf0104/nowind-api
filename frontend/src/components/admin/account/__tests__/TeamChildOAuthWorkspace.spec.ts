@@ -49,6 +49,24 @@ function workflow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('TeamChildOAuthWorkspace', () => {
+  it('keeps the mailbox-share link action in the mailbox module header without crowding the bottom actions', async () => {
+    const wrapper = mount(TeamChildOAuthWorkspace, {
+      props: {
+        workflow: workflow(),
+        mailboxEmail: 'team1061@example.test'
+      },
+      global: { plugins: [i18n], stubs: { Icon: IconStub, PixlabSMSReceiver: PixlabSMSReceiverStub } }
+    })
+
+    const button = wrapper.get('[data-testid="team-open-mailbox-share"]')
+    expect(button.text()).toContain('接码链接')
+    expect(button.classes()).toContain('ml-auto')
+    expect(wrapper.get('.team-oauth-side-module-heading').find('[data-testid="team-open-mailbox-share"]').exists()).toBe(true)
+    expect(wrapper.get('.team-oauth-mailbox-actions').find('[data-testid="team-open-mailbox-share"]').exists()).toBe(false)
+    await button.trigger('click')
+    expect(wrapper.emitted('open-mailbox-share')?.[0]).toEqual(['team1061@example.test'])
+  })
+
   it('uses the same card workspace for preflight member controls', () => {
     const wrapper = mount(TeamChildOAuthWorkspace, {
       props: {
