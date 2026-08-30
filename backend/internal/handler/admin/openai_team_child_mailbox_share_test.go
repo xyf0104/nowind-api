@@ -33,6 +33,32 @@ func (s *teamMailboxShareAdminStub) GetAccount(ctx context.Context, id int64) (*
 	return s.stubAdminService.GetAccount(ctx, id)
 }
 
+// teamMailboxShareTestEncryptor deliberately stores an opaque encoded value so
+// persistence assertions exercise the same no-plaintext invariant as the
+// production encryptor without requiring production key material in a test.
+type teamMailboxShareTestEncryptor struct {
+	failDecrypt bool
+}
+
+func (e teamMailboxShareTestEncryptor) Encrypt(plaintext string) (string, error) {
+	return "mailbox-test:" + base64.RawURLEncoding.EncodeToString([]byte(plaintext)), nil
+}
+
+func (e teamMailboxShareTestEncryptor) Decrypt(ciphertext string) (string, error) {
+	if e.failDecrypt {
+		return "", fmt.Errorf("test decrypt failure")
+	}
+	encoded, ok := strings.CutPrefix(ciphertext, "mailbox-test:")
+	if !ok {
+		return "", fmt.Errorf("test ciphertext format is invalid")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
 func setupTeamMailboxShareRouter(t *testing.T) (*OpenAIOAuthHandler, *teamMailboxShareAdminStub, *gin.Engine, *atomic.Int32, *atomic.Int32, *atomic.Int32) {
 	t.Helper()
 	t.Setenv(teamMailboxShareFileEnv, filepath.Join(t.TempDir(), "team-mailbox-shares.json"))
@@ -87,6 +113,7 @@ func setupTeamMailboxShareRouter(t *testing.T) (*OpenAIOAuthHandler, *teamMailbo
 	}
 	adminService := &teamMailboxShareAdminStub{stubAdminService: base}
 	handler.adminService = adminService
+	handler.ConfigureTeamChildSecrets(teamMailboxShareTestEncryptor{})
 
 	router := gin.New()
 	admin := router.Group("/admin")
@@ -138,8 +165,8 @@ func TestTeamChildMailboxShareIsLongLivedReadOnlyAndRevocable(t *testing.T) {
 	handler, adminService, router, createCalls, listCalls, detailCalls := setupTeamMailboxShareRouter(t)
 	created := createTeamMailboxShare(t, router, false)
 
-	// The persistent registry contains only a digest, never the public bearer
-	// token or the mailbox-provider session token.
+	// The persistent registry contains an encrypted token copy plus a digest,
+	// never the plaintext bearer token or mailbox-provider session token.
 	persisted, err := os.ReadFile(teamMailboxShareFilePath())
 	require.NoError(t, err)
 	require.NotContains(t, string(persisted), created.Token)
@@ -150,7 +177,12 @@ func TestTeamChildMailboxShareIsLongLivedReadOnlyAndRevocable(t *testing.T) {
 
 	statusRec := performTeamMailboxShareRequest(router, http.MethodGet, "/admin/team-child/accounts/61/mailbox-share", "")
 	require.Equal(t, http.StatusOK, statusRec.Code)
-	require.NotContains(t, statusRec.Body.String(), created.Token)
+	var restored struct {
+		Data teamMailboxShareStatusResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(statusRec.Body.Bytes(), &restored))
+	require.True(t, restored.Data.Active)
+	require.Equal(t, created.Token, restored.Data.Token)
 
 	firstList := performTeamMailboxShareRequest(router, http.MethodGet, "/public/team-mailbox/messages", created.Token)
 	require.Equal(t, http.StatusOK, firstList.Code)
@@ -232,6 +264,50 @@ func TestTeamChildMailboxShareIsLongLivedReadOnlyAndRevocable(t *testing.T) {
 	require.Equal(t, http.StatusOK, revokeRec.Code)
 	require.Equal(t, http.StatusNotFound, performTeamMailboxShareRequest(router, http.MethodGet, "/public/team-mailbox/messages", replaced.Token).Code)
 	require.NotNil(t, handler.teamMailboxShareStore)
+}
+
+func TestTeamMailboxShareStatusKeepsAnActiveLinkPrivateWhenDecryptionFails(t *testing.T) {
+	handler, _, router, _, _, _ := setupTeamMailboxShareRouter(t)
+	created := createTeamMailboxShare(t, router, false)
+
+	// A missing or rotated encryption key must not reveal a malformed value or
+	// invalidate the public capability that is still protected by its hash.
+	handler.ConfigureTeamChildSecrets(teamMailboxShareTestEncryptor{failDecrypt: true})
+	statusRec := performTeamMailboxShareRequest(router, http.MethodGet, "/admin/team-child/accounts/61/mailbox-share", "")
+	require.Equal(t, http.StatusOK, statusRec.Code)
+	var status struct {
+		Data teamMailboxShareStatusResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(statusRec.Body.Bytes(), &status))
+	require.True(t, status.Data.Active)
+	require.Empty(t, status.Data.Token)
+	require.Equal(t, http.StatusOK, performTeamMailboxShareRequest(router, http.MethodGet, "/public/team-mailbox/messages", created.Token).Code)
+}
+
+func TestTeamMailboxShareRegistryAcceptsHistoricalOneTimeLinks(t *testing.T) {
+	t.Setenv(teamMailboxShareFileEnv, filepath.Join(t.TempDir(), "team-mailbox-shares.json"))
+	shareID, token, tokenHash, err := newTeamMailboxShareToken()
+	require.NoError(t, err)
+	registry := persistedTeamMailboxShareRegistry{
+		Version: 1,
+		Shares: map[string]persistedTeamMailboxShare{
+			shareID: {
+				Email:     "team1061@example.test",
+				TokenHash: tokenHash,
+				CreatedAt: "2026-08-31T00:00:00Z",
+			},
+		},
+	}
+	body, err := json.Marshal(registry)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(teamMailboxShareFilePath(), body, 0o600))
+
+	_, parsedShareID, err := publicTeamMailboxShareToken("Bearer " + token)
+	require.NoError(t, err)
+	record, found, err := newOpenAITeamMailboxShareRegistry().resolve(parsedShareID, token)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Empty(t, record.TokenCiphertext)
 }
 
 func TestPendingTeamMailboxShareBindsAfterImportAndRejectsUnknownMailboxes(t *testing.T) {
@@ -319,8 +395,26 @@ func TestTeamMailboxShareDecodesHeaderAndMultipartBodyWithoutEnvelope(t *testing
 	require.NotContains(t, detail.Body, "HTML fallback")
 	require.NotContains(t, detail.Body, "Content-Type")
 	require.Contains(t, detail.HTML, "HTML fallback must not replace the plain part.")
-	require.NotContains(t, detail.HTML, "<style")
+	require.Contains(t, detail.HTML, "<style>.hidden{display:none}</style>")
 	require.NotContains(t, detail.HTML, "Content-Transfer-Encoding")
+}
+
+func TestTeamMailboxShareKeepsSafeRichEmailLayoutAndDropsActiveContent(t *testing.T) {
+	rawHTML := `<style>.shell { background-color: #101214; color: #f8fafc; } @import url(https://unsafe.example.test/mail.css);</style>
+<table class="shell" width="600" cellpadding="24"><tr><td><img src="https://cdn.openai.com/logo.png" alt="OpenAI" width="48" height="48"><p id="copy">Your verification code is <strong>418204</strong>.</p><img src="https://tracker.example.test/pixel.gif" width="1" height="1"></td></tr></table>
+<script>window.__unsafe = true</script><form action="https://unsafe.example.test"><input name="password"></form><iframe src="https://unsafe.example.test"></iframe>`
+
+	sanitized := teamMailboxSanitizeHTML(rawHTML)
+	require.Contains(t, sanitized, `<style>.shell{background-color:#101214; color:#f8fafc}</style>`)
+	require.Contains(t, sanitized, `<table class="shell" width="600" cellpadding="24">`)
+	require.Contains(t, sanitized, `src="https://cdn.openai.com/logo.png"`)
+	require.Contains(t, sanitized, `id="copy"`)
+	require.NotContains(t, sanitized, "tracker.example.test")
+	require.NotContains(t, sanitized, "<script")
+	require.NotContains(t, sanitized, "<form")
+	require.NotContains(t, sanitized, "<iframe")
+	require.NotContains(t, sanitized, "@import")
+	require.NotContains(t, sanitized, "url(")
 }
 
 func TestTeamMailboxShareDecodesBase64AndQuotedPrintableTextParts(t *testing.T) {
@@ -349,6 +443,26 @@ func TestTeamMailboxShareDecodesBase64AndQuotedPrintableTextParts(t *testing.T) 
 	require.NotContains(t, body, "5L2g5aW9")
 	require.NotContains(t, body, "Content-Transfer-Encoding")
 	require.Equal(t, "418204", extractTeamMailboxVerificationCodeFromMessage(message))
+}
+
+func TestTeamMailboxSharePreviewOmitsFlattenedTemplateCSS(t *testing.T) {
+	message := map[string]any{
+		"id":      "flattened-template-css",
+		"from":    "ChatGPT <noreply@tm.openai.com>",
+		"subject": "Your temporary ChatGPT verification code",
+		"body": strings.Join([]string{
+			"Enter this temporary verification code to continue: 219428",
+			"/** Google webfonts. Recommended to include the .woff version for cross-client compatibility. */",
+			"@media screen { @font-face { font-family: Colfax; src: url(https://openai-public.s3-us-west-2.amazonaws.com/font.woff2); } }",
+		}, "\n"),
+	}
+
+	summary, ok := teamMailboxShareMessageSummary(message)
+	require.True(t, ok)
+	require.Equal(t, "Enter this temporary verification code to continue: 219428", summary.Preview)
+	require.NotContains(t, summary.Preview, "Google webfonts")
+	require.NotContains(t, summary.Preview, "@font-face")
+	require.NotContains(t, summary.Preview, "url(")
 }
 
 func TestTeamMailboxShareDecodesCompleteMIMEAndSkipsAttachments(t *testing.T) {
@@ -386,7 +500,7 @@ func TestTeamMailboxSharePreservesSafeEmailLayoutWithoutActiveContent(t *testing
 		"from":     "OpenAI <trustandsafety@tm.openai.com>",
 		"subject":  "账号重要通知",
 		"received": "2026-08-30T12:00:00Z",
-		"html":     `<table width="600" cellpadding="0" cellspacing="0" style="background-color:#111827; color:#f8fafc"><tr><td style="padding:24px"><h1 style="font-size:24px">账号重要通知</h1><p>你的账号需要注意。</p><a href="https://help.openai.com/article" style="color:#60a5fa">查看详情</a><img src="https://tracker.example.test/pixel.png"><script>window.__unsafe = true</script><form action="https://attacker.example.test"><input name="secret"></form></td></tr></table>`,
+		"html":     `<table width="600" cellpadding="0" cellspacing="0" style="background-color:#111827; color:#f8fafc"><tr><td style="padding:24px"><h1 style="font-size:24px">账号重要通知</h1><p>你的账号需要注意。</p><a href="https://help.openai.com/article" style="color:#60a5fa">查看详情</a><img src="https://cdn.openai.com/logo.png" alt="OpenAI" width="40" height="40"><img src="https://tracker.example.test/pixel.png" width="1" height="1"><script>window.__unsafe = true</script><form action="https://attacker.example.test"><input name="secret"></form></td></tr></table>`,
 	}
 
 	summary, ok := teamMailboxShareMessageSummary(message)
@@ -401,8 +515,8 @@ func TestTeamMailboxSharePreservesSafeEmailLayoutWithoutActiveContent(t *testing
 	require.Contains(t, detail.HTML, `target="_blank"`)
 	require.Contains(t, detail.HTML, `rel="noopener noreferrer nofollow"`)
 	require.Contains(t, detail.HTML, `style="background-color:#111827; color:#f8fafc"`)
+	require.Contains(t, detail.HTML, `src="https://cdn.openai.com/logo.png"`)
 	require.NotContains(t, detail.HTML, "tracker.example.test")
-	require.NotContains(t, detail.HTML, "<img")
 	require.NotContains(t, detail.HTML, "<script")
 	require.NotContains(t, detail.HTML, "__unsafe")
 	require.NotContains(t, detail.HTML, "<form")

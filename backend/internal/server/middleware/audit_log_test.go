@@ -23,6 +23,8 @@ func TestDeriveAuditAction(t *testing.T) {
 		{"PUT", "/api/v1/admin/accounts/:id", "admin.accounts.update"},
 		{"POST", "/api/v1/admin/accounts", "admin.accounts.create"},
 		{"DELETE", "/api/v1/admin/backups/:id", "admin.backups.delete"},
+		{"POST", "/api/v1/admin/backups/runtime-exports", "admin.backups.runtime_export.create"},
+		{"GET", "/api/v1/admin/backups/runtime-exports/:id/download", "admin.backups.runtime_export.download"},
 		{"GET", "/api/v1/admin/users/:id/api-keys", "admin.users.api_keys.read"},
 		{"POST", "/api/v1/admin/redeem-codes/batch", "admin.redeem_codes.batch.create"},
 	}

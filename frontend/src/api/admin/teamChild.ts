@@ -57,10 +57,12 @@ export interface TeamChildMailboxShareStatus {
   active: boolean
   email: string
   created_at?: string
+  /** Returned only to an authenticated administrator, from an encrypted server-side copy. */
+  token?: string
 }
 
 export interface TeamChildMailboxShareLink extends TeamChildMailboxShareStatus {
-  /** Returned only when a link is newly created or explicitly replaced. */
+  /** Returned when a link is created, replaced, or safely restored for an administrator. */
   token: string
 }
 

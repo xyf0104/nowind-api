@@ -88,7 +88,7 @@ describe('TeamMailboxShareView', () => {
     wrapper.unmount()
   })
 
-  it('renders server-provided rich mail content with a second client-side sanitization pass', async () => {
+  it('renders server-provided rich mail content in a sandboxed dark document after a second sanitization pass', async () => {
     window.location.hash = '#t=tm2.share-id.html-secret'
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
@@ -117,7 +117,7 @@ describe('TeamMailboxShareView', () => {
             from: 'OpenAI <noreply@tm.openai.com>',
             subject: 'Account notice',
             body: 'Your account needs attention.',
-            html: '<div style="color: #c2410c"><h2>Account notice</h2><p>Your account needs attention.</p><a href="https://help.openai.com/">Read more</a><img src="https://tracker.example.test/pixel.png"><script>window.__unsafe = true</script></div>',
+            html: '<style>.notice { color: #c2410c; }</style><div class="notice"><h2>Account notice</h2><p>Your account needs attention.</p><a href="https://help.openai.com/">Read more</a><img src="https://cdn.openai.com/logo.png" alt="OpenAI"><script>window.__unsafe = true</script><iframe src="https://unsafe.example.test"></iframe></div>',
           },
         }))
       }
@@ -131,12 +131,75 @@ describe('TeamMailboxShareView', () => {
     await flushPromises()
     await flushPromises()
 
-    const rendered = wrapper.find('.team-mailbox-email-html')
+    const rendered = wrapper.find<HTMLIFrameElement>('.team-mailbox-email-frame')
     expect(rendered.exists()).toBe(true)
-    expect(rendered.html()).toContain('Read more')
-    expect(rendered.html()).not.toContain('<script')
-    expect(rendered.html()).not.toContain('<img')
-    expect(rendered.html()).not.toContain('tracker.example.test')
+    expect(rendered.attributes('sandbox')).toBe('allow-same-origin allow-popups')
+    expect(rendered.attributes('referrerpolicy')).toBe('no-referrer')
+    const source = rendered.attributes('srcdoc') || ''
+    expect(source).toContain('Read more')
+    expect(source).toContain('cdn.openai.com/logo.png')
+    expect(source).toContain('.notice { color: #c2410c; }')
+    expect(source).toContain("default-src 'none'")
+    expect(source).not.toContain('<script')
+    expect(source).not.toContain('<iframe')
+    expect(wrapper.find('pre').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('replaces the active mailbox safely when a different share link is pasted into the same tab', async () => {
+    window.location.hash = '#t=tm2.share-id.first-secret'
+    let resolveFirstInbox: ((value: ReturnType<typeof response>) => void) | null = null
+    const fetchMock = vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      const token = String((options?.headers as Record<string, string> | undefined)?.Authorization || '')
+      if (!String(input).endsWith('/public/team-mailbox/messages')) {
+        return Promise.reject(new Error(`unexpected request: ${String(input)}`))
+      }
+      if (token.endsWith('first-secret')) {
+        return new Promise<ReturnType<typeof response>>((resolve) => {
+          resolveFirstInbox = resolve
+        })
+      }
+      if (token.endsWith('second-secret')) {
+        return Promise.resolve(response({
+          code: 0,
+          data: {
+            email: 'second@example.test',
+            messages: [],
+            checked_at: '2026-08-31T12:00:00Z',
+            poll_after_ms: 5000,
+          },
+        }))
+      }
+      return Promise.reject(new Error(`unexpected token: ${token}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(TeamMailboxShareView, {
+      global: { stubs: { Icon: IconStub } },
+    })
+    await flushPromises()
+
+    window.location.hash = '#t=tm2.share-id.second-secret'
+    window.dispatchEvent(new Event('hashchange'))
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('second@example.test')
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/public/team-mailbox/messages', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer tm2.share-id.second-secret' }),
+    }))
+
+    resolveFirstInbox?.(response({
+      code: 0,
+      data: {
+        email: 'first@example.test',
+        messages: [],
+        checked_at: '2026-08-31T12:00:00Z',
+      },
+    }))
+    await flushPromises()
+    expect(wrapper.text()).toContain('second@example.test')
+    expect(wrapper.text()).not.toContain('first@example.test')
     wrapper.unmount()
   })
 
@@ -157,7 +220,6 @@ describe('TeamMailboxShareView', () => {
     const wrapper = mount(TeamMailboxShareView, {
       global: { stubs: { Icon: IconStub } },
     })
-    await vi.runAllTicks()
     await flushPromises()
 
     expect(fetchMock).toHaveBeenCalledTimes(1)

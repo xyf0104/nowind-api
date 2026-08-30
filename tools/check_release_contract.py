@@ -637,11 +637,40 @@ def check_update_bridge(errors: list[str]) -> None:
         "deploy/xiass-updater/Dockerfile",
         updater_dockerfile,
         [
-            "COPY xiass-update.sh xiass-runtime-start.sh xiass-backup.sh ./",
+            "COPY xiass-update.sh xiass-runtime-start.sh xiass-backup.sh xiass-runtime-export.sh xiass-runtime-restore.sh ./",
             "COPY xiass-updater/xiass-updater-entrypoint.sh /usr/local/bin/xiass-updater",
         ],
         errors,
     )
+
+    for relative, required in [
+        (
+            "deploy/xiass-runtime-export.sh",
+            [
+                "pg_dump",
+                "redis-cli --rdb",
+                'docker cp "$APP_CONTAINER:/app/data/."',
+                'rm -rf "$WORK_DIR/payload/app-data/runtime-exports"',
+                "--publish-to-container",
+                'PUBLISH_TEMP_PATH="${PUBLISH_PATH}.partial"',
+                'docker cp "$OUTPUT" "$PUBLISH_CONTAINER:$PUBLISH_TEMP_PATH"',
+                'mv -f "$1" "$2"',
+                "xiass-runtime-restore.sh",
+            ],
+        ),
+        (
+            "deploy/xiass-runtime-restore.sh",
+            [
+                'exec sudo -E bash "$0" "${ORIGINAL_ARGS[@]}"',
+                "verify_package()",
+                "--domain new.example.com",
+                "stop_existing_install()",
+                "compose_at",
+                "compose pull postgres redis xiass-api watchtower",
+            ],
+        ),
+    ]:
+        require_all(relative, read(relative), required, errors)
 
     update_script = read("deploy/xiass-update.sh")
     backup_script = read("deploy/xiass-backup.sh")

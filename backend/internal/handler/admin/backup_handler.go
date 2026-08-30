@@ -1,6 +1,9 @@
 package admin
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -8,16 +11,23 @@ import (
 )
 
 type BackupHandler struct {
-	backupService *service.BackupService
-	userService   *service.UserService
-	imageStorage  *service.ImageStorageSettingService
+	backupService  *service.BackupService
+	userService    *service.UserService
+	imageStorage   *service.ImageStorageSettingService
+	runtimeExports service.RuntimeExportManager
 }
 
-func NewBackupHandler(backupService *service.BackupService, userService *service.UserService, imageStorage *service.ImageStorageSettingService) *BackupHandler {
+func NewBackupHandler(
+	backupService *service.BackupService,
+	userService *service.UserService,
+	imageStorage *service.ImageStorageSettingService,
+	runtimeExports service.RuntimeExportManager,
+) *BackupHandler {
 	return &BackupHandler{
-		backupService: backupService,
-		userService:   userService,
-		imageStorage:  imageStorage,
+		backupService:  backupService,
+		userService:    userService,
+		imageStorage:   imageStorage,
+		runtimeExports: runtimeExports,
 	}
 }
 
@@ -159,6 +169,83 @@ func (h *BackupHandler) GetDownloadURL(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"url": url})
+}
+
+// ─── 完整迁移包 ───
+
+func (h *BackupHandler) CreateRuntimeExport(c *gin.Context) {
+	if h.runtimeExports == nil {
+		response.ErrorFrom(c, service.ErrRuntimeExportUnsupported)
+		return
+	}
+	record, err := h.runtimeExports.Start(c.Request.Context(), runtimeExportSourceOrigin(c))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Accepted(c, record)
+}
+
+func (h *BackupHandler) ListRuntimeExports(c *gin.Context) {
+	if h.runtimeExports == nil {
+		response.ErrorFrom(c, service.ErrRuntimeExportUnsupported)
+		return
+	}
+	records, err := h.runtimeExports.List(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if records == nil {
+		records = []service.RuntimeExportRecord{}
+	}
+	response.Success(c, gin.H{"items": records})
+}
+
+func (h *BackupHandler) DownloadRuntimeExport(c *gin.Context) {
+	if h.runtimeExports == nil {
+		response.ErrorFrom(c, service.ErrRuntimeExportUnsupported)
+		return
+	}
+	download, err := h.runtimeExports.Open(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	defer func() { _ = download.Reader.Close() }()
+
+	c.Header("Cache-Control", "private, no-store, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", download.Record.FileName))
+	c.DataFromReader(200, download.Record.SizeBytes, "application/gzip", download.Reader, nil)
+}
+
+func (h *BackupHandler) DeleteRuntimeExport(c *gin.Context) {
+	if h.runtimeExports == nil {
+		response.ErrorFrom(c, service.ErrRuntimeExportUnsupported)
+		return
+	}
+	if err := h.runtimeExports.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
+func runtimeExportSourceOrigin(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Proto"), ",")[0]); forwarded == "https" || forwarded == "http" {
+		scheme = forwarded
+	}
+	return scheme + "://" + strings.TrimSpace(c.Request.Host)
 }
 
 // ─── 恢复操作（需要重新输入管理员密码） ───

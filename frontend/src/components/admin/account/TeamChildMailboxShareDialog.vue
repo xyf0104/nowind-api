@@ -37,7 +37,7 @@
             <Icon name="check" size="sm" :stroke-width="2.5" />
             <span>接码链接已启用</span>
           </div>
-          <p class="mt-1.5 text-xs leading-5 text-green-700 dark:text-green-300">已有链接仅显示一次，需要时可替换或撤销。</p>
+          <p class="mt-1.5 text-xs leading-5 text-green-700 dark:text-green-300">这是历史链接，仍可正常使用。替换后可随时重新打开此处复制新链接。</p>
         </div>
 
         <div v-else class="rounded-2xl border border-gray-200 bg-white px-4 py-3.5 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300">
@@ -182,6 +182,7 @@ async function loadStatus(requestID = ++latestLoad): Promise<void> {
       : await getPendingTeamChildMailboxShare(email, accountID || undefined)
     if (requestID !== latestLoad) return
     shareStatus.value = result
+    shareLink.value = result.token ? buildShareLink(result.token) : ''
   } catch (error) {
     if (requestID !== latestLoad) return
     errorMessage.value = extractApiErrorMessage(error, '无法读取验证码网页链接状态')
@@ -212,11 +213,7 @@ async function confirmAction(): Promise<void> {
     const result = props.scope === 'account'
       ? await createTeamChildMailboxShare(accountID!, action === 'replace')
       : await createPendingTeamChildMailboxShare(email, action === 'replace', accountID || undefined)
-    shareStatus.value = {
-      active: result.active,
-      email: result.email,
-      created_at: result.created_at,
-    }
+    shareStatus.value = result
     shareLink.value = buildShareLink(result.token)
     copied.value = false
   } catch (error) {

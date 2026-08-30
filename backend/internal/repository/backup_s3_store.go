@@ -98,14 +98,22 @@ func (s *S3BackupStore) PresignURL(ctx context.Context, key string, expiry time.
 	return result.URL, nil
 }
 
-func (s *S3BackupStore) HeadBucket(ctx context.Context) error {
+// Probe verifies the exact permission class XIASS backups require: object
+// listing inside the configured bucket. Do not use HeadBucket here. Cloudflare
+// R2 deliberately permits scoped Object Read & Write credentials for backup
+// operations, but reserves the bucket-management HeadBucket operation for
+// account-level admin tokens. A connection test must not force users to grant
+// their backup service access to every bucket in the account.
+func (s *S3BackupStore) Probe(ctx context.Context) error {
 	finish := servertiming.ObserveDependency(ctx, "s3")
-	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: &s.bucket,
+	maxKeys := int32(1)
+	_, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  &s.bucket,
+		MaxKeys: &maxKeys,
 	})
 	finish()
 	if err != nil {
-		return fmt.Errorf("S3 HeadBucket failed: %w", err)
+		return fmt.Errorf("S3 ListObjectsV2 failed: %w", err)
 	}
 	return nil
 }

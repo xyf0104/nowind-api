@@ -167,6 +167,90 @@
         </div>
       </div>
 
+      <!-- Full migration package -->
+      <div class="card p-6">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.backup.runtimeExport.title') }}
+            </h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.backup.runtimeExport.description') }}
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0"
+              :disabled="loadingRuntimeExports"
+              :title="t('common.refresh')"
+              :aria-label="t('common.refresh')"
+              @click="() => void loadRuntimeExports()"
+            >
+              <Icon name="refresh" size="sm" :class="loadingRuntimeExports ? 'animate-spin' : ''" />
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" :disabled="creatingRuntimeExport" @click="createRuntimeExport">
+              <Icon name="database" size="sm" class="mr-1.5" />
+              {{ creatingRuntimeExport ? t('admin.backup.runtimeExport.creating') : t('admin.backup.runtimeExport.create') }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="runtimeExports.length" class="mt-4 divide-y divide-gray-100 overflow-hidden border-y border-gray-100 dark:divide-dark-700 dark:border-dark-700">
+          <div
+            v-for="record in runtimeExports"
+            :key="record.id"
+            class="flex min-w-0 flex-col gap-3 py-3.5 md:flex-row md:items-center md:justify-between"
+          >
+            <div class="min-w-0">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <span class="rounded px-2 py-0.5 text-xs" :class="statusClass(record.status)">
+                  {{ t(`admin.backup.runtimeExport.status.${record.status}`) }}
+                </span>
+                <span class="truncate font-mono text-xs text-gray-600 dark:text-gray-300" :title="record.file_name">{{ record.file_name }}</span>
+              </div>
+              <p class="mt-1.5 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                <template v-if="record.status === 'completed'">
+                  {{ formatSize(record.size_bytes) }} · {{ formatDate(record.finished_at || record.started_at) }}
+                </template>
+                <template v-else-if="record.status === 'failed'">
+                  {{ record.error_message || t('admin.backup.runtimeExport.failed') }}
+                </template>
+                <template v-else>
+                  {{ formatDate(record.started_at) }}
+                </template>
+              </p>
+            </div>
+            <div class="flex shrink-0 items-center gap-1 self-end md:self-auto">
+              <button
+                v-if="record.status === 'completed'"
+                type="button"
+                class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0"
+                :title="t('admin.backup.actions.download')"
+                :aria-label="t('admin.backup.actions.download')"
+                @click="downloadRuntimeExport(record)"
+              >
+                <Icon name="download" size="sm" />
+              </button>
+              <button
+                v-if="record.status === 'completed' || record.status === 'failed'"
+                type="button"
+                class="btn btn-secondary flex h-9 w-9 items-center justify-center p-0 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                :disabled="deletingRuntimeExportID === record.id"
+                :title="t('common.delete')"
+                :aria-label="t('common.delete')"
+                @click="removeRuntimeExport(record)"
+              >
+                <Icon name="trash" size="sm" :class="deletingRuntimeExportID === record.id ? 'animate-pulse' : ''" />
+              </button>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="!loadingRuntimeExports" class="mt-4 border-y border-dashed border-gray-200 py-6 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400">
+          {{ t('admin.backup.runtimeExport.empty') }}
+        </div>
+      </div>
+
       <!-- Backup Operations -->
       <div class="card p-6">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -359,11 +443,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
 import { useAppStore } from '@/stores'
+import { Icon } from '@/components/icons'
 import type {
   BackupS3Config,
   BackupScheduleConfig,
   BackupRecord,
   ImageStorageConfig,
+  RuntimeExportRecord,
 } from '@/api/admin/backup'
 import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
@@ -432,6 +518,15 @@ const loadingBackups = ref(false)
 const creatingBackup = ref(false)
 const restoringId = ref('')
 const manualExpireDays = ref(14)
+
+// Full runtime migration packages are separate from ordinary S3 database
+// backups. They are retained in protected app storage until downloaded or
+// explicitly removed.
+const runtimeExports = ref<RuntimeExportRecord[]>([])
+const loadingRuntimeExports = ref(false)
+const creatingRuntimeExport = ref(false)
+const deletingRuntimeExportID = ref('')
+const runtimeExportPollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 // Polling
 const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
@@ -517,10 +612,34 @@ function stopRestorePolling() {
   }
 }
 
+function runtimeExportsStillActive(): boolean {
+  return runtimeExports.value.some((record) => record.status === 'queued' || record.status === 'running')
+}
+
+function stopRuntimeExportPolling() {
+  if (runtimeExportPollingTimer.value) {
+    clearInterval(runtimeExportPollingTimer.value)
+    runtimeExportPollingTimer.value = null
+  }
+}
+
+function startRuntimeExportPolling() {
+  if (!runtimeExportsStillActive() || runtimeExportPollingTimer.value) return
+  let attempts = 0
+  runtimeExportPollingTimer.value = setInterval(async () => {
+    if (attempts++ >= MAX_POLL_COUNT) {
+      stopRuntimeExportPolling()
+      return
+    }
+    await loadRuntimeExports(true)
+  }, 2000)
+}
+
 function handleVisibilityChange() {
   if (document.hidden) {
     stopPolling()
     stopRestorePolling()
+    stopRuntimeExportPolling()
   } else {
     // 标签页恢复时刷新列表，检查是否仍有活跃操作
     loadBackups().then(() => {
@@ -535,6 +654,7 @@ function handleVisibilityChange() {
         startRestorePolling(restoring.id)
       }
     })
+    void loadRuntimeExports()
   }
 }
 
@@ -687,6 +807,75 @@ async function loadBackups() {
   }
 }
 
+async function loadRuntimeExports(silent = false) {
+  if (!silent) loadingRuntimeExports.value = true
+  try {
+    const result = await adminAPI.backup.listRuntimeExports()
+    runtimeExports.value = result.items || []
+    creatingRuntimeExport.value = runtimeExportsStillActive()
+    if (runtimeExportsStillActive()) {
+      startRuntimeExportPolling()
+    } else {
+      stopRuntimeExportPolling()
+    }
+  } catch (error) {
+    if (!silent) {
+      appStore.showError((error as { message?: string })?.message || t('errors.networkError'))
+    }
+  } finally {
+    if (!silent) loadingRuntimeExports.value = false
+  }
+}
+
+async function createRuntimeExport() {
+  creatingRuntimeExport.value = true
+  try {
+    const record = await backupStepUp.run(() => adminAPI.backup.createRuntimeExport())
+    runtimeExports.value = [record, ...runtimeExports.value.filter((item) => item.id !== record.id)]
+    appStore.showSuccess(t('admin.backup.runtimeExport.started'))
+    startRuntimeExportPolling()
+  } catch (error) {
+    if (isStepUpCancelled(error)) return
+    if (reportStepUpBlocked(error)) return
+    appStore.showError((error as { message?: string })?.message || t('errors.networkError'))
+  } finally {
+    if (!runtimeExportsStillActive()) creatingRuntimeExport.value = false
+  }
+}
+
+async function downloadRuntimeExport(record: RuntimeExportRecord) {
+  try {
+    const download = await backupStepUp.run(() => adminAPI.backup.downloadRuntimeExport(record.id))
+    const url = URL.createObjectURL(download.blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = download.fileName || record.file_name
+    link.rel = 'noopener'
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error) {
+    if (isStepUpCancelled(error)) return
+    if (reportStepUpBlocked(error)) return
+    appStore.showError((error as { message?: string })?.message || t('errors.networkError'))
+  }
+}
+
+async function removeRuntimeExport(record: RuntimeExportRecord) {
+  if (!window.confirm(t('admin.backup.runtimeExport.deleteConfirm'))) return
+  deletingRuntimeExportID.value = record.id
+  try {
+    await backupStepUp.run(() => adminAPI.backup.deleteRuntimeExport(record.id))
+    runtimeExports.value = runtimeExports.value.filter((item) => item.id !== record.id)
+    appStore.showSuccess(t('admin.backup.runtimeExport.deleted'))
+  } catch (error) {
+    if (isStepUpCancelled(error)) return
+    if (reportStepUpBlocked(error)) return
+    appStore.showError((error as { message?: string })?.message || t('errors.networkError'))
+  } finally {
+    deletingRuntimeExportID.value = ''
+  }
+}
+
 async function createBackup() {
   creatingBackup.value = true
   try {
@@ -790,7 +979,7 @@ function formatDate(value?: string): string {
 
 onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
-  await Promise.all([loadS3Config(), loadImageStorageConfig(), loadSchedule(), loadBackups()])
+  await Promise.all([loadS3Config(), loadImageStorageConfig(), loadSchedule(), loadBackups(), loadRuntimeExports()])
 
   // 如果有正在 running 的备份，恢复轮询
   const runningBackup = backups.value.find(r => r.status === 'running')
@@ -808,6 +997,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopPolling()
   stopRestorePolling()
+  stopRuntimeExportPolling()
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>

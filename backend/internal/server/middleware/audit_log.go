@@ -109,15 +109,16 @@ func truncateAuditExtraString(value string, limit int) string {
 
 // auditSensitiveReads 需要审计的敏感 GET 读取（method+FullPath → 动作名）。
 var auditSensitiveReads = map[string]string{
-	"GET /api/v1/admin/accounts/data":             "admin.accounts.export",
-	"GET /api/v1/admin/proxies/data":              "admin.proxies.export",
-	"GET /api/v1/admin/redeem-codes/export":       "admin.redeem_codes.export",
-	"GET /api/v1/admin/backups/:id/download-url":  "admin.backups.download",
-	"GET /api/v1/admin/settings/admin-api-key":    "admin.admin_api_key.read",
-	"GET /api/v1/admin/users/:id/api-keys":        "admin.users.api_keys.read",
-	"GET /api/v1/admin/groups/:id/api-keys":       "admin.groups.api_keys.read",
-	"GET /api/v1/admin/backups/s3-config":         "admin.backups.s3_config.read",
-	"GET /api/v1/admin/data-management/s3/config": "admin.data_management.s3_config.read",
+	"GET /api/v1/admin/accounts/data":                        "admin.accounts.export",
+	"GET /api/v1/admin/proxies/data":                         "admin.proxies.export",
+	"GET /api/v1/admin/redeem-codes/export":                  "admin.redeem_codes.export",
+	"GET /api/v1/admin/backups/:id/download-url":             "admin.backups.download",
+	"GET /api/v1/admin/backups/runtime-exports/:id/download": "admin.backups.runtime_export.download",
+	"GET /api/v1/admin/settings/admin-api-key":               "admin.admin_api_key.read",
+	"GET /api/v1/admin/users/:id/api-keys":                   "admin.users.api_keys.read",
+	"GET /api/v1/admin/groups/:id/api-keys":                  "admin.groups.api_keys.read",
+	"GET /api/v1/admin/backups/s3-config":                    "admin.backups.s3_config.read",
+	"GET /api/v1/admin/data-management/s3/config":            "admin.data_management.s3_config.read",
 }
 
 // auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
@@ -131,8 +132,10 @@ var auditActionOverrides = map[string]string{
 	"POST /api/v1/admin/audit-logs/clear":                     service.AuditActionAuditLogClear,
 	"POST /api/v1/admin/accounts/data":                        "admin.accounts.import",
 	"POST /api/v1/admin/backups":                              "admin.backups.create",
+	"POST /api/v1/admin/backups/runtime-exports":              "admin.backups.runtime_export.create",
 	"POST /api/v1/admin/backups/:id/restore":                  "admin.backups.restore",
 	"DELETE /api/v1/admin/backups/:id":                        "admin.backups.delete",
+	"DELETE /api/v1/admin/backups/runtime-exports/:id":        "admin.backups.runtime_export.delete",
 	"PUT /api/v1/admin/backups/s3-config":                     "admin.backups.s3_config.update",
 	"POST /api/v1/admin/settings/admin-api-key/regenerate":    "admin.admin_api_key.regenerate",
 	"DELETE /api/v1/admin/settings/admin-api-key":             "admin.admin_api_key.delete",
@@ -326,6 +329,18 @@ func MaskedRequestCredential(c *gin.Context) string {
 // deriveAuditAction 由 method + 路由模板自动推导动作名，
 // 例：PUT /api/v1/admin/accounts/:id → admin.accounts.update
 func deriveAuditAction(method, fullPath string) string {
+	// Keep callers that derive an action directly aligned with the explicit
+	// route contract used by the middleware's fast path. This matters for
+	// hyphenated resource names whose user-facing audit action is intentionally
+	// singular (for example, the full migration package export).
+	routeKey := method + " " + fullPath
+	if action, ok := auditActionOverrides[routeKey]; ok {
+		return action
+	}
+	if action, ok := auditSensitiveReads[routeKey]; ok {
+		return action
+	}
+
 	path := strings.TrimPrefix(fullPath, "/api/v1/")
 	path = strings.Trim(path, "/")
 	segs := strings.Split(path, "/")

@@ -55,8 +55,9 @@ type teamMailboxShareStatusResponse struct {
 	Active    bool   `json:"active"`
 	Email     string `json:"email"`
 	CreatedAt string `json:"created_at,omitempty"`
-	// Token is returned exactly once after a create or replace action. The
-	// server persists only its SHA-256 digest, never this plaintext value.
+	// Token is only returned to an authenticated administrator. It is encrypted
+	// at rest so the same long-lived link can be copied again after reopening
+	// the Team mailbox panel.
 	Token string `json:"token,omitempty"`
 }
 
@@ -91,8 +92,9 @@ type teamMailboxShareMessageDetailResponse struct {
 	teamMailboxShareMessageResponse
 	Body string `json:"body"`
 	// HTML is stripped to a deliberately small email-safe subset before this
-	// public response is created. It never contains remote images, scripts,
-	// forms, provider credentials, or mailbox session data.
+	// public response is created. It never contains scripts, forms, provider
+	// credentials, or mailbox session data. Images and layout styles are
+	// constrained to an inert subset and rendered in an isolated iframe.
 	HTML string `json:"html,omitempty"`
 }
 
@@ -100,7 +102,9 @@ type teamMailboxShareMessageDetailResponse struct {
 // mailbox session. It is persisted under the existing XIASS data volume, so a
 // link can be created immediately after a Team mailbox is allocated, then keep
 // working through OAuth import, application restart, and normal upgrades.
-// Only token hashes are written to disk.
+// The registry stores the token hash used for public validation plus an
+// application-encrypted copy that only an authenticated administrator can
+// recover for repeated copying. Plaintext bearer tokens are never persisted.
 type openAITeamMailboxShareRegistry struct {
 	mu sync.Mutex
 }
@@ -111,10 +115,11 @@ type persistedTeamMailboxShareRegistry struct {
 }
 
 type persistedTeamMailboxShare struct {
-	Email     string `json:"email"`
-	TokenHash string `json:"token_hash"`
-	CreatedAt string `json:"created_at"`
-	AccountID int64  `json:"account_id,omitempty"`
+	Email           string `json:"email"`
+	TokenHash       string `json:"token_hash"`
+	TokenCiphertext string `json:"token_ciphertext,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	AccountID       int64  `json:"account_id,omitempty"`
 }
 
 func newOpenAITeamMailboxShareRegistry() *openAITeamMailboxShareRegistry {
@@ -142,38 +147,38 @@ func (r *openAITeamMailboxShareRegistry) status(email string) (persistedTeamMail
 	return record, ok, nil
 }
 
-func (r *openAITeamMailboxShareRegistry) create(email string, accountID int64, replace bool) (token, oldTokenHash string, record persistedTeamMailboxShare, err error) {
+func (r *openAITeamMailboxShareRegistry) create(email string, accountID int64, shareID, tokenHash, tokenCiphertext string, replace bool) (oldTokenHash string, record persistedTeamMailboxShare, err error) {
 	if r == nil {
-		return "", "", persistedTeamMailboxShare{}, errors.New("mailbox share registry is unavailable")
+		return "", persistedTeamMailboxShare{}, errors.New("mailbox share registry is unavailable")
+	}
+	if !validTeamMailboxShareID(shareID) || !validTeamMailboxShareHash(tokenHash) || !validTeamMailboxShareCiphertext(tokenCiphertext) {
+		return "", persistedTeamMailboxShare{}, errors.New("mailbox share token is invalid")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	registry, err := r.loadLocked()
 	if err != nil {
-		return "", "", persistedTeamMailboxShare{}, err
+		return "", persistedTeamMailboxShare{}, err
 	}
 	if oldID, existing, ok := registry.shareForEmail(email); ok {
 		if !replace {
-			return "", "", persistedTeamMailboxShare{}, errTeamMailboxShareAlreadyActive
+			return "", persistedTeamMailboxShare{}, errTeamMailboxShareAlreadyActive
 		}
 		oldTokenHash = existing.TokenHash
 		delete(registry.Shares, oldID)
 	}
-	shareID, token, tokenHash, err := newTeamMailboxShareToken()
-	if err != nil {
-		return "", "", persistedTeamMailboxShare{}, err
-	}
 	record = persistedTeamMailboxShare{
-		Email:     email,
-		TokenHash: tokenHash,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		AccountID: accountID,
+		Email:           email,
+		TokenHash:       tokenHash,
+		TokenCiphertext: tokenCiphertext,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
+		AccountID:       accountID,
 	}
 	registry.Shares[shareID] = record
 	if err := r.writeLocked(registry); err != nil {
-		return "", "", persistedTeamMailboxShare{}, err
+		return "", persistedTeamMailboxShare{}, err
 	}
-	return token, oldTokenHash, record, nil
+	return oldTokenHash, record, nil
 }
 
 func (r *openAITeamMailboxShareRegistry) revoke(email string) (string, error) {
@@ -326,8 +331,16 @@ func validPersistedTeamMailboxShare(record persistedTeamMailboxShare) bool {
 	if err != nil || !validTeamMailboxShareHash(record.TokenHash) {
 		return false
 	}
+	if record.TokenCiphertext != "" && !validTeamMailboxShareCiphertext(record.TokenCiphertext) {
+		return false
+	}
 	_, err = time.Parse(time.RFC3339, strings.TrimSpace(record.CreatedAt))
 	return err == nil && record.AccountID >= 0
+}
+
+func validTeamMailboxShareCiphertext(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 8192 && teamMailboxHTMLHasNoControls(value)
 }
 
 func validTeamMailboxShareHash(value string) bool {
@@ -450,7 +463,8 @@ func (h *OpenAIOAuthHandler) ensureTeamMailboxShareRegistry() *openAITeamMailbox
 }
 
 // GetTeamChildMailboxShare exposes the current account's standalone mailbox
-// link state. The link itself is never re-displayed.
+// link state, including the original long-lived link when its encrypted
+// server-side copy is still available.
 // GET /api/v1/admin/openai/team-child/accounts/:account_id/mailbox-share
 func (h *OpenAIOAuthHandler) GetTeamChildMailboxShare(c *gin.Context) {
 	if !requireTeamChildAdminSession(c) {
@@ -555,11 +569,26 @@ func (h *OpenAIOAuthHandler) respondTeamMailboxShareStatus(c *gin.Context, email
 		Active:    active,
 		Email:     email,
 		CreatedAt: record.CreatedAt,
+		Token:     h.reusableTeamMailboxShareToken(record),
 	})
 }
 
 func (h *OpenAIOAuthHandler) createTeamMailboxShare(c *gin.Context, email string, accountID int64, replace bool) {
-	token, oldTokenHash, record, err := h.ensureTeamMailboxShareRegistry().create(email, accountID, replace)
+	if h == nil || h.secretEncryptor == nil {
+		response.InternalError(c, "接码链接加密服务不可用")
+		return
+	}
+	shareID, token, tokenHash, err := newTeamMailboxShareToken()
+	if err != nil {
+		response.InternalError(c, "无法生成接码链接")
+		return
+	}
+	tokenCiphertext, err := h.secretEncryptor.Encrypt(token)
+	if err != nil || !validTeamMailboxShareCiphertext(tokenCiphertext) {
+		response.InternalError(c, "无法安全保存接码链接")
+		return
+	}
+	oldTokenHash, record, err := h.ensureTeamMailboxShareRegistry().create(email, accountID, shareID, tokenHash, tokenCiphertext, replace)
 	if errors.Is(err, errTeamMailboxShareAlreadyActive) {
 		response.Error(c, http.StatusConflict, "该邮箱已经有可用的接码链接，请确认后替换")
 		return
@@ -577,6 +606,20 @@ func (h *OpenAIOAuthHandler) createTeamMailboxShare(c *gin.Context, email string
 		CreatedAt: record.CreatedAt,
 		Token:     token,
 	})
+}
+
+func (h *OpenAIOAuthHandler) reusableTeamMailboxShareToken(record persistedTeamMailboxShare) string {
+	if h == nil || h.secretEncryptor == nil || strings.TrimSpace(record.TokenCiphertext) == "" {
+		return ""
+	}
+	token, err := h.secretEncryptor.Decrypt(record.TokenCiphertext)
+	if err != nil || teamMailboxShareTokenDigest(token) != record.TokenHash {
+		return ""
+	}
+	if _, _, err := publicTeamMailboxShareToken("Bearer " + token); err != nil {
+		return ""
+	}
+	return token
 }
 
 func (h *OpenAIOAuthHandler) revokeTeamMailboxShare(c *gin.Context, email string, accountID int64) {
@@ -1278,11 +1321,33 @@ func uniqueTeamMailboxShareStrings(values []string) []string {
 
 func teamMailboxSharePreview(value string) string {
 	const maxRunes = 240
-	value = strings.Join(strings.Fields(value), " ")
+	value = teamMailboxSharePreviewText(value)
 	if len([]rune(value)) <= maxRunes {
 		return value
 	}
 	return string([]rune(value)[:maxRunes]) + "..."
+}
+
+// teamMailboxSharePreviewText keeps inbox rows useful when a provider exposes
+// a partially flattened HTML body. Some providers remove the style element's
+// tags but leave the stylesheet text in their list response. That text is not
+// part of the email preview and can otherwise hide the actual mail content.
+func teamMailboxSharePreviewText(value string) string {
+	value = strings.TrimSpace(teamMailboxTextFromHTML(value))
+	lower := strings.ToLower(value)
+	cutoff := len(value)
+	for _, marker := range []string{
+		"google webfonts", "@font-face", "@media", "@supports", "@keyframes",
+		"font-family:", "font-family :", "src: url(", "src:url(",
+	} {
+		if index := strings.Index(lower, marker); index >= 0 && index < cutoff {
+			cutoff = index
+		}
+	}
+	if cutoff < len(value) {
+		value = strings.TrimRight(value[:cutoff], " \t\r\n/*")
+	}
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func teamMailboxShareFindMessage(messages []teamMailboxShareMessageRecord, messageID string) (teamMailboxShareMessageRecord, bool) {

@@ -1589,6 +1589,23 @@ export default {
         deleteConfirm: 'Are you sure you want to delete this backup?',
         deleted: 'Backup deleted'
       },
+      runtimeExport: {
+        title: 'Full Migration Package',
+        description: 'Database, cache, application data, and Team browser configuration',
+        create: 'Create Package',
+        creating: 'Creating',
+        started: 'Migration package creation started',
+        empty: 'No migration packages',
+        failed: 'Migration package creation failed',
+        deleteConfirm: 'Delete this migration package?',
+        deleted: 'Migration package deleted',
+        status: {
+          queued: 'Queued',
+          running: 'Exporting',
+          completed: 'Completed',
+          failed: 'Failed'
+        }
+      },
       r2Guide: {
         title: 'Cloudflare R2 Setup Guide',
         intro: 'Cloudflare R2 provides S3-compatible object storage with a free tier of 10GB storage + 1M Class A requests/month, ideal for database backups.',

@@ -872,6 +872,8 @@ var ProviderSet = wire.NewSet(
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,
+	NewRuntimeExportService,
+	wire.Bind(new(RuntimeExportManager), new(*RuntimeExportService)),
 	ProvideOpsSystemLogSink,
 	ProvideOpsService,
 	ProvideOpsIngressRejectAggregator,

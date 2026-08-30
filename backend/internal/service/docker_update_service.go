@@ -155,7 +155,9 @@ type dockerUpdateContainerInfo struct {
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	State struct {
-		Running bool `json:"Running"`
+		Running  bool   `json:"Running"`
+		ExitCode int    `json:"ExitCode"`
+		Error    string `json:"Error"`
 	} `json:"State"`
 }
 
@@ -282,6 +284,32 @@ func updaterImage() string {
 	return image
 }
 
+func (c *dockerUpdateClient) pullImage(ctx context.Context, image string) error {
+	imageName, imageTag := image, "latest"
+	if at := strings.LastIndex(image, ":"); at > strings.LastIndex(image, "/") {
+		imageName, imageTag = image[:at], image[at+1:]
+	}
+	pullPath := "/images/create?fromImage=" + url.QueryEscape(imageName) + "&tag=" + url.QueryEscape(imageTag)
+	pullCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	pullResp, err := c.request(pullCtx, http.MethodPost, pullPath, nil)
+	if err != nil {
+		return err
+	}
+	pullStreamErr := readDockerPullProgress(pullResp.Body)
+	closeErr := pullResp.Body.Close()
+	if pullResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("updater image pull returned status %d", pullResp.StatusCode)
+	}
+	if pullStreamErr != nil {
+		return fmt.Errorf("updater image pull failed: %w", pullStreamErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("updater image pull response close failed: %w", closeErr)
+	}
+	return nil
+}
+
 func (s *DockerUpdateService) launchHostUpdater(ctx context.Context) (bool, error) {
 	return s.launchHostUpdaterWithClient(ctx, newDockerUpdateClient())
 }
@@ -300,27 +328,8 @@ func (s *DockerUpdateService) launchHostUpdaterWithClient(ctx context.Context, c
 	}
 
 	image := updaterImage()
-	imageName, imageTag := image, "latest"
-	if at := strings.LastIndex(image, ":"); at > strings.LastIndex(image, "/") {
-		imageName, imageTag = image[:at], image[at+1:]
-	}
-	pullPath := "/images/create?fromImage=" + url.QueryEscape(imageName) + "&tag=" + url.QueryEscape(imageTag)
-	pullCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	pullResp, err := client.request(pullCtx, http.MethodPost, pullPath, nil)
-	if err != nil {
+	if err := client.pullImage(ctx, image); err != nil {
 		return false, err
-	}
-	pullStreamErr := readDockerPullProgress(pullResp.Body)
-	closeErr := pullResp.Body.Close()
-	if pullResp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("updater image pull returned status %d", pullResp.StatusCode)
-	}
-	if pullStreamErr != nil {
-		return false, fmt.Errorf("updater image pull failed: %w", pullStreamErr)
-	}
-	if closeErr != nil {
-		return false, fmt.Errorf("updater image pull response close failed: %w", closeErr)
 	}
 
 	create := dockerUpdateContainerCreateRequest{

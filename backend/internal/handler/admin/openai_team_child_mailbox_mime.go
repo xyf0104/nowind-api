@@ -312,38 +312,43 @@ func uniqueTeamMailboxMIMEStrings(values []string) []string {
 }
 
 var teamMailboxSafeHTMLTags = map[string]struct{}{
-	"a": {}, "b": {}, "blockquote": {}, "br": {}, "code": {}, "div": {}, "em": {},
-	"h1": {}, "h2": {}, "h3": {}, "h4": {}, "h5": {}, "h6": {}, "hr": {}, "i": {},
-	"li": {}, "ol": {}, "p": {}, "pre": {}, "s": {}, "span": {}, "strong": {}, "table": {},
-	"tbody": {}, "td": {}, "tfoot": {}, "th": {}, "thead": {}, "tr": {}, "u": {}, "ul": {},
+	"a": {}, "b": {}, "blockquote": {}, "br": {}, "center": {}, "code": {}, "div": {}, "em": {},
+	"font": {}, "h1": {}, "h2": {}, "h3": {}, "h4": {}, "h5": {}, "h6": {}, "hr": {}, "i": {},
+	"img": {}, "li": {}, "ol": {}, "p": {}, "pre": {}, "s": {}, "small": {}, "span": {}, "strong": {},
+	"style": {}, "sub": {}, "sup": {}, "table": {}, "tbody": {}, "td": {}, "tfoot": {}, "th": {},
+	"thead": {}, "tr": {}, "u": {}, "ul": {},
 }
 
 var teamMailboxVoidHTMLTags = map[string]struct{}{
-	"br": {}, "hr": {},
+	"br": {}, "hr": {}, "img": {},
 }
 
 var teamMailboxDiscardedHTMLTags = map[string]struct{}{
 	"audio": {}, "base": {}, "button": {}, "canvas": {}, "embed": {}, "form": {}, "head": {},
-	"iframe": {}, "img": {}, "input": {}, "link": {}, "math": {}, "meta": {}, "noscript": {},
-	"object": {}, "picture": {}, "script": {}, "select": {}, "source": {}, "style": {}, "svg": {},
+	"iframe": {}, "input": {}, "link": {}, "math": {}, "meta": {}, "noscript": {},
+	"object": {}, "picture": {}, "script": {}, "select": {}, "source": {}, "svg": {},
 	"template": {}, "textarea": {}, "title": {}, "track": {}, "video": {},
 }
 
 var teamMailboxSafeHTMLStyleProperties = map[string]struct{}{
-	"background-color": {}, "border": {}, "border-bottom": {}, "border-collapse": {}, "border-color": {},
-	"border-left": {}, "border-radius": {}, "border-right": {}, "border-spacing": {}, "border-style": {},
-	"border-top": {}, "border-width": {}, "color": {}, "font-family": {}, "font-size": {},
-	"font-style": {}, "font-weight": {}, "height": {}, "letter-spacing": {}, "line-height": {},
-	"margin": {}, "margin-bottom": {}, "margin-left": {}, "margin-right": {}, "margin-top": {},
-	"max-height": {}, "max-width": {}, "min-height": {}, "padding": {},
-	"padding-bottom": {}, "padding-left": {}, "padding-right": {}, "padding-top": {}, "text-align": {},
-	"text-decoration": {}, "text-transform": {}, "vertical-align": {}, "width": {},
+	"background": {}, "background-color": {}, "border": {}, "border-bottom": {}, "border-collapse": {},
+	"border-color": {}, "border-left": {}, "border-radius": {}, "border-right": {}, "border-spacing": {},
+	"border-style": {}, "border-top": {}, "border-width": {}, "box-sizing": {}, "color": {}, "display": {},
+	"font": {}, "font-family": {}, "font-size": {}, "font-style": {}, "font-weight": {}, "height": {},
+	"letter-spacing": {}, "line-height": {}, "margin": {}, "margin-bottom": {}, "margin-left": {},
+	"margin-right": {}, "margin-top": {}, "max-height": {}, "max-width": {}, "min-height": {},
+	"min-width": {}, "opacity": {}, "overflow": {}, "overflow-wrap": {}, "overflow-x": {}, "overflow-y": {},
+	"padding": {}, "padding-bottom": {}, "padding-left": {}, "padding-right": {}, "padding-top": {},
+	"table-layout": {}, "text-align": {}, "text-decoration": {}, "text-overflow": {}, "text-transform": {},
+	"vertical-align": {}, "white-space": {}, "width": {}, "word-break": {},
 }
 
 // teamMailboxSanitizeHTML keeps the useful visual structure from ordinary
-// email templates without letting a message run scripts, load remote pixels,
-// submit forms, or use layout-breaking CSS inside the long-lived public inbox.
-// The browser applies a second independent sanitizer before rendering.
+// email templates without letting a message run scripts, submit forms, load
+// external styles, or use layout-breaking CSS inside the long-lived public
+// inbox. Visible images follow a constrained source policy and tracking beacons
+// are removed. The browser applies a second independent sanitizer before
+// rendering.
 func teamMailboxSanitizeHTML(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || len(raw) > teamMailboxMIMEMaxDecodedBytes {
@@ -369,7 +374,29 @@ func teamMailboxWriteSafeHTML(output *strings.Builder, node *xhtml.Node) {
 		return
 	case xhtml.ElementNode:
 		tag := strings.ToLower(strings.TrimSpace(node.Data))
+		if tag == "head" {
+			// HTML parsers commonly move email stylesheet blocks into <head>.
+			// Keep only those styles; metadata, titles, and every other head child
+			// remain outside the public mail document.
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				if child.Type == xhtml.ElementNode && strings.EqualFold(strings.TrimSpace(child.Data), "style") {
+					teamMailboxWriteSafeHTML(output, child)
+				}
+			}
+			return
+		}
 		if _, discarded := teamMailboxDiscardedHTMLTags[tag]; discarded {
+			return
+		}
+		if tag == "img" && teamMailboxHTMLImageIsTrackingPixel(node.Attr) {
+			return
+		}
+		if tag == "style" {
+			if stylesheet := teamMailboxSafeHTMLStyleSheet(teamMailboxHTMLNodeText(node)); stylesheet != "" {
+				output.WriteString("<style>")
+				output.WriteString(stylesheet)
+				output.WriteString("</style>")
+			}
 			return
 		}
 		_, allowed := teamMailboxSafeHTMLTags[tag]
@@ -409,6 +436,9 @@ type teamMailboxSafeHTMLAttribute struct {
 }
 
 func teamMailboxSafeHTMLAttributes(tag string, attributes []xhtml.Attribute) []teamMailboxSafeHTMLAttribute {
+	if tag == "img" && teamMailboxHTMLImageIsTrackingPixel(attributes) {
+		return nil
+	}
 	result := make([]teamMailboxSafeHTMLAttribute, 0, 6)
 	var href string
 	for _, attribute := range attributes {
@@ -422,9 +452,31 @@ func teamMailboxSafeHTMLAttributes(tag string, attributes []xhtml.Attribute) []t
 			if tag == "a" {
 				href = value
 			}
+		case "src":
+			if tag == "img" {
+				if source, ok := teamMailboxSafeHTMLImageSource(value); ok {
+					result = append(result, teamMailboxSafeHTMLAttribute{name: "src", value: source})
+				}
+			}
 		case "style":
 			if style := teamMailboxSafeHTMLStyle(value); style != "" {
 				result = append(result, teamMailboxSafeHTMLAttribute{name: "style", value: style})
+			}
+		case "class":
+			if className, ok := teamMailboxSafeHTMLClass(value); ok {
+				result = append(result, teamMailboxSafeHTMLAttribute{name: "class", value: className})
+			}
+		case "id":
+			if identifier, ok := teamMailboxSafeHTMLIdentifier(value); ok {
+				result = append(result, teamMailboxSafeHTMLAttribute{name: "id", value: identifier})
+			}
+		case "alt":
+			if tag == "img" && len(value) <= 1024 && teamMailboxHTMLHasNoControls(value) {
+				result = append(result, teamMailboxSafeHTMLAttribute{name: "alt", value: value})
+			}
+		case "role":
+			if tag == "img" && (value == "img" || value == "presentation" || value == "none") {
+				result = append(result, teamMailboxSafeHTMLAttribute{name: "role", value: value})
 			}
 		case "title":
 			if len(value) <= 512 && teamMailboxHTMLHasNoControls(value) {
@@ -466,6 +518,100 @@ func teamMailboxSafeHTMLAttributes(tag string, attributes []xhtml.Attribute) []t
 		}
 	}
 	return result
+}
+
+func teamMailboxHTMLNodeText(node *xhtml.Node) string {
+	if node == nil {
+		return ""
+	}
+	var output strings.Builder
+	var visit func(*xhtml.Node)
+	visit = func(current *xhtml.Node) {
+		if current == nil {
+			return
+		}
+		if current.Type == xhtml.TextNode {
+			output.WriteString(current.Data)
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(node)
+	return output.String()
+}
+
+func teamMailboxHTMLImageIsTrackingPixel(attributes []xhtml.Attribute) bool {
+	width, height := "", ""
+	for _, attribute := range attributes {
+		switch strings.ToLower(strings.TrimSpace(attribute.Key)) {
+		case "width":
+			width = attribute.Val
+		case "height":
+			height = attribute.Val
+		}
+	}
+	return teamMailboxHTMLSmallDimension(width) && teamMailboxHTMLSmallDimension(height)
+}
+
+func teamMailboxHTMLSmallDimension(value string) bool {
+	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "px"))
+	if value == "" || strings.HasSuffix(value, "%") {
+		return false
+	}
+	dimension, err := strconv.ParseFloat(value, 64)
+	return err == nil && dimension >= 0 && dimension <= 2
+}
+
+func teamMailboxSafeHTMLImageSource(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > teamMailboxMIMEMaxDecodedBytes || !teamMailboxHTMLHasNoControls(value) || strings.Contains(value, `\`) {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "data:image/") {
+		if strings.HasPrefix(lower, "data:image/png;") || strings.HasPrefix(lower, "data:image/jpeg;") || strings.HasPrefix(lower, "data:image/gif;") || strings.HasPrefix(lower, "data:image/webp;") {
+			return value, true
+		}
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed.String(), true
+	default:
+		return "", false
+	}
+}
+
+func teamMailboxSafeHTMLClass(value string) (string, bool) {
+	parts := strings.Fields(value)
+	if len(parts) == 0 || len(parts) > 32 {
+		return "", false
+	}
+	for _, part := range parts {
+		if _, ok := teamMailboxSafeHTMLIdentifier(part); !ok {
+			return "", false
+		}
+	}
+	return strings.Join(parts, " "), true
+}
+
+func teamMailboxSafeHTMLIdentifier(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return "", false
+	}
+	for _, character := range value {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) || character == '_' || character == '-' {
+			continue
+		}
+		return "", false
+	}
+	return value, true
 }
 
 func teamMailboxSafeHTMLHref(value string) (string, bool) {
@@ -520,7 +666,62 @@ func teamMailboxSafeHTMLStyleValue(value string) bool {
 		if unicode.IsLetter(character) || unicode.IsDigit(character) {
 			continue
 		}
-		if strings.ContainsRune(" #%.,()+-/'\"", character) {
+		if strings.ContainsRune(" !#%.,()+-/'\"", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// Style tags are retained only for ordinary email layout. The rules remain
+// isolated inside the sandboxed mail document, and each declaration passes the
+// same property/value filter used for inline styles.
+func teamMailboxSafeHTMLStyleSheet(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 32*1024 {
+		return ""
+	}
+	values := make([]string, 0, 8)
+	for len(value) > 0 {
+		opening := strings.IndexByte(value, '{')
+		if opening < 0 {
+			break
+		}
+		selector := strings.TrimSpace(value[:opening])
+		value = value[opening+1:]
+		closing := strings.IndexByte(value, '}')
+		if closing < 0 {
+			break
+		}
+		declarations := value[:closing]
+		value = value[closing+1:]
+		if !teamMailboxSafeHTMLStyleSelector(selector) {
+			continue
+		}
+		if safeDeclarations := teamMailboxSafeHTMLStyle(declarations); safeDeclarations != "" {
+			values = append(values, selector+"{"+safeDeclarations+"}")
+		}
+	}
+	return strings.Join(values, "\n")
+}
+
+func teamMailboxSafeHTMLStyleSelector(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 512 {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{"@", "url(", "expression", "behavior", "-moz-binding", "<", ">"} {
+		if strings.Contains(lower, forbidden) {
+			return false
+		}
+	}
+	for _, character := range value {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			continue
+		}
+		if strings.ContainsRune(" .#_-,:+~[]='\"*", character) {
 			continue
 		}
 		return false

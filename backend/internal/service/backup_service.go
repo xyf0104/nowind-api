@@ -72,7 +72,7 @@ type BackupObjectStore interface {
 	Download(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
 	PresignURL(ctx context.Context, key string, expiry time.Duration) (string, error)
-	HeadBucket(ctx context.Context) error
+	Probe(ctx context.Context) error
 }
 
 // BackupObjectStoreFactory creates an object store from S3 config
@@ -338,7 +338,7 @@ func (s *BackupService) TestS3Connection(ctx context.Context, cfg BackupS3Config
 	if err != nil {
 		return err
 	}
-	return store.HeadBucket(ctx)
+	return store.Probe(ctx)
 }
 
 // ─── 定时备份管理 ───

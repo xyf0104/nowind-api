@@ -44,6 +44,22 @@ export interface TestS3Response {
   message: string
 }
 
+export interface RuntimeExportRecord {
+  id: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  file_name: string
+  size_bytes: number
+  sha256?: string
+  started_at: string
+  finished_at?: string
+  error_message?: string
+}
+
+export interface RuntimeExportDownload {
+  blob: Blob
+  fileName: string
+}
+
 // S3 Config
 export async function getS3Config(): Promise<BackupS3Config> {
   const { data } = await apiClient.get<BackupS3Config>('/admin/backups/s3-config')
@@ -142,6 +158,54 @@ export async function getDownloadURL(id: string): Promise<{ url: string }> {
   return data
 }
 
+// Full migration packages are generated on the current Docker host and kept
+// inside XIASS application storage until an administrator downloads or deletes
+// them. All mutation and download calls are step-up protected server-side.
+export async function createRuntimeExport(): Promise<RuntimeExportRecord> {
+  const { data } = await apiClient.post<RuntimeExportRecord>('/admin/backups/runtime-exports')
+  return data
+}
+
+export async function listRuntimeExports(): Promise<{ items: RuntimeExportRecord[] }> {
+  const { data } = await apiClient.get<{ items: RuntimeExportRecord[] }>('/admin/backups/runtime-exports')
+  return data
+}
+
+export async function downloadRuntimeExport(id: string): Promise<RuntimeExportDownload> {
+  // Keep non-2xx replies in the success interceptor so a JSON STEP_UP_REQUIRED
+  // envelope can still be decoded even though the success response is a blob.
+  const response = await apiClient.get<Blob>(`/admin/backups/runtime-exports/${id}/download`, {
+    responseType: 'blob',
+    validateStatus: () => true,
+  })
+  if (response.status < 200 || response.status >= 300) {
+    const body = await response.data.text().catch(() => '')
+    let payload: { code?: string | number; reason?: string; message?: string; metadata?: Record<string, unknown> } = {}
+    try {
+      payload = JSON.parse(body) as typeof payload
+    } catch {
+      // The generic error below is intentional: a download error response must
+      // not be treated as archive content or leak a reverse-proxy error page.
+    }
+    return Promise.reject({
+      status: response.status,
+      code: payload.code,
+      reason: payload.reason,
+      message: payload.message || 'Migration package download failed',
+      metadata: payload.metadata,
+    })
+  }
+  const disposition = String(response.headers?.['content-disposition'] || '')
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  const quotedName = disposition.match(/filename="([^"]+)"/i)?.[1]
+  const fileName = encodedName ? decodeURIComponent(encodedName) : quotedName || `xiass-migration-${id}.tar.gz`
+  return { blob: response.data, fileName }
+}
+
+export async function deleteRuntimeExport(id: string): Promise<void> {
+  await apiClient.delete(`/admin/backups/runtime-exports/${id}`)
+}
+
 // Restore
 export async function restoreBackup(id: string, password: string): Promise<BackupRecord> {
   const { data } = await apiClient.post<BackupRecord>(`/admin/backups/${id}/restore`, { password })
@@ -162,6 +226,10 @@ export const backupAPI = {
   getBackup,
   deleteBackup,
   getDownloadURL,
+  createRuntimeExport,
+  listRuntimeExports,
+  downloadRuntimeExport,
+  deleteRuntimeExport,
   restoreBackup,
 }
 

@@ -160,6 +160,8 @@ jobs:
           bash -n deploy/install.sh
           bash -n deploy/docker-deploy.sh
           bash -n deploy/xiass-update.sh
+          bash -n deploy/xiass-runtime-export.sh
+          bash -n deploy/xiass-runtime-restore.sh
           bash -n deploy/tests/install-github-token-test.sh
           bash -n deploy/tests/docker-entrypoint-socket-group-test.sh
           bash -n deploy/tests/update-script-portability-test.sh
@@ -183,6 +185,9 @@ jobs:
 
       - name: Test updater BusyBox compatibility and success status
         run: bash deploy/tests/update-script-portability-test.sh
+
+      - name: Test migration export and restore package scripts
+        run: bash deploy/tests/runtime-export-scripts-test.sh
 
       - name: Test XIASS update browser-profile migration
         run: |

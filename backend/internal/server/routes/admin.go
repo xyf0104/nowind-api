@@ -699,6 +699,11 @@ func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAut
 		// 备份操作
 		backup.POST("", gin.HandlerFunc(stepUpAuth), h.Admin.Backup.CreateBackup)
 		backup.GET("", h.Admin.Backup.ListBackups)
+		// 完整迁移包包含数据库、账户凭据与 Team 浏览器配置；创建、下载和删除都必须经过 step-up。
+		backup.POST("/runtime-exports", gin.HandlerFunc(stepUpAuth), h.Admin.Backup.CreateRuntimeExport)
+		backup.GET("/runtime-exports", h.Admin.Backup.ListRuntimeExports)
+		backup.GET("/runtime-exports/:id/download", gin.HandlerFunc(stepUpAuth), h.Admin.Backup.DownloadRuntimeExport)
+		backup.DELETE("/runtime-exports/:id", gin.HandlerFunc(stepUpAuth), h.Admin.Backup.DeleteRuntimeExport)
 		backup.GET("/:id", h.Admin.Backup.GetBackup)
 		backup.DELETE("/:id", h.Admin.Backup.DeleteBackup)
 		// 备份下载链接可直接取走整库数据——要求 step-up 2FA

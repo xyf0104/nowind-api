@@ -181,8 +181,9 @@ func (d *blockingRestoreDumper) Restore(ctx context.Context, data io.Reader) err
 }
 
 type mockObjectStore struct {
-	objects map[string][]byte
-	mu      sync.Mutex
+	objects  map[string][]byte
+	probeErr error
+	mu       sync.Mutex
 }
 
 func newMockObjectStore() *mockObjectStore {
@@ -221,8 +222,8 @@ func (m *mockObjectStore) PresignURL(_ context.Context, key string, _ time.Durat
 	return "https://presigned.example.com/" + key, nil
 }
 
-func (m *mockObjectStore) HeadBucket(_ context.Context) error {
-	return nil
+func (m *mockObjectStore) Probe(_ context.Context) error {
+	return m.probeErr
 }
 
 func newTestBackupService(repo *mockSettingRepo, dumper DBDumper, store *mockObjectStore) *BackupService {
@@ -582,6 +583,20 @@ func TestBackupService_TestS3Connection(t *testing.T) {
 		SecretAccessKey: "sk",
 	})
 	require.NoError(t, err)
+}
+
+func TestBackupService_TestS3ConnectionUsesObjectStoreProbe(t *testing.T) {
+	repo := newMockSettingRepo()
+	store := newMockObjectStore()
+	store.probeErr = fmt.Errorf("object listing denied")
+	svc := newTestBackupService(repo, &mockDumper{}, store)
+
+	err := svc.TestS3Connection(context.Background(), BackupS3Config{
+		Bucket:          "test",
+		AccessKeyID:     "ak",
+		SecretAccessKey: "sk",
+	})
+	require.ErrorContains(t, err, "object listing denied")
 }
 
 func TestBackupService_TestS3Connection_Incomplete(t *testing.T) {
