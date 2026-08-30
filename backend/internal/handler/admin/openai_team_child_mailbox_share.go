@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -89,6 +90,10 @@ type teamMailboxShareMessagesResponse struct {
 type teamMailboxShareMessageDetailResponse struct {
 	teamMailboxShareMessageResponse
 	Body string `json:"body"`
+	// HTML is stripped to a deliberately small email-safe subset before this
+	// public response is created. It never contains remote images, scripts,
+	// forms, provider credentials, or mailbox session data.
+	HTML string `json:"html,omitempty"`
 }
 
 // The registry is intentionally separate from the 20-minute administrator
@@ -1076,13 +1081,13 @@ func teamMailboxShareMessageSummary(message map[string]any) (teamMailboxShareMes
 		return teamMailboxShareMessageResponse{}, false
 	}
 	body := teamMailboxShareReadableBody(message)
-	subject := teamMailboxShareMessageField(message, "subject", "title", "headline")
+	subject := teamMailboxDecodeMIMEHeader(teamMailboxShareMessageField(message, "subject", "title", "headline"))
 	if subject == "" {
 		subject = "无主题邮件"
 	}
 	return teamMailboxShareMessageResponse{
 		ID:         messageID,
-		From:       teamMailboxShareMessageSender(message),
+		From:       teamMailboxDecodeMIMEHeader(teamMailboxShareMessageSender(message)),
 		Subject:    subject,
 		Preview:    teamMailboxSharePreview(body),
 		ReceivedAt: teamMailboxShareMessageField(message, "received_at", "receivedAt", "created_at", "createdAt", "date", "timestamp", "time"),
@@ -1108,12 +1113,12 @@ func teamMailboxShareMessageDetail(message map[string]any, fallback teamMailboxS
 			summary.Code = fallback.Code
 		}
 	}
-	body := teamMailboxShareReadableBody(message)
+	body, html := teamMailboxShareMessageContent(message)
 	if body == "" {
 		body = fallback.Preview
 	}
 	summary.Preview = teamMailboxSharePreview(body)
-	return teamMailboxShareMessageDetailResponse{teamMailboxShareMessageResponse: summary, Body: body}
+	return teamMailboxShareMessageDetailResponse{teamMailboxShareMessageResponse: summary, Body: body, HTML: html}
 }
 
 func teamMailboxShareMessageID(message map[string]any) string {
@@ -1196,11 +1201,62 @@ func teamMailboxShareContact(value any) string {
 }
 
 func teamMailboxShareReadableBody(message map[string]any) string {
-	parts := make([]string, 0, 8)
-	for _, key := range []string{"text", "plain", "plain_text", "body_text", "body", "content", "message", "html", "preview", "snippet"} {
-		appendTeamMailboxReadableValue(&parts, message[key], 0)
+	body, _ := teamMailboxShareMessageContent(message)
+	return body
+}
+
+func teamMailboxShareMessageContent(message map[string]any) (string, string) {
+	textParts := make([]string, 0, 8)
+	htmlParts := make([]string, 0, 4)
+	for _, key := range teamMailboxMIMEContentKeys {
+		appendTeamMailboxShareContent(&textParts, &htmlParts, message[key], 0)
 	}
-	return strings.TrimSpace(strings.Join(uniqueTeamMailboxShareStrings(parts), "\n\n"))
+	body := strings.TrimSpace(strings.Join(uniqueTeamMailboxShareStrings(textParts), "\n\n"))
+	html := strings.TrimSpace(strings.Join(uniqueTeamMailboxMIMEStrings(htmlParts), "\n"))
+	if body == "" && html != "" {
+		body = strings.TrimSpace(teamMailboxTextFromHTML(html))
+	}
+	return body, html
+}
+
+func appendTeamMailboxShareContent(textParts, htmlParts *[]string, value any, depth int) {
+	if depth > teamMailboxMIMEMaxDepth || value == nil || textParts == nil || htmlParts == nil {
+		return
+	}
+	switch typed := value.(type) {
+	case string:
+		decoded := teamMailboxDecodeMIMEContent(typed)
+		if decoded.Recognized {
+			if decoded.Text != "" {
+				*textParts = append(*textParts, decoded.Text)
+			}
+			if decoded.HTML != "" {
+				*htmlParts = append(*htmlParts, decoded.HTML)
+			}
+			return
+		}
+		unescaped := strings.TrimSpace(stdhtml.UnescapeString(typed))
+		if teamMailboxLooksLikeHTML(unescaped) {
+			if html := teamMailboxSanitizeHTML(unescaped); html != "" {
+				*htmlParts = append(*htmlParts, html)
+				return
+			}
+		}
+		cleaned := strings.TrimSpace(teamMailboxTextFromHTML(unescaped))
+		if cleaned != "" {
+			*textParts = append(*textParts, cleaned)
+		}
+	case []any:
+		for _, item := range typed {
+			appendTeamMailboxShareContent(textParts, htmlParts, item, depth+1)
+		}
+	case map[string]any:
+		for _, key := range teamMailboxMIMEContentKeys {
+			if nested, ok := typed[key]; ok {
+				appendTeamMailboxShareContent(textParts, htmlParts, nested, depth+1)
+			}
+		}
+	}
 }
 
 func uniqueTeamMailboxShareStrings(values []string) []string {

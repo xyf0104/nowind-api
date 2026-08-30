@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -280,4 +281,130 @@ func TestTeamChildMailboxShareRejectsNonTeamAccounts(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
+}
+
+func TestTeamMailboxShareDecodesHeaderAndMultipartBodyWithoutEnvelope(t *testing.T) {
+	const boundary = "_av-dLpcuwCqBNVICISo1-E6JA"
+	plainText := "You've been invited to a ChatGPT Business workspace.\n\nJoin workspace"
+	rawBody := strings.Join([]string{
+		"--" + boundary,
+		"Content-Type: text/plain; charset=utf-8",
+		"Content-Transfer-Encoding: 7bit",
+		"",
+		plainText,
+		"--" + boundary,
+		"Content-Type: text/html; charset=utf-8",
+		"Content-Transfer-Encoding: base64",
+		"",
+		base64.StdEncoding.EncodeToString([]byte("<html><body><style>.hidden { display: none; }</style><p>HTML fallback must not replace the plain part.</p></body></html>")),
+		"--" + boundary + "--",
+		"",
+	}, "\r\n")
+	message := map[string]any{
+		"id":      "mime-invite",
+		"from":    "OpenAI <noreply@tm.openai.com>",
+		"subject": "=?utf-8?Q?xia=20xia=20has=20invited=20you=20to=20ChatGPT=20Business?=",
+		"body":    rawBody,
+	}
+
+	summary, ok := teamMailboxShareMessageSummary(message)
+	require.True(t, ok)
+	require.Equal(t, "xia xia has invited you to ChatGPT Business", summary.Subject)
+	require.Contains(t, summary.Preview, "You've been invited")
+	require.NotContains(t, summary.Preview, "Content-Transfer-Encoding")
+	require.NotContains(t, summary.Preview, boundary)
+
+	detail := teamMailboxShareMessageDetail(message, summary)
+	require.Equal(t, plainText, detail.Body)
+	require.NotContains(t, detail.Body, "HTML fallback")
+	require.NotContains(t, detail.Body, "Content-Type")
+	require.Contains(t, detail.HTML, "HTML fallback must not replace the plain part.")
+	require.NotContains(t, detail.HTML, "<style")
+	require.NotContains(t, detail.HTML, "Content-Transfer-Encoding")
+}
+
+func TestTeamMailboxShareDecodesBase64AndQuotedPrintableTextParts(t *testing.T) {
+	const boundary = "00000000000572bf1065a4335e9"
+	base64Text := "你好，这是一封完整的中文邮件。验证码是 418204。"
+	quotedPrintableText := "欢迎加入 XIASS 邮箱。"
+	rawBody := strings.Join([]string{
+		"--" + boundary,
+		"Content-Type: text/plain; charset=\"UTF-8\"",
+		"Content-Transfer-Encoding: base64",
+		"",
+		base64.StdEncoding.EncodeToString([]byte(base64Text)),
+		"--" + boundary,
+		"Content-Type: text/plain; charset=utf-8",
+		"Content-Transfer-Encoding: quoted-printable",
+		"",
+		"=E6=AC=A2=E8=BF=8E=E5=8A=A0=E5=85=A5=20XIASS=20=E9=82=AE=E7=AE=B1=E3=80=82",
+		"--" + boundary + "--",
+		"",
+	}, "\r\n")
+	message := map[string]any{"id": "mime-base64", "body": rawBody}
+
+	body := teamMailboxShareReadableBody(message)
+	require.Contains(t, body, base64Text)
+	require.Contains(t, body, quotedPrintableText)
+	require.NotContains(t, body, "5L2g5aW9")
+	require.NotContains(t, body, "Content-Transfer-Encoding")
+	require.Equal(t, "418204", extractTeamMailboxVerificationCodeFromMessage(message))
+}
+
+func TestTeamMailboxShareDecodesCompleteMIMEAndSkipsAttachments(t *testing.T) {
+	const boundary = "xiass-message-boundary"
+	raw := strings.Join([]string{
+		"From: =?utf-8?Q?XIASS_=E9=82=AE=E7=AE=B1?= <mail@example.test>",
+		"Subject: =?utf-8?Q?=E6=B4=BB=E5=8A=A8=E9=80=9A=E7=9F=A5?=",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/mixed; boundary=\"" + boundary + "\"",
+		"",
+		"--" + boundary,
+		"Content-Type: text/plain; charset=utf-8; name=ignored.txt",
+		"",
+		"This attachment must not be displayed.",
+		"--" + boundary,
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		"<html><body><h1>活动通知</h1><p>请登录查看详情。</p></body></html>",
+		"--" + boundary + "--",
+		"",
+	}, "\r\n")
+
+	decoded, recognized := teamMailboxDecodeMIMEText(raw)
+	require.True(t, recognized)
+	require.Contains(t, decoded, "活动通知")
+	require.Contains(t, decoded, "请登录查看详情")
+	require.NotContains(t, decoded, "attachment must not")
+	require.NotContains(t, decoded, "<h1>")
+	require.Equal(t, "活动通知", teamMailboxDecodeMIMEHeader("=?utf-8?Q?=E6=B4=BB=E5=8A=A8=E9=80=9A=E7=9F=A5?="))
+}
+
+func TestTeamMailboxSharePreservesSafeEmailLayoutWithoutActiveContent(t *testing.T) {
+	message := map[string]any{
+		"id":       "safe-rich-mail",
+		"from":     "OpenAI <trustandsafety@tm.openai.com>",
+		"subject":  "账号重要通知",
+		"received": "2026-08-30T12:00:00Z",
+		"html":     `<table width="600" cellpadding="0" cellspacing="0" style="background-color:#111827; color:#f8fafc"><tr><td style="padding:24px"><h1 style="font-size:24px">账号重要通知</h1><p>你的账号需要注意。</p><a href="https://help.openai.com/article" style="color:#60a5fa">查看详情</a><img src="https://tracker.example.test/pixel.png"><script>window.__unsafe = true</script><form action="https://attacker.example.test"><input name="secret"></form></td></tr></table>`,
+	}
+
+	summary, ok := teamMailboxShareMessageSummary(message)
+	require.True(t, ok)
+	require.Contains(t, summary.Preview, "你的账号需要注意")
+
+	detail := teamMailboxShareMessageDetail(message, summary)
+	require.Contains(t, detail.Body, "账号重要通知")
+	require.Contains(t, detail.HTML, "<table")
+	require.Contains(t, detail.HTML, "账号重要通知")
+	require.Contains(t, detail.HTML, `href="https://help.openai.com/article"`)
+	require.Contains(t, detail.HTML, `target="_blank"`)
+	require.Contains(t, detail.HTML, `rel="noopener noreferrer nofollow"`)
+	require.Contains(t, detail.HTML, `style="background-color:#111827; color:#f8fafc"`)
+	require.NotContains(t, detail.HTML, "tracker.example.test")
+	require.NotContains(t, detail.HTML, "<img")
+	require.NotContains(t, detail.HTML, "<script")
+	require.NotContains(t, detail.HTML, "__unsafe")
+	require.NotContains(t, detail.HTML, "<form")
+	require.NotContains(t, detail.HTML, "attacker.example.test")
 }

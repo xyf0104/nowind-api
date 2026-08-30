@@ -1552,7 +1552,7 @@ func teamMailboxMessageIsOfficialOpenAI(message map[string]any) bool {
 		return sender == "openai" || sender == "chatgpt"
 	}
 
-	identity := strings.ToLower(teamMailboxShareMessageField(message, "subject", "title", "headline"))
+	identity := strings.ToLower(teamMailboxDecodeMIMEHeader(teamMailboxShareMessageField(message, "subject", "title", "headline")))
 	return strings.Contains(identity, "openai") || strings.Contains(identity, "chatgpt")
 }
 
@@ -1564,6 +1564,14 @@ func extractTeamMailboxVerificationCodeFromMessage(message map[string]any) strin
 	text := teamMailboxReadableText(message)
 	if code := extractTeamMailboxVerificationCode(text); code != "" {
 		return code
+	}
+	if decoded := teamMailboxDecodedMIMETextFromMessage(message); decoded != "" {
+		if code := extractTeamMailboxVerificationCode(decoded); code != "" {
+			return code
+		}
+		if code := extractTeamMailboxStandaloneSixDigitCode(decoded); code != "" {
+			return code
+		}
 	}
 
 	for _, key := range []string{

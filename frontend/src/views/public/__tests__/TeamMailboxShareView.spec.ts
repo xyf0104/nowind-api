@@ -19,7 +19,7 @@ afterEach(() => {
 })
 
 describe('TeamMailboxShareView', () => {
-  it('uses the fragment token for a scoped full inbox and keeps verification-code copy convenient', async () => {
+  it('uses the fragment token for a scoped full inbox and reads verification messages without a copy control', async () => {
     window.location.hash = '#t=tm2.share-id.share-secret'
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
@@ -64,12 +64,7 @@ describe('TeamMailboxShareView', () => {
       }
       return Promise.reject(new Error(`unexpected request: ${url}`))
     })
-    const clipboardWrite = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('fetch', fetchMock)
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: clipboardWrite },
-    })
 
     const wrapper = mount(TeamMailboxShareView, {
       global: { stubs: { Icon: IconStub } },
@@ -89,9 +84,59 @@ describe('TeamMailboxShareView', () => {
     expect(wrapper.text()).toContain('Please bring dessert.')
     expect(wrapper.get('[data-testid="team-mailbox-message-family-update"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="team-mailbox-message-openai-code"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="team-mailbox-share-code"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
 
-    await wrapper.get('[data-testid="team-mailbox-share-code"]').trigger('click')
-    expect(clipboardWrite).toHaveBeenCalledWith('418204')
+  it('renders server-provided rich mail content with a second client-side sanitization pass', async () => {
+    window.location.hash = '#t=tm2.share-id.html-secret'
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/public/team-mailbox/messages')) {
+        return Promise.resolve(response({
+          code: 0,
+          data: {
+            email: 'family@example.test',
+            messages: [{
+              id: 'rich-message',
+              from: 'OpenAI <noreply@tm.openai.com>',
+              subject: 'Account notice',
+              preview: 'Your account needs attention.',
+              received_at: '2026-08-30T12:01:00Z',
+            }],
+            checked_at: '2026-08-30T12:01:00Z',
+            poll_after_ms: 5000,
+          },
+        }))
+      }
+      if (url.endsWith('/public/team-mailbox/messages/rich-message')) {
+        return Promise.resolve(response({
+          code: 0,
+          data: {
+            id: 'rich-message',
+            from: 'OpenAI <noreply@tm.openai.com>',
+            subject: 'Account notice',
+            body: 'Your account needs attention.',
+            html: '<div style="color: #c2410c"><h2>Account notice</h2><p>Your account needs attention.</p><a href="https://help.openai.com/">Read more</a><img src="https://tracker.example.test/pixel.png"><script>window.__unsafe = true</script></div>',
+          },
+        }))
+      }
+      return Promise.reject(new Error(`unexpected request: ${url}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(TeamMailboxShareView, {
+      global: { stubs: { Icon: IconStub } },
+    })
+    await flushPromises()
+    await flushPromises()
+
+    const rendered = wrapper.find('.team-mailbox-email-html')
+    expect(rendered.exists()).toBe(true)
+    expect(rendered.html()).toContain('Read more')
+    expect(rendered.html()).not.toContain('<script')
+    expect(rendered.html()).not.toContain('<img')
+    expect(rendered.html()).not.toContain('tracker.example.test')
     wrapper.unmount()
   })
 
