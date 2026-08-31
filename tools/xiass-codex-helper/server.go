@@ -168,11 +168,15 @@ func (s *helperServer) handleCallback(w http.ResponseWriter, _ *http.Request) {
 func (s *helperServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	backups, _ := s.manager.ListBackups()
 	connectURL, siteURL := s.connectionDetails(r.Host)
-	contextSettings, contextErr := s.manager.ReadContextSettings()
+	contextSettings := defaultContextSettings()
 	contextWarning := ""
-	if contextErr != nil {
-		contextSettings = defaultContextSettings()
-		contextWarning = contextErr.Error()
+	if s.manager.UsesXIASSProvider() {
+		configured, contextErr := s.manager.ReadContextSettings()
+		if contextErr != nil {
+			contextWarning = contextErr.Error()
+		} else {
+			contextSettings = configured
+		}
 	}
 	if pending := s.pendingContextSettings(); pending != nil {
 		contextSettings = *pending
@@ -393,6 +397,12 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 	}
 	if manual {
 		input.ProviderName = "Custom API"
+	} else {
+		// Website-assisted XIASS setup always takes ownership of the active
+		// provider. Existing foreign provider definitions are preserved only as
+		// inactive configuration and can be recovered from the local backup.
+		input.ProviderName = providerName
+		input.ForceCanonicalProvider = true
 	}
 	input = s.fillMissingContext(input)
 	normalized, err := normalizeApplyConfig(input)
@@ -611,8 +621,10 @@ func (s *helperServer) currentSiteURL() *url.URL {
 
 func (s *helperServer) resolveRequestedContext(requested ContextSettings) (ContextSettings, error) {
 	current := defaultContextSettings()
-	if configured, err := s.manager.ReadContextSettings(); err == nil {
-		current = configured
+	if s.manager.UsesXIASSProvider() {
+		if configured, err := s.manager.ReadContextSettings(); err == nil {
+			current = configured
+		}
 	}
 	if requested.ModelContextWindow == 0 {
 		requested.ModelContextWindow = current.ModelContextWindow
@@ -634,8 +646,10 @@ func (s *helperServer) fillMissingContext(input ApplyConfig) ApplyConfig {
 	settings := s.pendingContextSettings()
 	if settings == nil {
 		resolved := defaultContextSettings()
-		if configured, err := s.manager.ReadContextSettings(); err == nil {
-			resolved = configured
+		if s.manager.UsesXIASSProvider() {
+			if configured, err := s.manager.ReadContextSettings(); err == nil {
+				resolved = configured
+			}
 		}
 		settings = &resolved
 	}

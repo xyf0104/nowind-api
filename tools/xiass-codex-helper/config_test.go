@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 const testOriginalConfig = `model_provider = "official"
@@ -371,6 +373,153 @@ experimental_bearer_token = "old-secret"
 	}
 	if strings.Count(text, "[model_providers.codex_local_access]") != 1 {
 		t.Fatal("new stable provider section is missing")
+	}
+}
+
+func TestApplyForceCanonicalProviderTakesOverForeignConfiguration(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	original := `model_provider = "foreign-relay"
+model = "foreign-model"
+review_model = "foreign-review"
+model_reasoning_effort = "high"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+web_search = "cached"
+
+[features]
+goals = true
+
+[mcp_servers.customer]
+command = "customer-mcp"
+
+[model_providers."foreign-relay"]
+name = "Customer relay"
+base_url = "https://relay.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "foreign-secret"
+
+[model_providers.codex_local_access]
+name = "Old XIASS label"
+base_url = "https://old.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "old-secret"
+`
+	if err := os.WriteFile(manager.ConfigPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := ApplyConfig{
+		BaseURL:                    "https://gateway.example.com/v1",
+		APIKey:                     "sk-xiass-1234567890",
+		Model:                      "gpt-5.6-sol",
+		ReviewModel:                "gpt-5.6-sol",
+		ModelContextWindow:         512000,
+		ModelAutoCompactTokenLimit: 460800,
+		ProviderName:               providerName,
+		ForceCanonicalProvider:     true,
+	}
+	result, err := manager.Apply(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderID != providerID {
+		t.Fatalf("provider ID = %q, want %q", result.ProviderID, providerID)
+	}
+
+	written, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyManagedConfig(written, input, providerID); err != nil {
+		t.Fatalf("canonical XIASS config verification failed: %v", err)
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(written, &root); err != nil {
+		t.Fatal(err)
+	}
+	if root["model_provider"] != providerID {
+		t.Fatalf("active provider = %q, want %q", root["model_provider"], providerID)
+	}
+	if root["model_reasoning_effort"] != "high" {
+		t.Fatalf("unrelated top-level setting was not preserved: %#v", root["model_reasoning_effort"])
+	}
+	features, ok := root["features"].(map[string]any)
+	if !ok || features["goals"] != true {
+		t.Fatalf("features were not preserved: %#v", root["features"])
+	}
+	mcpServers, ok := root["mcp_servers"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP servers were not preserved: %#v", root["mcp_servers"])
+	}
+	customerMCP, ok := mcpServers["customer"].(map[string]any)
+	if !ok || customerMCP["command"] != "customer-mcp" {
+		t.Fatalf("customer MCP server was not preserved: %#v", mcpServers)
+	}
+	providers, ok := root["model_providers"].(map[string]any)
+	if !ok {
+		t.Fatal("model providers table missing")
+	}
+	foreign, ok := providers["foreign-relay"].(map[string]any)
+	if !ok || foreign["base_url"] != "https://relay.example.com/v1" {
+		t.Fatalf("inactive foreign provider was not preserved: %#v", providers["foreign-relay"])
+	}
+	canonical, ok := providers[providerID].(map[string]any)
+	if !ok || canonical["base_url"] != input.BaseURL || canonical["experimental_bearer_token"] != input.APIKey {
+		t.Fatalf("canonical XIASS provider = %#v", canonical)
+	}
+
+	manifest, err := manager.readManifest(result.BackupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Reason != "force_apply" {
+		t.Fatalf("backup reason = %q, want force_apply", manifest.Reason)
+	}
+	backup, err := os.ReadFile(manager.originalPath(result.BackupID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != original {
+		t.Fatal("force apply did not retain the exact original configuration backup")
+	}
+}
+
+func TestApplyForceCanonicalProviderRecoversInvalidExistingConfig(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	original := []byte("[broken\nvalue = true\n")
+	if err := os.WriteFile(manager.ConfigPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := ApplyConfig{
+		BaseURL:                "https://gateway.example.com/v1",
+		APIKey:                 "sk-xiass-1234567890",
+		ForceCanonicalProvider: true,
+	}
+	result, err := manager.Apply(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyManagedConfig(written, input, providerID); err != nil {
+		t.Fatalf("recovered config verification failed: %v", err)
+	}
+	manifest, err := manager.readManifest(result.BackupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Reason != "force_apply_invalid_config" {
+		t.Fatalf("backup reason = %q, want force_apply_invalid_config", manifest.Reason)
+	}
+	backup, err := os.ReadFile(manager.originalPath(result.BackupID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != string(original) {
+		t.Fatal("invalid original configuration was not retained exactly in the backup")
 	}
 }
 

@@ -93,7 +93,7 @@
         <button id="refresh-button" type="button">重新检测</button>
 		<button id="select-app-button" type="button">浏览选择 Codex App</button>
       </div>
-      <p class="hint">填写您当前使用的 XIASS API 网站地址。切换 model provider 时，助手会先退出 Codex，再备份配置和会话索引、同步历史对话并校验会话数量；只有全部成功才会重新启动。仅调整同一 provider 的模型、上下文或密钥时，会保留当前历史数据并跳过全量扫描。</p>
+      <p class="hint">填写您当前使用的 XIASS API 网站地址。连接 XIASS API 时，助手会先完整备份本地配置，再将当前 model provider 切换为 XIASS API；有效的 MCP、插件和其他非 XIASS 设置会保留，原配置可随时恢复。随后助手会安全退出 Codex、同步历史对话并校验会话数量，只有全部成功才会重新启动。</p>
     </section>
 
 	<section class="panel">

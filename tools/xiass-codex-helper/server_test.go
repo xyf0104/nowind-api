@@ -200,8 +200,8 @@ func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(written), `[model_providers.official]`) {
-		t.Fatal("apply endpoint did not write XIASS provider")
+	if !strings.Contains(string(written), `model_provider = "codex_local_access"`) || !strings.Contains(string(written), `[model_providers.codex_local_access]`) {
+		t.Fatal("apply endpoint did not force the canonical XIASS provider")
 	}
 
 	restoreBody, _ := json.Marshal(map[string]string{"backup_id": backupID})
@@ -364,7 +364,7 @@ func TestHelperServerSelectsSiteAtRuntime(t *testing.T) {
 
 func TestHelperStatusReportsStoredContextSettings(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
-	if err := os.WriteFile(manager.ConfigPath, []byte("model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n"), 0o600); err != nil {
+	if err := os.WriteFile(manager.ConfigPath, []byte("model_provider = \"codex_local_access\"\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	helper, err := newTestHelperServer(manager, defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
@@ -374,6 +374,29 @@ func TestHelperStatusReportsStoredContextSettings(t *testing.T) {
 	status := getJSON(t, helper.routes(), "/api/status")
 	if status["model_context_window"] != float64(1000000) || status["model_auto_compact_token_limit"] != float64(900000) {
 		t.Fatalf("status context settings = %v/%v", status["model_context_window"], status["model_auto_compact_token_limit"])
+	}
+}
+
+func TestHelperStatusUsesXIASSDefaultsForForeignProvider(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	foreign := `model_provider = "foreign-relay"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+
+[model_providers.foreign-relay]
+name = "Foreign relay"
+base_url = "https://relay.example.com/v1"
+`
+	if err := os.WriteFile(manager.ConfigPath, []byte(foreign), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := newTestHelperServer(manager, defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := getJSON(t, helper.routes(), "/api/status")
+	if status["model_context_window"] != float64(defaultContextWindow) || status["model_auto_compact_token_limit"] != float64(defaultAutoCompactTokenLimit) {
+		t.Fatalf("foreign provider context leaked into XIASS setup: %v/%v", status["model_context_window"], status["model_auto_compact_token_limit"])
 	}
 }
 
@@ -396,13 +419,43 @@ func TestHelperCarriesContextSelectionThroughSiteCallback(t *testing.T) {
 
 	body := []byte(`{"site_url":"https://gateway.example.com","model_context_window":1000000,"model_auto_compact_token_limit":900000}`)
 	postHelperJSON(t, helper.routes(), "/api/site", helper.state, body, http.StatusOK)
-	callbackBody := []byte(`{"base_url":"https://gateway.example.com/v1","api_key":"sk-test-1234567890","key_name":"Codex"}`)
+	callbackBody := []byte(`{"base_url":"https://gateway.example.com/v1","api_key":"sk-test-1234567890","key_name":"Codex","provider_name":"Foreign relay"}`)
 	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, callbackBody, http.StatusOK)
 	if applied.ModelContextWindow != 1000000 || applied.ModelAutoCompactTokenLimit != 900000 {
 		t.Fatalf("callback applied context = %d/%d, want 1000000/900000", applied.ModelContextWindow, applied.ModelAutoCompactTokenLimit)
 	}
+	if !applied.ForceCanonicalProvider || applied.ProviderName != providerName {
+		t.Fatalf("website-assisted apply did not force XIASS takeover: %+v", applied)
+	}
 	if helper.pendingContextSettings() != nil {
 		t.Fatal("pending context settings were not cleared after a successful callback")
+	}
+}
+
+func TestHelperManualApplyDoesNotForceCanonicalProvider(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	var applied ApplyConfig
+	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
+		applied = input
+		return ApplyResult{BackupID: "unused"}, nil
+	}
+
+	body := []byte(`{"base_url":"https://custom.example.com/v1","api_key":"custom-key","provider_name":"Ignored by manual path"}`)
+	postHelperJSON(t, helper.routes(), "/api/apply-manual", helper.state, body, http.StatusOK)
+	if applied.ForceCanonicalProvider {
+		t.Fatalf("manual configuration unexpectedly forced XIASS takeover: %+v", applied)
+	}
+	if applied.ProviderName != "Custom API" {
+		t.Fatalf("manual provider name = %q, want Custom API", applied.ProviderName)
 	}
 }
 

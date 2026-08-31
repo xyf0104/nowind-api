@@ -51,6 +51,9 @@ type ApplyConfig struct {
 	ProviderName               string `json:"provider_name,omitempty"`
 	ModelContextWindow         int64  `json:"model_context_window,omitempty"`
 	ModelAutoCompactTokenLimit int64  `json:"model_auto_compact_token_limit,omitempty"`
+	// ForceCanonicalProvider is only set by the trusted local XIASS helper
+	// endpoint. It is deliberately not accepted from JSON payloads.
+	ForceCanonicalProvider bool `json:"-"`
 }
 
 type ContextSettings struct {
@@ -130,19 +133,43 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 		if err != nil {
 			return err
 		}
+		originalValid := true
 		if existed && len(strings.TrimSpace(string(original))) > 0 {
 			if err := validateTOML(original); err != nil {
-				return fmt.Errorf("existing config.toml is invalid; no changes made: %w", err)
+				if !normalized.ForceCanonicalProvider {
+					return fmt.Errorf("existing config.toml is invalid; no changes made: %w", err)
+				}
+				originalValid = false
 			}
 		}
 
-		manifest, err := m.createBackup(original, existed, mode, "apply")
+		reason := "apply"
+		if normalized.ForceCanonicalProvider {
+			reason = "force_apply"
+			if !originalValid {
+				reason = "force_apply_invalid_config"
+			}
+		}
+		manifest, err := m.createBackup(original, existed, mode, reason)
 		if err != nil {
 			return fmt.Errorf("create backup: %w", err)
 		}
 
 		managedProviderID := managedProviderIDForConfig(original)
-		updated := patchConfig(original, normalized, managedProviderID)
+		var updated []byte
+		if normalized.ForceCanonicalProvider {
+			managedProviderID = providerID
+			if originalValid {
+				updated, err = patchCanonicalXIASSConfig(original, normalized)
+				if err != nil {
+					return fmt.Errorf("prepare canonical XIASS config: %w", err)
+				}
+			} else {
+				updated = patchConfig(nil, normalized, managedProviderID)
+			}
+		} else {
+			updated = patchConfig(original, normalized, managedProviderID)
+		}
 		if err := verifyManagedConfig(updated, normalized, managedProviderID); err != nil {
 			return fmt.Errorf("generated config verification failed: %w", err)
 		}
@@ -550,6 +577,20 @@ func (m *ConfigManager) ReadContextSettings() (ContextSettings, error) {
 	return contextSettingsFromTOMLRoot(root)
 }
 
+func (m *ConfigManager) UsesXIASSProvider() bool {
+	data, existed, _, err := readConfigFile(m.ConfigPath)
+	if err != nil || !existed || len(strings.TrimSpace(string(data))) == 0 {
+		return false
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	provider, _ := root["model_provider"].(string)
+	provider = strings.TrimSpace(provider)
+	return provider == providerID || provider == legacyProviderID
+}
+
 func readContextSettingsFromTOML(data []byte) (ContextSettings, error) {
 	var root map[string]any
 	if err := toml.Unmarshal(data, &root); err != nil {
@@ -665,6 +706,37 @@ func patchConfig(original []byte, input ApplyConfig, managedProviderID string) [
 	}
 	parts = append(parts, strings.Join(provider, "\n"))
 	return []byte(strings.Join(parts, "\n\n") + "\n")
+}
+
+func patchCanonicalXIASSConfig(original []byte, input ApplyConfig) ([]byte, error) {
+	if len(strings.TrimSpace(string(original))) == 0 {
+		return patchConfig(nil, input, providerID), nil
+	}
+
+	var root map[string]any
+	if err := toml.Unmarshal(original, &root); err != nil {
+		return nil, err
+	}
+	for key := range managedTopLevelKeys {
+		delete(root, key)
+	}
+	if providers, ok := root["model_providers"].(map[string]any); ok {
+		delete(providers, providerID)
+		delete(providers, legacyProviderID)
+		if len(providers) == 0 {
+			delete(root, "model_providers")
+		}
+	} else {
+		// A scalar or array under this key cannot coexist with a TOML provider
+		// table. Drop it so the canonical provider section can be written.
+		delete(root, "model_providers")
+	}
+
+	preserved, err := toml.Marshal(root)
+	if err != nil {
+		return nil, err
+	}
+	return patchConfig(preserved, input, providerID), nil
 }
 
 func isManagedProviderSection(section, managedProviderID string) bool {

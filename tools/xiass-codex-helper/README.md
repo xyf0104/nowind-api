@@ -26,11 +26,15 @@ Before applying a configuration, the helper:
 6. Creates coherent SHA-256-verified SQLite snapshots that include committed WAL data, and also
    backs up session metadata, `session_index.jsonl`, Codex desktop state, and
    workspace mappings before repairing history visibility.
-7. Reuses an existing configured custom provider ID whenever possible. New
-   configurations use `codex_local_access`; provider metadata in normal and
-   archived rollouts plus compatible `threads.model_provider` columns is
-   synchronized to the active provider so every conversation remains visible
-   after switching providers.
+7. Website-assisted XIASS connections always switch the active provider to the
+   stable `codex_local_access` XIASS provider, even when Codex was previously
+   configured for another relay or a custom provider. The original file is
+   backed up byte-for-byte first; unrelated settings and inactive foreign
+   provider definitions are retained when their TOML is valid. Manual custom
+   API configuration remains separate and does not perform this takeover.
+   Provider metadata in normal and archived rollouts plus compatible
+   `threads.model_provider` columns is synchronized to the active provider so
+   every conversation remains visible after switching providers.
 8. The explicit history-repair action also removes only incompatible internal
    Responses continuation records (encrypted reasoning/compaction entries and
    invalid message IDs) when the active provider is external. It keeps visible
