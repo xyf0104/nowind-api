@@ -3722,6 +3722,34 @@ func TestBuildOpenAISelectionOrderNewSessionUsesLRUWithinHighestPriority(t *test
 	require.Equal(t, int64(31), order[1].account.ID)
 }
 
+func TestBuildOpenAISelectionOrderNewSessionPrefersScoreBeforeLRU(t *testing.T) {
+	now := time.Now()
+	older := now.Add(-time.Hour)
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:  &Account{ID: 41, Priority: 1, LastUsedAt: &now},
+			loadInfo: &AccountLoadInfo{AccountID: 41},
+			score:    5,
+		},
+		{
+			account:  &Account{ID: 42, Priority: 1, LastUsedAt: &older},
+			loadInfo: &AccountLoadInfo{AccountID: 42},
+			score:    1,
+		},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{
+		SessionHash: "new-unbound-conversation-with-ttft-signal",
+	}, openAIAccountLoadPlan{
+		candidates: candidates,
+		topK:       2,
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(41), order[0].account.ID)
+	require.Equal(t, int64(42), order[1].account.ID)
+}
+
 func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing.T) {
 	candidates := []openAIAccountCandidateScore{
 		{

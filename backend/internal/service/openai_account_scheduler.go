@@ -696,6 +696,12 @@ func isOpenAINewSessionCandidateBetter(left openAIAccountCandidateScore, right o
 	if left.errorRate != right.errorRate {
 		return left.errorRate < right.errorRate
 	}
+	// LRU keeps otherwise equivalent accounts balanced, but it must not erase
+	// the live score signal. In particular, a consistently lower-TTFT account
+	// within the same operator priority tier should be preferred for new work.
+	if left.score != right.score {
+		return left.score > right.score
+	}
 	switch {
 	case left.account.LastUsedAt == nil && right.account.LastUsedAt != nil:
 		return true
@@ -703,9 +709,6 @@ func isOpenAINewSessionCandidateBetter(left openAIAccountCandidateScore, right o
 		return false
 	case left.account.LastUsedAt != nil && right.account.LastUsedAt != nil && !left.account.LastUsedAt.Equal(*right.account.LastUsedAt):
 		return left.account.LastUsedAt.Before(*right.account.LastUsedAt)
-	}
-	if left.score != right.score {
-		return left.score > right.score
 	}
 	return left.account.ID < right.account.ID
 }

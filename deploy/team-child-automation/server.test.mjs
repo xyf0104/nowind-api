@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 process.env.NODE_ENV = 'test'
 process.env.TEAM_CHILD_AUTOMATION_TOKEN = 'unit-test-team-child-token'
@@ -37,6 +40,8 @@ const {
 } = await import('./server.mjs')
 
 const authURL = 'https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_challenge=test-challenge&code_challenge_method=S256&codex_cli_simplified_flow=true&id_token_add_organizations=true&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&response_type=code&scope=openid+profile+email+offline_access&state=test-state'
+const automationDirectory = path.dirname(fileURLToPath(import.meta.url))
+const deployDirectory = path.dirname(automationDirectory)
 
 describe('Team child OAuth automation state', () => {
   it('activates managed pages without requiring the noVNC viewer', async () => {
@@ -71,6 +76,20 @@ describe('Team child OAuth automation state', () => {
     assert.equal('startStep' in workflow, false)
     assert.equal('runOnlyStep' in workflow, false)
     assert.equal('resumeNextStepIndex' in workflow, false)
+  })
+
+  it('keeps every deployment health check pinned to the current workflow protocol', () => {
+    for (const filename of ['docker-compose.yml', 'docker-compose.local.yml', 'docker-compose.standalone.yml', 'docker-compose.dev.yml']) {
+      const compose = fs.readFileSync(path.join(deployDirectory, filename), 'utf8')
+      assert.match(compose, /x-xiass-team-child-protocol'\) === '3'/)
+      assert.match(compose, /workflow_schema_version === 3/)
+      assert.doesNotMatch(compose, /x-xiass-team-child-protocol'\) === '2'/)
+    }
+
+    const runtimeStart = fs.readFileSync(path.join(deployDirectory, 'xiass-runtime-start.sh'), 'utf8')
+    assert.match(runtimeStart, /x-xiass-team-child-protocol'\) === '3'/)
+    assert.match(runtimeStart, /body\.workflow_schema_version === 3/)
+    assert.match(runtimeStart, /\[ "\$protocol" != "3" \]/)
   })
 
   it('extracts invitations only from supplied pending-record text', () => {
