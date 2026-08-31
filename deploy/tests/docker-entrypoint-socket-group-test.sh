@@ -3,7 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENTRYPOINT="$ROOT_DIR/deploy/docker-entrypoint.sh"
-RUNTIME_IMAGE="${XIASS_ENTRYPOINT_TEST_IMAGE:-ghcr.io/xyf0104/xiass-api:1.1.47}"
+# Use the currently published application image as the stable Alpine runtime.
+# Versioned images can be intentionally pruned after a release, so pinning a
+# historical tag here would turn retention cleanup into a false CI failure.
+RUNTIME_IMAGE="${XIASS_ENTRYPOINT_TEST_IMAGE:-ghcr.io/xyf0104/xiass-api:latest}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "docker-entrypoint socket-group test requires Docker" >&2
@@ -16,7 +19,7 @@ if [ ! -S /var/run/docker.sock ]; then
 fi
 
 # Exercise the repository entrypoint against the host's real Docker socket.
-# The previous stable image supplies the same Alpine runtime and su-exec binary
+# The published image supplies the same Alpine runtime and su-exec binary
 # without depending on the image currently being built by the release job.
 docker run --rm \
     -v /var/run/docker.sock:/var/run/docker.sock \
