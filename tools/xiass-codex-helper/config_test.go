@@ -301,6 +301,31 @@ func TestApplySupportsCustomProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestVerifyManagedConfigAllowsProviderDisplayNameVariation(t *testing.T) {
+	input := ApplyConfig{
+		BaseURL:      "https://gateway.example.com/v1",
+		APIKey:       "sk-test-1234567890",
+		Model:        "gpt-5.6-sol",
+		ReviewModel:  "gpt-5.6-sol",
+		ProviderName: "XIASS API",
+	}
+	var err error
+	input, err = normalizeApplyConfig(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := string(patchConfig(nil, input, providerID))
+	withLegacyLabel := []byte(strings.Replace(written, `name = "XIASS API"`, `name = "Customer's existing provider"`, 1))
+	if err := verifyManagedConfig(withLegacyLabel, input, providerID); err != nil {
+		t.Fatalf("display-label variation should not reject a valid configuration: %v", err)
+	}
+
+	withoutLabel := []byte(strings.Replace(written, `name = "XIASS API"`, `name = ""`, 1))
+	if err := verifyManagedConfig(withoutLabel, input, providerID); err == nil {
+		t.Fatal("missing provider display name was accepted")
+	}
+}
+
 func TestApplyIsIdempotent(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
 	input := ApplyConfig{BaseURL: "https://gateway.example.com", APIKey: "sk-test-1234567890"}

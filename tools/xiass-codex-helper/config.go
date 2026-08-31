@@ -709,8 +709,14 @@ func verifyManagedConfig(data []byte, expected ApplyConfig, managedProviderID st
 	if !ok {
 		return errors.New("XIASS provider table missing")
 	}
+	// The provider name is only a Codex display label. Customers may already
+	// have a localized or legacy label for the same provider, so it must not
+	// block an otherwise verified connection update.
+	if name, ok := provider["name"].(string); !ok || strings.TrimSpace(name) == "" {
+		return errors.New("provider display name missing")
+	}
+
 	providerChecks := map[string]string{
-		"name":                      expected.ProviderName,
 		"base_url":                  expected.BaseURL,
 		"wire_api":                  "responses",
 		"experimental_bearer_token": expected.APIKey,
