@@ -20,6 +20,10 @@ type upstreamResponseModelObserver struct {
 	first    string
 	terminal string
 	conflict bool
+
+	firstTier         string
+	firstTierConflict bool
+	terminalTier      string
 }
 
 func (o *upstreamResponseModelObserver) Observe(model string, terminal bool) {
@@ -60,7 +64,18 @@ func (o *upstreamResponseModelObserver) ObserveOpenAI(payload []byte, eventType 
 		gjson.GetBytes(payload, "response.model"),
 		gjson.GetBytes(payload, "model"),
 	)
-	o.Observe(model, isUpstreamResponseModelTerminalEvent(eventType))
+	terminal := isUpstreamResponseModelTerminalEvent(eventType)
+	o.Observe(model, terminal)
+	if model == "" || (!terminal && strings.TrimSpace(eventType) != "") {
+		return
+	}
+	o.ObserveServiceTier(
+		normalizeObservedOpenAIServiceTier(firstTrimmedGJSONModel(
+			gjson.GetBytes(payload, "response.service_tier"),
+			gjson.GetBytes(payload, "service_tier"),
+		)),
+		terminal,
+	)
 }
 
 func (o *upstreamResponseModelObserver) ObserveAnthropic(payload []byte) {
@@ -72,6 +87,68 @@ func (o *upstreamResponseModelObserver) ObserveAnthropic(payload []byte) {
 		gjson.GetBytes(payload, "model"),
 	)
 	o.Observe(model, false)
+	if model == "" {
+		return
+	}
+	o.ObserveServiceTier(
+		normalizeObservedAnthropicSpeed(firstTrimmedGJSONModel(
+			gjson.GetBytes(payload, "message.usage.speed"),
+			gjson.GetBytes(payload, "usage.speed"),
+		)),
+		false,
+	)
+}
+
+// ObserveServiceTier records a tier declared by the upstream. Terminal
+// declarations win; conflicting non-terminal declarations are discarded.
+func (o *upstreamResponseModelObserver) ObserveServiceTier(tier string, terminal bool) {
+	if o == nil || tier == "" {
+		return
+	}
+	if terminal {
+		o.terminalTier = tier
+		return
+	}
+	if o.firstTier == "" {
+		o.firstTier = tier
+		return
+	}
+	if o.firstTier != tier {
+		o.firstTierConflict = true
+	}
+}
+
+func (o *upstreamResponseModelObserver) ServiceTier() string {
+	if o == nil {
+		return ""
+	}
+	if o.terminalTier != "" {
+		return o.terminalTier
+	}
+	if o.firstTierConflict {
+		return ""
+	}
+	return o.firstTier
+}
+
+func normalizeObservedOpenAIServiceTier(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "priority", "fast":
+		return OpenAIFastTierPriority
+	case "default", "flex", "scale":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
+}
+
+func normalizeObservedAnthropicSpeed(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "fast", "standard":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
 }
 
 func (o *upstreamResponseModelObserver) ObserveGemini(payload []byte) {
@@ -127,6 +204,10 @@ func observedUpstreamResponseModel(c *gin.Context) string {
 
 func observedUpstreamResponseModelConflict(c *gin.Context) bool {
 	return upstreamResponseModelObserverFromContext(c).Conflict()
+}
+
+func observedUpstreamResponseServiceTier(c *gin.Context) string {
+	return upstreamResponseModelObserverFromContext(c).ServiceTier()
 }
 
 func observeOpenAISSEBody(observer *upstreamResponseModelObserver, body string) {

@@ -58,7 +58,6 @@
               <span class="px-4 text-sm text-gray-500 font-medium">{{ t('payment.topup.orCustomAmount', '或输入自定义金额') }}</span>
               <div class="h-px flex-grow bg-gray-200 dark:bg-dark-700"></div>
             </div>
-
             <!-- Custom Amount Input -->
             <div class="card p-6">
               <div class="relative">
@@ -263,6 +262,12 @@
                 <span>{{ t('payment.creditedBalance', '到账余额') }} ¥{{ creditedAmount.toFixed(2) }}</span>
                 <span v-if="feeRate > 0" class="text-xs">含手续费: {{ formatSelectedPaymentAmount(feeAmount) }}</span>
               </div>
+              <p
+                v-if="balanceRechargeMultiplier !== 1"
+                class="mt-3 border-t border-[#F0EBE1] pt-3 text-xs leading-5 text-gray-500 dark:border-dark-700 dark:text-gray-400"
+              >
+                {{ t('payment.rechargeRatePreview', { currency: selectedCurrencyName, balance: balanceRechargeMultiplier.toFixed(2) }) }}
+              </p>
             </div>
 
             <div class="space-y-4">
@@ -329,7 +334,7 @@ import { platformAccentBarClass, platformBadgeLightClass, platformBadgeClass, pl
 import SubscriptionPlanCard from '@/components/payment/SubscriptionPlanCard.vue'
 import PaymentStatusPanel from '@/components/payment/PaymentStatusPanel.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { DEFAULT_PAYMENT_CURRENCY, formatPaymentAmount, normalizePaymentCurrency } from '@/components/payment/currency'
+import { DEFAULT_PAYMENT_CURRENCY, formatPaymentAmount, normalizePaymentCurrency, paymentCurrencyName } from '@/components/payment/currency'
 import { planValiditySuffix as validitySuffixOf } from '@/components/payment/validity'
 import type { PaymentMethodOption } from '@/components/payment/PaymentMethodSelector.vue'
 import { buildPaymentErrorToastMessage, describePaymentScenarioError } from './paymentUx'
@@ -633,6 +638,7 @@ const localeCode = computed(() => {
   }
   return undefined
 })
+const selectedCurrencyName = computed(() => paymentCurrencyName(selectedCurrency.value, localeCode.value))
 
 function currencyFractionDigits(currency: string): number {
   try {

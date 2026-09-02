@@ -68,8 +68,14 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		}
 	}
 	// Derive the identity from the request xAI will actually see. This makes
-	// Codex Responses Lite additional_tools part of the stable tool prefix.
-	cacheIdentity := resolveGrokCacheIdentity(c, patchedBody, "", upstreamModel)
+	// Codex Responses Lite additional_tools part of the stable tool prefix. A
+	// Claude Code session carried in metadata is removed before forwarding, but
+	// still remains a valid stable cache identity for the current tenant.
+	cacheIdentityBody := patchedBody
+	if extractClaudeCodeSessionIDFromPayload(body) != "" {
+		cacheIdentityBody = body
+	}
+	cacheIdentity := resolveGrokCacheIdentity(c, cacheIdentityBody, "", upstreamModel)
 	mixedCacheIntentBody := append([]byte(nil), patchedBody...)
 	patchedBody, err = applyGrokResponsesCacheIdentity(patchedBody, body, cacheIdentity, account.IsGrokOAuth())
 	if err != nil {
@@ -432,7 +438,7 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	for _, unsupportedField := range []string{"prompt_cache_retention", "safety_identifier"} {
+	for _, unsupportedField := range []string{"prompt_cache_retention", "safety_identifier", "metadata"} {
 		if gjson.GetBytes(out, unsupportedField).Exists() {
 			out, err = sjson.DeleteBytes(out, unsupportedField)
 			if err != nil {
@@ -469,6 +475,10 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 		return nil, err
 	}
 	out, err = sanitizeGrokResponsesInput(out)
+	if err != nil {
+		return nil, err
+	}
+	out, err = sanitizeGrokResponsesModelInput(out)
 	if err != nil {
 		return nil, err
 	}
@@ -865,16 +875,20 @@ var grokResponsesSupportedToolTypes = map[string]struct{}{
 	"x_search":           {},
 }
 
+const grokSafeFunctionParameters = `{"type":"object","properties":{},"additionalProperties":true}`
+
 func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.Exists() {
-		if gjson.GetBytes(body, "tool_choice").Exists() {
-			return sjson.DeleteBytes(body, "tool_choice")
-		}
-		return body, nil
+		return deleteGrokOrphanToolControls(body)
 	}
 	if !tools.IsArray() {
-		return body, nil
+		var err error
+		body, err = sjson.DeleteBytes(body, "tools")
+		if err != nil {
+			return nil, err
+		}
+		return deleteGrokOrphanToolControls(body)
 	}
 
 	rawTools := tools.Array()
@@ -886,15 +900,28 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 			raw := json.RawMessage(tool.Raw)
 			if toolType == "function" && (!tool.Get("parameters").Exists() || tool.Get("parameters").Type == gjson.Null) {
 				var payload map[string]any
-				if err := json.Unmarshal(raw, &payload); err != nil {
+				if err := decodeOpenAIJSONUseNumber(raw, &payload); err != nil {
 					return nil, err
 				}
 				payload["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
-				encoded, err := json.Marshal(payload)
+				encoded, err := marshalOpenAIUpstreamJSON(payload)
 				if err != nil {
 					return nil, err
 				}
 				raw = encoded
+				toolsChanged = true
+			} else if toolType == "function" && grokFunctionParametersHaveInvalidUnionRoot(tool.Get("parameters")) {
+				var err error
+				raw, err = sjson.SetRawBytes(raw, "parameters", []byte(grokSafeFunctionParameters))
+				if err != nil {
+					return nil, err
+				}
+				if strict := tool.Get("strict"); strict.Exists() && strict.Bool() {
+					raw, err = sjson.SetBytes(raw, "strict", false)
+					if err != nil {
+						return nil, err
+					}
+				}
 				toolsChanged = true
 			}
 			filteredTools = append(filteredTools, raw)
@@ -930,6 +957,9 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if len(filteredTools) == 0 {
+		return deleteGrokOrphanToolControls(body)
+	}
 
 	toolChoice := gjson.GetBytes(body, "tool_choice")
 	if !toolChoice.Exists() {
@@ -944,6 +974,28 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 	return body, nil
 }
 
+func grokFunctionParametersHaveInvalidUnionRoot(parameters gjson.Result) bool {
+	if !parameters.Exists() || !parameters.IsObject() {
+		return false
+	}
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		branches := parameters.Get(keyword)
+		if !branches.IsArray() {
+			continue
+		}
+		values := branches.Array()
+		if len(values) == 0 {
+			continue
+		}
+		for _, branch := range values {
+			if !strings.EqualFold(strings.TrimSpace(branch.Get("type").String()), "object") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func grokRawToolsContainType(tools []json.RawMessage, want string) bool {
 	for _, tool := range tools {
 		if strings.TrimSpace(gjson.GetBytes(tool, "type").String()) == want {
@@ -951,6 +1003,20 @@ func grokRawToolsContainType(tools []json.RawMessage, want string) bool {
 		}
 	}
 	return false
+}
+
+func deleteGrokOrphanToolControls(body []byte) ([]byte, error) {
+	var err error
+	for _, field := range []string{"tool_choice", "parallel_tool_calls"} {
+		if !gjson.GetBytes(body, field).Exists() {
+			continue
+		}
+		body, err = sjson.DeleteBytes(body, field)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return body, nil
 }
 
 func shouldDropGrokToolChoice(toolChoice gjson.Result, tools []json.RawMessage) bool {

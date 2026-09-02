@@ -132,7 +132,8 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
-			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
+			prewarmModel, _ := reqBody["model"].(string)
+			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, prewarmModel)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "OpenAI websocket prewarm error"
@@ -222,6 +223,49 @@ func normalizeOpenAIWSTerminalEvent(eventType string) string {
 	}
 }
 
+// markOpenAIWSClientVisibleFailure records only error events that were
+// successfully delivered to the client. Internal failover decisions happen
+// before this callback, so hidden recovery errors never pollute Ops metrics.
+func markOpenAIWSClientVisibleFailure(c *gin.Context, eventType string, payload []byte) {
+	eventType = strings.TrimSpace(eventType)
+	if eventType != "error" && eventType != "response.failed" {
+		return
+	}
+	prefix := "error"
+	if eventType == "response.failed" {
+		prefix = "response.error"
+	}
+	code := strings.TrimSpace(gjson.GetBytes(payload, prefix+".code").String())
+	errType := strings.TrimSpace(gjson.GetBytes(payload, prefix+".type").String())
+	message := strings.TrimSpace(gjson.GetBytes(payload, prefix+".message").String())
+	if eventType == "response.failed" && code == "" && errType == "" && message == "" {
+		prefix = "error"
+		code = strings.TrimSpace(gjson.GetBytes(payload, prefix+".code").String())
+		errType = strings.TrimSpace(gjson.GetBytes(payload, prefix+".type").String())
+		message = strings.TrimSpace(gjson.GetBytes(payload, prefix+".message").String())
+	}
+	status := int(gjson.GetBytes(payload, prefix+".status_code").Int())
+	if status == 0 {
+		status = int(gjson.GetBytes(payload, prefix+".status").Int())
+	}
+	if status == 0 && eventType == "error" {
+		status = int(gjson.GetBytes(payload, "status").Int())
+	}
+	if status == 0 {
+		status = openAIWSErrorHTTPStatusFromRaw(code, errType)
+	}
+	if errType == "" {
+		errType = "upstream_error"
+	}
+	if code == "" {
+		code = strings.ReplaceAll(eventType, ".", "_")
+	}
+	if message == "" {
+		message = "upstream websocket request failed"
+	}
+	MarkOpsStreamFailure(c, errType, code, message, status)
+}
+
 func openAIWSPayloadTransientStatus(payload []byte) int {
 	if len(payload) == 0 {
 		return 0
@@ -273,6 +317,9 @@ func (s *OpenAIGatewayService) handleOpenAIWSTerminalTransientFailure(ctx contex
 	}
 	status := openAIWSPayloadTransientStatus(payload)
 	if status != 0 {
+		if status == http.StatusTooManyRequests {
+			headers = openAIWSSemantic429Headers(account, canonicalModel, headers)
+		}
 		s.handleOpenAIAccountUpstreamError(ctx, account, status, headers, payload, canonicalModel)
 	}
 	return terminalEvent
@@ -651,14 +698,31 @@ func isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw string) bool {
 	return false
 }
 
-func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Context, account *Account, headers http.Header, responseBody []byte, codeRaw, errTypeRaw, msgRaw string) {
+func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Context, account *Account, headers http.Header, responseBody []byte, codeRaw, errTypeRaw, msgRaw string, canonicalModel ...string) {
 	if s == nil || s.rateLimitService == nil || account == nil || account.Platform != PlatformOpenAI {
 		return
 	}
 	if !isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw) {
 		return
 	}
-	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody)
+	model := firstNonEmpty(canonicalModel...)
+	if model == "" {
+		model = firstNonEmpty(gjson.GetBytes(responseBody, "model").String(), gjson.GetBytes(responseBody, "response.model").String())
+	}
+	// A non-empty response body is a semantic event received after a successful
+	// handshake. Its headers are not a generic account quota signal. Spark is
+	// the only case whose model-specific quota headers can be retained.
+	if len(responseBody) > 0 {
+		headers = openAIWSSemantic429Headers(account, model, headers)
+	}
+	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody, model)
+}
+
+func openAIWSSemantic429Headers(account *Account, model string, headers http.Header) http.Header {
+	if isCodexSparkModel(model) && isOpenAIOAuthAccount(account) {
+		return headers
+	}
+	return nil
 }
 
 // newOpenAIWSRateLimitFailoverError keeps WebSocket rate-limit failures on the

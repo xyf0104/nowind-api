@@ -323,7 +323,47 @@ func TestPatchGrokResponsesBodyDropsNestedUnsupportedFields(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.False(t, strings.Contains(string(patched), "external_web_access"))
+	require.False(t, gjson.GetBytes(patched, "metadata").Exists())
 	require.Equal(t, "kept_fn", gjson.GetBytes(patched, "tools.0.name").String())
+}
+
+func TestPatchGrokResponsesBodyUsesMetadataSessionForCacheIdentityWithoutForwardingMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c := newGrokCacheTestContext(5401)
+	firstBody := []byte(`{"model":"grok","input":"first turn","metadata":{"user_id":"{\"session_id\":\"metadata-session\"}"}}`)
+	secondBody := []byte(`{"model":"grok","input":"different second turn","metadata":{"user_id":"{\"session_id\":\"metadata-session\"}"}}`)
+
+	cacheIdentityFor := func(body []byte) string {
+		patched, err := patchGrokResponsesBody(body, "grok-4.5")
+		require.NoError(t, err)
+		require.False(t, gjson.GetBytes(patched, "metadata").Exists())
+
+		cacheIdentityBody := patched
+		if extractClaudeCodeSessionIDFromPayload(body) != "" {
+			cacheIdentityBody = body
+		}
+		return resolveGrokCacheIdentity(c, cacheIdentityBody, "", "grok-4.5")
+	}
+
+	first := cacheIdentityFor(firstBody)
+	second := cacheIdentityFor(secondBody)
+	require.NotEmpty(t, first)
+	require.Equal(t, first, second)
+}
+
+func TestPatchGrokResponsesBodyReplacesInvalidFunctionUnionRoot(t *testing.T) {
+	invalid := []byte(`{"input":"hi","tools":[{"type":"function","name":"lookup","strict":true,"parameters":{"oneOf":[{"type":"object","properties":{"query":{"type":"string"}}},{"type":"string"}]}}]}`)
+	patched, err := patchGrokResponsesBody(invalid, "grok-4.5")
+	require.NoError(t, err)
+	require.JSONEq(t, grokSafeFunctionParameters, gjson.GetBytes(patched, "tools.0.parameters").String())
+	require.False(t, gjson.GetBytes(patched, "tools.0.strict").Bool())
+
+	objectOnly := []byte(`{"input":"hi","tools":[{"type":"function","name":"lookup","strict":true,"parameters":{"oneOf":[{"type":"object","properties":{}},{"type":"object","properties":{"query":{"type":"string"}}}]}}]}`)
+	patched, err = patchGrokResponsesBody(objectOnly, "grok-4.5")
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(patched, "tools.0.parameters.type").Exists())
+	require.True(t, gjson.GetBytes(patched, "tools.0.parameters.oneOf").Exists())
+	require.True(t, gjson.GetBytes(patched, "tools.0.strict").Bool())
 }
 
 func TestPatchGrokResponsesBodyFlattensNamespaceTools(t *testing.T) {
@@ -416,10 +456,8 @@ func TestSanitizeGrokResponsesToolsKeepsToolChoiceOnlyWithSupportedTools(t *test
 			wantToolChoice: true,
 		},
 		{
-			name:           "malformed non-array tools remain untouched",
-			body:           `{"input":"hello","tools":{"type":"function","name":"lookup"},"tool_choice":"auto"}`,
-			wantTools:      true,
-			wantToolChoice: true,
+			name: "malformed non-array tools are removed with their controls",
+			body: `{"input":"hello","tools":{"type":"function","name":"lookup"},"tool_choice":"auto"}`,
 		},
 	}
 
@@ -1919,8 +1957,8 @@ func TestForwardGrokResponsesRetriesInvalidEncryptedContentOnce(t *testing.T) {
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.0.encrypted_content").Exists())
 	require.Equal(t, "keep this summary", gjson.GetBytes(upstream.bodies[1], "input.0.summary.0.text").String())
 	require.Equal(t, "message", gjson.GetBytes(upstream.bodies[1], "input.1.type").String())
-	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.bodies[0], "metadata.large_id").Raw)
-	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.bodies[1], "metadata.large_id").Raw)
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "metadata").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "metadata").Exists())
 
 	firstIdentity := gjson.GetBytes(upstream.bodies[0], "prompt_cache_key").String()
 	secondIdentity := gjson.GetBytes(upstream.bodies[1], "prompt_cache_key").String()

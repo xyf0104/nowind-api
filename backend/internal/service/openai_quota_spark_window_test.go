@@ -668,6 +668,35 @@ func TestCacheResetCreditsSnapshot(t *testing.T) {
 	})
 }
 
+func TestCachePostResetSnapshotPersistsWindowsWithoutReplacingXIASSWeeklyEstimateState(t *testing.T) {
+	ctx := context.Background()
+	repo := &stubQuotaAccountRepo{}
+	svc := &OpenAIQuotaService{accountRepo: repo}
+	usage := &OpenAIQuotaUsage{
+		RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 0},
+		RateLimit: &OpenAIRateLimit{
+			PrimaryWindow: &OpenAIRateLimitWindow{
+				UsedPercent:        12,
+				LimitWindowSeconds: 7 * 24 * 60 * 60,
+				ResetAfterSeconds:  6 * 24 * 60 * 60,
+			},
+			SecondaryWindow: &OpenAIRateLimitWindow{
+				UsedPercent:        0,
+				LimitWindowSeconds: 5 * 60 * 60,
+				ResetAfterSeconds:  5 * 60 * 60,
+			},
+		},
+	}
+
+	require.NoError(t, svc.CachePostResetSnapshot(ctx, 100, usage))
+	updates := repo.extraUpdates[100]
+	require.Equal(t, usage.RateLimitResetCredits, updates[openaiQuotaResetCreditsKey])
+	require.Equal(t, 0.0, updates["codex_5h_used_percent"])
+	require.Equal(t, 12.0, updates["codex_7d_used_percent"])
+	require.NotEmpty(t, updates["codex_usage_updated_at"])
+	require.NotContains(t, updates, openAIWeeklyEstimateBaselineKey)
+}
+
 // TestResetCreditGetByIDError_FailsClosed 验证守卫「失败关闭」语义：
 // 当守卫的 GetByID 发生瞬时错误时，ResetCredit 必须立即返回该错误，
 // 不得旁路进入 prepareUpstreamCall（否则影子账号会借 resolve 路径操作母账号）。

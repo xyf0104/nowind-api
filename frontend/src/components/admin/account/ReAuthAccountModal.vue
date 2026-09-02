@@ -149,12 +149,14 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
+        :show-refresh-token-option="isOpenAILike || isAntigravity || isGrok"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
         :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : isGrok ? 'grok' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @validate-refresh-token="handleValidateRefreshToken"
       />
 
     </div>
@@ -642,6 +644,99 @@ const handleCookieAuth = async (sessionKey: string) => {
       error.response?.data?.detail || t('admin.accounts.oauth.cookieAuthFailed')
   } finally {
     claudeOAuth.loading.value = false
+  }
+}
+
+// Re-authorize the selected account with a single refresh token. This must use
+// the credential-specific endpoint so account configuration and token caches
+// remain consistent with the interactive OAuth path.
+const handleValidateRefreshToken = async (refreshTokenInput: string) => {
+  if (!props.account) return
+
+  const refreshToken = refreshTokenInput
+    .split('\n')
+    .map((line) => line.trim())
+    .find(Boolean)
+  if (!refreshToken) return
+
+  if (isGrok.value) {
+    const tokenInfo = await grokOAuth.validateRefreshToken(refreshToken, props.account.proxy_id)
+    if (!tokenInfo) return
+
+    grokOAuth.loading.value = true
+    try {
+      const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
+        type: 'oauth',
+        credentials: grokOAuth.buildCredentials(tokenInfo),
+        extra: grokOAuth.buildExtraInfo(tokenInfo)
+      })
+      appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+      emit('reauthorized', updatedAccount)
+      handleClose()
+    } catch (error: any) {
+      grokOAuth.error.value =
+        error.response?.data?.detail ||
+        error.response?.data?.message ||
+        error.message ||
+        t('admin.accounts.oauth.authFailed')
+      appStore.showError(grokOAuth.error.value)
+    } finally {
+      grokOAuth.loading.value = false
+    }
+    return
+  }
+
+  if (isOpenAILike.value) {
+    const tokenInfo = await openaiOAuth.validateRefreshToken(refreshToken, props.account.proxy_id)
+    if (!tokenInfo) return
+
+    openaiOAuth.loading.value = true
+    try {
+      const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
+        type: 'oauth',
+        credentials: openaiOAuth.buildCredentials(tokenInfo),
+        extra: openaiOAuth.buildExtraInfo(tokenInfo)
+      })
+      appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+      emit('reauthorized', updatedAccount)
+      handleClose()
+    } catch (error: any) {
+      openaiOAuth.error.value =
+        error.response?.data?.detail ||
+        error.response?.data?.message ||
+        error.message ||
+        t('admin.accounts.oauth.authFailed')
+      appStore.showError(openaiOAuth.error.value)
+    } finally {
+      openaiOAuth.loading.value = false
+    }
+    return
+  }
+
+  if (!isAntigravity.value) return
+
+  const tokenInfo = await antigravityOAuth.validateRefreshToken(refreshToken, props.account.proxy_id)
+  if (!tokenInfo) return
+
+  antigravityOAuth.loading.value = true
+  try {
+    const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
+      type: 'oauth',
+      credentials: antigravityOAuth.buildCredentials(tokenInfo, refreshToken),
+      extra: antigravityOAuth.buildExtraInfo(tokenInfo)
+    })
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized', updatedAccount)
+    handleClose()
+  } catch (error: any) {
+    antigravityOAuth.error.value =
+      error.response?.data?.detail ||
+      error.response?.data?.message ||
+      error.message ||
+      t('admin.accounts.oauth.authFailed')
+    appStore.showError(antigravityOAuth.error.value)
+  } finally {
+    antigravityOAuth.loading.value = false
   }
 }
 </script>

@@ -1128,18 +1128,23 @@ func extractCustomToolCallInput(arguments string) string {
 // 映射（见 NamespaceToolNames），命中的调用还原为带 namespace 字段的 function_call 项。
 func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model string, customTools map[string]bool, toolSearch bool, namespaceTools map[string]NamespacedToolName) *ResponsesResponse {
 	id := ""
+	createdAt := time.Now().Unix()
 	if resp != nil {
 		id = resp.ID
+		if resp.Created > 0 {
+			createdAt = resp.Created
+		}
 	}
 	if id == "" {
 		id = generateResponsesID()
 	}
 
 	out := &ResponsesResponse{
-		ID:     id,
-		Object: "response",
-		Model:  model,
-		Status: "completed",
+		ID:        id,
+		Object:    "response",
+		CreatedAt: createdAt,
+		Model:     model,
+		Status:    "completed",
 	}
 	if resp == nil {
 		out.Output = []ResponsesOutput{emptyResponsesMessageOutput()}
@@ -1618,6 +1623,7 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 		Response: &ResponsesResponse{
 			ID:                state.ResponseID,
 			Object:            "response",
+			CreatedAt:         state.Created,
 			Model:             state.Model,
 			Status:            status,
 			Output:            state.chatOutput(),
@@ -1635,11 +1641,12 @@ func ensureChatToResponsesCreated(state *ChatCompletionsToResponsesStreamState) 
 	state.CreatedSent = true
 	return []ResponsesStreamEvent{chatToResponsesEvent(state, "response.created", &ResponsesStreamEvent{
 		Response: &ResponsesResponse{
-			ID:     state.ResponseID,
-			Object: "response",
-			Model:  state.Model,
-			Status: "in_progress",
-			Output: []ResponsesOutput{},
+			ID:        state.ResponseID,
+			Object:    "response",
+			CreatedAt: state.Created,
+			Model:     state.Model,
+			Status:    "in_progress",
+			Output:    []ResponsesOutput{},
 		},
 	})}
 }

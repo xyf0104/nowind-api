@@ -60,6 +60,7 @@ func writeResponsesSecurityAuditCompletion(c *gin.Context, message string) {
 	responseID := synthesizeResponseID(c)
 	itemID := "msg_" + strings.TrimPrefix(responseID, "resp_")
 	model := requestModel(c)
+	createdAt := time.Now().Unix()
 	completedItem := apicompat.ResponsesOutput{
 		Type:   "message",
 		ID:     itemID,
@@ -71,11 +72,12 @@ func writeResponsesSecurityAuditCompletion(c *gin.Context, message string) {
 		}},
 	}
 	completed := &apicompat.ResponsesResponse{
-		ID:     responseID,
-		Object: "response",
-		Model:  model,
-		Status: "completed",
-		Output: []apicompat.ResponsesOutput{completedItem},
+		ID:        responseID,
+		Object:    "response",
+		CreatedAt: createdAt,
+		Model:     model,
+		Status:    "completed",
+		Output:    []apicompat.ResponsesOutput{completedItem},
 	}
 	if !requestIsStreaming(c) {
 		c.JSON(http.StatusOK, completed)
@@ -83,11 +85,12 @@ func writeResponsesSecurityAuditCompletion(c *gin.Context, message string) {
 	}
 
 	created := &apicompat.ResponsesResponse{
-		ID:     responseID,
-		Object: "response",
-		Model:  model,
-		Status: "in_progress",
-		Output: []apicompat.ResponsesOutput{},
+		ID:        responseID,
+		Object:    "response",
+		CreatedAt: createdAt,
+		Model:     model,
+		Status:    "in_progress",
+		Output:    []apicompat.ResponsesOutput{},
 	}
 	inProgressItem := completedItem
 	inProgressItem.Status = "in_progress"

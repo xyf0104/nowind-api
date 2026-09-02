@@ -13,6 +13,7 @@ func TestDefaultModels_AdvertisesOnlyVerifiedCurrentModels(t *testing.T) {
 
 	// 只验证经过服务器测试确认可用的核心模型
 	requiredIDs := []string{
+		"claude-fable-5-1",
 		"claude-opus-4-6-thinking",
 		"claude-sonnet-4-6",
 		"gemini-2.5-flash",

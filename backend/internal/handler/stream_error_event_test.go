@@ -226,6 +226,19 @@ func TestOpenAIHandleStreamingAwareError_BareResponsesRouteEmitsResponseFailed(t
 	assert.Equal(t, "rate_limit_exceeded", errObj["code"])
 }
 
+func TestOpenAIHandleStreamingAwareError_ResponsesStreamingCarriesCreatedAt(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointResponses)
+	h := &OpenAIGatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
+
+	resp, _ := parseResponsesFailedSSE(t, w.Body.String())
+	raw, ok := resp["created_at"]
+	assert.True(t, ok, "response.failed must carry created_at")
+	createdAt, ok := raw.(float64)
+	assert.True(t, ok, "created_at must be numeric, got %T", raw)
+	assert.Greater(t, int64(createdAt), int64(0), "created_at must be a valid Unix timestamp")
+}
+
 // Synthesized response.failed id falls back to uuid when no request_id is present.
 func TestSynthesizeResponseID_FallbackUUID(t *testing.T) {
 	c, _ := newGinContextForEndpoint(t, EndpointResponses)

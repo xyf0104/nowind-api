@@ -2092,6 +2092,44 @@ func (s *RateLimitService) HandleOpenAIImageRateLimit(ctx context.Context, accou
 	return true
 }
 
+// HandleOpenAICodexSparkRateLimit records a Spark-only quota signal as a
+// model-scoped rate limit. Spark quota headers must never park the whole OAuth
+// account, because the same credential can still serve its other models.
+func (s *RateLimitService) HandleOpenAICodexSparkRateLimit(ctx context.Context, account *Account, requestedModel string, statusCode int, headers http.Header, responseBody []byte) bool {
+	if s == nil || account == nil || s.accountRepo == nil || statusCode != http.StatusTooManyRequests || !isOpenAIOAuthAccount(account) {
+		return false
+	}
+	if !isCodexSparkModel(requestedModel) || !account.ShouldHandleErrorCode(statusCode) {
+		return false
+	}
+
+	modelKey := normalizeCodexModel(modelRateLimitKeyForUpstreamFailure(ctx, account, requestedModel))
+	if modelKey == "" {
+		return false
+	}
+	now := time.Now()
+	disposition, resetAt := classifyOpenAIOAuth429(headers, responseBody)
+	// Only a confirmed exhausted Spark 5h/7d window may use an upstream long
+	// reset. A transient 429 with incidental quota headers gets a short retry.
+	if disposition != openAIOAuth429Quota5h && disposition != openAIOAuth429Quota7d {
+		resetAt = nil
+	}
+	if resetAt == nil || !resetAt.After(now) {
+		cooldown, ok := s.get429FallbackCooldown(ctx, account)
+		if !ok || cooldown <= 0 {
+			cooldown = time.Duration(defaultRateLimit429CooldownSeconds) * time.Second
+		}
+		reset := now.Add(cooldown)
+		resetAt = &reset
+	}
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, *resetAt, openAICodexSparkRateLimitReason); err != nil {
+		slog.Warn("openai_codex_spark_model_rate_limit_set_failed", "account_id", account.ID, "model", modelKey, "error", err)
+		return true
+	}
+	slog.Info("openai_codex_spark_model_rate_limited", "account_id", account.ID, "model", modelKey, "reset_at", *resetAt)
+	return true
+}
+
 func isOpenAIImageRateLimitError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests || len(body) == 0 {
 		return false

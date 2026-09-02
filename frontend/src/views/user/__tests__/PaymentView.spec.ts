@@ -4,6 +4,8 @@ import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 import { formatPaymentAmount } from '@/components/payment/currency'
 import SubscriptionPlanCard from '@/components/payment/SubscriptionPlanCard.vue'
+import en from '@/i18n/locales/en'
+import zh from '@/i18n/locales/zh'
 import type { CheckoutInfoResponse, MethodLimit, SubscriptionPlan } from '@/types/payment'
 
 const routeState = vi.hoisted(() => ({
@@ -22,6 +24,7 @@ const showInfo = vi.hoisted(() => vi.fn())
 const showWarning = vi.hoisted(() => vi.fn())
 const getCheckoutInfo = vi.hoisted(() => vi.fn())
 const bridgeInvoke = vi.hoisted(() => vi.fn())
+const translate = vi.hoisted(() => vi.fn((key: string) => key))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -41,7 +44,8 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key,
+      t: translate,
+      locale: { value: 'zh' },
     }),
   }
 })
@@ -308,6 +312,48 @@ describe('PaymentView subscription plan grid', () => {
     expect(wrapper.get('[data-test="renewal-modal-panel"]').classes()).toEqual(
       expect.arrayContaining(['max-h-[calc(100dvh-2rem)]', 'overflow-y-auto'])
     )
+  })
+})
+
+describe('PaymentView recharge rate preview', () => {
+  it('uses a Chinese payment currency name in the Chinese recharge conversion copy', async () => {
+    translate.mockClear()
+    routeState.path = '/purchase'
+    routeState.query = {}
+    getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoFixture({
+      balance_recharge_multiplier: 0.5,
+      methods: {
+        stripe: {
+          ...checkoutInfoFixture().data.methods.wxpay,
+          currency: 'USD',
+        },
+      },
+    }))
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('input[type="number"]').setValue(10)
+    const continueButton = wrapper.findAll('button').find((button) =>
+      button.text().includes('payment.topup.continueToCheckout'),
+    )
+    expect(continueButton).toBeDefined()
+    await continueButton?.trigger('click')
+    await flushPromises()
+
+    expect(translate).toHaveBeenCalledWith('payment.rechargeRatePreview', {
+      currency: '美元',
+      balance: '0.50',
+    })
+    expect(en.payment.rechargeRatePreview).toBe('Recharge conversion: pay 1 {currency}, base credit CNY {balance}')
+    expect(zh.payment.rechargeRatePreview).toBe('充值换算：支付 1 {currency}，基础到账 ¥{balance}')
   })
 })
 

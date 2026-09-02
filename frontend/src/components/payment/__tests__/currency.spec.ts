@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { currencySymbol, formatPaymentAmount } from '../currency'
+import { currencySymbol, formatPaymentAmount, paymentCurrencyName } from '../currency'
 
 describe('formatPaymentAmount', () => {
   it('uses the currency default fraction digits', () => {
@@ -16,5 +16,14 @@ describe('currencySymbol', () => {
     expect(currencySymbol('EUR')).toBe('€')
     expect(currencySymbol('')).toBe('¥')
     expect(currencySymbol('XYZ')).toBe('XYZ')
+  })
+})
+
+describe('paymentCurrencyName', () => {
+  it('uses Chinese currency names for the Chinese interface', () => {
+    expect(paymentCurrencyName('CNY', 'zh-CN')).toBe('人民币')
+    expect(paymentCurrencyName('USD', 'zh-CN')).toBe('美元')
+    expect(paymentCurrencyName('HKD', 'zh-CN')).toBe('港币')
+    expect(paymentCurrencyName('XYZ', 'zh-CN')).toBe('XYZ')
   })
 })

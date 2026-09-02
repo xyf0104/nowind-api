@@ -23,9 +23,10 @@ type openAIQuotaWorkflowStub struct {
 	queryErr    error
 	cacheErr    error
 
-	resetCalls int
-	queryCalls int
-	cacheCalls int
+	resetCalls          int
+	queryCalls          int
+	cacheCalls          int
+	postResetCacheCalls int
 
 	queryCtxErr error
 	cacheCtxErr error
@@ -44,6 +45,13 @@ func (s *openAIQuotaWorkflowStub) QueryUsage(ctx context.Context, _ int64) (*ser
 
 func (s *openAIQuotaWorkflowStub) CacheResetCreditsSnapshot(ctx context.Context, _ int64, _ *service.OpenAIRateLimitResetCredits) error {
 	s.cacheCalls++
+	s.cacheCtxErr = ctx.Err()
+	return s.cacheErr
+}
+
+func (s *openAIQuotaWorkflowStub) CachePostResetSnapshot(ctx context.Context, _ int64, _ *service.OpenAIQuotaUsage) error {
+	s.cacheCalls++
+	s.postResetCacheCalls++
 	s.cacheCtxErr = ctx.Err()
 	return s.cacheErr
 }
@@ -198,6 +206,7 @@ func TestOpenAIResetQuota_RecoversAccountStateBeforeRefreshingCache(t *testing.T
 	require.Equal(t, 1, quota.resetCalls)
 	require.Equal(t, 1, quota.queryCalls)
 	require.Equal(t, 1, quota.cacheCalls)
+	require.Equal(t, 1, quota.postResetCacheCalls)
 	require.Equal(t, 1, recoverer.calls)
 	require.Equal(t, 1, adminService.calls)
 }
@@ -375,6 +384,7 @@ func TestOpenAIRefreshQuota_PersistsSnapshot(t *testing.T) {
 	require.Equal(t, int64(123), envelope.Data.FetchedAt)
 	require.Equal(t, 1, quota.queryCalls)
 	require.Equal(t, 1, quota.cacheCalls)
+	require.Equal(t, 0, quota.postResetCacheCalls)
 	require.Zero(t, quota.resetCalls)
 }
 
