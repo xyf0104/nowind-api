@@ -217,7 +217,7 @@ func executionNodeTunnelEndpoint(peer *url.URL, kind string) string {
 }
 
 func relayLocalConnectionToExecutionNode(local net.Conn, peer *url.URL, token, kind, requesterNodeID string, headers http.Header) {
-	defer local.Close()
+	defer func() { _ = local.Close() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if headers == nil {
@@ -235,8 +235,8 @@ func relayLocalConnectionToExecutionNode(local net.Conn, peer *url.URL, token, k
 }
 
 func relayBidirectional(left, right net.Conn) {
-	defer left.Close()
-	defer right.Close()
+	defer func() { _ = left.Close() }()
+	defer func() { _ = right.Close() }()
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(left, right); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(right, left); done <- struct{}{} }()
@@ -244,7 +244,7 @@ func relayBidirectional(left, right net.Conn) {
 }
 
 func handleExecutionNodeSOCKSConnection(conn net.Conn, localNodeID, token string, nodeURLs map[string]*url.URL) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 	reader := bufio.NewReader(conn)
 	ownerNodeID, destination, err := readExecutionNodeSOCKSRequest(reader, conn, token)

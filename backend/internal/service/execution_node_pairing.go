@@ -429,18 +429,21 @@ func (s *SettingService) ensureExecutionNodeDatabaseIdentity(ctx context.Context
 }
 
 func (s *SettingService) localPairingMaterial(ctx context.Context) (databaseFingerprint, redisFingerprint, authFingerprint, stateFingerprint string, err error) {
+	if s == nil {
+		return "", "", "", "", errors.New("local pairing service is unavailable")
+	}
+	if s.cfg == nil {
+		return "", "", "", "", errors.New("local auth configuration is unavailable")
+	}
+	if s.executionNodePairingState == nil {
+		return "", "", "", "", errors.New("redis shared-state identity is unavailable")
+	}
 	databaseID, err := s.ensureExecutionNodeDatabaseIdentity(ctx)
 	if err != nil {
 		return "", "", "", "", err
 	}
 	databaseFingerprint = executionNodeFingerprint("postgres", databaseID)
-	if s == nil || s.cfg == nil {
-		return databaseFingerprint, "", "", "", errors.New("local auth configuration is unavailable")
-	}
 	authFingerprint = executionNodeAuthFingerprint(s.cfg.JWT.Secret, s.cfg.Totp.EncryptionKey)
-	if s == nil || s.executionNodePairingState == nil {
-		return databaseFingerprint, "", authFingerprint, "", errors.New("Redis shared-state identity is unavailable")
-	}
 	redisID, err := s.executionNodePairingState.EnsureSharedStateIdentity(ctx, uuid.NewString())
 	if err != nil {
 		return databaseFingerprint, "", authFingerprint, "", fmt.Errorf("ensure Redis cluster identity: %w", err)
@@ -549,7 +552,7 @@ func normalizeExecutionNodePeerURL(raw string) (*url.URL, error) {
 	}
 	if u.Scheme != "https" {
 		host := strings.ToLower(u.Hostname())
-		if u.Scheme != "http" || !(host == "localhost" || host == "127.0.0.1" || host == "::1") {
+		if u.Scheme != "http" || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_URL_INVALID", "peer URL must use HTTPS; HTTP is allowed only for local testing")
 		}
 	}
@@ -657,7 +660,7 @@ func (s *SettingService) PairExecutionNodeWithTarget(ctx context.Context, peerUR
 	if err != nil {
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_UNREACHABLE", "cannot reach the peer pairing endpoint")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	limited := io.LimitReader(response.Body, executionNodePairingMaxResponseSize)
 	responseBody, err := io.ReadAll(limited)
 	if err != nil {

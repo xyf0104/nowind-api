@@ -112,13 +112,13 @@ func (h *ExecutionNodePairingHandler) Tunnel(c *gin.Context) {
 		return
 	}
 	wsConn.SetReadLimit(256 * 1024 * 1024)
-	defer wsConn.Close(coderws.StatusNormalClosure, "")
+	defer func() { _ = wsConn.Close(coderws.StatusNormalClosure, "") }()
 	remote, err := net.DialTimeout("tcp", net.JoinHostPort(targetHost, strconv.Itoa(targetPort)), 10*time.Second)
 	if err != nil {
 		_ = wsConn.Close(coderws.StatusBadGateway, "source target unavailable")
 		return
 	}
-	defer remote.Close()
+	defer func() { _ = remote.Close() }()
 	websocketConn := coderws.NetConn(c.Request.Context(), wsConn, coderws.MessageBinary)
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(remote, websocketConn); done <- struct{}{} }()
