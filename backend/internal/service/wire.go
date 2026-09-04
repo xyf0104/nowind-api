@@ -770,8 +770,8 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
-func ProvideExecutionNodeHeartbeatService(redisClient *redis.Client, cfg *config.Config) *ExecutionNodeHeartbeatService {
-	svc := NewExecutionNodeHeartbeatService(redisClient, cfg)
+func ProvideExecutionNodeHeartbeatService(store ExecutionNodeHeartbeatStore, cfg *config.Config) *ExecutionNodeHeartbeatService {
+	svc := NewExecutionNodeHeartbeatService(store, cfg)
 	svc.Start()
 	return svc
 }

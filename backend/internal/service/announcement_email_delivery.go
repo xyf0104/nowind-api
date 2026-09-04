@@ -417,14 +417,14 @@ func escapeAnnouncementEmailInlineHTML(content string) string {
 	for cursor := 0; cursor < len(content); {
 		open := strings.IndexByte(content[cursor:], '<')
 		if open < 0 {
-			out.WriteString(content[cursor:])
+			_, _ = out.WriteString(content[cursor:])
 			break
 		}
 		open += cursor
-		out.WriteString(content[cursor:open])
+		_, _ = out.WriteString(content[cursor:open])
 		close := strings.IndexByte(content[open:], '>')
 		if close < 0 {
-			out.WriteString(content[open:])
+			_, _ = out.WriteString(content[open:])
 			break
 		}
 		close += open

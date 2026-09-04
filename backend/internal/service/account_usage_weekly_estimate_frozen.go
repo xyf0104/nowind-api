@@ -175,7 +175,6 @@ func calculateOpenAIWeeklyFrozenEstimate(
 			if !snapshotMatched || observedAt.IsZero() {
 				return state.value(), nil
 			}
-			stateOK = false
 		} else if !snapshotMatched || !validOpenAIWeeklyEstimateValue(snapshotCost) ||
 			snapshotCost > currentCost+openAIWeeklyEstimateEpsilon {
 			return state.value(), nil

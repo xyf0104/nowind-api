@@ -741,7 +741,7 @@ func (h *OpenAIOAuthHandler) teamMailboxShareRequestedAccount(ctx context.Contex
 	}
 	accountEmail, valid := teamMailboxShareableEmail(account)
 	if !valid || !strings.EqualFold(accountEmail, email) {
-		return 0, errors.New("Team account does not match mailbox")
+		return 0, errors.New("team account does not match mailbox")
 	}
 	return accountID, nil
 }

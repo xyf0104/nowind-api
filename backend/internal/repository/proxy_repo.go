@@ -683,7 +683,7 @@ func (r *proxyRepository) loadExecutionNodeProxyFallbackPolicy(ctx context.Conte
 		// an unverified egress.
 		return executionNodeProxyFallbackPolicy{enabled: true}
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var enabledRaw, proxyIDsRaw string
 	for rows.Next() {

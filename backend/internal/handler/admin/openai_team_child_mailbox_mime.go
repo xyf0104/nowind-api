@@ -401,14 +401,14 @@ func teamMailboxWriteSafeHTML(output *strings.Builder, node *xhtml.Node) {
 		}
 		_, allowed := teamMailboxSafeHTMLTags[tag]
 		if allowed {
-			output.WriteByte('<')
+			_ = output.WriteByte('<')
 			output.WriteString(tag)
 			for _, attribute := range teamMailboxSafeHTMLAttributes(tag, node.Attr) {
-				output.WriteByte(' ')
+				_ = output.WriteByte(' ')
 				output.WriteString(attribute.name)
 				output.WriteString(`="`)
 				output.WriteString(stdhtml.EscapeString(attribute.value))
-				output.WriteByte('"')
+				_ = output.WriteByte('"')
 			}
 			output.WriteByte('>')
 			if _, void := teamMailboxVoidHTMLTags[tag]; void {

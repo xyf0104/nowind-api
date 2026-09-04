@@ -745,20 +745,3 @@ func executionNodeSelectionAnchor(parts ...string) string {
 	}
 	return builder.String()
 }
-
-func validateExecutionNodeRoutingSettings(enabled bool, weights map[string]float64) (map[string]float64, error) {
-	normalized, err := normalizeExecutionNodeWeights(weights)
-	if err != nil {
-		return nil, err
-	}
-	if enabled {
-		hasPositive := false
-		for _, weight := range normalized {
-			hasPositive = hasPositive || weight > 0
-		}
-		if !hasPositive {
-			return nil, fmt.Errorf("at least one execution node must be enabled")
-		}
-	}
-	return normalized, nil
-}
