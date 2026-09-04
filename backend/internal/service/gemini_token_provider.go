@@ -117,7 +117,9 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		}
 
 		var proxyURL string
-		if account.ProxyID != nil && p.geminiOAuthService.proxyRepo != nil {
+		if account.executionProxy != nil {
+			proxyURL = account.executionProxy.URL()
+		} else if account.ProxyID != nil && p.geminiOAuthService.proxyRepo != nil {
 			if proxy, err := p.geminiOAuthService.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
 				proxyURL = proxy.URL()
 			}

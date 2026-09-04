@@ -395,7 +395,17 @@ export default {
         title: '网关调度设置',
         description: '控制 API Key 的调度行为',
         allowUngroupedKey: '允许未分组 Key 调度',
-        allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。'
+        allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。',
+        executionNodeBalancing: '多节点执行负载均衡',
+        executionNodeBalancingHint: '所有 XIASS 实例均可对等接收请求；在当前最高账号优先级内，按账号归属节点分配新会话。已有粘性会话和不可迁移的 previous_response 链保持原账号与固定出口。',
+        executionNodeID: '节点 ID',
+        executionNodeWeight: '权重',
+        executionNodeProxyID: '出口代理 ID',
+        addExecutionNode: '添加节点',
+        removeExecutionNode: '删除节点',
+        executionNodeWeightsHint: '这里是账号调度权重，不是公网入口流量权重。设为 0 只排空该节点归属账号，不关闭其对等应用入口，也不中断已有会话。每个节点必须绑定不同且仅私网可达的出口代理；鉴权、余额和记录必须使用同一套 HA PostgreSQL 与 Redis。',
+        executionNodeWeightsError: '节点 ID 只能包含字母、数字、点、下划线或连字符且不可重复；权重必须是非负数字，并至少有一个大于 0。',
+        executionNodeProxyIDsError: '启用多节点前，每个节点都必须填写不同的有效出口代理 ID。',
       },
       upstreamBillingProbe: {
         title: '上游倍率自动探测',

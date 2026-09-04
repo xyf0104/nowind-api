@@ -4849,6 +4849,102 @@
               </div>
 
               <div
+                class="border-t border-gray-100 pt-5 dark:border-dark-700"
+                data-testid="execution-node-balancing-settings"
+              >
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+                  <div class="min-w-0">
+                    <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.scheduling.executionNodeBalancing") }}
+                    </label>
+                    <p class="mt-0.5 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.scheduling.executionNodeBalancingHint") }}
+                    </p>
+                  </div>
+                  <div class="shrink-0 self-start">
+                    <Toggle
+                      v-model="form.execution_node_balancing_enabled"
+                      data-testid="execution-node-balancing-toggle"
+                    />
+                  </div>
+                </div>
+
+                <div
+                  v-if="form.execution_node_balancing_enabled"
+                  class="mt-4 space-y-3"
+                >
+                  <div
+                    v-for="row in executionNodeWeightRows"
+                    :key="row.key"
+                    class="grid min-w-0 grid-cols-2 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.72fr)_minmax(0,0.9fr)_2.25rem]"
+                  >
+                    <label class="block min-w-0">
+                      <span class="block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ t("admin.settings.scheduling.executionNodeID") }}
+                      </span>
+                      <input
+                        v-model.trim="row.nodeID"
+                        class="input mt-1 w-full"
+                        :data-testid="`execution-node-id-${row.key}`"
+                        maxlength="64"
+                        type="text"
+                      />
+                    </label>
+                    <label class="block min-w-0">
+                      <span class="block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ t("admin.settings.scheduling.executionNodeWeight") }}
+                      </span>
+                      <input
+                        v-model.number="row.weight"
+                        class="input mt-1 w-full"
+                        :data-testid="`execution-node-weight-${row.key}`"
+                        inputmode="decimal"
+                        min="0"
+                        step="0.1"
+                        type="number"
+                      />
+                    </label>
+                    <label class="block min-w-0">
+                      <span class="block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ t("admin.settings.scheduling.executionNodeProxyID") }}
+                      </span>
+                      <div class="mt-1" :data-testid="`execution-node-proxy-${row.key}`">
+                        <ProxySelector
+                          v-model="row.proxyID"
+                          :proxies="webSearchProxies"
+                        />
+                      </div>
+                    </label>
+                    <button
+                      type="button"
+                      class="btn btn-secondary col-span-2 flex h-10 w-9 items-center justify-center self-end p-0 text-red-600 hover:text-red-700 disabled:text-gray-300 dark:text-red-400 dark:disabled:text-dark-500 sm:col-span-1"
+                      :aria-label="t('admin.settings.scheduling.removeExecutionNode')"
+                      :title="t('admin.settings.scheduling.removeExecutionNode')"
+                      :disabled="executionNodeWeightRows.length <= 1"
+                      @click="removeExecutionNodeWeightRow(row.key)"
+                    >
+                      <Icon name="trash" size="sm" />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-secondary btn-sm inline-flex items-center gap-1.5"
+                    :disabled="executionNodeWeightRows.length >= 32"
+                    @click="addExecutionNodeWeightRow"
+                  >
+                    <Icon name="plus" size="sm" />
+                    <span>{{ t("admin.settings.scheduling.addExecutionNode") }}</span>
+                  </button>
+                </div>
+                <p
+                  v-if="form.execution_node_balancing_enabled"
+                  class="mt-3 text-xs leading-5 text-gray-500 dark:text-gray-400"
+                >
+                  {{ t("admin.settings.scheduling.executionNodeWeightsHint") }}
+                </p>
+              </div>
+
+              <div
                 v-if="!form.openai_advanced_scheduler_enabled"
                 class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
               >
@@ -9270,6 +9366,105 @@ type SettingsForm = Omit<
   default_platform_quotas: DefaultPlatformQuotasMap;
 };
 
+interface ExecutionNodeWeightRow {
+  key: number;
+  nodeID: string;
+  weight: number;
+  proxyID: number | null;
+}
+
+let executionNodeWeightRowSequence = 0;
+const executionNodeWeightRows = ref<ExecutionNodeWeightRow[]>([
+  { key: ++executionNodeWeightRowSequence, nodeID: "api", weight: 1, proxyID: null },
+  { key: ++executionNodeWeightRowSequence, nodeID: "api2", weight: 1, proxyID: null },
+]);
+
+function setExecutionNodeWeightRows(
+  weights?: Record<string, number>,
+  proxyIDs?: Record<string, number>,
+): void {
+  const entries: Array<[string, number]> = Object.entries(weights || {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  const source: Array<[string, number]> = entries.length > 0
+    ? entries
+    : [["api", 1], ["api2", 1]];
+  executionNodeWeightRows.value = source.map(([nodeID, weight]) => ({
+    key: ++executionNodeWeightRowSequence,
+    nodeID,
+    weight: Number(weight),
+    proxyID: proxyIDs?.[nodeID] ? Number(proxyIDs[nodeID]) : null,
+  }));
+}
+
+function addExecutionNodeWeightRow(): void {
+  const used = new Set(executionNodeWeightRows.value.map((row) => row.nodeID));
+  let suffix = executionNodeWeightRows.value.length + 1;
+  let nodeID = `node${suffix}`;
+  while (used.has(nodeID)) {
+    suffix += 1;
+    nodeID = `node${suffix}`;
+  }
+  executionNodeWeightRows.value.push({
+    key: ++executionNodeWeightRowSequence,
+    nodeID,
+    weight: 1,
+    proxyID: null,
+  });
+}
+
+function removeExecutionNodeWeightRow(key: number): void {
+  if (executionNodeWeightRows.value.length <= 1) return;
+  executionNodeWeightRows.value = executionNodeWeightRows.value.filter(
+    (row) => row.key !== key,
+  );
+}
+
+function normalizedExecutionNodeWeights(): Record<string, number> | null {
+  const weights: Record<string, number> = {};
+  let hasPositive = false;
+  for (const row of executionNodeWeightRows.value) {
+    const nodeID = row.nodeID.trim();
+    const weight = Number(row.weight);
+    if (
+      !/^[A-Za-z0-9._-]{1,64}$/.test(nodeID) ||
+      Object.prototype.hasOwnProperty.call(weights, nodeID) ||
+      !Number.isFinite(weight) ||
+      weight < 0 ||
+      weight > 1_000_000
+    ) {
+      return null;
+    }
+    weights[nodeID] = weight;
+    hasPositive ||= weight > 0;
+  }
+  return hasPositive ? weights : null;
+}
+
+function normalizedExecutionNodeProxyIDs(requireComplete = false): Record<string, number> | null {
+  const proxyIDs: Record<string, number> = {};
+  for (const row of executionNodeWeightRows.value) {
+    const nodeID = row.nodeID.trim();
+    const proxyID = Number(row.proxyID);
+    if (
+      !/^[A-Za-z0-9._-]{1,64}$/.test(nodeID) ||
+      Object.prototype.hasOwnProperty.call(proxyIDs, nodeID)
+    ) {
+      return null;
+    }
+    if (!Number.isFinite(proxyID) || proxyID < 0 || proxyID !== Math.floor(proxyID)) {
+      return null;
+    }
+    if (Number.isFinite(proxyID) && proxyID > 0) {
+      if (Object.values(proxyIDs).includes(proxyID)) return null;
+      proxyIDs[nodeID] = Math.floor(proxyID);
+    } else if (requireComplete) {
+      return null;
+    }
+  }
+  return proxyIDs;
+}
+
 type RechargeBonusRuleForm = {
   threshold: number;
   bonus: number;
@@ -9547,6 +9742,9 @@ const form = reactive<SettingsForm>({
   max_claude_code_version: "",
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
+  execution_node_balancing_enabled: false,
+  execution_node_weights: { api: 1, api2: 1 },
+  execution_node_proxy_ids: {},
   openai_low_upstream_rate_priority_enabled: false,
   openai_oauth_scheduling_rate_multiplier: 1,
   openai_advanced_scheduler_enabled: false,
@@ -9929,15 +10127,15 @@ async function testWebSearchProvider() {
 
 async function loadWebSearchConfig() {
   try {
-    const [resp, proxiesResp] = await Promise.all([
+    const [resp, proxies] = await Promise.all([
       adminAPI.settings.getWebSearchEmulationConfig(),
-      adminAPI.proxies.list().catch(() => ({ items: [] as Proxy[] })),
+      adminAPI.proxies.getAll().catch(() => [] as Proxy[]),
     ]);
     if (resp) {
       webSearchConfig.enabled = resp.enabled || false;
       webSearchConfig.providers = resp.providers || [];
     }
-    webSearchProxies.value = proxiesResp.items || [];
+    webSearchProxies.value = proxies || [];
   } catch (err: unknown) {
     // 404 is expected when config hasn't been created yet; show error for other failures
     const status = (err as { status?: number })?.status;
@@ -10554,6 +10752,7 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    setExecutionNodeWeightRows(settings.execution_node_weights, settings.execution_node_proxy_ids);
     syncCaptchaProviderSelection();
     if (!form.claude_oauth_system_prompt_blocks?.trim()) {
       form.claude_oauth_system_prompt_blocks =
@@ -10775,6 +10974,21 @@ function findDuplicateDefaultSubscription(
 async function saveSettings() {
   saving.value = true;
   try {
+    const executionNodeWeights = normalizedExecutionNodeWeights();
+    const executionNodeProxyIDs = normalizedExecutionNodeProxyIDs(
+      form.execution_node_balancing_enabled,
+    );
+    if (!executionNodeWeights) {
+      appStore.showError(t("admin.settings.scheduling.executionNodeWeightsError"));
+      return;
+    }
+    if (!executionNodeProxyIDs) {
+      appStore.showError(t("admin.settings.scheduling.executionNodeProxyIDsError"));
+      return;
+    }
+    form.execution_node_weights = executionNodeWeights;
+    form.execution_node_proxy_ids = executionNodeProxyIDs;
+
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
     );
@@ -11114,6 +11328,9 @@ async function saveSettings() {
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      execution_node_balancing_enabled: form.execution_node_balancing_enabled,
+      execution_node_weights: executionNodeWeights,
+      execution_node_proxy_ids: executionNodeProxyIDs,
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
       enable_fingerprint_unification: form.enable_fingerprint_unification,

@@ -12,6 +12,7 @@ import (
 
 // stubMonitorSvc 实现 monitorRunnerSvc，用于隔离 runner 与真实 service/repo。
 type stubMonitorSvc struct {
+	enabledMu  sync.RWMutex
 	enabled    []*ChannelMonitor
 	runCount   atomic.Int64
 	runCalled  chan int64 // 每次 RunCheck 触发时 push 一次（缓冲足够大避免阻塞）
@@ -21,10 +22,18 @@ type stubMonitorSvc struct {
 }
 
 func (s *stubMonitorSvc) ListEnabledMonitors(_ context.Context) ([]*ChannelMonitor, error) {
+	s.enabledMu.RLock()
+	defer s.enabledMu.RUnlock()
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
-	return s.enabled, nil
+	return append([]*ChannelMonitor(nil), s.enabled...), nil
+}
+
+func (s *stubMonitorSvc) setEnabled(monitors ...*ChannelMonitor) {
+	s.enabledMu.Lock()
+	s.enabled = append([]*ChannelMonitor(nil), monitors...)
+	s.enabledMu.Unlock()
 }
 
 func (s *stubMonitorSvc) RunCheck(ctx context.Context, id int64) ([]*CheckResult, error) {
@@ -280,6 +289,21 @@ func TestStart_SkipsDecryptFailedMonitor(t *testing.T) {
 	if got := svc.runCount.Load(); got != 0 {
 		t.Fatalf("expected decrypt-failed startup monitor not to run, got %d calls", got)
 	}
+
+	stoppedWithin(t, r, 3*time.Second)
+}
+
+func TestReconcilerAppliesChangesWrittenByAnotherInstance(t *testing.T) {
+	svc := &stubMonitorSvc{runCalled: make(chan int64, 4)}
+	r := newRunnerForTest(svc)
+	r.reconcileInterval = 20 * time.Millisecond
+	r.Start()
+
+	svc.setEnabled(&ChannelMonitor{ID: 21, Name: "shared", Enabled: true, IntervalSeconds: 60})
+	waitFor(t, time.Second, "shared monitor scheduled", func() bool { return runnerTaskCount(r) == 1 })
+
+	svc.setEnabled()
+	waitFor(t, time.Second, "shared monitor removed", func() bool { return runnerTaskCount(r) == 0 })
 
 	stoppedWithin(t, r, 3*time.Second)
 }

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -720,7 +721,7 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "image/png")
-		assert.Empty(t, w.Header().Get("Cache-Control"))
+		assert.Equal(t, stableBrandCacheControl, w.Header().Get("Cache-Control"))
 
 		entries, err := fs.ReadDir(server.distFS, "assets")
 		require.NoError(t, err)
@@ -752,6 +753,27 @@ func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	} {
 		require.True(t, shouldBypassEmbeddedFrontend(path), "path=%s", path)
 	}
+}
+
+func TestEmbeddedFrontendBypassesReadinessRoute(t *testing.T) {
+	require.True(t, shouldBypassEmbeddedFrontend("/readyz"))
+}
+
+func TestEmbeddedFrontendMiddlewarePassesReadinessRouteToRegisteredHandler(t *testing.T) {
+	server, err := NewFrontendServer(&mockSettingsProvider{})
+	require.NoError(t, err)
+
+	router := gin.New()
+	router.Use(server.Middleware())
+	router.GET("/readyz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"status":"ok"}`, recorder.Body.String())
 }
 
 func TestNewFrontendServer(t *testing.T) {

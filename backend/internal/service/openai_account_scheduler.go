@@ -139,6 +139,8 @@ type openAIAccountLoadPlan struct {
 	topK                      int
 	loadSkew                  float64
 	includeOverflowFallback   bool
+	executionNodePolicy       executionNodeRoutingPolicy
+	executionNodeAnchor       string
 }
 
 type openAIAccountLoadSelectionAttempt struct {
@@ -592,6 +594,24 @@ func openAIRequestHasStickyAnchor(req OpenAIAccountScheduleRequest) bool {
 	return req.StickyPreviousAccountID > 0 || req.StickyAccountID > 0
 }
 
+func isOpenAIExecutionNodeBoundCandidate(req OpenAIAccountScheduleRequest, accountID int64) bool {
+	if !req.StickyWeighted || accountID <= 0 {
+		return false
+	}
+	// Ordinary sticky sessions survive a node drain. A movable previous-response
+	// hint is only a score preference and must migrate away from a drained node;
+	// hard, non-movable response affinity is handled before load balancing.
+	return req.StickyAccountID > 0 && accountID == req.StickyAccountID
+}
+
+func openAIExecutionNodeCandidateAllowed(policy executionNodeRoutingPolicy, req OpenAIAccountScheduleRequest, account *Account) bool {
+	if !policy.candidateAccountEgressAllowed(account) {
+		return false
+	}
+	return policy.weight(policy.nodeID(account)) > 0 ||
+		(account != nil && isOpenAIExecutionNodeBoundCandidate(req, account.ID))
+}
+
 func highestPriorityOpenAICandidates(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 	if len(candidates) <= 1 {
 		return candidates
@@ -881,6 +901,8 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	filtered []*Account,
 	loadMap map[int64]*AccountLoadInfo,
 ) openAIAccountLoadPlan {
+	executionNodePolicy := resolveExecutionNodeRoutingPolicy(ctx, s.service.cfg, s.service.settingService)
+	executionNodeAnchor := executionNodeSelectionAnchor(req.SessionHash, req.PreviousResponseID)
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo, loadKnown := loadMap[account.ID]
@@ -923,6 +945,8 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		candidates:                candidates,
 		staleSnapshotCompactRetry: staleSnapshotCompactRetry,
 		candidateCount:            len(candidates),
+		executionNodePolicy:       executionNodePolicy,
+		executionNodeAnchor:       executionNodeAnchor,
 	}
 	if len(candidates) == 0 {
 		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
@@ -1077,7 +1101,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	req OpenAIAccountScheduleRequest,
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
-	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	buildNodeSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 		if len(pool) == 0 || plan.topK <= 0 {
 			return nil
 		}
@@ -1136,6 +1160,28 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		})
 		return append(primary, overflow...)
 	}
+	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+		bound := make([]openAIAccountCandidateScore, 0, 1)
+		weightedPool := make([]openAIAccountCandidateScore, 0, len(pool))
+		for _, candidate := range pool {
+			if candidate.account != nil && isOpenAIExecutionNodeBoundCandidate(req, candidate.account.ID) {
+				bound = append(bound, candidate)
+				continue
+			}
+			weightedPool = append(weightedPool, candidate)
+		}
+		selectionOrder := buildNodeSelectionOrder(bound)
+		partitions := partitionExecutionNodeCandidates(
+			weightedPool,
+			func(candidate openAIAccountCandidateScore) *Account { return candidate.account },
+			plan.executionNodePolicy,
+			plan.executionNodeAnchor,
+		)
+		for _, partition := range partitions {
+			selectionOrder = append(selectionOrder, buildNodeSelectionOrder(partition)...)
+		}
+		return selectionOrder
+	}
 
 	if req.RequireCompact {
 		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
@@ -1152,7 +1198,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
 		selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
-			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
+			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry, plan.executionNodePolicy, req)...)
 		}
 		return selectionOrder
 	}
@@ -1160,7 +1206,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	return buildSelectionOrder(plan.candidates)
 }
 
-func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore, policy executionNodeRoutingPolicy, req OpenAIAccountScheduleRequest) []openAIAccountCandidateScore {
 	if len(pool) == 0 {
 		return nil
 	}
@@ -1187,7 +1233,13 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 			return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 		}
 	})
-	return ordered
+	filtered := ordered[:0]
+	for _, candidate := range ordered {
+		if openAIExecutionNodeCandidateAllowed(policy, req, candidate.account) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
@@ -1469,6 +1521,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	filterStats := openAISelectionFilterStats{pool: len(accounts)}
+	executionNodePolicy := resolveExecutionNodeRoutingPolicy(ctx, s.service.cfg, s.service.settingService)
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
@@ -1503,6 +1556,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			filterStats.exclude("transport_incompatible")
+			continue
+		}
+		if !openAIExecutionNodeCandidateAllowed(executionNodePolicy, req, account) {
+			if executionNodePolicy.candidateAccountEgressAllowed(account) {
+				filterStats.exclude("execution_node_drained")
+				continue
+			}
+			filterStats.exclude("execution_node_egress_unavailable")
 			continue
 		}
 		filtered = append(filtered, account)

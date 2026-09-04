@@ -197,6 +197,8 @@ export default {
         groups: 'Groups',
         usageWindows: 'Usage Windows',
         proxy: 'Proxy',
+        executionNode: 'Execution node',
+        executionNodeHint: 'This account uses the selected node egress for upstream traffic. Read-only.',
         lastUsed: 'Last Used',
         recentActivity: 'Recent Activity',
         createdAt: 'Created',

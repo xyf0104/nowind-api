@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
@@ -216,6 +217,7 @@ type UpdateAccountRequest struct {
 type AccountService struct {
 	accountRepo AccountRepository
 	groupRepo   GroupRepository
+	cfg         *config.Config
 }
 
 type groupExistenceBatchChecker interface {
@@ -230,6 +232,14 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 	}
 }
 
+// SetConfig enables node attribution for legacy construction sites without
+// changing NewAccountService's stable test-facing signature.
+func (s *AccountService) SetConfig(cfg *config.Config) {
+	if s != nil {
+		s.cfg = cfg
+	}
+}
+
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
 	// 验证分组是否存在（如果指定了分组）
@@ -239,6 +249,7 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		}
 	}
 
+	req.Extra, req.ProxyID = applyExecutionNodeForCreate(s.cfg, req.Extra, req.ProxyID)
 	// 创建账号
 	account := &Account{
 		Name:        req.Name,
@@ -349,13 +360,21 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		delete(extra, OllamaCloudUsageSessionExtraKey)
 		delete(extra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(extra, OllamaCloudUsageSnapshotExtraKey)
-		account.Extra = prepareCodexFingerprintExtraForUpdate(account, extra)
+		account.Extra = prepareCodexFingerprintExtraForUpdate(account, preserveExecutionNodeOnUpdate(account, extra))
 	} else {
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
 	}
 
 	if req.ProxyID != nil {
-		account.ProxyID = req.ProxyID
+		if s.cfg != nil && s.cfg.Gateway.ExecutionNode.Enabled && s.cfg.Gateway.ExecutionNode.DefaultProxyID > 0 {
+			// Execution-node ownership is durable account state. This legacy service
+			// does not have the shared policy needed to migrate an existing account,
+			// so it must never rewrite an account's proxy to the node handling the
+			// edit request. AdminAccountService performs the stricter immutable
+			// validation; keeping the current value here protects older callers too.
+		} else {
+			account.ProxyID = req.ProxyID
+		}
 	}
 
 	if req.Concurrency != nil {

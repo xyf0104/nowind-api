@@ -630,6 +630,62 @@ func TestBackupService_Schedule_CronValidation(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBackupService_MultiNodeReplicaPersistsScheduleWithoutRunningCron(t *testing.T) {
+	repo := newMockSettingRepo()
+	cfg := &config.Config{
+		Database: config.DatabaseConfig{Host: "localhost", Port: 5432, User: "test", DBName: "testdb"},
+		Totp:     config.TotpConfig{EncryptionKeyConfigured: true},
+	}
+	cfg.Gateway.ExecutionNode.Enabled = true
+	cfg.Gateway.ExecutionNode.ControlPlane = false
+	svc := NewBackupService(repo, cfg, &plainEncryptor{}, func(_ context.Context, _ *BackupS3Config) (BackupObjectStore, error) {
+		return newMockObjectStore(), nil
+	}, &mockDumper{})
+	svc.Start()
+	t.Cleanup(svc.Stop)
+
+	_, err := svc.UpdateSchedule(context.Background(), BackupScheduleConfig{Enabled: true, CronExpr: "0 2 * * *"})
+	require.NoError(t, err)
+	svc.cronMu.Lock()
+	entryID := svc.cronEntryID
+	svc.cronMu.Unlock()
+	require.Zero(t, entryID)
+}
+
+func TestBackupService_ControlPlaneReconcilesScheduleWrittenByPeer(t *testing.T) {
+	repo := newMockSettingRepo()
+	cfg := &config.Config{
+		Database: config.DatabaseConfig{Host: "localhost", Port: 5432, User: "test", DBName: "testdb"},
+		Totp:     config.TotpConfig{EncryptionKeyConfigured: true},
+	}
+	cfg.Gateway.ExecutionNode.Enabled = true
+	cfg.Gateway.ExecutionNode.ControlPlane = true
+	svc := NewBackupService(repo, cfg, &plainEncryptor{}, func(_ context.Context, _ *BackupS3Config) (BackupObjectStore, error) {
+		return newMockObjectStore(), nil
+	}, &mockDumper{})
+	svc.schedulePollInterval = 10 * time.Millisecond
+	svc.Start()
+	t.Cleanup(svc.Stop)
+
+	raw, err := json.Marshal(BackupScheduleConfig{Enabled: true, CronExpr: "0 2 * * *"})
+	require.NoError(t, err)
+	require.NoError(t, repo.Set(context.Background(), settingKeyBackupSchedule, string(raw)))
+	require.Eventually(t, func() bool {
+		svc.cronMu.Lock()
+		defer svc.cronMu.Unlock()
+		return svc.cronEntryID != 0 && svc.cronExpr == "0 2 * * *"
+	}, time.Second, 10*time.Millisecond)
+
+	raw, err = json.Marshal(BackupScheduleConfig{})
+	require.NoError(t, err)
+	require.NoError(t, repo.Set(context.Background(), settingKeyBackupSchedule, string(raw)))
+	require.Eventually(t, func() bool {
+		svc.cronMu.Lock()
+		defer svc.cronMu.Unlock()
+		return svc.cronEntryID == 0 && svc.cronExpr == ""
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestBackupService_LoadS3Config_Corrupted(t *testing.T) {
 	repo := newMockSettingRepo()
 	_ = repo.Set(context.Background(), settingKeyBackupS3Config, "not json!!!!")

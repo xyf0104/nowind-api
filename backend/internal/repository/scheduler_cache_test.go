@@ -37,6 +37,33 @@ func TestSchedulerMetadataAccountKeepsOpenAISubscriptionIdentity(t *testing.T) {
 	require.Empty(t, metadata.GetCredential("access_token"))
 }
 
+func TestSchedulerMetadataAccountKeepsExecutionNodeOwnership(t *testing.T) {
+	proxyID := int64(204)
+	account := service.Account{
+		ID:       25,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		ProxyID:  &proxyID,
+		Proxy:    &service.Proxy{ID: proxyID, Status: service.StatusActive},
+		Extra: map[string]any{
+			service.AccountExecutionNodeExtraKey: "api2",
+			"unused_large_field":                 "drop-me",
+		},
+	}
+
+	metadata := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, "api2", metadata.ExecutionNodeID("api"))
+	require.NotNil(t, metadata.ProxyID)
+	require.Equal(t, proxyID, *metadata.ProxyID)
+	require.NotNil(t, metadata.Proxy)
+	require.Equal(t, proxyID, metadata.Proxy.ID)
+	require.Equal(t, service.StatusActive, metadata.Proxy.Status)
+	require.Empty(t, metadata.Proxy.Host)
+	require.Empty(t, metadata.Proxy.Password)
+	require.NotContains(t, metadata.Extra, "unused_large_field")
+}
+
 func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 	lastError := strings.Repeat("upstream diagnostic ", 512)
 	probe := map[string]any{

@@ -883,7 +883,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Get proxy URL
 		proxyURL := ""
 		if account.ProxyID != nil && account.Proxy != nil {
-			proxyURL = account.Proxy.URL()
+			proxyURL = account.requestProxyURL()
 		}
 
 		// Send request

@@ -89,9 +89,17 @@ func ProvideBatchImageModelPricingResolver(resolver *ModelPricingResolver) *Batc
 	return &BatchImageModelPricingResolver{Resolver: resolver}
 }
 
-func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config) *BatchImageCleanupService {
-	svc := NewBatchImageCleanupService(repo, accountRepo, cfg)
-	svc.Start()
+func ProvideBatchImageDownloadService(repo BatchImageRepository, accountRepo AccountRepository, limiter BatchImageDownloadLimiter, cfg *config.Config, settingService *SettingService) *BatchImageDownloadService {
+	svc := NewBatchImageDownloadService(repo, accountRepo, limiter, cfg)
+	svc.AccountResolver = &BatchImageAccountRepositoryResolver{Repo: accountRepo, Config: cfg, SettingService: settingService}
+	return svc
+}
+
+func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config, settingService *SettingService) *BatchImageCleanupService {
+	svc := NewBatchImageCleanupService(repo, accountRepo, cfg, settingService)
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -131,7 +139,9 @@ func ProvideTokenRefreshService(
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -282,7 +292,9 @@ func ProvideCNProviderBalanceCheckService(
 		minutes = cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes
 	}
 	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -343,14 +355,18 @@ func ProvideDashboardAggregationService(repo DashboardAggregationRepository, tim
 // ProvideUsageCleanupService 创建并启动使用记录清理任务服务
 func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *TimingWheelService, dashboardAgg *DashboardAggregationService, cfg *config.Config) *UsageCleanupService {
 	svc := NewUsageCleanupService(repo, timingWheel, dashboardAgg, cfg)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideAccountExpiryService creates and starts AccountExpiryService.
-func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
+func ProvideAccountExpiryService(accountRepo AccountRepository, cfg *config.Config) *AccountExpiryService {
 	svc := NewAccountExpiryService(accountRepo, time.Minute)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -360,16 +376,21 @@ func ProvideOpenAICodexVersionSyncService(
 	settingRepo SettingRepository,
 	settingService *SettingService,
 	githubClient GitHubReleaseClient,
+	cfg *config.Config,
 ) *OpenAICodexVersionSyncService {
 	svc := NewOpenAICodexVersionSyncService(settingRepo, settingService, githubClient, openAICodexVersionSyncInterval)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideProxyExpiryService creates and starts ProxyExpiryService.
-func ProvideProxyExpiryService(proxyRepo ProxyRepository) *ProxyExpiryService {
+func ProvideProxyExpiryService(proxyRepo ProxyRepository, cfg *config.Config) *ProxyExpiryService {
 	svc := NewProxyExpiryService(proxyRepo, time.Minute)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -569,7 +590,9 @@ func ProvideSystemOperationLockService(repo IdempotencyRepository, cfg *config.C
 
 func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
 	svc := NewIdempotencyCleanupService(repo, cfg)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -590,7 +613,9 @@ func ProvideScheduledTestRunnerService(
 	cfg *config.Config,
 ) *ScheduledTestRunnerService {
 	svc := NewScheduledTestRunnerService(planRepo, scheduledSvc, accountTestSvc, rateLimitSvc, cfg)
-	svc.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -745,10 +770,23 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
-func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
+func ProvideExecutionNodeHeartbeatService(redisClient *redis.Client, cfg *config.Config) *ExecutionNodeHeartbeatService {
+	svc := NewExecutionNodeHeartbeatService(redisClient, cfg)
+	svc.Start()
+	return svc
+}
+
+func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, accountRepo AccountRepository, heartbeat *ExecutionNodeHeartbeatService, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
+	if preparer, ok := accountRepo.(ExecutionNodeAccountPreparer); ok {
+		svc.SetExecutionNodeAccountPreparer(preparer)
+	}
+	if activator, ok := accountRepo.(ExecutionNodeRoutingActivator); ok {
+		svc.SetExecutionNodeRoutingActivator(activator)
+	}
+	svc.SetExecutionNodeHealthReader(heartbeat)
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)
 	}
@@ -799,6 +837,12 @@ func ProvideAPIKeyService(
 	return svc
 }
 
+func ProvideAccountService(accountRepo AccountRepository, groupRepo GroupRepository, cfg *config.Config) *AccountService {
+	svc := NewAccountService(accountRepo, groupRepo)
+	svc.SetConfig(cfg)
+	return svc
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -808,9 +852,10 @@ var ProviderSet = wire.NewSet(
 	ProvideAPIKeyService,
 	ProvideAPIKeyAuthCacheInvalidator,
 	ProvideAuthCacheInvalidationWorker,
+	ProvideExecutionNodeHeartbeatService,
 	NewGroupService,
 	NewCompositeRouteResolver,
-	NewAccountService,
+	ProvideAccountService,
 	NewProxyService,
 	NewRedeemService,
 	NewPromoService,
@@ -837,7 +882,7 @@ var ProviderSet = wire.NewSet(
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
-	NewBatchImageDownloadService,
+	ProvideBatchImageDownloadService,
 	ProvideBatchImageCleanupService,
 	ProvideBatchImageWorkerRuntime,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
@@ -995,15 +1040,24 @@ func ProvideChannelMonitorRunner(
 	svc *ChannelMonitorService,
 	settingService *SettingService,
 	quotaFetcher *ChannelMonitorQuotaFetcher,
+	cfg *config.Config,
 ) *ChannelMonitorRunner {
 	r := NewChannelMonitorRunner(svc, settingService)
 	if svc != nil {
 		// Ensure runtime reader is set even if ProvideChannelMonitorService
 		// was constructed without settings (tests / alternate providers).
 		svc.SetRuntimeReader(settingService)
-		svc.SetScheduler(r)
 		svc.SetQuotaFetcher(quotaFetcher)
 	}
-	r.Start()
+	if executionNodeControlPlaneEnabled(cfg) {
+		if svc != nil {
+			svc.SetScheduler(r)
+		}
+		r.Start()
+	}
 	return r
+}
+
+func executionNodeControlPlaneEnabled(cfg *config.Config) bool {
+	return cfg == nil || !cfg.Gateway.ExecutionNode.Enabled || cfg.Gateway.ExecutionNode.ControlPlane
 }

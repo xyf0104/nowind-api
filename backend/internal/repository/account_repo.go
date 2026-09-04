@@ -15,6 +15,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -104,6 +106,28 @@ func stripCodexFingerprintSeedFromExtraUpdate(extra map[string]any) map[string]a
 	return stripped
 }
 
+// stripExecutionNodeIDFromExtraUpdate protects the server-owned account
+// ownership marker from generic JSONB update paths. The accepting XIASS
+// instance assigns this value during account creation; edits, imports, and
+// runtime state updates must never be able to move an account to another
+// execution node.
+func stripExecutionNodeIDFromExtraUpdate(extra map[string]any) map[string]any {
+	if extra == nil {
+		return nil
+	}
+	if _, exists := extra[service.AccountExecutionNodeExtraKey]; !exists {
+		return extra
+	}
+	stripped := make(map[string]any, len(extra)-1)
+	for key, value := range extra {
+		if key == service.AccountExecutionNodeExtraKey {
+			continue
+		}
+		stripped[key] = value
+	}
+	return stripped
+}
+
 // NewAccountRepository 创建账户仓储实例。
 // 这是对外暴露的构造函数，返回接口类型以便于依赖注入。
 func NewAccountRepository(client *dbent.Client, sqlDB *sql.DB, schedulerCache service.SchedulerCache) service.AccountRepository {
@@ -130,6 +154,272 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account create failed: account=%d err=%v", account.ID, err)
 	}
 	return nil
+}
+
+// PrepareExecutionNodeRouting permanently assigns pre-feature accounts to the
+// configured legacy node and its private egress, then rejects activation when
+// any account would remain unrouteable. It is safe to retry after any partial
+// failure: only accounts without system ownership are updated.
+func (r *accountRepository) PrepareExecutionNodeRouting(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string) (int64, error) {
+	legacyNodeID = strings.TrimSpace(legacyNodeID)
+	if legacyNodeID == "" || legacyProxyID <= 0 || len(allowedNodeIDs) == 0 {
+		return 0, errors.New("invalid execution node migration parameters")
+	}
+	beginner, ok := r.sql.(interface {
+		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+	})
+	if !ok {
+		return 0, errors.New("execution node migration requires a transactional database")
+	}
+	tx, err := beginner.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin execution node migration transaction: %w", err)
+	}
+	migrated, err := r.prepareExecutionNodeRoutingTx(ctx, tx, legacyNodeID, legacyProxyID, allowedNodeIDs, nil)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit execution node migration: %w", err)
+	}
+	return migrated, nil
+}
+
+// PrepareAndEnableExecutionNodeRouting performs the first shared activation
+// as one transaction. Account ownership, validation, settings and the
+// scheduler rebuild event become visible together on commit.
+func (r *accountRepository) PrepareAndEnableExecutionNodeRouting(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, weights map[string]float64) (int64, error) {
+	return r.prepareAndEnableExecutionNodeRouting(ctx, legacyNodeID, legacyProxyID, allowedNodeIDs, weights, nil)
+}
+
+// PrepareAndEnableExecutionNodeRoutingWithProxyIDs is the strict activation
+// path. It makes account ownership, node weights, proxy ownership and the
+// shared switch visible in one transaction, so an incomplete or cross-node
+// egress mapping cannot be activated accidentally.
+func (r *accountRepository) PrepareAndEnableExecutionNodeRoutingWithProxyIDs(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, weights map[string]float64, proxyIDs map[string]int64) (int64, error) {
+	return r.prepareAndEnableExecutionNodeRouting(ctx, legacyNodeID, legacyProxyID, allowedNodeIDs, weights, proxyIDs)
+}
+
+func (r *accountRepository) prepareAndEnableExecutionNodeRouting(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, weights map[string]float64, proxyIDs map[string]int64) (int64, error) {
+	legacyNodeID = strings.TrimSpace(legacyNodeID)
+	if legacyNodeID == "" || legacyProxyID <= 0 || len(allowedNodeIDs) == 0 {
+		return 0, errors.New("invalid execution node migration parameters")
+	}
+	beginner, ok := r.sql.(interface {
+		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+	})
+	if !ok {
+		return 0, errors.New("execution node migration requires a transactional database")
+	}
+	tx, err := beginner.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin execution node migration transaction: %w", err)
+	}
+	if len(weights) == 0 {
+		_ = tx.Rollback()
+		return 0, errors.New("execution node weights must not be empty")
+	}
+	weightsJSON, err := json.Marshal(weights)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("marshal execution node weights: %w", err)
+	}
+	migrated, err := r.prepareExecutionNodeRoutingTx(ctx, tx, legacyNodeID, legacyProxyID, allowedNodeIDs, proxyIDs)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO settings (key, value, updated_at)
+		VALUES
+			($1, 'true', NOW()),
+			($2, $3, NOW())
+		ON CONFLICT (key) DO UPDATE
+		SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+	`, service.SettingKeyExecutionNodeBalancingEnabled, service.SettingKeyExecutionNodeWeights, string(weightsJSON)); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("enable execution node routing settings: %w", err)
+	}
+	if len(proxyIDs) > 0 {
+		proxyIDsJSON, err := json.Marshal(proxyIDs)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("marshal execution node proxy IDs: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO settings (key, value, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (key) DO UPDATE
+			SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+		`, service.SettingKeyExecutionNodeProxyIDs, string(proxyIDsJSON)); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("enable execution node proxy mapping: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit execution node activation: %w", err)
+	}
+	return migrated, nil
+}
+
+func (r *accountRepository) prepareExecutionNodeRoutingTx(ctx context.Context, tx *sql.Tx, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, proxyIDs map[string]int64) (int64, error) {
+	rollback := func(cause error) (int64, error) {
+		return 0, cause
+	}
+	// Serialize activation preflights across XIASS instances. The lock is
+	// transaction-scoped so it is always released on commit, rollback, or
+	// connection loss.
+	var lockAcquired int
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtext('xiass_execution_node_routing_prepare'))) AS execution_node_lock").Scan(&lockAcquired); err != nil {
+		return rollback(fmt.Errorf("lock execution node migration: %w", err))
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = jsonb_set(
+			COALESCE(extra, '{}'::jsonb),
+			ARRAY[$1]::text[],
+			to_jsonb($2::text),
+			true
+		),
+		proxy_id = COALESCE(proxy_id, $3),
+		updated_at = NOW()
+		WHERE COALESCE(BTRIM(extra ->> $1), '') = ''
+			AND deleted_at IS NULL
+	`, service.AccountExecutionNodeExtraKey, legacyNodeID, legacyProxyID)
+	if err != nil {
+		return rollback(fmt.Errorf("assign legacy execution node accounts: %w", err))
+	}
+	migrated, err := result.RowsAffected()
+	if err != nil {
+		return rollback(fmt.Errorf("read legacy execution node migration result: %w", err))
+	}
+	// Always publish a rebuild after a successful preflight. The pending dedup
+	// key prevents duplicate backlog while still allowing a later retry to
+	// repair a previously consumed event after a partial deployment.
+	if err := enqueueSchedulerOutbox(ctx, tx, service.SchedulerOutboxEventFullRebuild, nil, nil, nil); err != nil {
+		return rollback(fmt.Errorf("publish execution node scheduler rebuild: %w", err))
+	}
+
+	validationQuery := `
+		SELECT
+			COALESCE(NULLIF(BTRIM(extra ->> $1), ''), $2) AS node_id,
+			COUNT(*) FILTER (WHERE proxy_id IS NULL) AS missing_proxy_count,
+			COUNT(*) FILTER (
+				WHERE proxy_id IS NOT NULL
+					AND NOT EXISTS (
+						SELECT 1 FROM proxies p
+						WHERE p.id = accounts.proxy_id
+							AND p.deleted_at IS NULL
+							AND p.status = 'active'
+							AND (p.expires_at IS NULL OR p.expires_at > NOW())
+					)
+			) AS invalid_proxy_count
+		FROM accounts
+		WHERE deleted_at IS NULL
+		GROUP BY 1
+	`
+	validationArgs := []any{service.AccountExecutionNodeExtraKey, legacyNodeID}
+	if len(proxyIDs) > 0 {
+		proxyIDsJSON, marshalErr := json.Marshal(proxyIDs)
+		if marshalErr != nil {
+			return rollback(fmt.Errorf("marshal execution node proxy validation: %w", marshalErr))
+		}
+		// Strict mode checks both that every configured proxy exists and that
+		// every account's durable proxy matches its durable node owner.
+		var expectedProxyCount int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM proxies
+			WHERE id = ANY($1::bigint[])
+				AND deleted_at IS NULL
+				AND status = 'active'
+				AND (expires_at IS NULL OR expires_at > NOW())
+		`, pq.Array(proxyIDValues(proxyIDs))).Scan(&expectedProxyCount); err != nil {
+			return rollback(fmt.Errorf("validate execution node proxy mapping: %w", err))
+		}
+		if expectedProxyCount != int64(len(proxyIDs)) {
+			return rollback(fmt.Errorf("execution node preflight failed: one or more mapped proxies are unavailable"))
+		}
+		validationQuery = `
+			SELECT node_id,
+				COUNT(*) FILTER (WHERE proxy_id IS NULL) AS missing_proxy_count,
+				COUNT(*) FILTER (
+					WHERE proxy_id IS NOT NULL
+						AND NOT EXISTS (
+							SELECT 1 FROM proxies p
+							WHERE p.id = owned.proxy_id
+								AND p.deleted_at IS NULL
+								AND p.status = 'active'
+								AND (p.expires_at IS NULL OR p.expires_at > NOW())
+						)
+				) AS invalid_proxy_count,
+				COUNT(*) FILTER (
+					WHERE proxy_id IS DISTINCT FROM (($3::jsonb ->> node_id)::bigint)
+				) AS mismatched_proxy_count
+			FROM (
+				SELECT COALESCE(NULLIF(BTRIM(extra ->> $1), ''), $2) AS node_id, proxy_id
+				FROM accounts
+				WHERE deleted_at IS NULL
+			) AS owned
+			GROUP BY node_id
+		`
+		validationArgs = []any{service.AccountExecutionNodeExtraKey, legacyNodeID, string(proxyIDsJSON)}
+	}
+	rows, err := tx.QueryContext(ctx, validationQuery, validationArgs...)
+	if err != nil {
+		return rollback(fmt.Errorf("validate execution node accounts: %w", err))
+	}
+
+	allowed := make(map[string]struct{}, len(allowedNodeIDs))
+	for _, nodeID := range allowedNodeIDs {
+		if nodeID = strings.TrimSpace(nodeID); nodeID != "" {
+			allowed[nodeID] = struct{}{}
+		}
+	}
+	unknownNodes := make([]string, 0)
+	var missingProxyCount int64
+	var invalidProxyCount int64
+	var mismatchedProxyCount int64
+	for rows.Next() {
+		var nodeID string
+		var missing, invalid int64
+		var mismatched int64
+		if len(proxyIDs) > 0 {
+			if err := rows.Scan(&nodeID, &missing, &invalid, &mismatched); err != nil {
+				_ = rows.Close()
+				return rollback(fmt.Errorf("scan execution node account validation: %w", err))
+			}
+		} else if err := rows.Scan(&nodeID, &missing, &invalid); err != nil {
+			_ = rows.Close()
+			return rollback(fmt.Errorf("scan execution node account validation: %w", err))
+		}
+		missingProxyCount += missing
+		invalidProxyCount += invalid
+		mismatchedProxyCount += mismatched
+		if _, ok := allowed[nodeID]; !ok {
+			unknownNodes = append(unknownNodes, nodeID)
+		}
+	}
+	rowsErr := rows.Err()
+	_ = rows.Close()
+	if rowsErr != nil {
+		return rollback(fmt.Errorf("iterate execution node account validation: %w", rowsErr))
+	}
+	sort.Strings(unknownNodes)
+	if missingProxyCount > 0 || invalidProxyCount > 0 || mismatchedProxyCount > 0 || len(unknownNodes) > 0 {
+		return rollback(fmt.Errorf("execution node preflight failed: accounts_without_proxy=%d invalid_proxies=%d mismatched_proxies=%d unknown_nodes=%v", missingProxyCount, invalidProxyCount, mismatchedProxyCount, unknownNodes))
+	}
+	return migrated, nil
+}
+
+func proxyIDValues(proxyIDs map[string]int64) []int64 {
+	values := make([]int64, 0, len(proxyIDs))
+	for _, proxyID := range proxyIDs {
+		values = append(values, proxyID)
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return values
 }
 
 func createAccountRecord(ctx context.Context, client *dbent.Client, account *service.Account) error {
@@ -2663,6 +2953,7 @@ func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now ti
 }
 
 func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	updates = stripExecutionNodeIDFromExtraUpdate(updates)
 	updates = stripCodexFingerprintSeedFromExtraUpdate(updates)
 	if len(updates) == 0 {
 		return nil
@@ -3064,6 +3355,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	if len(ids) == 0 {
 		return 0, nil
 	}
+	updates.Extra = stripExecutionNodeIDFromExtraUpdate(updates.Extra)
 	updates.Extra = stripCodexFingerprintSeedFromExtraUpdate(updates.Extra)
 
 	setClauses := make([]string, 0, 8)

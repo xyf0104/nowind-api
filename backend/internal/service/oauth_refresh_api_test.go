@@ -415,6 +415,51 @@ func TestRefreshIfNeeded_GrokSuccessCASLetsConcurrentReauthorizationWin(t *testi
 	require.Zero(t, repo.updateCredentialsCalls, "the provider result must not overwrite a concurrent repair")
 }
 
+func TestRefreshIfNeeded_RequestEgressOverridePreservesDurableProxyCAS(t *testing.T) {
+	durableProxyID := int64(17)
+	durableProxy := &Proxy{ID: durableProxyID, Status: StatusActive, Host: "api.internal", Port: 1080}
+	account := &Account{
+		ID:       71,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		ProxyID:  &durableProxyID,
+		Proxy:    durableProxy,
+		Credentials: map[string]any{
+			"access_token":   "old-access",
+			"refresh_token":  "old-refresh",
+			"_token_version": int64(1),
+		},
+	}
+	routed := *account
+	routed.executionProxy = &Proxy{ID: 23, Status: StatusActive, Host: "api2.internal", Port: 1080}
+	repo := &refreshAPIAccountRepo{account: account}
+	observedRequestProxyID := int64(0)
+	executor := &dynamicRefreshExecutor{
+		canRefresh:       true,
+		cacheKey:         "test:request-egress:grok",
+		needsRefreshFunc: func() bool { return true },
+		refreshFunc: func(_ context.Context, attempted *Account) (map[string]any, error) {
+			require.NotNil(t, attempted.requestProxy())
+			observedRequestProxyID = attempted.requestProxy().ID
+			require.NotNil(t, attempted.ProxyID)
+			require.Equal(t, durableProxyID, *attempted.ProxyID)
+			require.Same(t, durableProxy, attempted.Proxy)
+			return map[string]any{"access_token": "new-access", "refresh_token": "new-refresh"}, nil
+		},
+	}
+
+	result, err := NewOAuthRefreshAPI(repo, nil).RefreshIfNeeded(context.Background(), &routed, executor, time.Hour)
+
+	require.NoError(t, err)
+	require.True(t, result.Refreshed)
+	require.Equal(t, int64(23), observedRequestProxyID)
+	require.NotNil(t, repo.lastExpectedProxyID)
+	require.Equal(t, durableProxyID, *repo.lastExpectedProxyID)
+	require.Same(t, durableProxy, account.Proxy)
+	require.Equal(t, durableProxyID, *account.ProxyID)
+}
+
 func TestRefreshIfNeeded_AntigravitySuccessCASLetsConcurrentReauthorizationWin(t *testing.T) {
 	proxyID := int64(31)
 	account := &Account{

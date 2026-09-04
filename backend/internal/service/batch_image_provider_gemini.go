@@ -17,7 +17,6 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 )
 
 const defaultGeminiBatchRequeueAfter = 30 * time.Second
@@ -66,14 +65,40 @@ type GeminiBatchError struct {
 }
 
 type GeminiAPIBatchImageProvider struct {
-	client GeminiBatchClient
+	client        GeminiBatchClient
+	clientFactory func(proxyURL string) (GeminiBatchClient, error)
 }
 
 func NewGeminiAPIBatchImageProvider(client GeminiBatchClient) *GeminiAPIBatchImageProvider {
+	provider := &GeminiAPIBatchImageProvider{client: client}
 	if client == nil {
-		client = NewGeminiBatchHTTPClient("", nil)
+		provider.clientFactory = func(proxyURL string) (GeminiBatchClient, error) {
+			httpClient, err := newBatchImageHTTPClient(proxyURL)
+			if err != nil {
+				return nil, err
+			}
+			return NewGeminiBatchHTTPClient("", httpClient), nil
+		}
 	}
-	return &GeminiAPIBatchImageProvider{client: client}
+	return provider
+}
+
+func (p *GeminiAPIBatchImageProvider) clientForAccount(account *Account) (GeminiBatchClient, error) {
+	proxyURL, err := batchImageAccountProxyURL(account)
+	if err != nil {
+		return nil, err
+	}
+	if p != nil && p.clientFactory != nil {
+		client, err := p.clientFactory(proxyURL)
+		if err != nil {
+			return nil, ErrBatchImageProviderEgressUnavailable.WithCause(err)
+		}
+		return client, nil
+	}
+	if p == nil || p.client == nil {
+		return nil, ErrBatchImageProviderEgressUnavailable
+	}
+	return p.client, nil
 }
 
 func (p *GeminiAPIBatchImageProvider) Name() string {
@@ -95,6 +120,10 @@ func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImag
 	if apiKey == "" {
 		return nil, ErrBatchImageProviderMissingAPIKey
 	}
+	client, err := p.clientForAccount(account)
+	if err != nil {
+		return nil, err
+	}
 	if input.BatchID == "" && job != nil {
 		input.BatchID = job.BatchID
 	}
@@ -112,7 +141,7 @@ func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImag
 		displayName = strings.TrimSpace(input.BatchID)
 	}
 
-	uploaded, err := p.client.UploadJSONL(ctx, apiKey, displayName, bytes.NewReader(jsonl))
+	uploaded, err := client.UploadJSONL(ctx, apiKey, displayName, bytes.NewReader(jsonl))
 	if err != nil {
 		return nil, mapGeminiClientError(err)
 	}
@@ -120,7 +149,7 @@ func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImag
 		return nil, geminiProviderError("GEMINI_INVALID_RESPONSE", "Gemini upload response is missing file name", nil)
 	}
 
-	batch, err := p.client.CreateBatch(ctx, apiKey, input.Model, uploaded.Name, displayName)
+	batch, err := client.CreateBatch(ctx, apiKey, input.Model, uploaded.Name, displayName)
 	if err != nil {
 		return nil, mapGeminiClientError(err)
 	}
@@ -147,8 +176,12 @@ func (p *GeminiAPIBatchImageProvider) Get(ctx context.Context, job *BatchImageJo
 	if jobName == "" {
 		return nil, ErrBatchImageProviderMissingJobName
 	}
+	client, err := p.clientForAccount(account)
+	if err != nil {
+		return nil, err
+	}
 
-	batch, err := p.client.GetBatch(ctx, apiKey, jobName)
+	batch, err := client.GetBatch(ctx, apiKey, jobName)
 	if err != nil {
 		return nil, mapGeminiClientError(err)
 	}
@@ -185,7 +218,11 @@ func (p *GeminiAPIBatchImageProvider) Cancel(ctx context.Context, job *BatchImag
 	if jobName == "" {
 		return ErrBatchImageProviderMissingJobName
 	}
-	return mapGeminiClientError(p.client.CancelBatch(ctx, apiKey, jobName))
+	client, err := p.clientForAccount(account)
+	if err != nil {
+		return err
+	}
+	return mapGeminiClientError(client.CancelBatch(ctx, apiKey, jobName))
 }
 
 func (p *GeminiAPIBatchImageProvider) OpenResult(ctx context.Context, job *BatchImageJob, account *Account) (io.ReadCloser, string, error) {
@@ -200,7 +237,11 @@ func (p *GeminiAPIBatchImageProvider) OpenResult(ctx context.Context, job *Batch
 	if outputRef == "" {
 		return nil, "", ErrBatchImageProviderMissingResultRef
 	}
-	r, contentType, err := p.client.DownloadFile(ctx, apiKey, outputRef)
+	client, err := p.clientForAccount(account)
+	if err != nil {
+		return nil, "", err
+	}
+	r, contentType, err := client.DownloadFile(ctx, apiKey, outputRef)
 	return r, contentType, mapGeminiClientError(err)
 }
 
@@ -212,27 +253,31 @@ func (p *GeminiAPIBatchImageProvider) Cleanup(ctx context.Context, job *BatchIma
 	if apiKey == "" {
 		return ErrBatchImageProviderMissingAPIKey
 	}
+	client, err := p.clientForAccount(account)
+	if err != nil {
+		return err
+	}
 
 	switch target {
 	case CleanupTargetInput:
-		return p.deleteGeminiFileIfPresent(ctx, apiKey, batchImageProviderInputRef(job))
+		return p.deleteGeminiFileIfPresent(ctx, client, apiKey, batchImageProviderInputRef(job))
 	case CleanupTargetOutput:
-		return p.deleteGeminiFileIfPresent(ctx, apiKey, batchImageProviderOutputRef(job))
+		return p.deleteGeminiFileIfPresent(ctx, client, apiKey, batchImageProviderOutputRef(job))
 	case CleanupTargetAll:
-		if err := p.deleteGeminiFileIfPresent(ctx, apiKey, batchImageProviderInputRef(job)); err != nil {
+		if err := p.deleteGeminiFileIfPresent(ctx, client, apiKey, batchImageProviderInputRef(job)); err != nil {
 			return err
 		}
-		return p.deleteGeminiFileIfPresent(ctx, apiKey, batchImageProviderOutputRef(job))
+		return p.deleteGeminiFileIfPresent(ctx, client, apiKey, batchImageProviderOutputRef(job))
 	default:
 		return ErrUnsupportedCleanupTarget
 	}
 }
 
-func (p *GeminiAPIBatchImageProvider) deleteGeminiFileIfPresent(ctx context.Context, apiKey, fileName string) error {
+func (p *GeminiAPIBatchImageProvider) deleteGeminiFileIfPresent(ctx context.Context, client GeminiBatchClient, apiKey, fileName string) error {
 	if strings.TrimSpace(fileName) == "" {
 		return nil
 	}
-	return mapGeminiClientError(p.client.DeleteFile(ctx, apiKey, fileName))
+	return mapGeminiClientError(client.DeleteFile(ctx, apiKey, fileName))
 }
 
 type geminiJSONLLine struct {
@@ -470,9 +515,7 @@ func NewGeminiBatchHTTPClient(baseURL string, client *http.Client) *GeminiBatchH
 // 不设整体 Timeout：大文件上传与结果流式下载耗时不可预估，
 // 但拨号、TLS、等待响应头必须有界，否则挂死的连接会无限占用提交路径。
 func batchImageDefaultHTTPClient() *http.Client {
-	client, err := httpclient.GetClient(httpclient.Options{
-		ResponseHeaderTimeout: 60 * time.Second,
-	})
+	client, err := newBatchImageHTTPClient("")
 	if err != nil {
 		return http.DefaultClient
 	}

@@ -391,7 +391,7 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 	// 代理 URL
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+		proxyURL = account.requestProxyURL()
 	}
 
 	// 只读 probe：不让管理员测试污染模型 cooldown、粘性会话或账号调度状态。

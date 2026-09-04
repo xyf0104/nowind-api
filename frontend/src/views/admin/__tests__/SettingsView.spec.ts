@@ -23,7 +23,7 @@ const {
   getOllamaCloudUsageSettings,
   updateOllamaCloudUsageSettings,
   getGroups,
-  listProxies,
+  getAllProxies,
   getProviders,
   updateProvider,
   createProvider,
@@ -64,7 +64,7 @@ const {
   }),
   updateOllamaCloudUsageSettings: vi.fn().mockImplementation(async (payload) => payload),
   getGroups: vi.fn(),
-  listProxies: vi.fn(),
+  getAllProxies: vi.fn(),
   getProviders: vi.fn(),
   updateProvider: vi.fn(),
   createProvider: vi.fn(),
@@ -104,7 +104,7 @@ vi.mock("@/api", () => ({
       getAll: getGroups,
     },
     proxies: {
-      list: listProxies,
+      getAll: getAllProxies,
     },
     payment: {
       getProviders,
@@ -455,6 +455,9 @@ const baseSettingsResponse = {
   min_claude_code_version: "",
   max_claude_code_version: "",
   allow_ungrouped_key_scheduling: false,
+  execution_node_balancing_enabled: false,
+  execution_node_weights: { api: 1, api2: 1 },
+  execution_node_proxy_ids: {},
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -613,7 +616,7 @@ describe("admin SettingsView payment visible method controls", () => {
     getOllamaCloudUsageSettings.mockReset();
     updateOllamaCloudUsageSettings.mockReset();
     getGroups.mockReset();
-    listProxies.mockReset();
+    getAllProxies.mockReset();
     getProviders.mockReset();
     updateProvider.mockReset();
     createProvider.mockReset();
@@ -679,9 +682,7 @@ describe("admin SettingsView payment visible method controls", () => {
     });
     updateOllamaCloudUsageSettings.mockImplementation(async (payload) => payload);
     getGroups.mockResolvedValue([]);
-    listProxies.mockResolvedValue({
-      items: [],
-    });
+    getAllProxies.mockResolvedValue([]);
     getProviders.mockResolvedValue({
       data: [],
     });
@@ -1391,6 +1392,56 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(weightedModeText).toContain("计费倍率");
   });
 
+  it("loads, validates, and saves execution node balancing weights", async () => {
+    getSettings.mockResolvedValue({
+      ...baseSettingsResponse,
+      execution_node_balancing_enabled: true,
+      execution_node_weights: { api: 3, api2: 1 },
+      execution_node_proxy_ids: { api: 84, api2: 83 },
+    });
+
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const toggle = wrapper.get('[data-testid="execution-node-balancing-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(true);
+
+    const nodeInputs = wrapper.findAll('input[data-testid^="execution-node-id-"]');
+    const weightInputs = wrapper.findAll('input[data-testid^="execution-node-weight-"]');
+    const proxyFields = wrapper.findAll('[data-testid^="execution-node-proxy-"]');
+    expect(nodeInputs.map((input) => (input.element as HTMLInputElement).value)).toEqual([
+      "api",
+      "api2",
+    ]);
+    expect(weightInputs.map((input) => Number((input.element as HTMLInputElement).value))).toEqual([
+      3,
+      1,
+    ]);
+    expect(proxyFields).toHaveLength(2);
+
+    await weightInputs[1]!.setValue("4");
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      execution_node_balancing_enabled: true,
+      execution_node_weights: { api: 3, api2: 4 },
+      execution_node_proxy_ids: { api: 84, api2: 83 },
+    });
+
+    updateSettings.mockClear();
+    showError.mockClear();
+    await weightInputs[0]!.setValue("0");
+    await weightInputs[1]!.setValue("0");
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalled();
+  });
+
   it("passes translated upload and remove labels to the payment help image uploader", async () => {
     const wrapper = mountView();
 
@@ -1488,7 +1539,7 @@ describe("admin SettingsView wechat connect controls", () => {
     getRectifierSettings.mockReset();
     getBetaPolicySettings.mockReset();
     getGroups.mockReset();
-    listProxies.mockReset();
+    getAllProxies.mockReset();
     getProviders.mockReset();
     updateProvider.mockReset();
     createProvider.mockReset();
@@ -1546,9 +1597,7 @@ describe("admin SettingsView wechat connect controls", () => {
       rules: [],
     });
     getGroups.mockResolvedValue([]);
-    listProxies.mockResolvedValue({
-      items: [],
-    });
+    getAllProxies.mockResolvedValue([]);
     getProviders.mockResolvedValue({
       data: [],
     });
@@ -1734,7 +1783,7 @@ describe("admin SettingsView platform quota matrix", () => {
     getRectifierSettings.mockReset();
     getBetaPolicySettings.mockReset();
     getGroups.mockReset();
-    listProxies.mockReset();
+    getAllProxies.mockReset();
     getProviders.mockReset();
     updateProvider.mockReset();
     createProvider.mockReset();
@@ -1760,7 +1809,7 @@ describe("admin SettingsView platform quota matrix", () => {
     getRectifierSettings.mockResolvedValue({});
     getBetaPolicySettings.mockResolvedValue({});
     getGroups.mockResolvedValue([]);
-    listProxies.mockResolvedValue({ items: [] });
+    getAllProxies.mockResolvedValue([]);
     getProviders.mockResolvedValue({ data: [] });
   });
 

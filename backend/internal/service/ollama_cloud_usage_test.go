@@ -915,7 +915,7 @@ func TestOllamaCloudUsageRefreshUsesHydratedProxyIdentity(t *testing.T) {
 
 	_, err := svc.Refresh(context.Background(), 13)
 	require.NoError(t, err)
-	require.Equal(t, account.Proxy.URL(), upstream.lastProxyURL)
+	require.Equal(t, account.requestProxyURL(), upstream.lastProxyURL)
 }
 
 func TestOllamaCloudUsageRedirectAndBodyLimitArePersistedSafely(t *testing.T) {

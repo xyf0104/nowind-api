@@ -116,6 +116,8 @@ export default {
         groups: '分组',
         usageWindows: '用量窗口',
         proxy: '代理',
+        executionNode: '执行节点',
+        executionNodeHint: '账号固定从此执行节点的出口访问上游；该标识只读。',
         lastUsed: '最近使用',
         recentActivity: '最近操作',
         createdAt: '创建时间',

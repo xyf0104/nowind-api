@@ -31,11 +31,15 @@ type BatchImageCleanupService struct {
 	mu     sync.Mutex
 }
 
-func NewBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config) *BatchImageCleanupService {
+func NewBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config, settings ...*SettingService) *BatchImageCleanupService {
+	var settingService *SettingService
+	if len(settings) > 0 {
+		settingService = settings[0]
+	}
 	return &BatchImageCleanupService{
 		Repo:             repo,
 		ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg),
-		AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo},
+		AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo, Config: cfg, SettingService: settingService},
 		Config:           cfg,
 	}
 }

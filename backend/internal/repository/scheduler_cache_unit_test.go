@@ -70,6 +70,40 @@ func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
 	require.Nil(t, cached)
 }
 
+func TestSchedulerCacheSnapshotRoundTripKeepsExecutionNodeOwnership(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 26, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	account := service.Account{
+		ID:          126,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		GroupIDs:    []int64{bucket.GroupID},
+		Extra: map[string]any{
+			service.AccountExecutionNodeExtraKey: "api2",
+			"unused_large_field":                 "drop-me",
+		},
+	}
+
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+
+	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, snapshot, 1)
+	require.Equal(t, "api2", snapshot[0].ExecutionNodeID("api"))
+	require.NotContains(t, snapshot[0].Extra, "unused_large_field")
+
+	full, err := cache.GetAccount(ctx, account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, full)
+	require.Equal(t, "api2", full.ExecutionNodeID("api"))
+}
+
 func TestSchedulerCacheUpdateLastUsedClearsUnencodablePayload(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

@@ -30,12 +30,13 @@ func ProvideBatchImageWorkerRuntime(
 	pricing *BatchImageModelPricingResolver,
 	authCache APIKeyAuthCacheInvalidator,
 	cfg *config.Config,
+	settingService *SettingService,
 ) *BatchImageWorkerRuntime {
 	processor := &BatchImagePipelineProcessor{
 		ProviderProcessor: &BatchImageProviderProcessor{
 			Repo:             repo,
 			ProviderRegistry: NewBatchImageProviderRegistryFromConfig(cfg),
-			AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo},
+			AccountResolver:  &BatchImageAccountRepositoryResolver{Repo: accountRepo, Config: cfg, SettingService: settingService},
 			BillingRepo:      billingRepo,
 			AuthCache:        authCache,
 		},

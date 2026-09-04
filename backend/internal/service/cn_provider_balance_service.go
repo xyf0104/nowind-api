@@ -276,7 +276,7 @@ func (s *CNProviderBalanceService) resolveProxyURL(ctx context.Context, account 
 		return ""
 	}
 	if account.Proxy != nil {
-		return account.Proxy.URL()
+		return account.requestProxyURL()
 	}
 	if s != nil && s.proxyRepo != nil {
 		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {

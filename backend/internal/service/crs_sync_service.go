@@ -368,6 +368,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			extra = mergeMap(existing.Extra, extra)
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
+		extra, proxyID = s.prepareCRSExecutionNode(existing, extra, proxyID)
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformAnthropic, targetType, credentials, extra)
 
 		if existing == nil {
@@ -504,6 +505,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			extra = mergeMap(existing.Extra, extra)
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
+		extra, proxyID = s.prepareCRSExecutionNode(existing, extra, proxyID)
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformAnthropic, AccountTypeAPIKey, credentials, extra)
 
 		if existing == nil {
@@ -664,6 +666,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		} else {
 			extra = prepareCodexFingerprintExtraForCreate(PlatformOpenAI, AccountTypeOAuth, extra)
 		}
+		extra, proxyID = s.prepareCRSExecutionNode(existing, extra, proxyID)
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformOpenAI, AccountTypeOAuth, credentials, extra)
 
 		if existing == nil {
@@ -815,6 +818,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		if existing != nil {
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
+		extra, proxyID = s.prepareCRSExecutionNode(existing, extra, proxyID)
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformOpenAI, AccountTypeAPIKey, credentials, extra)
 
 		if existing == nil {
@@ -945,6 +949,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			extra = mergeMap(existing.Extra, extra)
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
+		extra, proxyID = s.prepareCRSExecutionNode(existing, extra, proxyID)
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformGemini, AccountTypeOAuth, credentials, extra)
 
 		if existing == nil {
@@ -1075,6 +1080,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			extra = mergeMap(existing.Extra, extra)
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
+		extra, proxyID = s.prepareCRSExecutionNode(existing, extra, proxyID)
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformGemini, AccountTypeAPIKey, credentials, extra)
 
 		if existing == nil {
@@ -1146,6 +1152,18 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 	}
 
 	return result, nil
+}
+
+func (s *CRSSyncService) prepareCRSExecutionNode(existing *Account, extra map[string]any, proxyID *int64) (map[string]any, *int64) {
+	if existing != nil {
+		// CRS refreshes credentials and metadata, but must never move a durable
+		// account to another node's egress proxy.
+		if s.cfg != nil && s.cfg.Gateway.ExecutionNode.Enabled {
+			return preserveExecutionNodeOnUpdate(existing, extra), existing.ProxyID
+		}
+		return preserveExecutionNodeOnUpdate(existing, extra), proxyID
+	}
+	return applyExecutionNodeForCreate(s.cfg, extra, proxyID)
 }
 
 func mergeMap(existing map[string]any, updates map[string]any) map[string]any {

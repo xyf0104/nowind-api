@@ -385,6 +385,13 @@
           </template>
           <template #cell-proxy="{ row }">
             <div class="flex flex-col gap-1">
+              <div
+                v-if="row.execution_node_id"
+                class="inline-flex w-fit items-center rounded bg-sky-50 px-1.5 py-0.5 text-[11px] font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+                :title="t('admin.accounts.columns.executionNodeHint')"
+              >
+                {{ t('admin.accounts.columns.executionNode') }}: {{ row.execution_node_id }}
+              </div>
               <div v-if="row.proxy" class="flex items-center gap-2">
                 <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
                 <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">

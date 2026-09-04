@@ -863,11 +863,21 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 }
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
+	var proxySummary *service.Proxy
+	if account.Proxy != nil {
+		proxySummary = &service.Proxy{
+			ID:        account.Proxy.ID,
+			Status:    account.Proxy.Status,
+			ExpiresAt: account.Proxy.ExpiresAt,
+		}
+	}
 	return service.Account{
 		ID:                      account.ID,
 		Name:                    account.Name,
 		Platform:                account.Platform,
 		Type:                    account.Type,
+		ProxyID:                 account.ProxyID,
+		Proxy:                   proxySummary,
 		Concurrency:             account.Concurrency,
 		LoadFactor:              account.LoadFactor,
 		Priority:                account.Priority,
@@ -972,6 +982,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		service.AccountExecutionNodeExtraKey,
 		"quota_limit",
 		"quota_used",
 		"quota_daily_limit",

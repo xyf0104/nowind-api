@@ -688,14 +688,14 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
-	selected, compactBlocked := s.selectBestAccount(ctx, groupID, platform, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+	selected, compactBlocked := s.selectBestAccount(ctx, groupID, platform, accounts, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
 	if selected == nil {
 		// A non-empty scheduler snapshot can still be stale or incomplete. This
 		// is especially visible during failover: the failed account is excluded
 		// on the second pass, so a partial snapshot otherwise turns into a false
 		// 503 without ever consulting the authoritative account pool.
 		if recovered, ok := s.recoverSchedulableAccountsFromDatabase(ctx, groupID, platform, "legacy_selection_exhausted"); ok {
-			selected, compactBlocked = s.selectBestAccount(ctx, groupID, platform, recovered, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
+			selected, compactBlocked = s.selectBestAccount(ctx, groupID, platform, recovered, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
 		}
 	}
 
@@ -797,7 +797,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // Returns nil if no available account. The second return reports whether at
 // least one candidate was filtered out solely because it lacks compact support
 // (only meaningful when requireCompact=true).
-func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, platform string, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, bool) {
+func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, platform string, accounts []Account, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, bool) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	compactBlocked := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
@@ -840,6 +840,24 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if len(eligible) == 0 {
 		return nil, compactBlocked
 	}
+	executionNodePolicy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	eligible = filterExecutionNodeCandidates(eligible, func(account *Account) *Account { return account }, executionNodePolicy)
+	if len(eligible) == 0 {
+		return nil, compactBlocked
+	}
+	minPriority := eligible[0].Priority
+	for _, account := range eligible[1:] {
+		if account.Priority < minPriority {
+			minPriority = account.Priority
+		}
+	}
+	highestPriority := eligible[:0]
+	for _, account := range eligible {
+		if account.Priority == minPriority {
+			highestPriority = append(highestPriority, account)
+		}
+	}
+	eligible = highestPriority
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -857,6 +875,12 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		}
 		return s.isBetterAccount(a, b)
 	})
+	eligible = orderExecutionNodeCandidates(
+		eligible,
+		func(account *Account) *Account { return account },
+		executionNodePolicy,
+		executionNodeSelectionAnchor(sessionHash),
+	)
 	return eligible[0], compactBlocked
 }
 
@@ -1032,6 +1056,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		parentCacheL2[id] = a
 		return a
 	}
+	executionNodePolicy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
 	baseCandidateCount := 0
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
@@ -1052,6 +1077,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel, requireCompact) {
+			continue
+		}
+		if !executionNodeCandidateAllowed(executionNodePolicy, acc) {
 			continue
 		}
 		baseCandidateCount++
@@ -1136,6 +1164,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return openAICompactSupportTier(selectionOrder[i].account) > openAICompactSupportTier(selectionOrder[j].account)
 			})
 		}
+		selectionOrder = orderExecutionNodeCandidatesWithinPriorities(
+			selectionOrder,
+			func(item accountWithLoad) *Account { return item.account },
+			func(item accountWithLoad) int { return item.account.Priority },
+			executionNodePolicy,
+			executionNodeSelectionAnchor(sessionHash),
+		)
 
 		for _, item := range selectionOrder {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, platform, requestedModel, false, requiredCapability)
@@ -1184,6 +1219,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return openAICompactSupportTier(ordered[i]) > openAICompactSupportTier(ordered[j])
 			})
 		}
+		ordered = orderExecutionNodeCandidatesWithinPriorities(
+			ordered,
+			func(account *Account) *Account { return account },
+			func(account *Account) int { return account.Priority },
+			executionNodePolicy,
+			executionNodeSelectionAnchor(sessionHash),
+		)
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, platform, requestedModel, false, requiredCapability)
 			if fresh == nil {
@@ -1242,6 +1284,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			return openAICompactSupportTier(candidates[i]) > openAICompactSupportTier(candidates[j])
 		})
 	}
+	candidates = orderExecutionNodeCandidatesWithinPriorities(
+		candidates,
+		func(account *Account) *Account { return account },
+		func(account *Account) int { return account.Priority },
+		executionNodePolicy,
+		executionNodeSelectionAnchor(sessionHash),
+	)
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, platform, requestedModel, false, requiredCapability)
 		if fresh == nil {
@@ -1467,7 +1516,11 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	platform = normalizeOpenAICompatiblePlatform(platform)
+	executionNodePolicy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		if !executionNodePolicy.hydratedAccountEgressAllowed(account) {
+			return nil
+		}
 		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
 			return nil
 		}
@@ -1483,11 +1536,14 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		if s.isOpenAIProxyStreamQuarantined(ctx, account) {
 			return nil
 		}
-		return account
+		return executionNodePolicy.routeAccountForExecution(account)
 	}
 
 	latest, err := s.accountRepo.GetByID(ctx, account.ID)
 	if err != nil || latest == nil {
+		return nil
+	}
+	if !executionNodePolicy.hydratedAccountEgressAllowed(latest) {
 		return nil
 	}
 	if !s.openAIAccountMatchesSchedulingGroup(latest, groupID) {
@@ -1511,7 +1567,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if s.isOpenAIProxyStreamQuarantined(ctx, latest) {
 		return nil
 	}
-	return latest
+	return executionNodePolicy.routeAccountForExecution(latest)
 }
 
 func (s *OpenAIGatewayService) openAIAccountMatchesSchedulingGroup(account *Account, groupID *int64) bool {
@@ -1534,6 +1590,11 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 	if err != nil || account == nil {
 		return account, err
 	}
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	if !policy.hydratedAccountEgressAllowed(account) {
+		return nil, nil
+	}
+	account = policy.routeAccountForExecution(account)
 	if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, account) {
 		return nil, nil
 	}
@@ -1575,17 +1636,25 @@ func (s *OpenAIGatewayService) isOpenAIAccountBlockedBySchedulingThreshold(ctx c
 }
 
 func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
-	if account == nil || s.schedulerSnapshot == nil {
-		return account, nil
+	if account == nil {
+		return nil, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
-	if err != nil {
-		return nil, err
+	hydrated := account
+	if s.schedulerSnapshot != nil {
+		var err error
+		hydrated, err = s.schedulerSnapshot.GetAccount(ctx, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		if hydrated == nil {
+			return nil, fmt.Errorf("selected openai account %d not found during hydration", account.ID)
+		}
 	}
-	if hydrated == nil {
-		return nil, fmt.Errorf("selected openai account %d not found during hydration", account.ID)
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	if !policy.hydratedAccountEgressAllowed(hydrated) {
+		return nil, fmt.Errorf("%w: execution node egress unavailable for account %d", ErrNoAvailableAccounts, account.ID)
 	}
-	return hydrated, nil
+	return policy.routeAccountForExecution(hydrated), nil
 }
 
 func (s *OpenAIGatewayService) newSelectionResult(ctx context.Context, account *Account, acquired bool, release func(), waitPlan *AccountWaitPlan) (*AccountSelectionResult, error) {

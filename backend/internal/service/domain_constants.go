@@ -567,6 +567,16 @@ const (
 
 	// SettingKeyAllowUngroupedKeyScheduling 允许未分组 API Key 调度（默认 false：未分组 Key 返回 403）
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
+	// SettingKeyExecutionNodeBalancingEnabled enables weighted selection between
+	// account execution nodes. The local gateway.execution_node switch remains
+	// the deployment-level safety gate.
+	SettingKeyExecutionNodeBalancingEnabled = "execution_node_balancing_enabled"
+	// SettingKeyExecutionNodeWeights stores a JSON object of node ID -> weight.
+	SettingKeyExecutionNodeWeights = "execution_node_weights"
+	// SettingKeyExecutionNodeProxyIDs stores a JSON object of node ID -> private
+	// egress proxy ID. The mapping is shared so every replica can validate that
+	// an account keeps the proxy belonging to its execution node.
+	SettingKeyExecutionNodeProxyIDs = "execution_node_proxy_ids"
 	// SettingKeyOpenAILowUpstreamRatePriorityEnabled 旧调度是否按上游 token 倍率优先。
 	SettingKeyOpenAILowUpstreamRatePriorityEnabled = "openai_low_upstream_rate_priority_enabled"
 	// SettingKeyOpenAIOAuthSchedulingRateMultiplier OAuth 账号参与成本调度时使用的参考倍率。

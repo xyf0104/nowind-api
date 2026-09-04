@@ -54,6 +54,7 @@ type GeminiMessagesCompatService struct {
 	httpUpstream              HTTPUpstream
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
+	settingService            *SettingService
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
 	candidatePolicy           AccountCandidateAccessPolicy
 }
@@ -102,6 +103,7 @@ func NewGeminiMessagesCompatService(
 	httpUpstream HTTPUpstream,
 	antigravityGatewayService *AntigravityGatewayService,
 	cfg *config.Config,
+	settingService *SettingService,
 ) *GeminiMessagesCompatService {
 	return &GeminiMessagesCompatService{
 		accountRepo:               accountRepo,
@@ -113,6 +115,7 @@ func NewGeminiMessagesCompatService(
 		httpUpstream:              httpUpstream,
 		antigravityGatewayService: antigravityGatewayService,
 		cfg:                       cfg,
+		settingService:            settingService,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}
 }
@@ -158,7 +161,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	// 4. 按优先级 + LRU 选择最佳账号
 	// Select best account by priority + LRU
-	selected := s.selectBestGeminiAccount(ctx, accounts, requestedModel, excludedIDs, platform, useMixedScheduling)
+	selected := s.selectBestGeminiAccount(ctx, accounts, sessionHash, requestedModel, excludedIDs, platform, useMixedScheduling)
 
 	if selected == nil {
 		if requestedModel != "" {
@@ -354,13 +357,14 @@ func (s *GeminiMessagesCompatService) passesRateLimitPreCheckWithCache(ctx conte
 func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	ctx context.Context,
 	accounts []Account,
+	sessionHash string,
 	requestedModel string,
 	excludedIDs map[int64]struct{},
 	platform string,
 	useMixedScheduling bool,
 ) *Account {
-	var selected *Account
 	precheckResult := s.buildPreCheckUsageResultMap(ctx, accounts, requestedModel)
+	eligible := make([]*Account, 0, len(accounts))
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -375,14 +379,38 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 			continue
 		}
 
-		// 选择最佳账号
-		if selected == nil {
-			selected = acc
-			continue
+		eligible = append(eligible, acc)
+	}
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	eligible = filterExecutionNodeCandidates(eligible, func(account *Account) *Account { return account }, policy)
+	if len(eligible) == 0 {
+		return nil
+	}
+	minPriority := eligible[0].Priority
+	for _, account := range eligible[1:] {
+		if account.Priority < minPriority {
+			minPriority = account.Priority
 		}
-
-		if s.isBetterGeminiAccount(acc, selected) {
-			selected = acc
+	}
+	highestPriority := make([]*Account, 0, len(eligible))
+	for _, account := range eligible {
+		if account.Priority == minPriority {
+			highestPriority = append(highestPriority, account)
+		}
+	}
+	eligible = firstExecutionNodeCandidateGroup(
+		highestPriority,
+		func(account *Account) *Account { return account },
+		policy,
+		executionNodeSelectionAnchor(sessionHash),
+	)
+	if len(eligible) == 0 {
+		return nil
+	}
+	selected := eligible[0]
+	for _, account := range eligible[1:] {
+		if s.isBetterGeminiAccount(account, selected) {
+			selected = account
 		}
 	}
 
@@ -454,24 +482,45 @@ func (s *GeminiMessagesCompatService) GetAntigravityGatewayService() *Antigravit
 }
 
 func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
+	var (
+		account *Account
+		err     error
+	)
 	if s.schedulerSnapshot != nil {
-		return s.schedulerSnapshot.GetAccount(ctx, accountID)
+		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+	} else {
+		account, err = s.accountRepo.GetByID(ctx, accountID)
 	}
-	return s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || account == nil {
+		return account, err
+	}
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	if !policy.hydratedAccountEgressAllowed(account) {
+		return nil, nil
+	}
+	return policy.routeAccountForExecution(account), nil
 }
 
 func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
-	if account == nil || s.schedulerSnapshot == nil {
-		return account, nil
+	if account == nil {
+		return nil, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
-	if err != nil {
-		return nil, err
+	hydrated := account
+	if s.schedulerSnapshot != nil {
+		var err error
+		hydrated, err = s.schedulerSnapshot.GetAccount(ctx, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		if hydrated == nil {
+			return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
+		}
 	}
-	if hydrated == nil {
-		return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	if !policy.hydratedAccountEgressAllowed(hydrated) {
+		return nil, fmt.Errorf("%w: execution node egress unavailable for account %d", ErrNoAvailableAccounts, account.ID)
 	}
-	return hydrated, nil
+	return policy.routeAccountForExecution(hydrated), nil
 }
 
 func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, error) {
@@ -531,6 +580,8 @@ func (s *GeminiMessagesCompatService) HasAntigravityAccounts(ctx context.Context
 	if err != nil {
 		return false, err
 	}
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	accounts = filterExecutionNodeCandidates(accounts, func(account Account) *Account { return &account }, policy)
 	return len(accounts) > 0, nil
 }
 
@@ -579,39 +630,54 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 		}
 	}
 
-	var selected *Account
+	eligible := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
-		if selected == nil {
-			selected = acc
-			continue
+		if rank(acc) < 999 {
+			eligible = append(eligible, acc)
 		}
-
-		r1, r2 := rank(acc), rank(selected)
-		if r1 < r2 {
-			selected = acc
-			continue
+	}
+	policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+	eligible = filterExecutionNodeCandidates(eligible, func(account *Account) *Account { return account }, policy)
+	if len(eligible) == 0 {
+		return nil, errors.New("no available Gemini accounts")
+	}
+	bestRank := rank(eligible[0])
+	for _, account := range eligible[1:] {
+		if accountRank := rank(account); accountRank < bestRank {
+			bestRank = accountRank
 		}
-		if r1 > r2 {
-			continue
+	}
+	bestRankCandidates := make([]*Account, 0, len(eligible))
+	for _, account := range eligible {
+		if rank(account) == bestRank {
+			bestRankCandidates = append(bestRankCandidates, account)
 		}
-
-		if acc.Priority < selected.Priority {
-			selected = acc
-		} else if acc.Priority == selected.Priority {
-			switch {
-			case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
-				selected = acc
-			case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
-				// keep selected
-			case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-				if acc.Type == AccountTypeOAuth && selected.Type != AccountTypeOAuth {
-					selected = acc
-				}
-			default:
-				if acc.LastUsedAt.Before(*selected.LastUsedAt) {
-					selected = acc
-				}
+	}
+	minPriority := bestRankCandidates[0].Priority
+	for _, account := range bestRankCandidates[1:] {
+		if account.Priority < minPriority {
+			minPriority = account.Priority
+		}
+	}
+	highestPriority := make([]*Account, 0, len(bestRankCandidates))
+	for _, account := range bestRankCandidates {
+		if account.Priority == minPriority {
+			highestPriority = append(highestPriority, account)
+		}
+	}
+	eligible = firstExecutionNodeCandidateGroup(
+		highestPriority,
+		func(account *Account) *Account { return account },
+		policy,
+		"",
+	)
+	var selected *Account
+	if len(eligible) > 0 {
+		selected = eligible[0]
+		for _, account := range eligible[1:] {
+			if s.isBetterGeminiAccount(account, selected) {
+				selected = account
 			}
 		}
 	}
@@ -653,7 +719,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+		proxyURL = account.requestProxyURL()
 	}
 
 	var requestIDHeader string
@@ -1205,7 +1271,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+		proxyURL = account.requestProxyURL()
 	}
 
 	useUpstreamStream := stream
@@ -2835,7 +2901,7 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 
 	var proxyURL string
 	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+		proxyURL = account.requestProxyURL()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)

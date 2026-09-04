@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -168,6 +169,26 @@ type SettingRepository interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// ExecutionNodeAccountPreparer performs the one-time, idempotent account
+// attribution required before shared multi-node scheduling can be enabled.
+type ExecutionNodeAccountPreparer interface {
+	PrepareExecutionNodeRouting(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string) (int64, error)
+}
+
+// ExecutionNodeRoutingActivator atomically attributes legacy accounts and
+// enables the shared routing policy. Implementations must use one database
+// transaction so a failed activation cannot leave a half-migrated instance.
+type ExecutionNodeRoutingActivator interface {
+	PrepareAndEnableExecutionNodeRouting(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, weights map[string]float64) (int64, error)
+}
+
+// ExecutionNodeRoutingProxyMapActivator is the strict activation contract.
+// Implementations must validate every durable account against the shared
+// node-to-proxy map before making the shared switch visible.
+type ExecutionNodeRoutingProxyMapActivator interface {
+	PrepareAndEnableExecutionNodeRoutingWithProxyIDs(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, weights map[string]float64, proxyIDs map[string]int64) (int64, error)
+}
+
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
 	GetByID(ctx context.Context, id int64) (*Group, error)
@@ -212,12 +233,37 @@ type SettingService struct {
 	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 
+	executionNodeRoutingCache     atomic.Value // *cachedExecutionNodeRoutingSettings
+	executionNodeRoutingSF        singleflight.Group
+	executionNodeActivationMu     sync.Mutex
+	executionNodeAccountPreparer  ExecutionNodeAccountPreparer
+	executionNodeRoutingActivator ExecutionNodeRoutingActivator
+	executionNodeHealthReader     ExecutionNodeHealthReader
+
 	// grokRuntimeSettingsCache keeps the Grok model-mapping and default endpoint
 	// settings off the request hot path.  It is deliberately per SettingService
 	// (rather than package-global) so tests and multiple app instances cannot
 	// leak configuration into one another.
 	grokRuntimeSettingsCache atomic.Value // *cachedGrokRuntimeSettings
 	grokRuntimeSettingsSF    singleflight.Group
+}
+
+func (s *SettingService) SetExecutionNodeAccountPreparer(preparer ExecutionNodeAccountPreparer) {
+	if s != nil {
+		s.executionNodeAccountPreparer = preparer
+	}
+}
+
+func (s *SettingService) SetExecutionNodeRoutingActivator(activator ExecutionNodeRoutingActivator) {
+	if s != nil {
+		s.executionNodeRoutingActivator = activator
+	}
+}
+
+func (s *SettingService) SetExecutionNodeHealthReader(reader ExecutionNodeHealthReader) {
+	if s != nil {
+		s.executionNodeHealthReader = reader
+	}
 }
 
 // DefaultPlatformQuotaSetting 单 platform 三档限额（nil = 沿用上层；0 = 显式禁用；>0 = 上限）

@@ -53,7 +53,9 @@ xiass.example.com {
 	# =========================================================================
 	reverse_proxy localhost:8080 {
 		# 健康检查
-		health_uri /health
+		# Only route traffic to instances whose shared PostgreSQL and Redis are
+		# ready. /health remains the container liveness probe.
+		health_uri /readyz
 		health_interval 30s
 		health_timeout 10s
 		health_status 200

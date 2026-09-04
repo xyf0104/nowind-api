@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -198,6 +199,44 @@ func TestDuplicateAccountCopiesConfigurationAndResetsRuntimeState(t *testing.T) 
 	require.Equal(t, "us-east-1", storedSource.Extra["config"].(map[string]any)["region"])
 	require.Equal(t, true, storedSource.Extra["items"].([]any)[0].(map[string]any)["enabled"])
 	require.Equal(t, "remote-42", storedSource.Extra["crs_account_id"])
+}
+
+func TestDuplicateAccountUsesReceivingExecutionNode(t *testing.T) {
+	ctx := context.Background()
+	repo := newDuplicateAccountRepoStub()
+	cfg := &config.Config{}
+	cfg.Gateway.ExecutionNode = config.GatewayExecutionNodeConfig{
+		Enabled:        true,
+		ID:             "api2",
+		DefaultProxyID: 83,
+	}
+	svc := &adminServiceImpl{
+		accountRepo:          repo,
+		accountDuplicateRepo: repo,
+		settingService:       &SettingService{cfg: cfg},
+	}
+
+	apiProxyID := int64(84)
+	source := &Account{
+		Name:     "source",
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		ProxyID:  &apiProxyID,
+		Extra: map[string]any{
+			AccountExecutionNodeExtraKey: "api",
+			"custom":                     "preserved",
+		},
+		Credentials: map[string]any{"api_key": "secret"},
+	}
+	require.NoError(t, repo.Create(ctx, source))
+
+	duplicate, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+
+	require.NoError(t, err)
+	require.Equal(t, "api2", duplicate.Extra[AccountExecutionNodeExtraKey])
+	require.NotNil(t, duplicate.ProxyID)
+	require.Equal(t, int64(83), *duplicate.ProxyID)
+	require.Equal(t, "preserved", duplicate.Extra["custom"])
 }
 
 func TestDuplicateAccountRejectsCredentialShadow(t *testing.T) {

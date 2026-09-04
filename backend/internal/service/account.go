@@ -65,6 +65,12 @@ type Account struct {
 	GroupIDs      []int64
 	Groups        []*Group
 
+	// executionProxy is a request-local egress override used only while another
+	// XIASS node temporarily takes over an account whose owner is offline. The
+	// durable ProxyID and Proxy remain unchanged so OAuth refresh CAS operations
+	// still compare the account's persisted identity.
+	executionProxy *Proxy
+
 	// model_mapping 热路径缓存（非持久化字段）
 	modelMappingCache               map[string]string
 	modelMappingCacheReady          bool
@@ -82,6 +88,26 @@ type Account struct {
 	headerOverrideCacheRawSig         uint64
 }
 
+func (a *Account) requestProxy() *Proxy {
+	if a == nil {
+		return nil
+	}
+	if a.executionProxy != nil {
+		return a.executionProxy
+	}
+	if a.ProxyID == nil {
+		return nil
+	}
+	return a.Proxy
+}
+
+func (a *Account) requestProxyURL() string {
+	if proxy := a.requestProxy(); proxy != nil {
+		return proxy.URL()
+	}
+	return ""
+}
+
 // AccountSortRecentActivity orders account-management rows by the newest
 // created_at, updated_at, or last_used_at value before pagination.
 const AccountSortRecentActivity = "recent_activity"
@@ -89,6 +115,11 @@ const AccountSortRecentActivity = "recent_activity"
 type OpenAIEndpointCapability string
 
 const openAILongContextBillingEnabledKey = "openai_long_context_billing_enabled"
+
+// AccountExecutionNodeExtraKey is system-managed account ownership metadata.
+// It identifies the node whose private egress must carry direct upstream
+// traffic for this account.
+const AccountExecutionNodeExtraKey = "xiass_execution_node_id"
 
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
@@ -139,6 +170,59 @@ type TempUnschedulableRule struct {
 
 func (a *Account) IsActive() bool {
 	return a.Status == StatusActive
+}
+
+// ExecutionNodeID returns the persisted owner, or legacyDefault for accounts
+// created before multi-node attribution. Malformed values fail back to the
+// legacy owner instead of creating an unrouteable third node.
+func (a *Account) ExecutionNodeID(legacyDefault string) string {
+	legacyDefault = strings.TrimSpace(legacyDefault)
+	if a == nil || a.Extra == nil {
+		return legacyDefault
+	}
+	nodeID, ok := a.Extra[AccountExecutionNodeExtraKey].(string)
+	nodeID = strings.TrimSpace(nodeID)
+	if !ok || !validExecutionNodeID(nodeID) {
+		return legacyDefault
+	}
+	return nodeID
+}
+
+func applyExecutionNodeForCreate(cfg *config.Config, extra map[string]any, proxyID *int64) (map[string]any, *int64) {
+	if cfg == nil || !cfg.Gateway.ExecutionNode.Enabled {
+		// The ownership field is always system-managed. Strip untrusted import data
+		// even while multi-node routing is disabled so a later activation cannot
+		// reinterpret a forged node assignment.
+		delete(extra, AccountExecutionNodeExtraKey)
+		return extra, proxyID
+	}
+	if extra == nil {
+		extra = make(map[string]any, 1)
+	}
+	// Ownership is derived from the accepting instance and is never trusted from
+	// imported/admin-supplied JSON.
+	extra[AccountExecutionNodeExtraKey] = strings.TrimSpace(cfg.Gateway.ExecutionNode.ID)
+	if cfg.Gateway.ExecutionNode.DefaultProxyID > 0 {
+		// In multi-node mode the accepting instance owns the account's egress.
+		// Do not let an imported JSON or an admin form carry a proxy from a
+		// different node into the shared account pool.
+		id := cfg.Gateway.ExecutionNode.DefaultProxyID
+		proxyID = &id
+	}
+	return extra, proxyID
+}
+
+func preserveExecutionNodeOnUpdate(account *Account, extra map[string]any) map[string]any {
+	if extra == nil {
+		extra = make(map[string]any)
+	}
+	delete(extra, AccountExecutionNodeExtraKey)
+	if account != nil && account.Extra != nil {
+		if nodeID, ok := account.Extra[AccountExecutionNodeExtraKey].(string); ok && strings.TrimSpace(nodeID) != "" {
+			extra[AccountExecutionNodeExtraKey] = strings.TrimSpace(nodeID)
+		}
+	}
+	return extra
 }
 
 // IsSyntheticUITest reports whether the account belongs to an isolated UI load-test

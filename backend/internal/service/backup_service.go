@@ -26,7 +26,8 @@ const (
 	settingKeyBackupSchedule = "backup_schedule"
 	settingKeyBackupRecords  = "backup_records"
 
-	maxBackupRecords = 100
+	maxBackupRecords                = 100
+	backupScheduleReconcileInterval = 5 * time.Second
 )
 
 var (
@@ -148,6 +149,14 @@ type BackupService struct {
 	cronMu      sync.Mutex
 	cronSched   *cron.Cron
 	cronEntryID cron.EntryID
+	cronExpr    string
+
+	scheduleOwner        bool
+	multiNode            bool
+	schedulePollInterval time.Duration
+	scheduleStopCh       chan struct{}
+	scheduleStopOnce     sync.Once
+	scheduleWG           sync.WaitGroup
 
 	wg           sync.WaitGroup     // 追踪活跃的备份/恢复 goroutine
 	shuttingDown atomic.Bool        // 阻止新备份启动
@@ -172,6 +181,10 @@ func NewBackupService(
 		dumper:                  dumper,
 		bgCtx:                   bgCtx,
 		bgCancel:                bgCancel,
+		scheduleOwner:           executionNodeControlPlaneEnabled(cfg),
+		multiNode:               cfg.Gateway.ExecutionNode.Enabled,
+		schedulePollInterval:    backupScheduleReconcileInterval,
+		scheduleStopCh:          make(chan struct{}),
 	}
 }
 
@@ -179,23 +192,21 @@ func NewBackupService(
 func (s *BackupService) Start() {
 	s.cronSched = cron.New()
 	s.cronSched.Start()
-
-	// 清理重启后孤立的 running 记录
-	s.recoverStaleRecords()
-
-	// 加载已有的定时配置
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	schedule, err := s.GetSchedule(ctx)
-	if err != nil {
-		logger.LegacyPrintf("service.backup", "[Backup] 加载定时备份配置失败: %v", err)
+	if !s.scheduleOwner {
 		return
 	}
-	if schedule.Enabled && schedule.CronExpr != "" {
-		if err := s.applyCronSchedule(schedule); err != nil {
-			logger.LegacyPrintf("service.backup", "[Backup] 应用定时备份配置失败: %v", err)
-		}
+
+	// A running record can belong to another active application instance. Until
+	// records carry an owner lease, multi-node startup must not mark it failed.
+	if !s.multiNode {
+		s.recoverStaleRecords()
 	}
+
+	if err := s.reconcileSchedule(); err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] 加载定时备份配置失败: %v", err)
+	}
+	s.scheduleWG.Add(1)
+	go s.runScheduleReconciler()
 }
 
 // recoverStaleRecords 启动时将孤立的 running 记录标记为 failed
@@ -228,6 +239,8 @@ func (s *BackupService) recoverStaleRecords() {
 // Stop 停止定时备份并等待活跃操作完成
 func (s *BackupService) Stop() {
 	s.shuttingDown.Store(true)
+	s.scheduleStopOnce.Do(func() { close(s.scheduleStopCh) })
+	s.scheduleWG.Wait()
 
 	s.cronMu.Lock()
 	if s.cronSched != nil {
@@ -375,13 +388,16 @@ func (s *BackupService) UpdateSchedule(ctx context.Context, cfg BackupScheduleCo
 		return nil, fmt.Errorf("save schedule config: %w", err)
 	}
 
-	// 应用或停止定时任务
-	if cfg.Enabled {
-		if err := s.applyCronSchedule(&cfg); err != nil {
-			return nil, err
+	// Only the configured control-plane instance owns periodic execution. Other
+	// peers persist the shared setting; the owner reconciles it within seconds.
+	if s.scheduleOwner {
+		if cfg.Enabled {
+			if err := s.applyCronSchedule(&cfg); err != nil {
+				return nil, err
+			}
+		} else {
+			s.removeCronSchedule()
 		}
-	} else {
-		s.removeCronSchedule()
 	}
 
 	return &cfg, nil
@@ -393,6 +409,9 @@ func (s *BackupService) applyCronSchedule(cfg *BackupScheduleConfig) error {
 
 	if s.cronSched == nil {
 		return fmt.Errorf("cron scheduler not initialized")
+	}
+	if s.cronEntryID != 0 && s.cronExpr == cfg.CronExpr {
+		return nil
 	}
 
 	// 移除旧任务
@@ -408,6 +427,7 @@ func (s *BackupService) applyCronSchedule(cfg *BackupScheduleConfig) error {
 		return infraerrors.BadRequest("INVALID_CRON", fmt.Sprintf("failed to schedule: %v", err))
 	}
 	s.cronEntryID = entryID
+	s.cronExpr = cfg.CronExpr
 	logger.LegacyPrintf("service.backup", "[Backup] 定时备份已启用: %s", cfg.CronExpr)
 	return nil
 }
@@ -418,7 +438,42 @@ func (s *BackupService) removeCronSchedule() {
 	if s.cronSched != nil && s.cronEntryID != 0 {
 		s.cronSched.Remove(s.cronEntryID)
 		s.cronEntryID = 0
+		s.cronExpr = ""
 		logger.LegacyPrintf("service.backup", "[Backup] 定时备份已停用")
+	}
+}
+
+func (s *BackupService) reconcileSchedule() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	schedule, err := s.GetSchedule(ctx)
+	if err != nil {
+		return err
+	}
+	if schedule.Enabled && schedule.CronExpr != "" {
+		return s.applyCronSchedule(schedule)
+	}
+	s.removeCronSchedule()
+	return nil
+}
+
+func (s *BackupService) runScheduleReconciler() {
+	defer s.scheduleWG.Done()
+	interval := s.schedulePollInterval
+	if interval <= 0 {
+		interval = backupScheduleReconcileInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := s.reconcileSchedule(); err != nil {
+				logger.LegacyPrintf("service.backup", "[Backup] 同步定时备份配置失败: %v", err)
+			}
+		case <-s.scheduleStopCh:
+			return
+		}
 	}
 }
 

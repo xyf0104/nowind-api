@@ -142,24 +142,24 @@ var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
 	"drive_storage_usage":                    {},
 	"drive_tier_updated_at":                  {},
 	// Codex fingerprint convergence uses a per-account random seed, never copied from another account.
-	codexFingerprintSeedExtraKey: {},
-	"codex_primary_used_percent":                 {},
-	"codex_primary_reset_after_seconds":          {},
-	"codex_primary_window_minutes":               {},
-	"codex_secondary_used_percent":               {},
-	"codex_secondary_reset_after_seconds":        {},
-	"codex_secondary_window_minutes":             {},
-	"codex_primary_over_secondary_percent":       {},
-	"codex_usage_updated_at":                     {},
-	"codex_5h_used_percent":                      {},
-	"codex_5h_reset_after_seconds":               {},
-	"codex_5h_window_minutes":                    {},
-	"codex_5h_reset_at":                          {},
-	"codex_7d_used_percent":                      {},
-	"codex_7d_reset_after_seconds":               {},
-	"codex_7d_window_minutes":                    {},
-	"codex_7d_reset_at":                          {},
-	openAIWeeklyEstimateBaselineKey:              {},
+	codexFingerprintSeedExtraKey:           {},
+	"codex_primary_used_percent":           {},
+	"codex_primary_reset_after_seconds":    {},
+	"codex_primary_window_minutes":         {},
+	"codex_secondary_used_percent":         {},
+	"codex_secondary_reset_after_seconds":  {},
+	"codex_secondary_window_minutes":       {},
+	"codex_primary_over_secondary_percent": {},
+	"codex_usage_updated_at":               {},
+	"codex_5h_used_percent":                {},
+	"codex_5h_reset_after_seconds":         {},
+	"codex_5h_window_minutes":              {},
+	"codex_5h_reset_at":                    {},
+	"codex_7d_used_percent":                {},
+	"codex_7d_reset_after_seconds":         {},
+	"codex_7d_window_minutes":              {},
+	"codex_7d_reset_at":                    {},
+	openAIWeeklyEstimateBaselineKey:        {},
 }
 
 func duplicateAccountExtra(value map[string]any) (map[string]any, error) {
@@ -334,6 +334,12 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, fmt.Errorf("normalize duplicate account extra: %w", err)
+	}
+	// A duplicate is a new account created by the instance receiving this
+	// request. In multi-node mode it must use that instance's durable node and
+	// private egress instead of inheriting the source account's ownership.
+	if s.settingService != nil {
+		accountExtra, input.ProxyID = applyExecutionNodeForCreate(s.settingService.cfg, accountExtra, input.ProxyID)
 	}
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
@@ -590,6 +596,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err != nil {
 		return nil, err
 	}
+	if s.settingService != nil {
+		accountExtra, input.ProxyID = applyExecutionNodeForCreate(s.settingService.cfg, accountExtra, input.ProxyID)
+	} else {
+		delete(accountExtra, AccountExecutionNodeExtraKey)
+	}
 
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -682,6 +693,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err != nil {
 			return nil, err
 		}
+		normalizedExtra = preserveExecutionNodeOnUpdate(account, normalizedExtra)
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
@@ -850,8 +862,16 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// 影子代理恒继承母账号(由 propagateProxyToShadows 同步),不接受独立编辑——外审 B/P1;
 	// 否则要等母账号下次改 proxy 才被覆盖,期间影子会出现"有时继承、有时独立"的漂移。
 	if input.ProxyID != nil && !account.IsCredentialShadow() {
+		if s.executionNodeRoutingActive(ctx) {
+			if *input.ProxyID == 0 || account.ProxyID == nil || *input.ProxyID != *account.ProxyID {
+				return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_IMMUTABLE", "an account's egress proxy cannot be changed while multi-node routing is enabled")
+			}
+		}
 		// 0 表示清除代理（前端发送 0 而不是 null 来表达清除意图）
 		if *input.ProxyID == 0 {
+			if s.executionNodeRoutingActive(ctx) {
+				return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_REQUIRED", "accounts must keep a private egress proxy while multi-node routing is enabled")
+			}
 			account.ProxyID = nil
 		} else {
 			account.ProxyID = input.ProxyID
@@ -1152,6 +1172,7 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	delete(updates, AccountExecutionNodeExtraKey)
 	updates = sanitizedCodexFingerprintExtraUpdates(updates)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
@@ -1182,6 +1203,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// preserve any existing encrypted binding, but never copy or overwrite it.
 	input.Credentials = stripOpenAIReauthorizationCredentials(input.Credentials)
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
+	delete(input.Extra, AccountExecutionNodeExtraKey)
 	fingerprintModeValue, hasFingerprintModeUpdate := input.Extra[codexFingerprintModeExtraKey]
 	if hasFingerprintModeUpdate {
 		mode, ok := fingerprintModeValue.(string)
@@ -1299,6 +1321,16 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// 时目标不得含影子,否则影子会获得独立 proxy、破坏继承不变量(网关按所选影子自身 proxy 出站,
 	// 要等母账号下次改 proxy 才覆盖→漂移)。含影子即整体拒绝,提示从选择中剔除影子。
 	if input.ProxyID != nil {
+		if *input.ProxyID <= 0 && s.executionNodeRoutingActive(ctx) {
+			return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_REQUIRED", "accounts must keep a private egress proxy while multi-node routing is enabled")
+		}
+		if s.executionNodeRoutingActive(ctx) {
+			for _, acc := range cachedTargets {
+				if acc != nil && (acc.ProxyID == nil || *input.ProxyID != *acc.ProxyID) {
+					return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_IMMUTABLE", "an account's egress proxy cannot be changed while multi-node routing is enabled")
+				}
+			}
+		}
 		for _, acc := range cachedTargets {
 			if acc != nil && acc.IsCredentialShadow() {
 				return nil, infraerrors.Newf(http.StatusBadRequest, "SPARK_SHADOW_PROXY_INHERITED",
@@ -1453,6 +1485,17 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	return result, nil
 }
 
+func (s *adminServiceImpl) executionNodeRoutingActive(ctx context.Context) bool {
+	if s == nil || s.settingService == nil || s.settingService.cfg == nil || !s.settingService.cfg.Gateway.ExecutionNode.Enabled {
+		return false
+	}
+	settings := s.settingService.GetExecutionNodeRoutingSettings(ctx)
+	// Once an instance is configured for multi-node execution, an unreadable
+	// shared policy is not evidence that routing is disabled. Keep the durable
+	// proxy immutable until storage can confirm the shared switch is off.
+	return !settings.Available || settings.Enabled
+}
+
 func updatesUpstreamBillingProbeIdentity(credentials map[string]any) bool {
 	for _, key := range []string{"api_key", "base_url", credKeyHeaderOverrideEnabled, credKeyHeaderOverrides} {
 		if _, ok := credentials[key]; ok {
@@ -1591,6 +1634,35 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id int64) error {
+	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.ExecutionNode.Enabled {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if account.ProxyFallbackOriginID != nil {
+			settings := s.settingService.GetExecutionNodeRoutingSettings(ctx)
+			if !settings.Available {
+				return infraerrors.BadRequest("EXECUTION_NODE_POLICY_UNAVAILABLE", "shared execution node policy is unavailable; proxy fallback cannot be reverted safely")
+			}
+			if settings.Enabled {
+				legacyNodeID := strings.TrimSpace(s.settingService.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID)
+				if legacyNodeID == "" {
+					legacyNodeID = "api"
+				}
+				nodeID := account.ExecutionNodeID(legacyNodeID)
+				originNodeID := ""
+				for mappedNodeID, mappedProxyID := range settings.ProxyIDs {
+					if mappedProxyID == *account.ProxyFallbackOriginID {
+						originNodeID = strings.TrimSpace(mappedNodeID)
+						break
+					}
+				}
+				if originNodeID == "" || originNodeID != nodeID {
+					return infraerrors.BadRequest("EXECUTION_NODE_PROXY_FALLBACK_ORIGIN_INVALID", "proxy fallback origin does not belong to the account execution node")
+				}
+			}
+		}
+	}
 	if err := s.accountRepo.RevertProxyFallback(ctx, id); err != nil {
 		return err
 	}
@@ -1679,6 +1751,9 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 	if priority <= 0 {
 		priority = parent.Priority
 	}
+	shadowExtra := preserveExecutionNodeOnUpdate(parent, map[string]any{
+		openAILongContextBillingEnabledKey: parent.IsOpenAILongContextBillingEnabled(),
+	})
 	shadow := &Account{
 		Name:            name,
 		Platform:        PlatformOpenAI,
@@ -1691,9 +1766,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		Priority:        priority,
 		Concurrency:     concurrency,
 		Schedulable:     true,
-		Extra: map[string]any{
-			openAILongContextBillingEnabledKey: parent.IsOpenAILongContextBillingEnabled(),
-		},
+		Extra:           shadowExtra,
 	}
 
 	// 5. 持久化（Create 填充 shadow.ID）。并发竞态:预查(步骤2)放行后另一请求抢先建成,本次会撞

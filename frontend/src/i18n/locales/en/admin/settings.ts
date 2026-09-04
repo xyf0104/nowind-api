@@ -402,7 +402,17 @@ export default {
         title: 'Gateway Scheduling Settings',
         description: 'Control API Key scheduling behavior',
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
-        allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.'
+        allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.',
+        executionNodeBalancing: 'Multi-node execution balancing',
+        executionNodeBalancingHint: 'Every XIASS instance remains an active-active request peer. New sessions are distributed by account-owner node inside the highest priority tier; sticky and non-migratable previous_response chains keep their account and fixed egress.',
+        executionNodeID: 'Node ID',
+        executionNodeWeight: 'Weight',
+        executionNodeProxyID: 'Egress proxy ID',
+        addExecutionNode: 'Add node',
+        removeExecutionNode: 'Remove node',
+        executionNodeWeightsHint: 'These are account scheduling weights, not public ingress weights. Weight 0 drains that node\'s accounts without closing its peer app ingress or interrupting existing sessions. Every node needs a distinct private-only egress proxy, and all peers must use the same HA PostgreSQL and Redis state.',
+        executionNodeWeightsError: 'Node IDs must be unique and contain only letters, numbers, dots, underscores, or hyphens. Weights must be non-negative and at least one must be above 0.',
+        executionNodeProxyIDsError: 'Before enabling multi-node routing, every node must have a different valid egress proxy ID.',
       },
       upstreamBillingProbe: {
         title: 'Upstream Rate Auto Detection',

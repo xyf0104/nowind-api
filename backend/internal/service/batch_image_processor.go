@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"go.uber.org/zap"
@@ -36,14 +37,24 @@ type BatchImageAccountLookup interface {
 }
 
 type BatchImageAccountRepositoryResolver struct {
-	Repo BatchImageAccountLookup
+	Repo           BatchImageAccountLookup
+	Config         *config.Config
+	SettingService *SettingService
 }
 
 func (r *BatchImageAccountRepositoryResolver) ResolveBatchImageAccount(ctx context.Context, accountID int64) (*Account, error) {
 	if r == nil || r.Repo == nil {
 		return nil, ErrAccountNotFound
 	}
-	return r.Repo.GetByID(ctx, accountID)
+	account, err := r.Repo.GetByID(ctx, accountID)
+	if err != nil || account == nil {
+		return account, err
+	}
+	policy := resolveExecutionNodeRoutingPolicy(ctx, r.Config, r.SettingService)
+	if !policy.hydratedAccountEgressAllowed(account) {
+		return nil, ErrNoAvailableAccounts
+	}
+	return policy.routeAccountForExecution(account), nil
 }
 
 type BatchImageProviderProcessor struct {

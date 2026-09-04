@@ -94,6 +94,7 @@ type BatchImagePublicService struct {
 	BillingRepo       UsageBillingRepository
 	AuthCache         APIKeyAuthCacheInvalidator
 	Config            *config.Config
+	SettingService    *SettingService
 }
 
 type BatchImagePricingSnapshot struct {
@@ -184,7 +185,7 @@ type BatchImageItemsQuery struct {
 	Cursor string
 }
 
-func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, accountPolicy AccountCandidateAccessPolicy, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config) *BatchImagePublicService {
+func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, accountPolicy AccountCandidateAccessPolicy, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config, settingService *SettingService) *BatchImagePublicService {
 	return &BatchImagePublicService{
 		Repo:              repo,
 		AccountRepo:       accountRepo,
@@ -197,6 +198,7 @@ func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRe
 		BillingRepo:       billingRepo,
 		AuthCache:         authCache,
 		Config:            cfg,
+		SettingService:    settingService,
 	}
 }
 
@@ -639,9 +641,16 @@ func (s *BatchImagePublicService) ListModels(ctx context.Context, owner BatchIma
 		if err != nil {
 			return nil, err
 		}
+		policy := resolveExecutionNodeRoutingPolicy(selectionCtx, s.Config, s.SettingService)
 		for i := range accounts {
 			account := accounts[i]
 			if !account.IsSchedulable() || !provider.SupportsAccount(&account) {
+				continue
+			}
+			// Model discovery must expose the same usable account pool as submit.
+			// Otherwise a drained node or a broken fixed egress can advertise a
+			// model that the next request cannot actually execute.
+			if !executionNodeCandidateAllowed(policy, &account) {
 				continue
 			}
 			for _, model := range batchImageModelsFromAccountMapping(&account) {
@@ -956,14 +965,43 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 			}
 			return accounts[i].ID < accounts[j].ID
 		})
+		eligible := make([]*Account, 0, len(accounts))
 		for i := range accounts {
-			account := accounts[i]
+			account := &accounts[i]
 			if !account.IsSchedulable() || !account.IsModelSupported(model) {
 				continue
 			}
-			if provider.SupportsAccount(&account) {
-				return provider, &account, nil
+			if provider.SupportsAccount(account) {
+				eligible = append(eligible, account)
 			}
+		}
+		policy := resolveExecutionNodeRoutingPolicy(selectionCtx, s.Config, s.SettingService)
+		eligible = filterExecutionNodeCandidates(eligible, func(account *Account) *Account { return account }, policy)
+		if len(eligible) == 0 {
+			continue
+		}
+		// Preserve the batch subsystem's established priority direction, then apply
+		// node weights only inside that highest tier.
+		highestPriority := eligible[0].Priority
+		for _, account := range eligible[1:] {
+			if account.Priority > highestPriority {
+				highestPriority = account.Priority
+			}
+		}
+		priorityCandidates := make([]*Account, 0, len(eligible))
+		for _, account := range eligible {
+			if account.Priority == highestPriority {
+				priorityCandidates = append(priorityCandidates, account)
+			}
+		}
+		priorityCandidates = firstExecutionNodeCandidateGroup(
+			priorityCandidates,
+			func(account *Account) *Account { return account },
+			policy,
+			"",
+		)
+		if len(priorityCandidates) > 0 {
+			return provider, policy.routeAccountForExecution(priorityCandidates[0]), nil
 		}
 	}
 	if requestedProvider != "" {

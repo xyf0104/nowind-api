@@ -11,6 +11,8 @@ import (
 	"github.com/alitto/pond/v2"
 )
 
+const channelMonitorReconcileInterval = 5 * time.Second
+
 // MonitorScheduler 调度器接口，供 ChannelMonitorService 在 CRUD 时回调，
 // 用 setter 注入避免 service ↔ runner 的 wire 依赖环。
 type MonitorScheduler interface {
@@ -38,7 +40,8 @@ type monitorRunnerSvc interface {
 //   - 每个 enabled monitor 对应一个独立 goroutine + ticker（按各自 IntervalSeconds）
 //   - Start 时一次性加载所有 enabled monitor 并为每个建立任务
 //   - Service 在 Create/Update/Delete 后通过 MonitorScheduler 接口回调，
-//     即时重建/取消对应任务（无需轮询 DB）
+//     同一实例即时重建/取消对应任务
+//   - 控制面定期从共享数据库对账，使其他 XIASS 节点提交的 CRUD 也能生效
 //   - 实际 HTTP 检测交给 pond 池（容量 monitorWorkerConcurrency），
 //     防止突发并发拖垮上游
 //
@@ -58,6 +61,8 @@ type ChannelMonitorRunner struct {
 	wg      sync.WaitGroup
 	started bool
 	stopped bool
+
+	reconcileInterval time.Duration
 
 	// inFlight 跟踪正在执行的 monitor.ID。fire 调度前会检查避免重复提交，
 	// 防止单次检测耗时 > interval 时同一 monitor 被并发执行。
@@ -102,13 +107,14 @@ func NewChannelMonitorRunner(svc *ChannelMonitorService, settingService *Setting
 func newChannelMonitorRunner(svc monitorRunnerSvc, settingService *SettingService) *ChannelMonitorRunner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ChannelMonitorRunner{
-		svc:            svc,
-		settingService: settingService,
-		pool:           pond.NewPool(monitorWorkerConcurrency),
-		parentCtx:      ctx,
-		parentCancel:   cancel,
-		tasks:          make(map[int64]*scheduledMonitor),
-		inFlight:       make(map[int64]struct{}),
+		svc:               svc,
+		settingService:    settingService,
+		pool:              pond.NewPool(monitorWorkerConcurrency),
+		parentCtx:         ctx,
+		parentCancel:      cancel,
+		tasks:             make(map[int64]*scheduledMonitor),
+		inFlight:          make(map[int64]struct{}),
+		reconcileInterval: channelMonitorReconcileInterval,
 	}
 }
 
@@ -127,16 +133,77 @@ func (r *ChannelMonitorRunner) Start() {
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), monitorStartupLoadTimeout)
-	defer cancel()
+	scheduled, err := r.reconcile(ctx)
+	cancel()
+	if err != nil {
+		slog.Error("channel_monitor: load enabled monitors failed at startup; background reconciliation will retry", "error", err)
+	} else {
+		slog.Info("channel_monitor: runner started", "scheduled_tasks", scheduled)
+	}
+	r.wg.Add(1)
+	go r.runReconciler()
+}
+
+func (r *ChannelMonitorRunner) runReconciler() {
+	defer r.wg.Done()
+	interval := r.reconcileInterval
+	if interval <= 0 {
+		interval = channelMonitorReconcileInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(r.parentCtx, monitorStartupLoadTimeout)
+			_, err := r.reconcile(ctx)
+			cancel()
+			if err != nil {
+				slog.Error("channel_monitor: reconcile enabled monitors failed", "error", err)
+			}
+		case <-r.parentCtx.Done():
+			return
+		}
+	}
+}
+
+func (r *ChannelMonitorRunner) reconcile(ctx context.Context) (int, error) {
 	enabled, err := r.svc.ListEnabledMonitors(ctx)
 	if err != nil {
-		slog.Error("channel_monitor: load enabled monitors failed at startup", "error", err)
-		return
+		return 0, err
 	}
-	for _, m := range enabled {
-		r.Schedule(m)
+	desired := make(map[int64]*ChannelMonitor, len(enabled))
+	for _, monitor := range enabled {
+		if monitor == nil || !monitor.Enabled || monitor.APIKeyDecryptFailed {
+			continue
+		}
+		desired[monitor.ID] = monitor
 	}
-	slog.Info("channel_monitor: runner started", "scheduled_tasks", len(enabled))
+
+	r.mu.Lock()
+	current := make(map[int64]*scheduledMonitor, len(r.tasks))
+	for id, task := range r.tasks {
+		current[id] = task
+	}
+	r.mu.Unlock()
+
+	for id, monitor := range desired {
+		task := current[id]
+		interval := time.Duration(monitor.IntervalSeconds) * time.Second
+		jitter := time.Duration(monitor.JitterSeconds) * time.Second
+		if jitter < 0 {
+			jitter = 0
+		}
+		if task == nil || task.name != monitor.Name || task.interval != interval || task.jitter != jitter {
+			r.Schedule(monitor)
+		}
+	}
+	for id := range current {
+		if _, ok := desired[id]; !ok {
+			r.Unschedule(id)
+		}
+	}
+	return len(desired), nil
 }
 
 // Schedule 为指定监控创建（或重置）独立定时任务。
