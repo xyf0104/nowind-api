@@ -148,15 +148,16 @@ func ProvideBatchImageHandler(
 }
 
 // ProvideSystemHandler creates admin.SystemHandler with UpdateService
-func ProvideSystemHandler(updateService *service.UpdateService, lockService *service.SystemOperationLockService) *admin.SystemHandler {
+func ProvideSystemHandler(updateService *service.UpdateService, dockerUpdateService *service.DockerUpdateService, lockService *service.SystemOperationLockService) *admin.SystemHandler {
 	if service.IsRunningInContainer() {
-		return admin.NewSystemHandler(service.NewDockerUpdateService(updateService), lockService)
+		return admin.NewSystemHandler(dockerUpdateService, lockService)
 	}
 	return admin.NewSystemHandler(updateService, lockService)
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
 func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo, notificationEmailService *service.NotificationEmailService) *SettingHandler {
+	settingService.SetVersion(buildInfo.Version)
 	h := NewSettingHandler(settingService, buildInfo.Version)
 	h.SetNotificationEmailService(notificationEmailService)
 	return h
@@ -222,30 +223,32 @@ func ProvideHandlers(
 	smsReceiverHandler *SMSReceiverHandler,
 	asyncImageHandler *AsyncImageHandler,
 	batchImageHandler *BatchImageHandler,
+	executionNodePairingHandler *ExecutionNodePairingHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 ) *Handlers {
 	return &Handlers{
-		Auth:             authHandler,
-		User:             userHandler,
-		APIKey:           apiKeyHandler,
-		Usage:            usageHandler,
-		Redeem:           redeemHandler,
-		Subscription:     subscriptionHandler,
-		Announcement:     announcementHandler,
-		ChannelMonitor:   channelMonitorUserHandler,
-		Admin:            adminHandlers,
-		Gateway:          gatewayHandler,
-		OpenAIGateway:    openaiGatewayHandler,
-		Setting:          settingHandler,
-		Totp:             totpHandler,
-		Passkey:          passkeyHandler,
-		Payment:          paymentHandler,
-		PaymentWebhook:   paymentWebhookHandler,
-		AvailableChannel: availableChannelHandler,
-		SMSReceiver:      smsReceiverHandler,
-		AsyncImage:       asyncImageHandler,
-		BatchImage:       batchImageHandler,
+		Auth:                 authHandler,
+		User:                 userHandler,
+		APIKey:               apiKeyHandler,
+		Usage:                usageHandler,
+		Redeem:               redeemHandler,
+		Subscription:         subscriptionHandler,
+		Announcement:         announcementHandler,
+		ChannelMonitor:       channelMonitorUserHandler,
+		Admin:                adminHandlers,
+		Gateway:              gatewayHandler,
+		OpenAIGateway:        openaiGatewayHandler,
+		Setting:              settingHandler,
+		Totp:                 totpHandler,
+		Passkey:              passkeyHandler,
+		Payment:              paymentHandler,
+		PaymentWebhook:       paymentWebhookHandler,
+		AvailableChannel:     availableChannelHandler,
+		SMSReceiver:          smsReceiverHandler,
+		AsyncImage:           asyncImageHandler,
+		BatchImage:           batchImageHandler,
+		ExecutionNodePairing: executionNodePairingHandler,
 	}
 }
 
@@ -271,6 +274,7 @@ var ProviderSet = wire.NewSet(
 	NewSMSReceiverHandler,
 	NewAsyncImageHandler,
 	ProvideBatchImageHandler,
+	NewExecutionNodePairingHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

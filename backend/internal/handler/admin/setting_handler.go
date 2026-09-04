@@ -425,6 +425,65 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 	response.Success(c, systemSettingsResponseData(payload, authSourceDefaults))
 }
 
+// GetExecutionNodeStatus returns the effective local runtime and shared
+// scheduling state used by the XIASS load-balancing control panel.
+func (h *SettingHandler) GetExecutionNodeStatus(c *gin.Context) {
+	status, err := h.settingService.GetExecutionNodeAdminStatus(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, status)
+}
+
+// GetExecutionNodePairingStatus reports whether the local instance has a
+// verified peer using the same PostgreSQL and Redis state.
+func (h *SettingHandler) GetExecutionNodePairingStatus(c *gin.Context) {
+	status, err := h.settingService.GetExecutionNodePairingStatus(c.Request.Context())
+	if err != nil {
+		if response.ErrorFrom(c, err) {
+			return
+		}
+	}
+	response.Success(c, status)
+}
+
+// GenerateExecutionNodePairingInvite returns the raw one-time invite only in
+// this response. The database stores its hash and expiry, never the token.
+func (h *SettingHandler) GenerateExecutionNodePairingInvite(c *gin.Context) {
+	invite, err := h.settingService.GenerateExecutionNodePairingInvite(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, invite)
+}
+
+func (h *SettingHandler) PairExecutionNode(c *gin.Context) {
+	var req struct {
+		PeerURL string `json:"peer_url"`
+		Token   string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid pairing request")
+		return
+	}
+	status, err := h.settingService.PairExecutionNode(c.Request.Context(), req.PeerURL, req.Token)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, status)
+}
+
+func (h *SettingHandler) UnpairExecutionNode(c *gin.Context) {
+	if err := h.settingService.UnpairExecutionNode(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"paired": false})
+}
+
 // openaiFastPolicySettingsToDTO converts service -> dto for OpenAI fast policy.
 func openaiFastPolicySettingsToDTO(s *service.OpenAIFastPolicySettings) *dto.OpenAIFastPolicySettings {
 	if s == nil {

@@ -642,6 +642,18 @@ def check_update_bridge(errors: list[str]) -> None:
         ],
         errors,
     )
+    require_all(
+        "deploy/xiass-cluster-join.sh",
+        read("deploy/xiass-cluster-join.sh"),
+        [
+            "source-authoritative",
+            "OLD_ENV_FILE",
+            "compose up -d --no-deps --no-build --force-recreate xiass-api",
+            "finalize_source",
+            "自动回滚",
+        ],
+        errors,
+    )
 
     for relative, required in [
         (

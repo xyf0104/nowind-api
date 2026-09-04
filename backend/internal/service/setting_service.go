@@ -189,6 +189,13 @@ type ExecutionNodeRoutingProxyMapActivator interface {
 	PrepareAndEnableExecutionNodeRoutingWithProxyIDs(ctx context.Context, legacyNodeID string, legacyProxyID int64, allowedNodeIDs []string, weights map[string]float64, proxyIDs map[string]int64) (int64, error)
 }
 
+// ExecutionNodeJoinTargetInspector prevents a source-authoritative join from
+// silently replacing an already-used target ledger. A target with business
+// data must be migrated explicitly before it can be joined.
+type ExecutionNodeJoinTargetInspector interface {
+	IsExecutionNodeJoinTargetEmpty(ctx context.Context) (bool, error)
+}
+
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
 	GetByID(ctx context.Context, id int64) (*Group, error)
@@ -239,6 +246,10 @@ type SettingService struct {
 	executionNodeAccountPreparer  ExecutionNodeAccountPreparer
 	executionNodeRoutingActivator ExecutionNodeRoutingActivator
 	executionNodeHealthReader     ExecutionNodeHealthReader
+	executionNodeAccountStats     ExecutionNodeAccountStatsReader
+	executionNodePairingState     ExecutionNodePairingStateReader
+	executionNodeJoinApplier      ExecutionNodeJoinApplier
+	executionNodeJoinInspector    ExecutionNodeJoinTargetInspector
 
 	// grokRuntimeSettingsCache keeps the Grok model-mapping and default endpoint
 	// settings off the request hot path.  It is deliberately per SettingService
@@ -263,6 +274,24 @@ func (s *SettingService) SetExecutionNodeRoutingActivator(activator ExecutionNod
 func (s *SettingService) SetExecutionNodeHealthReader(reader ExecutionNodeHealthReader) {
 	if s != nil {
 		s.executionNodeHealthReader = reader
+	}
+}
+
+func (s *SettingService) SetExecutionNodeAccountStatsReader(reader ExecutionNodeAccountStatsReader) {
+	if s != nil {
+		s.executionNodeAccountStats = reader
+	}
+}
+
+func (s *SettingService) SetExecutionNodeJoinApplier(applier ExecutionNodeJoinApplier) {
+	if s != nil {
+		s.executionNodeJoinApplier = applier
+	}
+}
+
+func (s *SettingService) SetExecutionNodeJoinInspector(inspector ExecutionNodeJoinTargetInspector) {
+	if s != nil {
+		s.executionNodeJoinInspector = inspector
 	}
 }
 

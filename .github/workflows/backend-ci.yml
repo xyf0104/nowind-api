@@ -26,6 +26,7 @@ jobs:
           bash -n deploy/xiass-update.sh
           bash -n deploy/xiass-runtime-export.sh
           bash -n deploy/xiass-runtime-restore.sh
+          bash -n deploy/xiass-cluster-join.sh
           bash -n deploy/install.sh
           bash -n deploy/docker-deploy.sh
           tools/test_xiass_update_origin.sh

@@ -542,6 +542,7 @@ function mountView() {
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
+        RouterLink: { props: ["to"], template: '<a :href="to"><slot /></a>' },
         Select: SelectStub,
         Toggle: ToggleStub,
         Icon: true,
@@ -1392,7 +1393,7 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(weightedModeText).toContain("计费倍率");
   });
 
-  it("loads, validates, and saves execution node balancing weights", async () => {
+  it("shows load-balancing status and leaves node settings to the dedicated panel", async () => {
     getSettings.mockResolvedValue({
       ...baseSettingsResponse,
       execution_node_balancing_enabled: true,
@@ -1404,42 +1405,23 @@ describe("admin SettingsView payment visible method controls", () => {
     await flushPromises();
     await openGatewayTab(wrapper);
 
-    const toggle = wrapper.get('[data-testid="execution-node-balancing-toggle"]');
-    expect((toggle.element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.get('[data-testid="execution-node-balancing-status"]').text()).toBe(
+      "admin.executionNodes.on",
+    );
+    expect(wrapper.get('[data-testid="open-execution-node-panel"]').attributes("href")).toBe(
+      "/admin/execution-nodes",
+    );
+    expect(wrapper.find('[data-testid="execution-node-balancing-toggle"]').exists()).toBe(false);
 
-    const nodeInputs = wrapper.findAll('input[data-testid^="execution-node-id-"]');
-    const weightInputs = wrapper.findAll('input[data-testid^="execution-node-weight-"]');
-    const proxyFields = wrapper.findAll('[data-testid^="execution-node-proxy-"]');
-    expect(nodeInputs.map((input) => (input.element as HTMLInputElement).value)).toEqual([
-      "api",
-      "api2",
-    ]);
-    expect(weightInputs.map((input) => Number((input.element as HTMLInputElement).value))).toEqual([
-      3,
-      1,
-    ]);
-    expect(proxyFields).toHaveLength(2);
-
-    await weightInputs[1]!.setValue("4");
     await wrapper.find("form").trigger("submit");
     await flushPromises();
 
     expect(updateSettings).toHaveBeenCalledTimes(1);
-    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
-      execution_node_balancing_enabled: true,
-      execution_node_weights: { api: 3, api2: 4 },
-      execution_node_proxy_ids: { api: 84, api2: 83 },
-    });
-
-    updateSettings.mockClear();
-    showError.mockClear();
-    await weightInputs[0]!.setValue("0");
-    await weightInputs[1]!.setValue("0");
-    await wrapper.find("form").trigger("submit");
-    await flushPromises();
-
-    expect(updateSettings).not.toHaveBeenCalled();
-    expect(showError).toHaveBeenCalled();
+    expect(updateSettings.mock.calls[0]?.[0]).not.toHaveProperty(
+      "execution_node_balancing_enabled",
+    );
+    expect(updateSettings.mock.calls[0]?.[0]).not.toHaveProperty("execution_node_weights");
+    expect(updateSettings.mock.calls[0]?.[0]).not.toHaveProperty("execution_node_proxy_ids");
   });
 
   it("passes translated upload and remove labels to the payment help image uploader", async () => {

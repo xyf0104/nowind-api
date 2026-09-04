@@ -2,8 +2,12 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -11,10 +15,17 @@ import (
 
 type settingRepository struct {
 	client *ent.Client
+	db     *sql.DB
 }
 
 func NewSettingRepository(client *ent.Client) service.SettingRepository {
-	return &settingRepository{client: client}
+	var db *sql.DB
+	if client != nil {
+		if driver, ok := client.Driver().(*entsql.Driver); ok {
+			db = driver.DB()
+		}
+	}
+	return &settingRepository{client: client, db: db}
 }
 
 func (r *settingRepository) Get(ctx context.Context, key string) (*service.Setting, error) {
@@ -102,4 +113,114 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 func (r *settingRepository) Delete(ctx context.Context, key string) error {
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
+}
+
+// EnsureExecutionNodeClusterID creates a stable PostgreSQL-cluster identity
+// without trusting a UUID that may have been copied by a logical database
+// snapshot. The fallback is retained for non-PostgreSQL test doubles.
+func (r *settingRepository) EnsureExecutionNodeClusterID(ctx context.Context, candidate string) (string, error) {
+	identity := strings.TrimSpace(candidate)
+	if r.db != nil {
+		var systemIdentifier string
+		if err := r.db.QueryRowContext(ctx, "SELECT system_identifier::text FROM pg_control_system()").Scan(&systemIdentifier); err != nil {
+			return "", fmt.Errorf("read PostgreSQL system identifier: %w", err)
+		}
+		identity = strings.TrimSpace(systemIdentifier)
+		if identity == "" {
+			return "", fmt.Errorf("PostgreSQL system identifier is empty")
+		}
+	}
+	if identity == "" {
+		return "", fmt.Errorf("database cluster identity candidate is empty")
+	}
+	if err := r.client.Setting.
+		Create().
+		SetKey(service.SettingKeyExecutionNodeClusterID).
+		SetValue(identity).
+		SetUpdatedAt(time.Now()).
+		OnConflictColumns(setting.FieldKey).
+		Ignore().
+		Exec(ctx); err != nil {
+		return "", err
+	}
+	item, err := r.client.Setting.Query().Where(setting.KeyEQ(service.SettingKeyExecutionNodeClusterID)).Only(ctx)
+	if err != nil {
+		return "", err
+	}
+	// Existing installations may contain the older generated UUID. Replace it
+	// with the actual PostgreSQL identity so a cloned settings table cannot keep
+	// passing the shared-state check after the upgrade.
+	if strings.TrimSpace(item.Value) != identity {
+		if err := r.client.Setting.
+			UpdateOneID(item.ID).
+			SetValue(identity).
+			SetUpdatedAt(time.Now()).
+			Exec(ctx); err != nil {
+			return "", err
+		}
+		return identity, nil
+	}
+	return item.Value, nil
+}
+
+// IsExecutionNodeJoinTargetEmpty allows a source-authoritative join only on a
+// target that has no customer/business state. The target's bootstrap admin and
+// migration metadata are intentionally ignored; silently discarding accounts,
+// keys, usage, proxies, or groups would create an unrecoverable split ledger.
+func (r *settingRepository) IsExecutionNodeJoinTargetEmpty(ctx context.Context) (bool, error) {
+	if r.db == nil {
+		return false, fmt.Errorf("target database handle is unavailable")
+	}
+	var hasBusinessData bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT
+			EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL)
+			OR EXISTS (SELECT 1 FROM api_keys WHERE deleted_at IS NULL)
+			OR EXISTS (SELECT 1 FROM usage_logs)
+			OR EXISTS (SELECT 1 FROM proxies WHERE deleted_at IS NULL)
+			OR EXISTS (SELECT 1 FROM groups WHERE deleted_at IS NULL)
+			OR (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) > 1
+	`).Scan(&hasBusinessData)
+	if err != nil {
+		return false, fmt.Errorf("inspect target business data: %w", err)
+	}
+	return !hasBusinessData, nil
+}
+
+// AcceptExecutionNodePairing consumes the single-use invite and publishes both
+// sides of the peer relationship atomically. A zero row count means the invite
+// was replayed or replaced by a newer one.
+func (r *settingRepository) AcceptExecutionNodePairing(ctx context.Context, expectedInvite string, peerSettings map[string]string) (bool, error) {
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	count, err := tx.Setting.
+		Update().
+		Where(setting.KeyEQ(service.SettingKeyExecutionNodePairingInvite), setting.ValueEQ(expectedInvite)).
+		SetValue("").
+		SetUpdatedAt(time.Now()).
+		Save(ctx)
+	if err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
+	if count != 1 {
+		_ = tx.Rollback()
+		return false, nil
+	}
+	builders := make([]*ent.SettingCreate, 0, len(peerSettings))
+	for key, value := range peerSettings {
+		builders = append(builders, tx.Setting.Create().SetKey(key).SetValue(value).SetUpdatedAt(time.Now()))
+	}
+	if len(builders) > 0 {
+		if err := tx.Setting.CreateBulk(builders...).OnConflictColumns(setting.FieldKey).UpdateNewValues().Exec(ctx); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }

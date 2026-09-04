@@ -531,7 +531,7 @@ func teamMailboxHTMLNodeText(node *xhtml.Node) string {
 			return
 		}
 		if current.Type == xhtml.TextNode {
-			output.WriteString(current.Data)
+			_, _ = output.WriteString(current.Data)
 		}
 		for child := current.FirstChild; child != nil; child = child.NextSibling {
 			visit(child)

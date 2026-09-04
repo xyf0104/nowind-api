@@ -585,6 +585,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/execution-nodes',
+    name: 'AdminExecutionNodes',
+    component: () => import('@/views/admin/ExecutionNodesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Load Balancing',
+      titleKey: 'nav.executionNodes'
+    }
+  },
+  {
     path: '/admin/team-child-creation',
     name: 'AdminTeamChildCreation',
     component: () => import('@/views/admin/TeamChildCreationView.vue'),

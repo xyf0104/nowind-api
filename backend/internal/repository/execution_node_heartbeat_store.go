@@ -66,3 +66,25 @@ func (s *executionNodeHeartbeatStore) HealthyExecutionNodes(
 	}
 	return result, nil
 }
+
+// EnsureExecutionNodeClusterIdentity creates the Redis-side identity exactly
+// once for a shared Redis database. SETNX prevents two XIASS instances starting
+// together from silently choosing different identities.
+func (s *executionNodeHeartbeatStore) EnsureExecutionNodeClusterIdentity(ctx context.Context, candidate string) (string, error) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return "", fmt.Errorf("cluster identity candidate is empty")
+	}
+	if err := s.rdb.SetNX(ctx, service.ExecutionNodeClusterIdentityKey(), candidate, 0).Err(); err != nil {
+		return "", err
+	}
+	value, err := s.rdb.Get(ctx, service.ExecutionNodeClusterIdentityKey()).Result()
+	if err != nil {
+		return "", err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("shared Redis cluster identity is empty")
+	}
+	return value, nil
+}

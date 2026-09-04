@@ -14,6 +14,7 @@ import (
 
 const (
 	executionNodeHeartbeatKeyPrefix = "xiass:execution_node:heartbeat:"
+	executionNodeClusterIdentityKey = "xiass:execution_node:cluster_identity"
 	executionNodeHeartbeatInterval  = 5 * time.Second
 	executionNodeHeartbeatTTL       = 20 * time.Second
 )
@@ -111,6 +112,29 @@ func (s *ExecutionNodeHeartbeatService) touch() {
 // health check from drifting away from the failover liveness source.
 func ExecutionNodeHeartbeatKey(nodeID string) string {
 	return executionNodeHeartbeatKeyPrefix + strings.TrimSpace(nodeID)
+}
+
+// ExecutionNodeClusterIdentityKey is a durable Redis key shared by all
+// instances that intentionally use the same Redis database. It is used only
+// during administrator pairing; it is not an authentication secret.
+func ExecutionNodeClusterIdentityKey() string {
+	return executionNodeClusterIdentityKey
+}
+
+// EnsureSharedStateIdentity asks the Redis-backed heartbeat store for the
+// cluster identity. Keeping this optional preserves deterministic service
+// tests and makes a missing Redis wiring fail closed in production pairing.
+func (s *ExecutionNodeHeartbeatService) EnsureSharedStateIdentity(ctx context.Context, candidate string) (string, error) {
+	if s == nil || s.store == nil {
+		return "", errors.New("execution node shared-state store is unavailable")
+	}
+	provider, ok := s.store.(interface {
+		EnsureExecutionNodeClusterIdentity(context.Context, string) (string, error)
+	})
+	if !ok {
+		return "", errors.New("execution node shared-state identity is unavailable")
+	}
+	return provider.EnsureExecutionNodeClusterIdentity(ctx, candidate)
 }
 
 func (s *ExecutionNodeHeartbeatService) HealthyExecutionNodes(ctx context.Context, nodeIDs []string) (map[string]bool, error) {

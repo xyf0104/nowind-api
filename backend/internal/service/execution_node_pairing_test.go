@@ -1,0 +1,331 @@
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/stretchr/testify/require"
+)
+
+type executionNodePairingRepo struct {
+	mu     sync.Mutex
+	values map[string]string
+}
+
+func newExecutionNodePairingRepo(databaseID string) *executionNodePairingRepo {
+	return &executionNodePairingRepo{values: map[string]string{SettingKeyExecutionNodeClusterID: databaseID}}
+}
+
+func (r *executionNodePairingRepo) Get(_ context.Context, key string) (*Setting, error) {
+	value, err := r.GetValue(context.Background(), key)
+	if err != nil {
+		return nil, err
+	}
+	return &Setting{Key: key, Value: value}, nil
+}
+
+func (r *executionNodePairingRepo) GetValue(_ context.Context, key string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, ok := r.values[key]
+	if !ok {
+		return "", ErrSettingNotFound
+	}
+	return value, nil
+}
+
+func (r *executionNodePairingRepo) Set(_ context.Context, key, value string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.values[key] = value
+	return nil
+}
+
+func (r *executionNodePairingRepo) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if value, ok := r.values[key]; ok {
+			result[key] = value
+		}
+	}
+	return result, nil
+}
+
+func (r *executionNodePairingRepo) SetMultiple(_ context.Context, values map[string]string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, value := range values {
+		r.values[key] = value
+	}
+	return nil
+}
+
+func (r *executionNodePairingRepo) GetAll(_ context.Context) (map[string]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make(map[string]string, len(r.values))
+	for key, value := range r.values {
+		result[key] = value
+	}
+	return result, nil
+}
+
+func (r *executionNodePairingRepo) Delete(_ context.Context, key string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.values, key)
+	return nil
+}
+
+func (r *executionNodePairingRepo) EnsureExecutionNodeClusterID(_ context.Context, candidate string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.TrimSpace(r.values[SettingKeyExecutionNodeClusterID]) == "" {
+		r.values[SettingKeyExecutionNodeClusterID] = candidate
+	}
+	return r.values[SettingKeyExecutionNodeClusterID], nil
+}
+
+func (r *executionNodePairingRepo) AcceptExecutionNodePairing(_ context.Context, expectedInvite string, peerSettings map[string]string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.values[SettingKeyExecutionNodePairingInvite] != expectedInvite {
+		return false, nil
+	}
+	r.values[SettingKeyExecutionNodePairingInvite] = ""
+	for key, value := range peerSettings {
+		r.values[key] = value
+	}
+	return true, nil
+}
+
+type executionNodePairingState string
+
+func (s executionNodePairingState) EnsureSharedStateIdentity(context.Context, string) (string, error) {
+	return string(s), nil
+}
+
+func newExecutionNodePairingService(nodeID, databaseID, redisID string) (*SettingService, *executionNodePairingRepo) {
+	repo := newExecutionNodePairingRepo(databaseID)
+	cfg := &config.Config{
+		JWT:  config.JWTConfig{Secret: "shared-jwt-secret-value"},
+		Totp: config.TotpConfig{EncryptionKey: strings.Repeat("42", 32)},
+	}
+	cfg.Gateway.ExecutionNode.Enabled = true
+	cfg.Gateway.ExecutionNode.ID = nodeID
+	svc := NewSettingService(repo, cfg)
+	svc.SetVersion("1.1.74")
+	svc.SetExecutionNodePairingStateReader(executionNodePairingState(redisID))
+	return svc, repo
+}
+
+func TestExecutionNodePairingInviteStoresHashAndIsSingleUse(t *testing.T) {
+	target, repo := newExecutionNodePairingService("api2", "shared-db", "shared-redis")
+	invite, err := target.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	require.Len(t, invite.Token, 64)
+
+	stored := repo.values[SettingKeyExecutionNodePairingInvite]
+	require.NotContains(t, stored, invite.Token)
+	require.Contains(t, stored, pairingTokenHash(invite.Token))
+
+	initiator, _ := newExecutionNodePairingService("api", "shared-db", "shared-redis")
+	request, err := initiator.localPairingHandshakeResponse(context.Background())
+	require.NoError(t, err)
+	accepted, err := target.AcceptExecutionNodePairingHandshake(context.Background(), invite.Token, &ExecutionNodePairingHandshakeRequest{
+		NodeID:              request.NodeID,
+		Version:             request.Version,
+		ProtocolVersion:     request.ProtocolVersion,
+		DatabaseFingerprint: request.DatabaseFingerprint,
+		RedisFingerprint:    request.RedisFingerprint,
+		AuthFingerprint:     request.AuthFingerprint,
+		StateFingerprint:    request.StateFingerprint,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "api2", accepted.NodeID)
+	require.Empty(t, repo.values[SettingKeyExecutionNodePairingInvite])
+	require.NotEmpty(t, repo.values[executionNodePairingPeerKey("api")])
+	require.NotEmpty(t, repo.values[executionNodePairingPeerKey("api2")])
+
+	_, err = target.AcceptExecutionNodePairingHandshake(context.Background(), invite.Token, &ExecutionNodePairingHandshakeRequest{
+		NodeID:              request.NodeID,
+		ProtocolVersion:     request.ProtocolVersion,
+		DatabaseFingerprint: request.DatabaseFingerprint,
+		RedisFingerprint:    request.RedisFingerprint,
+		AuthFingerprint:     request.AuthFingerprint,
+		StateFingerprint:    request.StateFingerprint,
+	})
+	require.Equal(t, "EXECUTION_NODE_PAIRING_INVITE_INVALID", infraerrors.Reason(err))
+}
+
+func TestExecutionNodePairingRejectsIndependentStateWithoutConsumingInvite(t *testing.T) {
+	target, repo := newExecutionNodePairingService("api2", "target-db", "target-redis")
+	invite, err := target.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	storedInvite := repo.values[SettingKeyExecutionNodePairingInvite]
+
+	initiator, _ := newExecutionNodePairingService("api", "other-db", "other-redis")
+	request, err := initiator.localPairingHandshakeResponse(context.Background())
+	require.NoError(t, err)
+	_, err = target.AcceptExecutionNodePairingHandshake(context.Background(), invite.Token, &ExecutionNodePairingHandshakeRequest{
+		NodeID:              request.NodeID,
+		ProtocolVersion:     request.ProtocolVersion,
+		DatabaseFingerprint: request.DatabaseFingerprint,
+		RedisFingerprint:    request.RedisFingerprint,
+		AuthFingerprint:     request.AuthFingerprint,
+		StateFingerprint:    request.StateFingerprint,
+	})
+	require.Equal(t, "EXECUTION_NODE_PAIRING_STATE_MISMATCH", infraerrors.Reason(err))
+	require.Equal(t, storedInvite, repo.values[SettingKeyExecutionNodePairingInvite])
+}
+
+func TestPairExecutionNodeVerifiesPeerAndPersistsProductionReadyStatus(t *testing.T) {
+	initiator, _ := newExecutionNodePairingService("api", "shared-db", "shared-redis")
+	local, err := initiator.localPairingHandshakeResponse(context.Background())
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/internal/execution-nodes/pair", r.URL.Path)
+		require.Equal(t, strings.Repeat("a", 64), r.Header.Get(executionNodePairingInviteHeader))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": ExecutionNodePairingHandshakeResponse{
+				NodeID:              "api2",
+				Version:             "1.1.74",
+				ProtocolVersion:     executionNodePairingProtocolVersion,
+				DatabaseFingerprint: local.DatabaseFingerprint,
+				RedisFingerprint:    local.RedisFingerprint,
+				AuthFingerprint:     local.AuthFingerprint,
+				StateFingerprint:    local.StateFingerprint,
+			},
+		})
+	}))
+	defer server.Close()
+
+	status, err := initiator.PairExecutionNode(context.Background(), server.URL, strings.Repeat("a", 64))
+	require.NoError(t, err)
+	require.True(t, status.Paired)
+	require.True(t, status.ProductionReady)
+	require.True(t, status.DatabaseShared)
+	require.True(t, status.RedisShared)
+	require.True(t, status.AuthCompatible)
+	require.Equal(t, "api2", status.Peer.NodeID)
+}
+
+func TestPairExecutionNodeRejectsRedirectAndPublicHTTP(t *testing.T) {
+	initiator, _ := newExecutionNodePairingService("api", "shared-db", "shared-redis")
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "https://example.com")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	_, err := initiator.PairExecutionNode(context.Background(), redirect.URL, strings.Repeat("a", 64))
+	require.Equal(t, "EXECUTION_NODE_PAIRING_REJECTED", infraerrors.Reason(err))
+	_, err = initiator.PairExecutionNode(context.Background(), "http://example.com", strings.Repeat("a", 64))
+	require.Equal(t, "EXECUTION_NODE_PAIRING_URL_INVALID", infraerrors.Reason(err))
+}
+
+type executionNodeJoinApplierRecorder struct {
+	join ExecutionNodeJoinConfig
+}
+
+func (r *executionNodeJoinApplierRecorder) LaunchExecutionNodeJoin(_ context.Context, join ExecutionNodeJoinConfig) error {
+	r.join = join
+	return nil
+}
+
+func TestAuthoritativePairingReturnsEncryptedJoinBundleToTargetApplier(t *testing.T) {
+	source, sourceRepo := newExecutionNodePairingService("api", "source-db", "source-redis")
+	source.cfg.Database = config.DatabaseConfig{Host: "postgres", Port: 5432, User: "xiass", Password: "db-secret", DBName: "xiass", SSLMode: "disable"}
+	source.cfg.Redis = config.RedisConfig{Host: "redis", Port: 6379, Username: "", Password: "redis-secret", DB: 2}
+	source.cfg.Totp.EncryptionKeyConfigured = true
+	target, _ := newExecutionNodePairingService("api2", "target-db", "target-redis")
+	recorder := &executionNodeJoinApplierRecorder{}
+	target.SetExecutionNodeJoinApplier(recorder)
+
+	invite, err := source.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	server := httptest.NewServer(setupExecutionNodePairingHTTPRouter(source))
+	defer server.Close()
+
+	status, err := target.PairExecutionNode(context.Background(), server.URL, invite.Token)
+	require.NoError(t, err)
+	require.True(t, status.Paired)
+	require.False(t, status.ProductionReady)
+	require.Equal(t, "api", recorder.join.SourceNodeID)
+	require.Equal(t, "api2", recorder.join.TargetNodeID)
+	require.Equal(t, "postgres", recorder.join.DatabaseHost)
+	require.Equal(t, "db-secret", recorder.join.DatabasePass)
+	require.Equal(t, "redis-secret", recorder.join.RedisPassword)
+	require.NotEmpty(t, recorder.join.TunnelProof)
+
+	stored, err := sourceRepo.GetValue(context.Background(), executionNodePairingPeerKey("api"))
+	require.NoError(t, err)
+	require.NotContains(t, stored, recorder.join.TunnelProof)
+	var peer ExecutionNodePairingPeer
+	require.NoError(t, json.Unmarshal([]byte(stored), &peer))
+	require.False(t, peer.Ready)
+	require.Equal(t, pairingTokenHash(recorder.join.TunnelProof), peer.TunnelProofHash)
+}
+
+func setupExecutionNodePairingHTTPRouter(svc *SettingService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/internal/execution-nodes/pair" {
+			http.NotFound(w, r)
+			return
+		}
+		token := r.Header.Get(executionNodePairingInviteHeader)
+		var request ExecutionNodePairingHandshakeRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		result, err := svc.AcceptExecutionNodePairingHandshake(r.Context(), token, &request)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": result})
+	})
+}
+
+type executionNodeJoinTargetInspectorStub struct {
+	empty bool
+}
+
+func (s executionNodeJoinTargetInspectorStub) IsExecutionNodeJoinTargetEmpty(context.Context) (bool, error) {
+	return s.empty, nil
+}
+
+func TestAuthoritativePairingRejectsNonEmptyTargetBeforeConsumingInvite(t *testing.T) {
+	source, sourceRepo := newExecutionNodePairingService("api", "source-db", "source-redis")
+	source.cfg.Database = config.DatabaseConfig{Host: "postgres", Port: 5432, User: "xiass", Password: "db-secret", DBName: "xiass", SSLMode: "disable"}
+	source.cfg.Redis = config.RedisConfig{Host: "redis", Port: 6379, Password: "redis-secret"}
+	source.cfg.Totp.EncryptionKeyConfigured = true
+	target, _ := newExecutionNodePairingService("api2", "target-db", "target-redis")
+	target.SetExecutionNodeJoinInspector(executionNodeJoinTargetInspectorStub{empty: false})
+
+	invite, err := source.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	_, err = target.PairExecutionNode(context.Background(), "https://source.example.com", invite.Token)
+	require.Equal(t, "EXECUTION_NODE_PAIRING_TARGET_NOT_EMPTY", infraerrors.Reason(err))
+	stored, readErr := sourceRepo.GetValue(context.Background(), SettingKeyExecutionNodePairingInvite)
+	require.NoError(t, readErr)
+	require.NotEmpty(t, stored)
+}

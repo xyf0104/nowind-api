@@ -776,7 +776,11 @@ func ProvideExecutionNodeHeartbeatService(store ExecutionNodeHeartbeatStore, cfg
 	return svc
 }
 
-func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, accountRepo AccountRepository, heartbeat *ExecutionNodeHeartbeatService, cfg *config.Config) *SettingService {
+func ProvideDockerUpdateService(updateService *UpdateService) *DockerUpdateService {
+	return NewDockerUpdateService(updateService)
+}
+
+func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, accountRepo AccountRepository, heartbeat *ExecutionNodeHeartbeatService, dockerUpdateService *DockerUpdateService, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
@@ -786,7 +790,15 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	if activator, ok := accountRepo.(ExecutionNodeRoutingActivator); ok {
 		svc.SetExecutionNodeRoutingActivator(activator)
 	}
+	if statsReader, ok := accountRepo.(ExecutionNodeAccountStatsReader); ok {
+		svc.SetExecutionNodeAccountStatsReader(statsReader)
+	}
 	svc.SetExecutionNodeHealthReader(heartbeat)
+	svc.SetExecutionNodePairingStateReader(heartbeat)
+	svc.SetExecutionNodeJoinApplier(dockerUpdateService)
+	if inspector, ok := settingRepo.(ExecutionNodeJoinTargetInspector); ok {
+		svc.SetExecutionNodeJoinInspector(inspector)
+	}
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)
 	}
@@ -853,6 +865,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAPIKeyAuthCacheInvalidator,
 	ProvideAuthCacheInvalidationWorker,
 	ProvideExecutionNodeHeartbeatService,
+	ProvideDockerUpdateService,
 	NewGroupService,
 	NewCompositeRouteResolver,
 	ProvideAccountService,

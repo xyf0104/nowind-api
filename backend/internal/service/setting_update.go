@@ -163,6 +163,12 @@ func (s *SettingService) prepareExecutionNodeRoutingActivationAndReport(ctx cont
 	if _, ok := weights[legacyNodeID]; !ok {
 		return false, infraerrors.BadRequest("EXECUTION_NODE_LEGACY_WEIGHT_MISSING", "execution node weights do not contain the legacy node ID")
 	}
+	if len(weights) > 1 && s.executionNodePairingState != nil {
+		pairingStatus, pairingErr := s.GetExecutionNodePairingStatus(ctx)
+		if pairingErr != nil || pairingStatus == nil || !pairingStatus.ProductionReady {
+			return false, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_NOT_READY", "complete production-ready node pairing before enabling multi-node routing")
+		}
+	}
 	proxyIDs, err := normalizeExecutionNodeProxyIDs(settings.ExecutionNodeProxyIDs)
 	if err != nil {
 		return false, err

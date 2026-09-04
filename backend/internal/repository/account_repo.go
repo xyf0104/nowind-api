@@ -53,6 +53,41 @@ type accountRepository struct {
 	schedulerCache service.SchedulerCache
 }
 
+func (r *accountRepository) GetExecutionNodeAccountStats(
+	ctx context.Context,
+	legacyNodeID string,
+) (map[string]service.ExecutionNodeAccountStats, error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(BTRIM(extra ->> $1), ''), $2) AS node_id,
+			COUNT(*) AS total_count,
+			COUNT(*) FILTER (WHERE status = 'active') AS active_count,
+			COUNT(*) FILTER (WHERE status = 'active' AND schedulable = TRUE) AS schedulable_count
+		FROM accounts
+		WHERE deleted_at IS NULL
+		GROUP BY 1
+		ORDER BY 1
+	`, service.AccountExecutionNodeExtraKey, strings.TrimSpace(legacyNodeID))
+	if err != nil {
+		return nil, fmt.Errorf("query execution node account stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]service.ExecutionNodeAccountStats)
+	for rows.Next() {
+		var nodeID string
+		var stats service.ExecutionNodeAccountStats
+		if err := rows.Scan(&nodeID, &stats.Total, &stats.Active, &stats.Schedulable); err != nil {
+			return nil, fmt.Errorf("scan execution node account stats: %w", err)
+		}
+		result[strings.TrimSpace(nodeID)] = stats
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate execution node account stats: %w", err)
+	}
+	return result, nil
+}
+
 var schedulerNeutralExtraKeyPrefixes = []string{
 	"codex_primary_",
 	"codex_secondary_",

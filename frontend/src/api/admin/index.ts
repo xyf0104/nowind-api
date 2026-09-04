@@ -36,6 +36,7 @@ import riskControlAPI from './riskControl'
 import adminComplianceAPI from './compliance'
 import auditAPI from './audit'
 import teamChildAPI from './teamChild'
+import executionNodesAPI from './executionNodes'
 
 /**
  * Unified admin API object for convenient access
@@ -73,7 +74,8 @@ export const adminAPI = {
   riskControl: riskControlAPI,
   compliance: adminComplianceAPI,
   audit: auditAPI,
-  teamChild: teamChildAPI
+  teamChild: teamChildAPI,
+  executionNodes: executionNodesAPI
 }
 
 export {
@@ -109,7 +111,8 @@ export {
   riskControlAPI,
   adminComplianceAPI,
   auditAPI,
-  teamChildAPI
+  teamChildAPI,
+  executionNodesAPI
 }
 
 export default adminAPI
