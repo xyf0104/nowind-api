@@ -182,6 +182,23 @@ describe('ExecutionNodesView', () => {
     expect(wrapper.text()).not.toContain('NODE_PROXY_UNAVAILABLE')
   })
 
+  it('renders older server responses with null node collections', async () => {
+    getStatus.mockResolvedValue({
+      ...statusFixture({
+        can_enable: false,
+        runtime: { ...statusFixture().runtime, enabled: false, node_id: '', default_proxy_id: 0, legacy_unassigned_proxy_id: 0 }
+      }),
+      nodes: null,
+      issues: null
+    } as unknown as ExecutionNodeAdminStatus)
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(showError).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="execution-node-id-0"]').element).toHaveProperty('value', 'api')
+    expect(wrapper.get('[data-testid="execution-node-generate-invite"]').attributes('disabled')).toBeDefined()
+  })
+
   it('requires confirmation before enabling and saves the full policy', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -217,6 +234,7 @@ describe('ExecutionNodesView', () => {
 
     expect(initializeRuntime).toHaveBeenCalledWith('api')
     expect(showSuccess).toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="execution-node-generate-invite"]').attributes('disabled')).toBeDefined()
   })
 
   it('blocks enabling when the server preflight has errors', async () => {

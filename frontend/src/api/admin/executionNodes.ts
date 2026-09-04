@@ -87,7 +87,11 @@ export interface ExecutionNodeRuntimeConfig {
 
 export async function getStatus(): Promise<ExecutionNodeAdminStatus> {
   const { data } = await apiClient.get<ExecutionNodeAdminStatus>('/admin/settings/execution-nodes/status')
-  return data
+  return {
+    ...data,
+    nodes: data.nodes ?? [],
+    issues: data.issues ?? []
+  }
 }
 
 export async function getPairingStatus(): Promise<ExecutionNodePairingStatus> {

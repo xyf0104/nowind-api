@@ -10,6 +10,7 @@ export default {
       inviteTitle: 'Generate an invite here',
       inviteHint: 'The invite expires in 10 minutes and can be used once. After generation, this node is the state source; send it to the other XIASS administrator over a secure channel.',
       generateInvite: 'Generate invite',
+      initializeFirst: 'Initialize the local node first',
       regenerateInvite: 'Regenerate',
       copyInvite: 'Copy',
       inviteExpiry: 'Expires at {time}. The raw invite is not shown again after leaving this page.',

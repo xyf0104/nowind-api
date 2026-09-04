@@ -88,7 +88,7 @@
                   <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.inviteTitle') }}</h3>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.inviteHint') }}</p>
                 </div>
-                <button type="button" class="btn btn-secondary btn-sm" :disabled="pairingSaving" data-testid="execution-node-generate-invite" @click="generateInvite">
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="pairingSaving || !canGenerateInvite" :title="canGenerateInvite ? t('admin.executionNodes.generateInvite') : t('admin.executionNodes.initializeFirst')" data-testid="execution-node-generate-invite" @click="generateInvite">
                   <Icon name="key" size="sm" />
                   <span>{{ pairingInvite ? t('admin.executionNodes.regenerateInvite') : t('admin.executionNodes.generateInvite') }}</span>
                 </button>
@@ -224,8 +224,8 @@
           <div class="border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ hasBlockingIssues ? t('admin.executionNodes.issueTitle') : t('admin.executionNodes.statusTitle') }}</h2>
           </div>
-          <div v-if="status.issues.length" class="divide-y divide-gray-100 dark:divide-dark-700">
-            <div v-for="issue in status.issues" :key="`${issue.code}-${issue.message}`" class="flex gap-3 px-5 py-3 text-sm sm:px-6">
+          <div v-if="statusIssues.length" class="divide-y divide-gray-100 dark:divide-dark-700">
+            <div v-for="issue in statusIssues" :key="`${issue.code}-${issue.message}`" class="flex gap-3 px-5 py-3 text-sm sm:px-6">
               <Icon :name="issue.severity === 'error' ? 'exclamationTriangle' : 'infoCircle'" size="sm" :class="issue.severity === 'error' ? 'text-red-500' : issue.severity === 'info' ? 'text-sky-500' : 'text-amber-500'" />
               <div class="min-w-0"><span class="font-medium text-gray-800 dark:text-gray-200">{{ issueText(issue) }}</span><span class="ml-2 font-mono text-xs text-gray-400 dark:text-gray-500">{{ issue.code }}</span></div>
             </div>
@@ -292,7 +292,13 @@ let nodeSequence = 0
 interface NodeDraft { key: number; nodeID: string; weight: number; proxyID: number }
 const draftNodes = ref<NodeDraft[]>([])
 const mappingLocked = computed(() => Boolean(status.value?.balancing_enabled))
-const hasBlockingIssues = computed(() => Boolean(status.value?.issues.some((issue) => issue.severity === 'error')))
+const statusIssues = computed(() => status.value?.issues ?? [])
+const canGenerateInvite = computed(() => Boolean(
+  status.value?.runtime.enabled &&
+  /^[A-Za-z0-9._-]{1,64}$/.test(status.value.runtime.node_id) &&
+  status.value.runtime.default_proxy_id > 0
+))
+const hasBlockingIssues = computed(() => statusIssues.value.some((issue) => issue.severity === 'error'))
 
 const StatusTile = defineComponent({
   props: { label: { type: String, required: true }, value: { type: String, required: true }, tone: { type: String, default: 'ok' } },
@@ -338,7 +344,7 @@ const hasValidDraft = computed(() => {
 })
 
 function nodeStatus(nodeID: string): ExecutionNodeAdminNode | undefined {
-  return status.value?.nodes.find((node) => node.node_id === nodeID.trim())
+  return (status.value?.nodes ?? []).find((node) => node.node_id === nodeID.trim())
 }
 
 function issueText(issue: ExecutionNodeAdminStatus['issues'][number]): string {
@@ -349,7 +355,7 @@ function issueText(issue: ExecutionNodeAdminStatus['issues'][number]): string {
 
 function syncDraft(next: ExecutionNodeAdminStatus): void {
   draftEnabled.value = next.balancing_enabled
-  draftNodes.value = next.nodes.map((node) => ({ key: ++nodeSequence, nodeID: node.node_id, weight: node.weight, proxyID: node.proxy_id || 0 }))
+  draftNodes.value = (next.nodes ?? []).map((node) => ({ key: ++nodeSequence, nodeID: node.node_id, weight: node.weight, proxyID: node.proxy_id || 0 }))
   if (!draftNodes.value.length) draftNodes.value = [{ key: ++nodeSequence, nodeID: 'api', weight: 1, proxyID: 0 }]
   if (next.runtime.node_id) localNodeID.value = next.runtime.node_id
 }
@@ -464,7 +470,7 @@ function removeNode(index: number): void {
 function requestToggle(next: boolean): void {
   if (next) {
     if (!status.value?.can_enable) {
-      appStore.showError(status.value?.issues.filter((issue) => issue.severity === 'error').map(issueText).join('；') || t('admin.executionNodes.cannotEnable'))
+      appStore.showError(statusIssues.value.filter((issue) => issue.severity === 'error').map(issueText).join('；') || t('admin.executionNodes.cannotEnable'))
       return
     }
     showEnableConfirm.value = true

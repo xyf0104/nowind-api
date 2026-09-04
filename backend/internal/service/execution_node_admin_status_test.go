@@ -139,6 +139,8 @@ func TestGetExecutionNodeAdminStatusKeepsDefaultSingleNodeModeNeutral(t *testing
 	for _, issue := range status.Issues {
 		require.NotEqual(t, "error", issue.Severity)
 	}
+	require.NotNil(t, status.Nodes)
+	require.Empty(t, status.Nodes)
 }
 
 func TestGetExecutionNodeAdminStatusKeepsPanelVisibleWhenSettingsDatabaseFails(t *testing.T) {

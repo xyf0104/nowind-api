@@ -10,6 +10,7 @@ export default {
       inviteTitle: '在本机生成邀请码',
       inviteHint: '邀请码 10 分钟内有效、只能使用一次。生成后本机成为状态源；请通过安全渠道交给另一台 XIASS 的管理员。',
       generateInvite: '生成邀请码',
+      initializeFirst: '请先初始化本机节点',
       regenerateInvite: '重新生成',
       copyInvite: '复制',
       inviteExpiry: '有效期至 {time}；关闭页面后不会再次显示原始邀请码。',

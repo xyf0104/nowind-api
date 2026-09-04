@@ -57,7 +57,11 @@ type ExecutionNodeAdminStatus struct {
 }
 
 func (s *SettingService) GetExecutionNodeAdminStatus(ctx context.Context) (*ExecutionNodeAdminStatus, error) {
-	status := &ExecutionNodeAdminStatus{DatabaseReachable: true}
+	status := &ExecutionNodeAdminStatus{
+		DatabaseReachable: true,
+		Nodes:             make([]ExecutionNodeAdminNode, 0),
+		Issues:            make([]ExecutionNodeAdminIssue, 0),
+	}
 	if s != nil && s.cfg != nil {
 		cfg := s.cfg.Gateway.ExecutionNode
 		status.Runtime = ExecutionNodeRuntimeStatus{
