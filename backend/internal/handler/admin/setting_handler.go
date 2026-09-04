@@ -436,6 +436,33 @@ func (h *SettingHandler) GetExecutionNodeStatus(c *gin.Context) {
 	response.Success(c, status)
 }
 
+// InitializeExecutionNodeRuntime prepares the local fixed egress and asks the
+// host updater to write the node runtime into .env. It deliberately does not
+// enable shared account balancing.
+func (h *SettingHandler) InitializeExecutionNodeRuntime(c *gin.Context) {
+	var req struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid execution-node runtime request")
+		return
+	}
+	runtime, err := h.settingService.InitializeExecutionNodeRuntime(c.Request.Context(), req.NodeID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	// The token is a long-lived host runtime secret. The updater receives it
+	// through Docker's private control path; it must not be sent back to a web
+	// browser or retained in the frontend state.
+	response.Success(c, gin.H{
+		"node_id":                    runtime.NodeID,
+		"default_proxy_id":           runtime.DefaultProxyID,
+		"legacy_unassigned_node_id":  runtime.LegacyUnassignedNodeID,
+		"legacy_unassigned_proxy_id": runtime.LegacyUnassignedProxyID,
+	})
+}
+
 // GetExecutionNodePairingStatus reports whether the local instance has a
 // verified peer using the same PostgreSQL and Redis state.
 func (h *SettingHandler) GetExecutionNodePairingStatus(c *gin.Context) {
@@ -461,14 +488,16 @@ func (h *SettingHandler) GenerateExecutionNodePairingInvite(c *gin.Context) {
 
 func (h *SettingHandler) PairExecutionNode(c *gin.Context) {
 	var req struct {
-		PeerURL string `json:"peer_url"`
-		Token   string `json:"token"`
+		PeerURL   string `json:"peer_url"`
+		Token     string `json:"token"`
+		TargetID  string `json:"target_node_id"`
+		TargetURL string `json:"target_url"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid pairing request")
 		return
 	}
-	status, err := h.settingService.PairExecutionNode(c.Request.Context(), req.PeerURL, req.Token)
+	status, err := h.settingService.PairExecutionNodeWithTarget(c.Request.Context(), req.PeerURL, req.Token, req.TargetID, req.TargetURL)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

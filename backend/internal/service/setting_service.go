@@ -240,16 +240,17 @@ type SettingService struct {
 	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 
-	executionNodeRoutingCache     atomic.Value // *cachedExecutionNodeRoutingSettings
-	executionNodeRoutingSF        singleflight.Group
-	executionNodeActivationMu     sync.Mutex
-	executionNodeAccountPreparer  ExecutionNodeAccountPreparer
-	executionNodeRoutingActivator ExecutionNodeRoutingActivator
-	executionNodeHealthReader     ExecutionNodeHealthReader
-	executionNodeAccountStats     ExecutionNodeAccountStatsReader
-	executionNodePairingState     ExecutionNodePairingStateReader
-	executionNodeJoinApplier      ExecutionNodeJoinApplier
-	executionNodeJoinInspector    ExecutionNodeJoinTargetInspector
+	executionNodeRoutingCache       atomic.Value // *cachedExecutionNodeRoutingSettings
+	executionNodeRoutingSF          singleflight.Group
+	executionNodeActivationMu       sync.Mutex
+	executionNodeAccountPreparer    ExecutionNodeAccountPreparer
+	executionNodeRoutingActivator   ExecutionNodeRoutingActivator
+	executionNodeHealthReader       ExecutionNodeHealthReader
+	executionNodeAccountStats       ExecutionNodeAccountStatsReader
+	executionNodePairingState       ExecutionNodePairingStateReader
+	executionNodeJoinApplier        ExecutionNodeJoinApplier
+	executionNodeRuntimeInitializer ExecutionNodeRuntimeInitializer
+	executionNodeJoinInspector      ExecutionNodeJoinTargetInspector
 
 	// grokRuntimeSettingsCache keeps the Grok model-mapping and default endpoint
 	// settings off the request hot path.  It is deliberately per SettingService
@@ -286,6 +287,12 @@ func (s *SettingService) SetExecutionNodeAccountStatsReader(reader ExecutionNode
 func (s *SettingService) SetExecutionNodeJoinApplier(applier ExecutionNodeJoinApplier) {
 	if s != nil {
 		s.executionNodeJoinApplier = applier
+	}
+}
+
+func (s *SettingService) SetExecutionNodeRuntimeInitializer(initializer ExecutionNodeRuntimeInitializer) {
+	if s != nil {
+		s.executionNodeRuntimeInitializer = initializer
 	}
 }
 

@@ -78,6 +78,13 @@ export interface ExecutionNodePairingInvite {
   expires_at: string
 }
 
+export interface ExecutionNodeRuntimeConfig {
+  node_id: string
+  default_proxy_id: number
+  legacy_unassigned_node_id: string
+  legacy_unassigned_proxy_id: number
+}
+
 export async function getStatus(): Promise<ExecutionNodeAdminStatus> {
   const { data } = await apiClient.get<ExecutionNodeAdminStatus>('/admin/settings/execution-nodes/status')
   return data
@@ -88,15 +95,22 @@ export async function getPairingStatus(): Promise<ExecutionNodePairingStatus> {
   return data
 }
 
+export async function initializeRuntime(nodeID: string): Promise<ExecutionNodeRuntimeConfig> {
+  const { data } = await apiClient.post<ExecutionNodeRuntimeConfig>('/admin/settings/execution-nodes/runtime/initialize', { node_id: nodeID })
+  return data
+}
+
 export async function generatePairingInvite(): Promise<ExecutionNodePairingInvite> {
   const { data } = await apiClient.post<ExecutionNodePairingInvite>('/admin/settings/execution-nodes/pairing/invite')
   return data
 }
 
-export async function pairExecutionNode(peerURL: string, token: string): Promise<ExecutionNodePairingStatus> {
+export async function pairExecutionNode(peerURL: string, token: string, targetNodeID: string, targetURL: string): Promise<ExecutionNodePairingStatus> {
   const { data } = await apiClient.post<ExecutionNodePairingStatus>('/admin/settings/execution-nodes/pairing/join', {
     peer_url: peerURL,
-    token
+    token,
+    target_node_id: targetNodeID,
+    target_url: targetURL
   })
   return data
 }
@@ -105,6 +119,6 @@ export async function unpairExecutionNode(): Promise<void> {
   await apiClient.post('/admin/settings/execution-nodes/pairing/unpair')
 }
 
-export const executionNodesAPI = { getStatus, getPairingStatus, generatePairingInvite, pairExecutionNode, unpairExecutionNode }
+export const executionNodesAPI = { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, pairExecutionNode, unpairExecutionNode }
 
 export default executionNodesAPI

@@ -92,6 +92,15 @@ func (s *SettingService) GetExecutionNodeAdminStatus(ctx context.Context) (*Exec
 		values = loaded
 	}
 	status.BalancingEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyExecutionNodeBalancingEnabled]), "true")
+	// A regular single-node installation intentionally has no execution-node
+	// identity, private egress mapping, heartbeat, or pairing state. Keep that
+	// default mode healthy and quiet; these checks become blocking only when an
+	// administrator has opted into the multi-node runtime or enabled routing.
+	if !status.Runtime.Enabled && !status.BalancingEnabled {
+		addIssue("MULTI_NODE_DISABLED", "info", "multi-node routing is not enabled; the current single-node runtime is operating normally")
+		status.CanEnable = false
+		return status, nil
+	}
 
 	weights := defaultExecutionNodeWeights()
 	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeWeights]); raw != "" {

@@ -4,9 +4,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ExecutionNodesView from '../ExecutionNodesView.vue'
 import type { ExecutionNodeAdminStatus } from '@/api/admin/executionNodes'
 
-const { getStatus, getPairingStatus, generatePairingInvite, pairExecutionNode, unpairExecutionNode, getAllWithCount, updateSettings, showError, showSuccess } = vi.hoisted(() => ({
+const { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, pairExecutionNode, unpairExecutionNode, getAllWithCount, updateSettings, showError, showSuccess } = vi.hoisted(() => ({
   getStatus: vi.fn(),
   getPairingStatus: vi.fn(),
+  initializeRuntime: vi.fn(),
   generatePairingInvite: vi.fn(),
   pairExecutionNode: vi.fn(),
   unpairExecutionNode: vi.fn(),
@@ -18,7 +19,7 @@ const { getStatus, getPairingStatus, generatePairingInvite, pairExecutionNode, u
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
-    executionNodes: { getStatus, getPairingStatus, generatePairingInvite, pairExecutionNode, unpairExecutionNode },
+    executionNodes: { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, pairExecutionNode, unpairExecutionNode },
     proxies: { getAllWithCount },
     settings: { updateSettings }
   }
@@ -29,7 +30,8 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/utils/apiError', () => ({
-  extractApiErrorMessage: (_error: unknown, fallback: string) => fallback
+  extractApiErrorMessage: (_error: unknown, fallback: string) => fallback,
+  extractI18nErrorMessage: (_error: unknown, _t: unknown, _prefix: string, fallback: string) => fallback
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => {
@@ -129,6 +131,7 @@ describe('ExecutionNodesView', () => {
       invite_active: false
     })
     generatePairingInvite.mockResolvedValue({ token: 'a'.repeat(64), expires_at: '2026-09-04T12:10:00Z' })
+    initializeRuntime.mockResolvedValue({ node_id: 'api', tunnel_token: 'b'.repeat(64), default_proxy_id: 84, legacy_unassigned_node_id: 'api', legacy_unassigned_proxy_id: 84 })
     pairExecutionNode.mockResolvedValue({
       protocol_version: 1,
       local_node_id: 'api',
@@ -159,6 +162,26 @@ describe('ExecutionNodesView', () => {
     expect(wrapper.text()).toContain('JP egress')
   })
 
+  it('renders disabled multi-node runtime as a neutral single-node state', async () => {
+    getStatus.mockResolvedValue(statusFixture({
+      can_enable: false,
+      runtime: {
+        ...statusFixture().runtime,
+        enabled: false,
+        node_id: '',
+        default_proxy_id: 0,
+        legacy_unassigned_proxy_id: 0
+      },
+      issues: [{ code: 'MULTI_NODE_DISABLED', severity: 'info', message: 'single node is healthy' }]
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('MULTI_NODE_DISABLED')
+    expect(wrapper.text()).not.toContain('LOCAL_NODE_ID_INVALID')
+    expect(wrapper.text()).not.toContain('NODE_PROXY_UNAVAILABLE')
+  })
+
   it('requires confirmation before enabling and saves the full policy', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -176,6 +199,24 @@ describe('ExecutionNodesView', () => {
       execution_node_weights: { api: 3, api2: 1 },
       execution_node_proxy_ids: { api: 84, api2: 83 }
     })
+  })
+
+  it('offers local runtime initialization before balancing is enabled', async () => {
+    getStatus.mockResolvedValue(statusFixture({
+      can_enable: false,
+      runtime: { ...statusFixture().runtime, enabled: false, node_id: '', default_proxy_id: 0, legacy_unassigned_proxy_id: 0 },
+      nodes: [],
+      issues: [{ code: 'MULTI_NODE_DISABLED', severity: 'info', message: 'single node is healthy' }]
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="execution-node-local-id"]').setValue('api')
+    await wrapper.get('[data-testid="execution-node-initialize"]').trigger('click')
+    await flushPromises()
+
+    expect(initializeRuntime).toHaveBeenCalledWith('api')
+    expect(showSuccess).toHaveBeenCalled()
   })
 
   it('blocks enabling when the server preflight has errors', async () => {
@@ -206,7 +247,7 @@ describe('ExecutionNodesView', () => {
     await wrapper.get('[data-testid="execution-node-pair"]').trigger('click')
     await flushPromises()
 
-    expect(pairExecutionNode).toHaveBeenCalledWith('https://api2.example.com', 'b'.repeat(64))
+    expect(pairExecutionNode).toHaveBeenCalledWith('https://api2.example.com', 'b'.repeat(64), 'api2', expect.any(String))
     expect(wrapper.text()).toContain('admin.executionNodes.pairingReady')
   })
 

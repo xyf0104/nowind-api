@@ -168,9 +168,22 @@ main() {
     chmod 600 "$OLD_ENV_FILE"
     log "已备份目标配置到受保护目录。"
 
-    # The target application keeps its own node identity and egress mapping;
-    # only shared state, source tunnel, and compatible authentication material
-    # are replaced.
+    target_proxy_id=$(json_value target_proxy_id)
+    legacy_node_id=$(json_value legacy_node_id)
+    legacy_proxy_id=$(json_value legacy_proxy_id)
+    [ -n "$target_proxy_id" ] && [ "$target_proxy_id" -gt 0 ] || die "来源没有提供目标节点固定出口"
+    [ -n "$legacy_node_id" ] || legacy_node_id="$(json_value source_node_id)"
+    [ -n "$legacy_proxy_id" ] && [ "$legacy_proxy_id" -gt 0 ] || legacy_proxy_id="$target_proxy_id"
+
+    # The target application keeps its own public ingress, but receives the
+    # shared account runtime identity and its own fixed loopback egress.
+    set_env_value GATEWAY_EXECUTION_NODE_ENABLED true
+    set_env_value GATEWAY_EXECUTION_NODE_ID "$JOIN_TARGET_NODE_ID"
+    set_env_value GATEWAY_EXECUTION_NODE_DEFAULT_PROXY_ID "$target_proxy_id"
+    set_env_value GATEWAY_EXECUTION_NODE_EMERGENCY_LOCAL_EGRESS true
+    set_env_value GATEWAY_EXECUTION_NODE_CONTROL_PLANE false
+    set_env_value GATEWAY_EXECUTION_NODE_LEGACY_UNASSIGNED_NODE_ID "$legacy_node_id"
+    set_env_value GATEWAY_EXECUTION_NODE_LEGACY_UNASSIGNED_PROXY_ID "$legacy_proxy_id"
     set_env_value DATABASE_HOST 127.0.0.1
     set_env_value DATABASE_PORT 15432
     set_env_value DATABASE_USER "$(json_value database_user)"
@@ -185,10 +198,13 @@ main() {
     set_env_value REDIS_ENABLE_TLS "$(json_value redis_enable_tls)"
     set_env_value JWT_SECRET "$(json_value jwt_secret)"
     set_env_value TOTP_ENCRYPTION_KEY "$(json_value totp_key)"
-    set_env_value XIASS_CLUSTER_STATE_SOURCE_URL "$JOIN_SOURCE_URL"
+    source_url=$(json_value source_url)
+    [ -n "$source_url" ] || source_url="$JOIN_SOURCE_URL"
+    [ -n "$source_url" ] || die "来源地址缺失"
+    set_env_value XIASS_CLUSTER_STATE_SOURCE_URL "$source_url"
     set_env_value XIASS_CLUSTER_TUNNEL_TOKEN "$JOIN_TUNNEL_PROOF"
     set_env_value XIASS_CLUSTER_STATE_SOURCE_NODE_ID "$(json_value source_node_id)"
-    set_env_value XIASS_CLUSTER_NODE_URLS_JSON "$(jq -cn --arg id "$(json_value source_node_id)" --arg url "$JOIN_SOURCE_URL" '{($id):$url}')"
+    set_env_value XIASS_CLUSTER_NODE_URLS_JSON "$(jq -cn --arg id "$(json_value source_node_id)" --arg url "$source_url" '{($id):$url}')"
 
     log "已写入来源 PostgreSQL/Redis 和认证配置，开始仅重建目标应用容器。"
     compose up -d --no-deps --no-build --force-recreate xiass-api >/dev/null

@@ -39,7 +39,7 @@
             <StatusTile :label="t('admin.executionNodes.localNode')" :value="status.runtime.node_id || t('admin.executionNodes.notConfigured')" :tone="status.runtime.node_id ? 'ok' : 'bad'" />
             <StatusTile :label="t('admin.executionNodes.runtimeEnabled')" :value="status.runtime.enabled ? t('admin.executionNodes.configured') : t('admin.executionNodes.notConfigured')" :tone="status.runtime.enabled ? 'ok' : 'bad'" />
             <StatusTile :label="t('admin.executionNodes.database')" :value="status.database_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')" :tone="status.database_reachable ? 'ok' : 'bad'" />
-            <StatusTile :label="t('admin.executionNodes.redis')" :value="status.heartbeat_store_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')" :tone="status.heartbeat_store_reachable ? 'ok' : 'warn'" />
+            <StatusTile :label="t('admin.executionNodes.redis')" :value="status.runtime.enabled ? (status.heartbeat_store_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')) : t('admin.executionNodes.notRequired')" :tone="status.runtime.enabled ? (status.heartbeat_store_reachable ? 'ok' : 'warn') : 'warn'" />
           </div>
         </section>
 
@@ -52,6 +52,21 @@
             <RuntimeValue :label="t('admin.executionNodes.controlPlane')" :value="status.runtime.control_plane ? t('admin.executionNodes.yes') : t('admin.executionNodes.no')" />
             <RuntimeValue :label="t('admin.executionNodes.emergencyEgress')" :value="status.runtime.emergency_local_egress ? t('admin.executionNodes.yes') : t('admin.executionNodes.no')" />
             <RuntimeValue :label="t('admin.executionNodes.egress')" :value="status.runtime.default_proxy_id > 0 ? `#${status.runtime.default_proxy_id}` : t('admin.executionNodes.proxyMissing')" />
+          </div>
+          <div v-if="!status.runtime.enabled" class="border-t border-gray-100 bg-sky-50 px-5 py-4 dark:border-dark-700 dark:bg-sky-950/20 sm:px-6">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-semibold text-sky-900 dark:text-sky-200">{{ t('admin.executionNodes.initializeTitle') }}</h3>
+                <p class="mt-1 text-xs leading-5 text-sky-800 dark:text-sky-300">{{ t('admin.executionNodes.initializeHint') }}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <input v-model.trim="localNodeID" class="input h-9 w-36" maxlength="64" type="text" :placeholder="t('admin.executionNodes.nodeIDPlaceholder')" data-testid="execution-node-local-id" />
+                <button type="button" class="btn btn-primary btn-sm" :disabled="runtimeSaving || !localNodeID" data-testid="execution-node-initialize" @click="initializeRuntime">
+                  <Icon :name="runtimeSaving ? 'refresh' : 'server'" size="sm" :class="runtimeSaving ? 'animate-spin' : ''" />
+                  <span>{{ runtimeSaving ? t('admin.executionNodes.initializing') : t('admin.executionNodes.initialize') }}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -104,6 +119,14 @@
               <label class="block" for="execution-node-peer-url">
                 <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.peerURL') }}</span>
                 <input id="execution-node-peer-url" v-model.trim="pairingPeerURL" class="input mt-1 w-full" type="url" autocomplete="url" placeholder="https://api2.example.com" data-testid="execution-node-peer-url" />
+              </label>
+              <label class="block" for="execution-node-target-id">
+                <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.targetNodeID') }}</span>
+                <input id="execution-node-target-id" v-model.trim="pairingTargetID" class="input mt-1 w-full" maxlength="64" type="text" autocomplete="off" :placeholder="t('admin.executionNodes.nodeIDPlaceholder')" data-testid="execution-node-target-id" />
+              </label>
+              <label class="block" for="execution-node-target-url">
+                <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.targetURL') }}</span>
+                <input id="execution-node-target-url" v-model.trim="pairingTargetURL" class="input mt-1 w-full" type="url" autocomplete="url" :placeholder="t('admin.executionNodes.targetURLPlaceholder')" data-testid="execution-node-target-url" />
               </label>
               <label class="block" for="execution-node-peer-token">
                 <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.inviteToken') }}</span>
@@ -199,11 +222,11 @@
 
         <section class="card overflow-hidden">
           <div class="border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
-            <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.issueTitle') }}</h2>
+            <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ hasBlockingIssues ? t('admin.executionNodes.issueTitle') : t('admin.executionNodes.statusTitle') }}</h2>
           </div>
           <div v-if="status.issues.length" class="divide-y divide-gray-100 dark:divide-dark-700">
             <div v-for="issue in status.issues" :key="`${issue.code}-${issue.message}`" class="flex gap-3 px-5 py-3 text-sm sm:px-6">
-              <Icon :name="issue.severity === 'error' ? 'exclamationTriangle' : 'infoCircle'" size="sm" :class="issue.severity === 'error' ? 'text-red-500' : 'text-amber-500'" />
+              <Icon :name="issue.severity === 'error' ? 'exclamationTriangle' : 'infoCircle'" size="sm" :class="issue.severity === 'error' ? 'text-red-500' : issue.severity === 'info' ? 'text-sky-500' : 'text-amber-500'" />
               <div class="min-w-0"><span class="font-medium text-gray-800 dark:text-gray-200">{{ issueText(issue) }}</span><span class="ml-2 font-mono text-xs text-gray-400 dark:text-gray-500">{{ issue.code }}</span></div>
             </div>
           </div>
@@ -243,7 +266,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import Toggle from '@/components/common/Toggle.vue'
-import { extractApiErrorMessage } from '@/utils/apiError'
+import { extractI18nErrorMessage } from '@/utils/apiError'
 import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
@@ -253,10 +276,14 @@ const pairingStatus = ref<ExecutionNodePairingStatus | null>(null)
 const pairingInvite = ref<ExecutionNodePairingInvite | null>(null)
 const pairingPeerURL = ref('')
 const pairingToken = ref('')
+const pairingTargetID = ref('api2')
+const pairingTargetURL = ref('')
+const localNodeID = ref('api')
 const proxies = ref<Proxy[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const pairingSaving = ref(false)
+const runtimeSaving = ref(false)
 const showEnableConfirm = ref(false)
 const showUnpairConfirm = ref(false)
 const draftEnabled = ref(false)
@@ -265,6 +292,7 @@ let nodeSequence = 0
 interface NodeDraft { key: number; nodeID: string; weight: number; proxyID: number }
 const draftNodes = ref<NodeDraft[]>([])
 const mappingLocked = computed(() => Boolean(status.value?.balancing_enabled))
+const hasBlockingIssues = computed(() => Boolean(status.value?.issues.some((issue) => issue.severity === 'error')))
 
 const StatusTile = defineComponent({
   props: { label: { type: String, required: true }, value: { type: String, required: true }, tone: { type: String, default: 'ok' } },
@@ -323,6 +351,20 @@ function syncDraft(next: ExecutionNodeAdminStatus): void {
   draftEnabled.value = next.balancing_enabled
   draftNodes.value = next.nodes.map((node) => ({ key: ++nodeSequence, nodeID: node.node_id, weight: node.weight, proxyID: node.proxy_id || 0 }))
   if (!draftNodes.value.length) draftNodes.value = [{ key: ++nodeSequence, nodeID: 'api', weight: 1, proxyID: 0 }]
+  if (next.runtime.node_id) localNodeID.value = next.runtime.node_id
+}
+
+async function initializeRuntime(): Promise<void> {
+  runtimeSaving.value = true
+  try {
+    await adminAPI.executionNodes.initializeRuntime(localNodeID.value)
+    appStore.showSuccess(t('admin.executionNodes.initializeAccepted'))
+    await load()
+  } catch (error) {
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.initializeFailed')))
+  } finally {
+    runtimeSaving.value = false
+  }
 }
 
 async function load(): Promise<void> {
@@ -333,7 +375,7 @@ async function load(): Promise<void> {
     proxies.value = nextProxies
     syncDraft(nextStatus)
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.executionNodes.reloadFailed')))
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.reloadFailed')))
   } finally {
     loading.value = false
   }
@@ -344,7 +386,7 @@ async function loadPairing(): Promise<void> {
     pairingStatus.value = await adminAPI.executionNodes.getPairingStatus()
   } catch (error) {
     pairingStatus.value = null
-    appStore.showError(extractApiErrorMessage(error, t('admin.executionNodes.pairingLoadFailed')))
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingLoadFailed')))
   }
 }
 
@@ -359,7 +401,7 @@ async function generateInvite(): Promise<void> {
     appStore.showSuccess(t('admin.executionNodes.inviteGenerated'))
     await loadPairing()
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.executionNodes.pairingFailed')))
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingFailed')))
   } finally {
     pairingSaving.value = false
   }
@@ -378,12 +420,12 @@ async function copyInvite(): Promise<void> {
 async function pairNode(): Promise<void> {
   pairingSaving.value = true
   try {
-    pairingStatus.value = await adminAPI.executionNodes.pairExecutionNode(pairingPeerURL.value, pairingToken.value)
+    pairingStatus.value = await adminAPI.executionNodes.pairExecutionNode(pairingPeerURL.value, pairingToken.value, pairingTargetID.value, pairingTargetURL.value)
     pairingToken.value = ''
     appStore.showSuccess(t('admin.executionNodes.pairSuccess'))
     await load()
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.executionNodes.pairingFailed')))
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingFailed')))
   } finally {
     pairingSaving.value = false
   }
@@ -397,7 +439,7 @@ async function unpairNode(): Promise<void> {
     pairingStatus.value = await adminAPI.executionNodes.getPairingStatus()
     appStore.showSuccess(t('admin.executionNodes.unpairSuccess'))
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.executionNodes.pairingFailed')))
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingFailed')))
   } finally {
     pairingSaving.value = false
   }
@@ -422,7 +464,7 @@ function removeNode(index: number): void {
 function requestToggle(next: boolean): void {
   if (next) {
     if (!status.value?.can_enable) {
-      appStore.showError(status.value?.issues.filter((issue) => issue.severity === 'error').map((issue) => issue.message).join('；') || t('admin.executionNodes.cannotEnable'))
+      appStore.showError(status.value?.issues.filter((issue) => issue.severity === 'error').map(issueText).join('；') || t('admin.executionNodes.cannotEnable'))
       return
     }
     showEnableConfirm.value = true
@@ -454,7 +496,7 @@ async function save(): Promise<void> {
     appStore.showSuccess(t('admin.executionNodes.saveSuccess'))
     await load()
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.executionNodes.saveFailed')))
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.saveFailed')))
   } finally {
     saving.value = false
   }

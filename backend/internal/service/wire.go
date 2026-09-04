@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -796,6 +797,10 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	svc.SetExecutionNodeHealthReader(heartbeat)
 	svc.SetExecutionNodePairingStateReader(heartbeat)
 	svc.SetExecutionNodeJoinApplier(dockerUpdateService)
+	svc.SetExecutionNodeRuntimeInitializer(dockerUpdateService)
+	SetExecutionNodeTunnelPeerResolver(func(ctx context.Context, nodeID string) (*url.URL, error) {
+		return svc.ResolveExecutionNodePeerURL(ctx, nodeID)
+	})
 	if inspector, ok := settingRepo.(ExecutionNodeJoinTargetInspector); ok {
 		svc.SetExecutionNodeJoinInspector(inspector)
 	}

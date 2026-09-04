@@ -298,3 +298,54 @@ func TestLaunchHostClusterJoinStartsIsolatedController(t *testing.T) {
 	require.Contains(t, payload.Env, "JOIN_TARGET_NODE_ID=api2")
 	require.NotContains(t, strings.Join(payload.Env, "\n"), "db-secret")
 }
+
+func TestLaunchHostClusterRuntimeStartsIsolatedControllerWithScopedRuntimeConfig(t *testing.T) {
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("xiass-runtime-docker-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	var payload dockerUpdateContainerCreateRequest
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/xiass-api/json"):
+			_, _ = io.WriteString(w, `{"Config":{"Labels":{"com.docker.compose.project.working_dir":"/opt/xiass-api/deploy"}},"State":{"Running":true}}`)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/containers/"):
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/images/create"):
+			_, _ = io.WriteString(w, "{}")
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"Id":"cluster-runtime-id"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/cluster-runtime-id/start"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	oldListener := server.Listener
+	require.NoError(t, oldListener.Close())
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	t.Setenv(updaterImageEnv, "ghcr.io/test/xiass-updater:latest")
+	runtime := ExecutionNodeRuntimeConfig{
+		NodeID: "api2", TunnelToken: strings.Repeat("c", 64), DefaultProxyID: 83,
+		LegacyUnassignedNodeID: "api", LegacyUnassignedProxyID: 84,
+	}
+	client := newDockerUpdateClientWithSocket(socketPath)
+	require.NoError(t, (&DockerUpdateService{}).launchHostClusterRuntime(context.Background(), runtime, client))
+	require.Equal(t, []string{"/usr/local/bin/xiass-updater", "cluster-runtime"}, payload.Cmd)
+	require.Equal(t, "/opt/xiass-api", payload.WorkingDir)
+	require.Equal(t, "host", payload.HostConfig.NetworkMode)
+	require.Contains(t, payload.HostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock")
+	require.Contains(t, payload.HostConfig.Binds, "/opt/xiass-api:/opt/xiass-api")
+	require.Contains(t, payload.HostConfig.Binds, "/root/xiass-backups:/root/xiass-backups")
+	require.Contains(t, payload.Env, "RUNTIME_NODE_ID=api2")
+	require.Contains(t, payload.Env, "RUNTIME_TUNNEL_TOKEN="+strings.Repeat("c", 64))
+	require.Contains(t, payload.Env, "RUNTIME_DEFAULT_PROXY_ID=83")
+	require.Contains(t, payload.Env, "RUNTIME_LEGACY_NODE_ID=api")
+	require.Contains(t, payload.Env, "RUNTIME_LEGACY_PROXY_ID=84")
+}

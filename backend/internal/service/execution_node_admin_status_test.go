@@ -124,6 +124,23 @@ func TestGetExecutionNodeAdminStatusRejectsMissingEgressMapping(t *testing.T) {
 	require.Equal(t, "error", status.Issues[0].Severity)
 }
 
+func TestGetExecutionNodeAdminStatusKeepsDefaultSingleNodeModeNeutral(t *testing.T) {
+	cfg := &config.Config{}
+	svc := NewSettingService(&executionNodeSettingRepo{values: map[string]string{}}, cfg)
+
+	status, err := svc.GetExecutionNodeAdminStatus(context.Background())
+	require.NoError(t, err)
+	require.False(t, status.BalancingEnabled)
+	require.False(t, status.CanEnable)
+	require.Contains(t, status.Issues, ExecutionNodeAdminIssue{
+		Code: "MULTI_NODE_DISABLED", Severity: "info",
+		Message: "multi-node routing is not enabled; the current single-node runtime is operating normally",
+	})
+	for _, issue := range status.Issues {
+		require.NotEqual(t, "error", issue.Severity)
+	}
+}
+
 func TestGetExecutionNodeAdminStatusKeepsPanelVisibleWhenSettingsDatabaseFails(t *testing.T) {
 	cfg := executionNodeAdminTestConfig()
 	svc := NewSettingService(&executionNodeSettingRepo{err: errors.New("database unavailable")}, cfg)

@@ -3,8 +3,10 @@ package service
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	coderws "github.com/coder/websocket"
@@ -48,6 +51,44 @@ type ExecutionNodeTunnelRuntime struct {
 	once      sync.Once
 }
 
+// executionNodeTunnelPeerResolver is installed after the application has
+// loaded its shared settings repository. The tunnel listener starts before
+// dependency injection, so the resolver is intentionally late-bound.
+var executionNodeTunnelPeerResolver atomic.Value // func(context.Context, string) (*url.URL, error)
+
+// SetExecutionNodeTunnelPeerResolver supplies a shared-state lookup for peer
+// URLs. Static environment URLs remain the first choice; this resolver lets a
+// source node learn the target URL without restarting the source application.
+func SetExecutionNodeTunnelPeerResolver(resolver func(context.Context, string) (*url.URL, error)) {
+	if resolver != nil {
+		executionNodeTunnelPeerResolver.Store(resolver)
+	}
+}
+
+func executionNodeTunnelToken(jwtSecret string) string {
+	digest := sha256.Sum256([]byte("xiass-execution-node-tunnel:v1:" + strings.TrimSpace(jwtSecret)))
+	return hex.EncodeToString(digest[:])
+}
+
+func configuredExecutionNodeTunnelToken() string {
+	if token := strings.TrimSpace(os.Getenv(ExecutionNodeTunnelTokenEnv)); len(token) == 64 {
+		return token
+	}
+	// Older manually configured installations may not have the explicit tunnel
+	// variable yet. Keep that compatibility path deterministic, but never derive
+	// a tunnel token for an ordinary single-node installation: doing so would
+	// start the loopback listeners before the node runtime has been opted in.
+	enabled := strings.EqualFold(strings.TrimSpace(os.Getenv("GATEWAY_EXECUTION_NODE_ENABLED")), "true")
+	if !enabled || !validExecutionNodeID(strings.TrimSpace(os.Getenv("GATEWAY_EXECUTION_NODE_ID"))) {
+		return ""
+	}
+	jwtSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if jwtSecret == "" {
+		return ""
+	}
+	return executionNodeTunnelToken(jwtSecret)
+}
+
 func (r *ExecutionNodeTunnelRuntime) Close() error {
 	if r == nil {
 		return nil
@@ -69,7 +110,7 @@ func (r *ExecutionNodeTunnelRuntime) Close() error {
 // source PostgreSQL/Redis through verified HTTPS without exposing either
 // service on a public TCP port.
 func StartExecutionNodeTunnelRuntimeFromEnv() (*ExecutionNodeTunnelRuntime, error) {
-	token := strings.TrimSpace(os.Getenv(ExecutionNodeTunnelTokenEnv))
+	token := configuredExecutionNodeTunnelToken()
 	if token == "" {
 		return nil, nil
 	}
@@ -213,7 +254,7 @@ func handleExecutionNodeSOCKSConnection(conn net.Conn, localNodeID, token string
 	var remote net.Conn
 	if ownerNodeID == localNodeID {
 		remote, err = net.DialTimeout("tcp", destination, executionNodeTunnelDialTimeout)
-	} else if peer := nodeURLs[ownerNodeID]; peer != nil {
+	} else if peer := executionNodeTunnelPeerURL(ownerNodeID, nodeURLs); peer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), executionNodeTunnelDialTimeout)
 		defer cancel()
 		headers := make(http.Header)
@@ -240,6 +281,19 @@ func handleExecutionNodeSOCKSConnection(conn net.Conn, localNodeID, token string
 		return
 	}
 	relayBidirectional(conn, remote)
+}
+
+func executionNodeTunnelPeerURL(nodeID string, nodeURLs map[string]*url.URL) *url.URL {
+	if peer := nodeURLs[nodeID]; peer != nil {
+		return peer
+	}
+	if resolver, ok := executionNodeTunnelPeerResolver.Load().(func(context.Context, string) (*url.URL, error)); ok {
+		peer, err := resolver(context.Background(), nodeID)
+		if err == nil {
+			return peer
+		}
+	}
+	return nil
 }
 
 func readExecutionNodeSOCKSRequest(reader *bufio.Reader, conn net.Conn, expectedToken string) (string, string, error) {
@@ -370,8 +424,16 @@ func (s *SettingService) AuthorizeExecutionNodeTunnel(ctx context.Context, reque
 		return errors.New("execution-node peer is not paired")
 	}
 	var peer ExecutionNodePairingPeer
-	if json.Unmarshal([]byte(raw), &peer) != nil || peer.NodeID != requesterNodeID || peer.TunnelProofHash == "" ||
-		len(peer.TunnelProofHash) != len(pairingTokenHash(proof)) || subtle.ConstantTimeCompare([]byte(peer.TunnelProofHash), []byte(pairingTokenHash(proof))) != 1 {
+	if json.Unmarshal([]byte(raw), &peer) != nil || peer.NodeID != requesterNodeID {
+		return errors.New("execution-node tunnel proof is invalid")
+	}
+	tokenHash := peer.TunnelTokenHash
+	if tokenHash == "" {
+		// Pairings created before the separate tunnel-token field used the proof
+		// as both values. Keep those records compatible until they are re-paired.
+		tokenHash = peer.TunnelProofHash
+	}
+	if tokenHash == "" || len(tokenHash) != len(pairingTokenHash(proof)) || subtle.ConstantTimeCompare([]byte(tokenHash), []byte(pairingTokenHash(proof))) != 1 {
 		return errors.New("execution-node tunnel proof is invalid")
 	}
 	return nil

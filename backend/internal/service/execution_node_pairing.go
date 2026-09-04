@@ -46,11 +46,31 @@ type ExecutionNodeJoinApplier interface {
 	LaunchExecutionNodeJoin(ctx context.Context, join ExecutionNodeJoinConfig) error
 }
 
+// ExecutionNodeRuntimeInitializer applies the local node identity outside the
+// application container. The host-side controller owns the .env backup,
+// restart, health check, and rollback so an admin request never mutates a live
+// process in-place.
+type ExecutionNodeRuntimeInitializer interface {
+	LaunchExecutionNodeRuntime(ctx context.Context, runtime ExecutionNodeRuntimeConfig) error
+}
+
+type ExecutionNodeRuntimeConfig struct {
+	NodeID                  string `json:"node_id"`
+	TunnelToken             string `json:"tunnel_token"`
+	DefaultProxyID          int64  `json:"default_proxy_id"`
+	LegacyUnassignedNodeID  string `json:"legacy_unassigned_node_id"`
+	LegacyUnassignedProxyID int64  `json:"legacy_unassigned_proxy_id"`
+}
+
 type ExecutionNodeJoinConfig struct {
 	SourceURL       string `json:"source_url"`
+	TargetURL       string `json:"target_url"`
 	SourceNodeID    string `json:"source_node_id"`
 	TargetNodeID    string `json:"target_node_id"`
 	TunnelProof     string `json:"tunnel_proof"`
+	TargetProxyID   int64  `json:"target_proxy_id"`
+	LegacyNodeID    string `json:"legacy_node_id"`
+	LegacyProxyID   int64  `json:"legacy_proxy_id"`
 	DatabaseHost    string `json:"database_host"`
 	DatabasePort    int    `json:"database_port"`
 	DatabaseUser    string `json:"database_user"`
@@ -95,6 +115,7 @@ type ExecutionNodePairingPeer struct {
 	PeerURL             string    `json:"peer_url,omitempty"`
 	Ready               bool      `json:"ready"`
 	TunnelProofHash     string    `json:"tunnel_proof_hash,omitempty"`
+	TunnelTokenHash     string    `json:"tunnel_token_hash,omitempty"`
 }
 
 type ExecutionNodePairingStatus struct {
@@ -120,6 +141,8 @@ type ExecutionNodePairingInvite struct {
 
 type ExecutionNodePairingHandshakeRequest struct {
 	NodeID              string `json:"node_id"`
+	PeerURL             string `json:"peer_url,omitempty"`
+	SourceURL           string `json:"source_url,omitempty"`
 	Version             string `json:"version,omitempty"`
 	ProtocolVersion     int    `json:"protocol_version"`
 	DatabaseFingerprint string `json:"database_fingerprint"`
@@ -143,9 +166,14 @@ type ExecutionNodePairingHandshakeResponse struct {
 
 type executionNodeJoinBundle struct {
 	Version         int    `json:"version"`
+	SourceURL       string `json:"source_url,omitempty"`
+	TargetURL       string `json:"target_url,omitempty"`
 	SourceNodeID    string `json:"source_node_id"`
 	TargetNodeID    string `json:"target_node_id"`
 	TunnelProof     string `json:"tunnel_proof"`
+	TargetProxyID   int64  `json:"target_proxy_id,omitempty"`
+	LegacyNodeID    string `json:"legacy_node_id,omitempty"`
+	LegacyProxyID   int64  `json:"legacy_proxy_id,omitempty"`
 	DatabaseHost    string `json:"database_host"`
 	DatabasePort    int    `json:"database_port"`
 	DatabaseUser    string `json:"database_user"`
@@ -274,22 +302,98 @@ func (s *SettingService) authoritativeJoinAvailable() bool {
 		strings.TrimSpace(s.cfg.JWT.Secret) != "" && strings.TrimSpace(s.cfg.Totp.EncryptionKey) != "" && s.cfg.Totp.EncryptionKeyConfigured
 }
 
-func (s *SettingService) createExecutionNodeJoinBundle(targetNodeID string) (executionNodeJoinBundle, string, error) {
+func (s *SettingService) createExecutionNodeJoinBundle(ctx context.Context, targetNodeID, targetURL, sourceURL string) (executionNodeJoinBundle, string, error) {
 	if !s.authoritativeJoinAvailable() {
 		return executionNodeJoinBundle{}, "", errors.New("source node does not have a complete runtime configuration")
 	}
-	tunnelProof, err := newPairingRandomToken()
-	if err != nil {
-		return executionNodeJoinBundle{}, "", fmt.Errorf("generate execution-node tunnel proof: %w", err)
+	tunnelProof := configuredExecutionNodeTunnelToken()
+	if tunnelProof == "" && s.cfg != nil {
+		// Keep constructor-level and older manually configured deployments
+		// compatible. The runtime uses the same deterministic derivation when its
+		// explicit token is absent, while new web initialization persists a random
+		// token in the host environment.
+		tunnelProof = executionNodeTunnelToken(s.cfg.JWT.Secret)
+	}
+	if len(tunnelProof) != 64 {
+		return executionNodeJoinBundle{}, "", errors.New("source node tunnel runtime is not initialized; initialize this node before pairing")
+	}
+	targetProxyID := int64(0)
+	if s.proxyRepo != nil {
+		proxy, _, err := s.ensureExecutionNodeBuiltinProxy(ctx, targetNodeID, tunnelProof)
+		if err != nil {
+			return executionNodeJoinBundle{}, "", err
+		}
+		targetProxyID = proxy.ID
+	}
+	legacyNodeID := strings.TrimSpace(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID)
+	if !validExecutionNodeID(legacyNodeID) {
+		legacyNodeID = s.localExecutionNodeID()
+	}
+	legacyProxyID := s.cfg.Gateway.ExecutionNode.LegacyUnassignedProxyID
+	if legacyProxyID <= 0 {
+		legacyProxyID = s.cfg.Gateway.ExecutionNode.DefaultProxyID
 	}
 	bundle := executionNodeJoinBundle{
-		Version: executionNodeJoinBundleVersion, SourceNodeID: s.localExecutionNodeID(), TargetNodeID: targetNodeID, TunnelProof: tunnelProof,
+		Version: executionNodeJoinBundleVersion, SourceURL: strings.TrimRight(strings.TrimSpace(sourceURL), "/"), TargetURL: strings.TrimRight(strings.TrimSpace(targetURL), "/"), SourceNodeID: s.localExecutionNodeID(), TargetNodeID: targetNodeID, TunnelProof: tunnelProof,
+		TargetProxyID: targetProxyID, LegacyNodeID: legacyNodeID, LegacyProxyID: legacyProxyID,
 		DatabaseHost: s.cfg.Database.Host, DatabasePort: s.cfg.Database.Port, DatabaseUser: s.cfg.Database.User, DatabasePass: s.cfg.Database.Password,
 		DatabaseName: s.cfg.Database.DBName, DatabaseSSLMode: s.cfg.Database.SSLMode,
 		RedisHost: s.cfg.Redis.Host, RedisPort: s.cfg.Redis.Port, RedisUsername: s.cfg.Redis.Username, RedisPassword: s.cfg.Redis.Password, RedisDB: s.cfg.Redis.DB, RedisEnableTLS: s.cfg.Redis.EnableTLS,
 		JWTSecret: s.cfg.JWT.Secret, TOTPKey: s.cfg.Totp.EncryptionKey,
 	}
 	return bundle, tunnelProof, nil
+}
+
+func (s *SettingService) executionNodePairingRoutingSettings(ctx context.Context, targetNodeID string, targetProxyID int64) (map[string]string, error) {
+	if targetProxyID <= 0 || s == nil || s.settingRepo == nil || s.cfg == nil {
+		return map[string]string{}, nil
+	}
+	localNodeID := s.localExecutionNodeID()
+	if !validExecutionNodeID(localNodeID) {
+		return nil, errors.New("source node ID is invalid")
+	}
+	values, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyExecutionNodeWeights, SettingKeyExecutionNodeProxyIDs})
+	if err != nil {
+		return nil, fmt.Errorf("read execution-node routing settings: %w", err)
+	}
+	weights := map[string]float64{localNodeID: 1}
+	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeWeights]); raw != "" {
+		weights, err = decodeExecutionNodeWeights(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	weights[localNodeID] = maxFloat(weights[localNodeID], 1)
+	weights[targetNodeID] = maxFloat(weights[targetNodeID], 1)
+	proxyIDs := map[string]int64{}
+	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeProxyIDs]); raw != "" {
+		proxyIDs, err = decodeExecutionNodeProxyIDs(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if localProxyID := s.cfg.Gateway.ExecutionNode.DefaultProxyID; localProxyID > 0 {
+		proxyIDs[localNodeID] = localProxyID
+	}
+	if existing := proxyIDs[targetNodeID]; existing > 0 && existing != targetProxyID {
+		return nil, fmt.Errorf("target node %s is already mapped to a different proxy", targetNodeID)
+	}
+	proxyIDs[targetNodeID] = targetProxyID
+	if err := validateExecutionNodeProxyIDs(proxyIDs, weights); err != nil {
+		return nil, err
+	}
+	weightsJSON, err := json.Marshal(weights)
+	if err != nil {
+		return nil, err
+	}
+	proxyJSON, err := json.Marshal(proxyIDs)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		SettingKeyExecutionNodeWeights:  string(weightsJSON),
+		SettingKeyExecutionNodeProxyIDs: string(proxyJSON),
+	}, nil
 }
 
 func (s *SettingService) ensureExecutionNodeDatabaseIdentity(ctx context.Context) (string, error) {
@@ -461,13 +565,13 @@ func executionNodePairingEndpoint(peer *url.URL) string {
 	return clone.String()
 }
 
-func (s *SettingService) localPairingHandshakeResponse(ctx context.Context) (*ExecutionNodePairingHandshakeResponse, error) {
+func (s *SettingService) localPairingHandshakeResponseForNode(ctx context.Context, nodeID string) (*ExecutionNodePairingHandshakeResponse, error) {
 	databaseFingerprint, redisFingerprint, authFingerprint, stateFingerprint, err := s.localPairingMaterial(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &ExecutionNodePairingHandshakeResponse{
-		NodeID:              s.localExecutionNodeID(),
+		NodeID:              strings.TrimSpace(nodeID),
 		Version:             strings.TrimSpace(s.version),
 		ProtocolVersion:     executionNodePairingProtocolVersion,
 		DatabaseFingerprint: databaseFingerprint,
@@ -477,21 +581,41 @@ func (s *SettingService) localPairingHandshakeResponse(ctx context.Context) (*Ex
 	}, nil
 }
 
+func (s *SettingService) localPairingHandshakeResponse(ctx context.Context) (*ExecutionNodePairingHandshakeResponse, error) {
+	return s.localPairingHandshakeResponseForNode(ctx, s.localExecutionNodeID())
+}
+
 // PairExecutionNode contacts the invited instance. When the peer is an
 // authoritative source, the response contains an encrypted, one-time join
 // bundle; the target hands it to the host updater and does not mutate its
 // running container in-process.
 func (s *SettingService) PairExecutionNode(ctx context.Context, peerURL, token string) (*ExecutionNodePairingStatus, error) {
+	return s.PairExecutionNodeWithTarget(ctx, peerURL, token, s.localExecutionNodeID(), "")
+}
+
+// PairExecutionNodeWithTarget pairs a fresh installation before it has local
+// multi-node environment variables. The target node ID and public URL are
+// supplied by the administrator's browser and are persisted by the host join
+// controller only after the source-authoritative bundle is verified.
+func (s *SettingService) PairExecutionNodeWithTarget(ctx context.Context, peerURL, token, targetNodeID, targetURL string) (*ExecutionNodePairingStatus, error) {
 	peer, err := normalizeExecutionNodePeerURL(peerURL)
 	if err != nil {
 		return nil, err
 	}
-	if !validExecutionNodeID(s.localExecutionNodeID()) {
-		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_NODE_INVALID", "configure a valid local execution node ID before pairing")
+	targetNodeID = strings.TrimSpace(targetNodeID)
+	if !validExecutionNodeID(targetNodeID) {
+		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_NODE_INVALID", "configure a valid target execution node ID before pairing")
 	}
 	token = strings.TrimSpace(token)
 	if len(token) != 64 {
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_TOKEN_INVALID", "pairing invite token is invalid")
+	}
+	if strings.TrimSpace(targetURL) != "" {
+		normalizedTargetURL, targetURLErr := normalizeExecutionNodePeerURL(targetURL)
+		if targetURLErr != nil {
+			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_TARGET_URL_INVALID", "target URL must be a valid HTTPS URL")
+		}
+		targetURL = strings.TrimRight(normalizedTargetURL.String(), "/")
 	}
 	if s.executionNodeJoinInspector != nil {
 		empty, inspectErr := s.executionNodeJoinInspector.IsExecutionNodeJoinTargetEmpty(ctx)
@@ -502,12 +626,14 @@ func (s *SettingService) PairExecutionNode(ctx context.Context, peerURL, token s
 			return nil, infraerrors.Conflict("EXECUTION_NODE_PAIRING_TARGET_NOT_EMPTY", "the target XIASS installation already contains data; export or migrate it explicitly before joining the source state")
 		}
 	}
-	handshake, err := s.localPairingHandshakeResponse(ctx)
+	handshake, err := s.localPairingHandshakeResponseForNode(ctx, targetNodeID)
 	if err != nil {
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_STATE_UNAVAILABLE", "both PostgreSQL and Redis shared-state identities must be available before pairing")
 	}
 	body, err := json.Marshal(ExecutionNodePairingHandshakeRequest{
 		NodeID:              handshake.NodeID,
+		PeerURL:             strings.TrimRight(strings.TrimSpace(targetURL), "/"),
+		SourceURL:           strings.TrimRight(peer.String(), "/"),
 		Version:             handshake.Version,
 		ProtocolVersion:     handshake.ProtocolVersion,
 		DatabaseFingerprint: handshake.DatabaseFingerprint,
@@ -570,7 +696,8 @@ func (s *SettingService) PairExecutionNode(ctx context.Context, peerURL, token s
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_APPLIER_UNAVAILABLE", "the target deployment does not have a host join controller")
 		}
 		if err := s.executionNodeJoinApplier.LaunchExecutionNodeJoin(ctx, ExecutionNodeJoinConfig{
-			SourceURL: strings.TrimRight(peer.String(), "/"), SourceNodeID: bundle.SourceNodeID, TargetNodeID: bundle.TargetNodeID, TunnelProof: bundle.TunnelProof,
+			SourceURL: strings.TrimRight(peer.String(), "/"), TargetURL: bundle.TargetURL, SourceNodeID: bundle.SourceNodeID, TargetNodeID: bundle.TargetNodeID, TunnelProof: bundle.TunnelProof,
+			TargetProxyID: bundle.TargetProxyID, LegacyNodeID: bundle.LegacyNodeID, LegacyProxyID: bundle.LegacyProxyID,
 			DatabaseHost: bundle.DatabaseHost, DatabasePort: bundle.DatabasePort, DatabaseUser: bundle.DatabaseUser, DatabasePass: bundle.DatabasePass, DatabaseName: bundle.DatabaseName, DatabaseSSLMode: bundle.DatabaseSSLMode,
 			RedisHost: bundle.RedisHost, RedisPort: bundle.RedisPort, RedisUsername: bundle.RedisUsername, RedisPassword: bundle.RedisPassword, RedisDB: bundle.RedisDB, RedisEnableTLS: bundle.RedisEnableTLS,
 			JWTSecret: bundle.JWTSecret, TOTPKey: bundle.TOTPKey,
@@ -635,6 +762,16 @@ func (s *SettingService) AcceptExecutionNodePairingHandshake(ctx context.Context
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_STATE_UNAVAILABLE", "the invited instance shared-state identity is unavailable")
 	}
 	authoritative := s.authoritativeJoinAvailable()
+	if authoritative && strings.TrimSpace(request.PeerURL) == "" {
+		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_TARGET_URL_REQUIRED", "the target must provide its public HTTPS URL for fixed-egress routing")
+	}
+	if authoritative {
+		targetURL, targetURLErr := normalizeExecutionNodePeerURL(request.PeerURL)
+		if targetURLErr != nil {
+			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_TARGET_URL_INVALID", "the target public URL must be a valid HTTPS URL")
+		}
+		request.PeerURL = strings.TrimRight(targetURL.String(), "/")
+	}
 	if authoritative && strings.TrimSpace(request.Version) != "" && strings.TrimSpace(handshake.Version) != "" && request.Version != handshake.Version {
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_VERSION_MISMATCH", "the source and target must run the same XIASS version before joining")
 	}
@@ -642,11 +779,13 @@ func (s *SettingService) AcceptExecutionNodePairingHandshake(ctx context.Context
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_STATE_MISMATCH", "the two instances do not use the same PostgreSQL, Redis, and authentication state")
 	}
 	var encryptedBundle, tunnelProof string
+	var targetProxyID int64
 	if authoritative {
-		bundle, bundleProof, bundleErr := s.createExecutionNodeJoinBundle(request.NodeID)
+		bundle, bundleProof, bundleErr := s.createExecutionNodeJoinBundle(ctx, request.NodeID, request.PeerURL, request.SourceURL)
 		if bundleErr != nil {
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_BUNDLE_UNAVAILABLE", bundleErr.Error())
 		}
+		targetProxyID = bundle.TargetProxyID
 		encryptedBundle, bundleErr = encryptExecutionNodeJoinBundle(token, request.NodeID, bundle)
 		if bundleErr != nil {
 			return nil, fmt.Errorf("encrypt execution-node join bundle: %w", bundleErr)
@@ -683,8 +822,15 @@ func (s *SettingService) AcceptExecutionNodePairingHandshake(ctx context.Context
 			return request.StateFingerprint
 		}(),
 		PairedAt: time.Now().UTC(),
+		PeerURL:  strings.TrimRight(strings.TrimSpace(request.PeerURL), "/"),
 		Ready:    !authoritative,
 		TunnelProofHash: func() string {
+			if tunnelProof == "" {
+				return ""
+			}
+			return pairingTokenHash(tunnelProof)
+		}(),
+		TunnelTokenHash: func() string {
 			if tunnelProof == "" {
 				return ""
 			}
@@ -703,8 +849,15 @@ func (s *SettingService) AcceptExecutionNodePairingHandshake(ctx context.Context
 		AuthFingerprint:     handshake.AuthFingerprint,
 		StateFingerprint:    handshake.StateFingerprint,
 		PairedAt:            time.Now().UTC(),
+		PeerURL:             strings.TrimRight(strings.TrimSpace(request.SourceURL), "/"),
 		Ready:               !authoritative,
 		TunnelProofHash: func() string {
+			if tunnelProof == "" {
+				return ""
+			}
+			return pairingTokenHash(tunnelProof)
+		}(),
+		TunnelTokenHash: func() string {
 			if tunnelProof == "" {
 				return ""
 			}
@@ -717,6 +870,15 @@ func (s *SettingService) AcceptExecutionNodePairingHandshake(ctx context.Context
 	peerSettings := map[string]string{
 		executionNodePairingPeerKey(s.localExecutionNodeID()): string(peerRecord),
 		executionNodePairingPeerKey(request.NodeID):           string(requesterRecord),
+	}
+	if authoritative {
+		routingSettings, routingErr := s.executionNodePairingRoutingSettings(ctx, request.NodeID, targetProxyID)
+		if routingErr != nil {
+			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_ROUTING_INVALID", routingErr.Error())
+		}
+		for key, value := range routingSettings {
+			peerSettings[key] = value
+		}
 	}
 
 	// Serialize the fallback path for test doubles. The production repository

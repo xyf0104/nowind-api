@@ -248,6 +248,81 @@ func (r *executionNodeJoinApplierRecorder) LaunchExecutionNodeJoin(_ context.Con
 	return nil
 }
 
+type executionNodePairingProxyRepo struct {
+	ProxyRepository
+	proxies map[int64]Proxy
+	nextID  int64
+}
+
+func (r *executionNodePairingProxyRepo) ListAllForFallback(_ context.Context) ([]Proxy, error) {
+	result := make([]Proxy, 0, len(r.proxies))
+	for _, proxy := range r.proxies {
+		result = append(result, proxy)
+	}
+	return result, nil
+}
+
+func (r *executionNodePairingProxyRepo) Create(_ context.Context, proxy *Proxy) error {
+	if proxy.ID == 0 {
+		proxy.ID = r.nextID
+		r.nextID++
+	}
+	r.proxies[proxy.ID] = *proxy
+	return nil
+}
+
+func (r *executionNodePairingProxyRepo) Update(_ context.Context, proxy *Proxy) error {
+	r.proxies[proxy.ID] = *proxy
+	return nil
+}
+
+func TestAuthoritativePairingPublishesTargetURLAndFixedEgressMapping(t *testing.T) {
+	source, sourceRepo := newExecutionNodePairingService("api", "source-db", "source-redis")
+	source.cfg.Database = config.DatabaseConfig{Host: "postgres", Port: 5432, User: "xiass", Password: "db-secret", DBName: "xiass", SSLMode: "disable"}
+	source.cfg.Redis = config.RedisConfig{Host: "redis", Port: 6379, Password: "redis-secret"}
+	source.cfg.Totp.EncryptionKeyConfigured = true
+	source.cfg.Gateway.ExecutionNode.DefaultProxyID = 84
+	source.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID = "api"
+	source.cfg.Gateway.ExecutionNode.LegacyUnassignedProxyID = 84
+	sourceProxies := &executionNodePairingProxyRepo{
+		proxies: map[int64]Proxy{84: {ID: 84, Name: "api egress", Protocol: "socks5", Host: "127.0.0.1", Port: 19080, Username: "api", Password: strings.Repeat("a", 64), Status: StatusActive}},
+		nextID:  100,
+	}
+	source.SetProxyRepository(sourceProxies)
+
+	target, _ := newExecutionNodePairingService("api2", "target-db", "target-redis")
+	recorder := &executionNodeJoinApplierRecorder{}
+	target.SetExecutionNodeJoinApplier(recorder)
+
+	invite, err := source.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	server := httptest.NewServer(setupExecutionNodePairingHTTPRouter(source))
+	defer server.Close()
+	targetURL := "http://127.0.0.1:18082"
+
+	status, err := target.PairExecutionNodeWithTarget(context.Background(), server.URL, invite.Token, "api2", targetURL)
+	require.NoError(t, err)
+	require.True(t, status.Paired)
+	require.Equal(t, targetURL, recorder.join.TargetURL)
+	require.Equal(t, strings.TrimRight(server.URL, "/"), recorder.join.SourceURL)
+	require.Equal(t, int64(100), recorder.join.TargetProxyID)
+	require.Equal(t, "api", recorder.join.LegacyNodeID)
+	require.Equal(t, int64(84), recorder.join.LegacyProxyID)
+
+	var sourcePeer ExecutionNodePairingPeer
+	require.NoError(t, json.Unmarshal([]byte(sourceRepo.values[executionNodePairingPeerKey("api")]), &sourcePeer))
+	require.Equal(t, "api2", sourcePeer.NodeID)
+	require.Equal(t, targetURL, sourcePeer.PeerURL)
+	require.Equal(t, pairingTokenHash(recorder.join.TunnelProof), sourcePeer.TunnelTokenHash)
+
+	var weights map[string]float64
+	require.NoError(t, json.Unmarshal([]byte(sourceRepo.values[SettingKeyExecutionNodeWeights]), &weights))
+	require.Equal(t, map[string]float64{"api": 1, "api2": 1}, weights)
+	var proxyIDs map[string]int64
+	require.NoError(t, json.Unmarshal([]byte(sourceRepo.values[SettingKeyExecutionNodeProxyIDs]), &proxyIDs))
+	require.Equal(t, map[string]int64{"api": 84, "api2": 100}, proxyIDs)
+}
+
 func TestAuthoritativePairingReturnsEncryptedJoinBundleToTargetApplier(t *testing.T) {
 	source, sourceRepo := newExecutionNodePairingService("api", "source-db", "source-redis")
 	source.cfg.Database = config.DatabaseConfig{Host: "postgres", Port: 5432, User: "xiass", Password: "db-secret", DBName: "xiass", SSLMode: "disable"}
@@ -262,7 +337,7 @@ func TestAuthoritativePairingReturnsEncryptedJoinBundleToTargetApplier(t *testin
 	server := httptest.NewServer(setupExecutionNodePairingHTTPRouter(source))
 	defer server.Close()
 
-	status, err := target.PairExecutionNode(context.Background(), server.URL, invite.Token)
+	status, err := target.PairExecutionNodeWithTarget(context.Background(), server.URL, invite.Token, "api2", "http://127.0.0.1:18082")
 	require.NoError(t, err)
 	require.True(t, status.Paired)
 	require.False(t, status.ProductionReady)
