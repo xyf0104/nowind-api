@@ -127,7 +127,9 @@ func (s *DockerUpdateService) launchHostClusterRuntime(ctx context.Context, runt
 	}
 	create := dockerUpdateContainerCreateRequest{
 		Image: updaterImage(),
-		Cmd:   []string{"/usr/local/bin/xiass-updater", "cluster-runtime"},
+		// The updater image already declares /usr/local/bin/xiass-updater as its
+		// ENTRYPOINT. Docker appends Cmd, so only the subcommand belongs here.
+		Cmd: []string{"cluster-runtime"},
 		Env: []string{
 			"INSTALL_DIR=" + installDir,
 			"BACKUP_DIR=" + updaterBackupDir,
@@ -184,7 +186,7 @@ func (s *DockerUpdateService) launchHostClusterJoin(ctx context.Context, join Ex
 	bundle := base64.StdEncoding.EncodeToString(payload)
 	create := dockerUpdateContainerCreateRequest{
 		Image:      updaterImage(),
-		Cmd:        []string{"/usr/local/bin/xiass-updater", "cluster-join"},
+		Cmd:        []string{"cluster-join"},
 		Env:        []string{"INSTALL_DIR=" + installDir, "BACKUP_DIR=" + updaterBackupDir, "JOIN_BUNDLE_B64=" + bundle, "JOIN_SOURCE_URL=" + join.SourceURL, "JOIN_TARGET_NODE_ID=" + join.TargetNodeID, "JOIN_TUNNEL_PROOF=" + join.TunnelProof},
 		WorkingDir: installDir,
 		Labels: map[string]string{
@@ -458,7 +460,6 @@ func (s *DockerUpdateService) launchHostUpdaterWithClient(ctx context.Context, c
 
 	create := dockerUpdateContainerCreateRequest{
 		Image:      image,
-		Cmd:        []string{"/usr/local/bin/xiass-updater"},
 		Env:        []string{"INSTALL_DIR=" + installDir, "BACKUP_DIR=" + updaterBackupDir},
 		WorkingDir: installDir,
 		Labels: map[string]string{

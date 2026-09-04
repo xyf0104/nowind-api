@@ -241,7 +241,7 @@ func TestLaunchHostUpdaterCreatesScopedUpdaterContainer(t *testing.T) {
 	select {
 	case payload := <-payloadCh:
 		require.Equal(t, "ghcr.io/test/xiass-updater:latest", payload.Image)
-		require.Equal(t, []string{"/usr/local/bin/xiass-updater"}, payload.Cmd)
+		require.Empty(t, payload.Cmd)
 		require.Equal(t, "/opt/xiass-api", payload.WorkingDir)
 		require.Contains(t, payload.HostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock")
 		require.Contains(t, payload.HostConfig.Binds, "/opt/xiass-api:/opt/xiass-api")
@@ -291,7 +291,7 @@ func TestLaunchHostClusterJoinStartsIsolatedController(t *testing.T) {
 	}
 	client := newDockerUpdateClientWithSocket(socketPath)
 	require.NoError(t, (&DockerUpdateService{}).launchHostClusterJoin(context.Background(), join, client))
-	require.Equal(t, []string{"/usr/local/bin/xiass-updater", "cluster-join"}, payload.Cmd)
+	require.Equal(t, []string{"cluster-join"}, payload.Cmd)
 	require.Equal(t, "host", payload.HostConfig.NetworkMode)
 	require.Contains(t, payload.HostConfig.Binds, "/opt/xiass-api:/opt/xiass-api")
 	require.Contains(t, payload.Env, "JOIN_SOURCE_URL=https://api.example.com")
@@ -337,7 +337,7 @@ func TestLaunchHostClusterRuntimeStartsIsolatedControllerWithScopedRuntimeConfig
 	}
 	client := newDockerUpdateClientWithSocket(socketPath)
 	require.NoError(t, (&DockerUpdateService{}).launchHostClusterRuntime(context.Background(), runtime, client))
-	require.Equal(t, []string{"/usr/local/bin/xiass-updater", "cluster-runtime"}, payload.Cmd)
+	require.Equal(t, []string{"cluster-runtime"}, payload.Cmd)
 	require.Equal(t, "/opt/xiass-api", payload.WorkingDir)
 	require.Equal(t, "host", payload.HostConfig.NetworkMode)
 	require.Contains(t, payload.HostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock")
