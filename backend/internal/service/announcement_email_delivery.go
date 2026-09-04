@@ -432,7 +432,7 @@ func escapeAnnouncementEmailInlineHTML(content string) string {
 		if sanitized, ok := sanitizeAnnouncementEmailInlineTag(candidate); ok {
 			if sanitized.closing {
 				if len(openTags) == 0 || openTags[len(openTags)-1] != sanitized.name {
-					out.WriteString(candidate)
+					_, _ = out.WriteString(candidate)
 					cursor = close + 1
 					continue
 				}
@@ -443,9 +443,9 @@ func escapeAnnouncementEmailInlineHTML(content string) string {
 			marker := fmt.Sprintf("\x00ANNOUNCEMENTTAG%d\x00", tagID)
 			tagID++
 			allowed[marker] = sanitized.value
-			out.WriteString(marker)
+			_, _ = out.WriteString(marker)
 		} else {
-			out.WriteString(candidate)
+			_, _ = out.WriteString(candidate)
 		}
 		cursor = close + 1
 	}

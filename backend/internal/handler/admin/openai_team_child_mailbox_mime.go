@@ -370,7 +370,7 @@ func teamMailboxWriteSafeHTML(output *strings.Builder, node *xhtml.Node) {
 	}
 	switch node.Type {
 	case xhtml.TextNode:
-		output.WriteString(stdhtml.EscapeString(node.Data))
+		_, _ = output.WriteString(stdhtml.EscapeString(node.Data))
 		return
 	case xhtml.ElementNode:
 		tag := strings.ToLower(strings.TrimSpace(node.Data))
@@ -393,24 +393,24 @@ func teamMailboxWriteSafeHTML(output *strings.Builder, node *xhtml.Node) {
 		}
 		if tag == "style" {
 			if stylesheet := teamMailboxSafeHTMLStyleSheet(teamMailboxHTMLNodeText(node)); stylesheet != "" {
-				output.WriteString("<style>")
-				output.WriteString(stylesheet)
-				output.WriteString("</style>")
+				_, _ = output.WriteString("<style>")
+				_, _ = output.WriteString(stylesheet)
+				_, _ = output.WriteString("</style>")
 			}
 			return
 		}
 		_, allowed := teamMailboxSafeHTMLTags[tag]
 		if allowed {
 			_ = output.WriteByte('<')
-			output.WriteString(tag)
+			_, _ = output.WriteString(tag)
 			for _, attribute := range teamMailboxSafeHTMLAttributes(tag, node.Attr) {
 				_ = output.WriteByte(' ')
-				output.WriteString(attribute.name)
-				output.WriteString(`="`)
-				output.WriteString(stdhtml.EscapeString(attribute.value))
+				_, _ = output.WriteString(attribute.name)
+				_, _ = output.WriteString(`="`)
+				_, _ = output.WriteString(stdhtml.EscapeString(attribute.value))
 				_ = output.WriteByte('"')
 			}
-			output.WriteByte('>')
+			_ = output.WriteByte('>')
 			if _, void := teamMailboxVoidHTMLTags[tag]; void {
 				return
 			}
@@ -419,9 +419,9 @@ func teamMailboxWriteSafeHTML(output *strings.Builder, node *xhtml.Node) {
 			teamMailboxWriteSafeHTML(output, child)
 		}
 		if allowed {
-			output.WriteString("</")
-			output.WriteString(tag)
-			output.WriteByte('>')
+			_, _ = output.WriteString("</")
+			_, _ = output.WriteString(tag)
+			_ = output.WriteByte('>')
 		}
 		return
 	}
