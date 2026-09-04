@@ -10,7 +10,9 @@
 # Firewall 8080 so only the edge/private network can reach it. Never expose
 # PostgreSQL, Redis, or node SOCKS ports publicly.
 
-api.xiass.com, api2.xiass.com {
+# Replace these example names with the public names configured for your
+# deployment. Both names may point at the same healthy origin pool.
+api.example.com, api2.example.com {
 	encode gzip
 
 	@inference path \
