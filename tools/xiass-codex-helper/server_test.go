@@ -93,6 +93,42 @@ func TestHelperServerListsCompatibleModelsFromLocalHelperOnly(t *testing.T) {
 	postHelperJSON(t, helper.routes(), "/api/models", "", body, http.StatusForbidden)
 }
 
+func TestHelperServerAddsGPT6ToConfiguredXIASSModelCatalog(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xiassBaseURL := strings.TrimSuffix(defaultXIASSAPIURL, "/")
+	helper.listModels = func(baseURL, apiKey string) ([]string, error) {
+		if baseURL != xiassBaseURL+"/v1" || apiKey != "xiass-key" {
+			t.Fatalf("model discovery input = %q / %q", baseURL, apiKey)
+		}
+		return []string{"gpt-5.6-sol", "gpt-reserve"}, nil
+	}
+	body := []byte(`{"base_url":"` + xiassBaseURL + `","api_key":"xiass-key"}`)
+	response := postHelperJSON(t, helper.routes(), "/api/models", helper.state, body, http.StatusOK)
+	models, ok := response["models"].([]any)
+	if !ok || len(models) != 3 || models[0] != "gpt-5.6-sol" || models[1] != "gpt-6-astra" || models[2] != "gpt-reserve" {
+		t.Fatalf("XIASS model response = %+v", response)
+	}
+}
+
+func TestHelperServerDoesNotAddGPT6ToAnotherConfiguredSite(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), "https://relay.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.listModels = func(string, string) ([]string, error) {
+		return []string{"gpt-5.6-sol"}, nil
+	}
+	body := []byte(`{"base_url":"https://relay.example.com","api_key":"relay-key"}`)
+	response := postHelperJSON(t, helper.routes(), "/api/models", helper.state, body, http.StatusOK)
+	models, ok := response["models"].([]any)
+	if !ok || len(models) != 1 || models[0] != "gpt-5.6-sol" {
+		t.Fatalf("non-XIASS model response = %+v", response)
+	}
+}
+
 func TestDiscoverCompatibleModelsUsesStandardModelsEndpoint(t *testing.T) {
 	var authorization string
 	var clientVersion string
@@ -694,6 +730,9 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="delete-backup-button"`) || !strings.Contains(body, `id="load-manual-models-button"`) || !strings.Contains(body, `id="manual-review-model"`) {
 		t.Fatal("helper index does not expose backup cleanup and multi-model manual configuration controls")
+	}
+	if !strings.Contains(string(helper.callback), `id="model-chooser"`) || !strings.Contains(string(helper.callback), `gpt-6-astra`) {
+		t.Fatal("helper callback does not expose the legacy direct-key model chooser")
 	}
 	if !strings.Contains(body, "334800") || !strings.Contains(body, "defaultCompactLimit") {
 		t.Fatal("helper index does not expose the corrected 90% context defaults")

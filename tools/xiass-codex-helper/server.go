@@ -81,6 +81,8 @@ type historyBackupsResponse struct {
 	Items []HistoryBackupInfo `json:"items"`
 }
 
+const xiassCodexEnabledModel = "gpt-6-astra"
+
 func newHelperServer(manager *ConfigManager, site string, state string) (*helperServer, error) {
 	var parsedSite *url.URL
 	if strings.TrimSpace(site) != "" {
@@ -376,7 +378,51 @@ func (s *helperServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	models = s.augmentConfiguredXIASSModels(normalized.BaseURL, models)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
+}
+
+// augmentConfiguredXIASSModels keeps the local helper compatible with an older
+// XIASS API deployment whose Codex catalog predates a model enabled for the
+// canonical XIASS site. Arbitrary compatible APIs remain authoritative for
+// their own model catalog and are never augmented.
+func (s *helperServer) augmentConfiguredXIASSModels(baseURL string, models []string) []string {
+	site := s.currentSiteURL()
+	if site == nil {
+		return models
+	}
+	canonical, err := url.Parse(defaultXIASSAPIURL)
+	if err != nil || !strings.EqualFold(site.Hostname(), canonical.Hostname()) {
+		return models
+	}
+	parsedBase, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsedBase.Scheme != site.Scheme || !strings.EqualFold(parsedBase.Host, site.Host) {
+		return models
+	}
+	basePath := strings.TrimRight(parsedBase.Path, "/")
+	sitePath := strings.TrimRight(site.Path, "/")
+	if basePath != sitePath && basePath != sitePath+"/v1" {
+		return models
+	}
+
+	seen := make(map[string]struct{}, len(models)+1)
+	augmented := make([]string, 0, len(models)+1)
+	for _, raw := range models {
+		model := strings.TrimSpace(raw)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		augmented = append(augmented, model)
+	}
+	if _, exists := seen[xiassCodexEnabledModel]; !exists {
+		augmented = append(augmented, xiassCodexEnabledModel)
+	}
+	sort.Strings(augmented)
+	return augmented
 }
 
 func (s *helperServer) handleApply(w http.ResponseWriter, r *http.Request) {

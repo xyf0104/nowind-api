@@ -10,20 +10,44 @@
     main { width: min(560px, calc(100% - 32px)); border: 1px solid #d9dee7; border-radius: 8px; background: #fff; padding: 28px; box-shadow: 0 8px 30px rgba(20,30,50,.08); }
     h1 { margin: 0 0 12px; font-size: 21px; }
     p { margin: 0; color: #667085; line-height: 1.65; }
+    .chooser { margin-top: 20px; border-top: 1px solid #edf0f4; padding-top: 18px; }
+    .field + .field { margin-top: 14px; }
+    label { display: block; margin: 0 0 7px; color: #667085; font-size: 13px; }
+    select { width: 100%; min-height: 42px; border: 1px solid #cbd3df; border-radius: 7px; padding: 9px 10px; background: #fff; color: #172033; font: inherit; }
+    button { width: 100%; margin-top: 18px; min-height: 42px; border: 1px solid #1677ff; border-radius: 7px; padding: 9px 14px; background: #1677ff; color: #fff; cursor: pointer; font: inherit; font-weight: 600; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .note { margin-top: 10px; font-size: 12px; }
     a { color: #1677ff; }
     .success { color: #176b49; }
     .error { color: #b42318; }
-    @media (prefers-color-scheme: dark) { body { background: #11151c; color: #eef2f8; } main { background: #1b212b; border-color: #343d4b; } p { color: #aab4c2; } .success { color: #9ce0c0; } .error { color: #ffc2bd; } }
+    @media (prefers-color-scheme: dark) { body { background: #11151c; color: #eef2f8; } main { background: #1b212b; border-color: #343d4b; } p, label { color: #aab4c2; } select { background: #242c38; color: #eef2f8; border-color: #465163; } .chooser { border-color: #303846; } .success { color: #9ce0c0; } .error { color: #ffc2bd; } }
   </style>
 </head>
 <body>
   <main>
 	<h1 id="title">正在安全配置 Codex...</h1>
 		<p id="detail">正在退出 Codex、备份配置并同步已有会话的当前模型；全部校验通过后会自动重新启动。</p>
+	<section id="model-chooser" class="chooser" hidden>
+	  <div class="field">
+		<label for="session-model">默认会话模型</label>
+		<select id="session-model"></select>
+	  </div>
+	  <div class="field">
+		<label for="review-model">审查模型</label>
+		<select id="review-model"></select>
+	  </div>
+	  <button id="apply-selection" type="button">确认模型并配置 Codex</button>
+	  <p class="note">模型名称来自当前 XIASS 目录；旧版目录缺少时，助手会保留已启用的 <code>gpt-6-astra</code> 选项。</p>
+	</section>
   </main>
 	<script>
 	  let helperState = '';
 	  let keepHelperRunning = false;
+	  let pendingPayload = null;
+	  const modelChooser = document.getElementById('model-chooser');
+	  const sessionModel = document.getElementById('session-model');
+	  const reviewModel = document.getElementById('review-model');
+	  const applySelection = document.getElementById('apply-selection');
 
 	  function releaseHelperOnPageClose() {
 		if (!helperState || keepHelperRunning) return;
@@ -44,6 +68,7 @@
     function showResult(title, detail, kind) {
       const titleElement = document.getElementById('title');
       const detailElement = document.getElementById('detail');
+	  modelChooser.hidden = true;
       titleElement.textContent = title;
       titleElement.className = kind;
       detailElement.textContent = detail + ' ';
@@ -54,21 +79,132 @@
 		detailElement.append(link);
     }
 
+	function readModelIDs(value) {
+	  if (!Array.isArray(value)) return [];
+	  return value.map(item => {
+		if (typeof item === 'string') return item.trim();
+		if (!item || typeof item !== 'object') return '';
+		return String(item.slug || item.id || '').trim();
+	  }).filter(model => model && model.length <= 200 && !/[\u0000-\u001f\u007f-\u009f]/.test(model));
+	}
+
+	function showModelChooser(models, payload) {
+	  const unique = [...new Set(models)];
+	  if (!unique.length) throw new Error('服务端没有返回可用模型');
+	  sessionModel.innerHTML = '';
+	  reviewModel.innerHTML = '';
+	  for (const model of unique) {
+		const sessionOption = document.createElement('option');
+		sessionOption.value = model;
+		sessionOption.textContent = model;
+		sessionModel.append(sessionOption);
+		const reviewOption = document.createElement('option');
+		reviewOption.value = model;
+		reviewOption.textContent = model;
+		reviewModel.append(reviewOption);
+	  }
+	  const preferred = payload.model && unique.includes(payload.model)
+		? payload.model
+		: unique.includes('gpt-6-astra') ? 'gpt-6-astra' : unique[0];
+	  sessionModel.value = preferred;
+	  reviewModel.value = payload.review_model && unique.includes(payload.review_model)
+		? payload.review_model : sessionModel.value;
+	  pendingPayload = payload;
+	  document.getElementById('title').textContent = '请选择 Codex 模型';
+	  document.getElementById('title').className = '';
+	  document.getElementById('detail').textContent = '当前密钥尚未携带完整模型选择，请确认默认会话模型和审查模型后继续。';
+	  modelChooser.hidden = false;
+	}
+
+	function sameConfiguredSite(baseURL, siteURL) {
+	  try {
+		const base = new URL(baseURL);
+		const site = new URL(siteURL);
+		const basePath = base.pathname.replace(/\/+$/, '');
+		const sitePath = site.pathname.replace(/\/+$/, '');
+		return base.protocol === site.protocol && base.host === site.host
+		  && (basePath === sitePath || basePath === `${sitePath}/v1`);
+	  } catch {
+		return false;
+	  }
+	}
+
+	async function submitConfiguration(payload) {
+	  const response = await fetch('/api/apply', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'X-XIASS-Helper-State': helperState },
+		body: JSON.stringify(payload)
+	  });
+	  const data = await response.json();
+	  if (!response.ok) throw new Error(data.message || `配置失败 (${response.status})`);
+	  showResult('配置成功', data.message, 'success');
+	}
+
+	applySelection.addEventListener('click', async () => {
+	  if (!pendingPayload) return;
+	  const model = sessionModel.value.trim();
+	  const selectedReviewModel = reviewModel.value.trim() || model;
+	  if (!model) return;
+	  applySelection.disabled = true;
+	  try {
+		await submitConfiguration({ ...pendingPayload, model, review_model: selectedReviewModel });
+	  } catch (error) {
+		showResult('配置未完成', error instanceof Error ? error.message : '配置失败', 'error');
+	  } finally {
+		applySelection.disabled = false;
+	  }
+	});
+
+	async function shouldChooseModel(configuration) {
+	  if (!String(configuration.model || '').trim()) return true;
+	  try {
+		const response = await fetch('/api/status');
+		if (!response.ok) return false;
+		const status = await response.json();
+		return sameConfiguredSite(configuration.base_url, status.site_url);
+	  } catch {
+		return false;
+	  }
+	}
+
+	async function loadModelsForConfiguration(configuration) {
+	  const response = await fetch('/api/models', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'X-XIASS-Helper-State': helperState },
+		body: JSON.stringify({ base_url: configuration.base_url, api_key: configuration.api_key })
+	  });
+	  const data = await response.json();
+	  if (!response.ok) throw new Error(data.message || `读取模型列表失败 (${response.status})`);
+	  return readModelIDs(data.models);
+	}
+
     async function apply() {
       const params = new URLSearchParams(location.hash.slice(1));
 		const state = params.get('state') || '';
 		const payload = params.get('payload') || '';
 		helperState = state;
-      history.replaceState(null, '', '/callback');
-      if (!state || !payload) throw new Error('网站没有返回有效的配置数据。');
-      const response = await fetch('/api/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-XIASS-Helper-State': state },
-        body: decodeBase64Url(payload)
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || `配置失败 (${response.status})`);
-      showResult('配置成功', data.message, 'success');
+	  history.replaceState(null, '', '/callback');
+	  if (!state || !payload) throw new Error('网站没有返回有效的配置数据。');
+	  let configuration;
+	  try {
+		configuration = JSON.parse(decodeBase64Url(payload));
+	  } catch {
+		throw new Error('网站返回的配置数据无效。');
+	  }
+	  if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) {
+		throw new Error('网站返回的配置数据无效。');
+	  }
+	  if (!(await shouldChooseModel(configuration))) {
+		await submitConfiguration(configuration);
+		return;
+	  }
+	  let models;
+	  try {
+		models = await loadModelsForConfiguration(configuration);
+	  } catch (error) {
+		throw error;
+	  }
+	  showModelChooser(models, configuration);
     }
 
     apply().catch(error => {

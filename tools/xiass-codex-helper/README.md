@@ -11,12 +11,17 @@ fragment; manually entered keys are posted only to the loopback helper.
 For a compatible API, the local page can read that provider's model catalog
 using the Base URL and key entered on the page. XIASS returns its live Codex
 manifest (`models[].slug`) so newly enabled, account-specific models such as
-`gpt-6-astra` can be selected; ordinary compatible APIs can continue returning
-the standard `data[].id` list. The result is offered for both the default
-session model and review model, but is not treated as a hardcoded or persisted
-model whitelist: providers without a model catalog can still use manually
-entered model names. The key and discovered catalog remain on the local
-machine.
+`gpt-6-astra` can be selected; the helper also supplies this model when the
+configured XIASS deployment is an older catalog that has not listed it yet.
+Ordinary compatible APIs remain authoritative for their own `data[].id` list.
+The result is offered for both the default session model and review model, but
+is not treated as a hardcoded or persisted model whitelist: providers without
+a model catalog can still use manually entered model names. The key and
+discovered catalog remain on the local machine.
+
+Website-selected XIASS keys are rechecked locally when the callback arrives.
+This protects older website versions that either omit the model or send an old
+default: the helper shows the model chooser before applying the configuration.
 
 Before applying a configuration, the helper:
 
