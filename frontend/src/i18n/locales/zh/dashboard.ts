@@ -67,8 +67,15 @@ export default {
 
   codexHelper: {
     title: '连接 XIASS Codex 配置助手',
-    description: '选择一个 OpenAI 分组的有效密钥。配置只会发送到您电脑上的本地助手。',
+    description: '选择一个 OpenAI 分组的有效密钥，并从该密钥当前可用的模型中选择。配置只会发送到您电脑上的本地助手。',
     useThisKey: '使用此密钥配置',
+    modelSelection: '模型选择',
+    modelSource: '模型来自该密钥的实时服务端目录',
+    syncModels: '同步模型',
+    sessionModel: '默认会话模型',
+    reviewModel: '审查模型',
+    modelsLoadFailed: '读取模型列表失败',
+    modelRequired: '请选择默认会话模型',
     noKeys: '没有可用于 Codex 的密钥',
     noKeysHint: '请先创建并启用一个绑定到 OpenAI 分组的 API 密钥。',
     manageKeys: '管理 API 密钥',

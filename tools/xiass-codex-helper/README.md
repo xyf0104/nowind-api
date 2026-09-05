@@ -8,12 +8,15 @@ model. The default XIASS site is
 `https://api.xiass.com`. Website-selected keys are returned through a URL
 fragment; manually entered keys are posted only to the loopback helper.
 
-For a compatible API, the local page can read that provider's standard
-`/v1/models` catalog using the Base URL and key entered on the page. The result
-is offered for both the default session model and review model, but is not
-treated as a hardcoded or persisted model whitelist: providers without a model
-catalog can still use manually entered model names. The key and discovered
-catalog remain on the local machine.
+For a compatible API, the local page can read that provider's model catalog
+using the Base URL and key entered on the page. XIASS returns its live Codex
+manifest (`models[].slug`) so newly enabled, account-specific models such as
+`gpt-6-astra` can be selected; ordinary compatible APIs can continue returning
+the standard `data[].id` list. The result is offered for both the default
+session model and review model, but is not treated as a hardcoded or persisted
+model whitelist: providers without a model catalog can still use manually
+entered model names. The key and discovered catalog remain on the local
+machine.
 
 Before applying a configuration, the helper:
 

@@ -67,8 +67,15 @@ export default {
 
   codexHelper: {
     title: 'Connect XIASS Codex Helper',
-    description: 'Select an active key assigned to an OpenAI group. The configuration is sent only to the local helper on your computer.',
+    description: 'Select an active key assigned to an OpenAI group and choose from the models currently available to that key. The configuration is sent only to the local helper on your computer.',
     useThisKey: 'Configure with this key',
+    modelSelection: 'Model selection',
+    modelSource: 'Models come from this key\'s live server catalog',
+    syncModels: 'Sync models',
+    sessionModel: 'Default session model',
+    reviewModel: 'Review model',
+    modelsLoadFailed: 'Failed to load the model list',
+    modelRequired: 'Select a default session model',
     noKeys: 'No Codex-compatible key found',
     noKeysHint: 'Create and enable an API key assigned to an OpenAI group first.',
     manageKeys: 'Manage API keys',

@@ -95,8 +95,10 @@ func TestHelperServerListsCompatibleModelsFromLocalHelperOnly(t *testing.T) {
 
 func TestDiscoverCompatibleModelsUsesStandardModelsEndpoint(t *testing.T) {
 	var authorization string
+	var clientVersion string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authorization = r.Header.Get("Authorization")
+		clientVersion = r.URL.Query().Get("client_version")
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
@@ -113,7 +115,35 @@ func TestDiscoverCompatibleModelsUsesStandardModelsEndpoint(t *testing.T) {
 	if authorization != "Bearer local-key" {
 		t.Fatalf("authorization header = %q", authorization)
 	}
+	if clientVersion != "0.146.0" {
+		t.Fatalf("client_version = %q, want 0.146.0", clientVersion)
+	}
 	if got := strings.Join(models, ","); got != "gpt-5.6-luna,gpt-5.6-sol" {
+		t.Fatalf("models = %q", got)
+	}
+}
+
+func TestDiscoverCompatibleModelsAcceptsCodexManifestModels(t *testing.T) {
+	var clientVersion string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientVersion = r.URL.Query().Get("client_version")
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-6-astra"},{"slug":"gpt-5.6-sol"},{"slug":"gpt-6-astra"}]}`))
+	}))
+	defer server.Close()
+
+	models, err := discoverCompatibleModels(server.URL+"/v1", "local-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clientVersion != "0.146.0" {
+		t.Fatalf("client_version = %q, want 0.146.0", clientVersion)
+	}
+	if got := strings.Join(models, ","); got != "gpt-5.6-sol,gpt-6-astra" {
 		t.Fatalf("models = %q", got)
 	}
 }

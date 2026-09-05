@@ -555,7 +555,12 @@ func discoverCompatibleModels(baseURL, apiKey string) ([]string, error) {
 		return nil, errors.New("invalid compatible API base URL")
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/models"
-	endpoint.RawQuery = ""
+	query := endpoint.Query()
+	// XIASS uses the Codex manifest when client_version is present. A generic
+	// OpenAI-compatible endpoint may ignore this parameter and still return the
+	// standard data[].id catalog, which is handled below as well.
+	query.Set("client_version", "0.146.0")
+	endpoint.RawQuery = query.Encode()
 	endpoint.Fragment = ""
 
 	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
@@ -583,19 +588,38 @@ func discoverCompatibleModels(baseURL, apiKey string) ([]string, error) {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
+		Models []struct {
+			ID   string `json:"id"`
+			Slug string `json:"slug"`
+		} `json:"models"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode compatible API model list: %w", err)
 	}
-	modelSet := make(map[string]struct{}, len(payload.Data))
-	for _, item := range payload.Data {
-		model := strings.TrimSpace(item.ID)
+	modelSet := make(map[string]struct{}, len(payload.Data)+len(payload.Models))
+	addModel := func(raw string) error {
+		model := strings.TrimSpace(raw)
 		if model == "" || len(model) > 200 || strings.ContainsAny(model, "\r\n\x00") {
-			continue
+			return nil
 		}
 		modelSet[model] = struct{}{}
 		if len(modelSet) > 256 {
-			return nil, errors.New("compatible API returned too many models")
+			return errors.New("compatible API returned too many models")
+		}
+		return nil
+	}
+	for _, item := range payload.Data {
+		if err := addModel(item.ID); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range payload.Models {
+		model := item.Slug
+		if strings.TrimSpace(model) == "" {
+			model = item.ID
+		}
+		if err := addModel(model); err != nil {
+			return nil, err
 		}
 	}
 	if len(modelSet) == 0 {

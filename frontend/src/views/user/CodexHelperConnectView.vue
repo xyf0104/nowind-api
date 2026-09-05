@@ -40,10 +40,41 @@
               {{ key.group?.name }} · <code>{{ maskApiKey(key.key) }}</code>
             </p>
           </div>
-          <button type="button" class="btn btn-primary flex-shrink-0" @click="connectKey(key)">
-            <Icon name="check" size="sm" class="mr-2" />
-            {{ t('codexHelper.useThisKey') }}
-          </button>
+          <div v-if="modelStates[key.id]" class="w-full border-t border-gray-100 pt-4 dark:border-dark-600 sm:max-w-xl sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('codexHelper.modelSelection') }}</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('codexHelper.modelSource') }}</p>
+              </div>
+              <button type="button" class="btn btn-secondary flex-shrink-0" :disabled="modelStates[key.id].loading" @click="syncModels(key)">
+                <Icon name="refresh" size="sm" class="mr-2" :class="{ 'animate-spin': modelStates[key.id].loading }" />
+                {{ modelStates[key.id].loading ? t('common.loading') : t('codexHelper.syncModels') }}
+              </button>
+            </div>
+            <p v-if="modelStates[key.id].error" class="mt-2 text-xs text-red-600 dark:text-red-300">
+              {{ modelStates[key.id].error }}
+            </p>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              <label class="block text-sm text-gray-700 dark:text-gray-300">
+                {{ t('codexHelper.sessionModel') }}
+                <select v-model="modelStates[key.id].model" class="form-select mt-1 w-full" :disabled="!modelStates[key.id].models.length">
+                  <option v-if="!modelStates[key.id].models.length" :value="defaultHelperModel">{{ defaultHelperModel }}</option>
+                  <option v-for="model in modelStates[key.id].models" :key="`session-${key.id}-${model}`" :value="model">{{ model }}</option>
+                </select>
+              </label>
+              <label class="block text-sm text-gray-700 dark:text-gray-300">
+                {{ t('codexHelper.reviewModel') }}
+                <select v-model="modelStates[key.id].review_model" class="form-select mt-1 w-full" :disabled="!modelStates[key.id].models.length">
+                  <option v-if="!modelStates[key.id].models.length" :value="defaultHelperModel">{{ defaultHelperModel }}</option>
+                  <option v-for="model in modelStates[key.id].models" :key="`review-${key.id}-${model}`" :value="model">{{ model }}</option>
+                </select>
+              </label>
+            </div>
+            <button type="button" class="btn btn-primary mt-3 w-full justify-center" @click="connectKey(key)">
+              <Icon name="check" size="sm" class="mr-2" />
+              {{ t('codexHelper.useThisKey') }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -76,16 +107,28 @@ import type { ApiKey } from '@/types'
 import { maskApiKey } from '@/utils/maskApiKey'
 import {
   buildCodexHelperCallback,
+  fetchCodexCompatibleModels,
   isCodexCompatibleKey,
   parseCodexHelperConnection,
   type CodexHelperConnection
 } from '@/utils/codexHelper'
+
+const defaultHelperModel = 'gpt-5.6-sol'
+
+interface KeyModelState {
+  loading: boolean
+  models: string[]
+  model: string
+  review_model: string
+  error: string
+}
 
 const route = useRoute()
 const { t } = useI18n()
 const loading = ref(true)
 const errorMessage = ref('')
 const compatibleKeys = ref<ApiKey[]>([])
+const modelStates = ref<Record<number, KeyModelState>>({})
 const connection = ref<CodexHelperConnection | null>(null)
 const apiBaseUrl = ref('')
 
@@ -117,6 +160,15 @@ async function initialize() {
     const [settings, keys] = await Promise.all([authAPI.getPublicSettings(), loadKeys()])
     apiBaseUrl.value = settings.api_base_url || window.location.origin
     compatibleKeys.value = keys.filter(isCodexCompatibleKey)
+    modelStates.value = Object.fromEntries(
+      compatibleKeys.value.map((key) => [key.id, {
+        loading: false,
+        models: [],
+        model: defaultHelperModel,
+        review_model: defaultHelperModel,
+        error: ''
+      }])
+    )
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : t('codexHelper.loadFailed')
   } finally {
@@ -124,10 +176,35 @@ async function initialize() {
   }
 }
 
+async function syncModels(key: ApiKey) {
+  const state = modelStates.value[key.id]
+  if (!state) return
+  state.loading = true
+  state.error = ''
+  try {
+    const models = await fetchCodexCompatibleModels(apiBaseUrl.value, key.key)
+    state.models = models
+    if (!models.includes(state.model)) state.model = models.includes(defaultHelperModel) ? defaultHelperModel : models[0]
+    if (!models.includes(state.review_model)) state.review_model = state.model
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : t('codexHelper.modelsLoadFailed')
+  } finally {
+    state.loading = false
+  }
+}
+
 function connectKey(key: ApiKey) {
   if (!connection.value) return
+  const state = modelStates.value[key.id]
+  if (!state?.model.trim()) {
+    errorMessage.value = t('codexHelper.modelRequired')
+    return
+  }
   try {
-    window.location.assign(buildCodexHelperCallback(connection.value, apiBaseUrl.value, key))
+    window.location.assign(buildCodexHelperCallback(connection.value, apiBaseUrl.value, key, {
+      model: state.model,
+      review_model: state.review_model || state.model
+    }))
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : t('codexHelper.connectFailed')
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCodexHelperCallback, parseCodexHelperConnection } from '@/utils/codexHelper'
+import { buildCodexHelperCallback, fetchCodexCompatibleModels, parseCodexHelperConnection } from '@/utils/codexHelper'
 
 const state = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1'
 
@@ -33,5 +33,38 @@ describe('codexHelper', () => {
       api_key: 'sk-secret-value',
       key_name: '我的 Codex 密钥'
     })
+  })
+
+  it('passes selected session and review models through the loopback fragment', () => {
+    const connection = parseCodexHelperConnection('http://127.0.0.1:43123/callback', state)
+    const target = buildCodexHelperCallback(connection, 'https://gateway.example.com', {
+      key: 'sk-secret-value',
+      name: 'Codex'
+    }, {
+      model: 'gpt-6-astra',
+      review_model: 'gpt-5.6-sol'
+    })
+    const parsed = new URL(target)
+    const params = new URLSearchParams(parsed.hash.slice(1))
+    const encoded = params.get('payload')!
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4)
+    const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(padded), char => char.charCodeAt(0))))
+    expect(decoded.model).toBe('gpt-6-astra')
+    expect(decoded.review_model).toBe('gpt-5.6-sol')
+  })
+
+  it('reads both Codex manifest slugs and standard model ids', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      models: [{ slug: 'gpt-6-astra' }, { slug: 'gpt-5.6-sol' }],
+      data: [{ id: 'gpt-5.6-sol' }]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+    try {
+      await expect(fetchCodexCompatibleModels('https://gateway.example.com', 'sk-secret-value'))
+        .resolves.toEqual(['gpt-6-astra', 'gpt-5.6-sol'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
