@@ -9,7 +9,12 @@ import (
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/account"
+	"github.com/Wei-Shaw/sub2api/ent/apikey"
+	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
+	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -168,34 +173,77 @@ func (r *settingRepository) EnsureExecutionNodeClusterID(ctx context.Context, ca
 // migration metadata are intentionally ignored; silently discarding accounts,
 // keys, usage, proxies, or groups would create an unrecoverable split ledger.
 func (r *settingRepository) IsExecutionNodeJoinTargetEmpty(ctx context.Context) (bool, error) {
-	if r.db == nil {
-		return false, fmt.Errorf("target database handle is unavailable")
-	}
-	var hasBusinessData bool
-	err := r.db.QueryRowContext(ctx, `
-		SELECT
-			EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL)
-			OR EXISTS (SELECT 1 FROM api_keys WHERE deleted_at IS NULL)
-			OR EXISTS (SELECT 1 FROM usage_logs)
-			OR EXISTS (
-				SELECT 1
-				FROM proxies
-				WHERE deleted_at IS NULL
-					AND NOT (
-						name LIKE $1 || '%'
-						AND protocol = 'socks5'
-						AND host = '127.0.0.1'
-						AND port = 19080
-						AND username = substring(name FROM char_length($1) + 1)
-					)
-			)
-			OR EXISTS (SELECT 1 FROM groups WHERE deleted_at IS NULL)
-			OR (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) > 1
-	`, service.ExecutionNodeBuiltinProxyNamePrefix).Scan(&hasBusinessData)
+	// Use Ent queries instead of the repository's optional *sql.DB handle. The
+	// pairing preflight also runs inside an Ent transaction during integration
+	// tests, where the transaction client intentionally does not expose the
+	// underlying *sql.DB.
+	accountExists, err := r.client.Account.Query().
+		Where(account.DeletedAtIsNil()).
+		Exist(ctx)
 	if err != nil {
-		return false, fmt.Errorf("inspect target business data: %w", err)
+		return false, fmt.Errorf("inspect target accounts: %w", err)
 	}
-	return !hasBusinessData, nil
+	if accountExists {
+		return false, nil
+	}
+
+	apiKeyExists, err := r.client.APIKey.Query().
+		Where(apikey.DeletedAtIsNil()).
+		Exist(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inspect target API keys: %w", err)
+	}
+	if apiKeyExists {
+		return false, nil
+	}
+
+	usageLogExists, err := r.client.UsageLog.Query().Exist(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inspect target usage logs: %w", err)
+	}
+	if usageLogExists {
+		return false, nil
+	}
+
+	proxies, err := r.client.Proxy.Query().
+		Where(proxy.DeletedAtIsNil()).
+		All(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inspect target proxies: %w", err)
+	}
+	for _, item := range proxies {
+		if !isExecutionNodeBootstrapProxy(item) {
+			return false, nil
+		}
+	}
+
+	groupExists, err := r.client.Group.Query().
+		Where(group.DeletedAtIsNil()).
+		Exist(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inspect target groups: %w", err)
+	}
+	if groupExists {
+		return false, nil
+	}
+
+	activeUserCount, err := r.client.User.Query().
+		Where(user.DeletedAtIsNil()).
+		Count(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inspect target users: %w", err)
+	}
+	return activeUserCount <= 1, nil
+}
+
+func isExecutionNodeBootstrapProxy(item *ent.Proxy) bool {
+	if item == nil || !strings.HasPrefix(item.Name, service.ExecutionNodeBuiltinProxyNamePrefix) {
+		return false
+	}
+	if item.Protocol != "socks5" || item.Host != "127.0.0.1" || item.Port != 19080 || item.Username == nil {
+		return false
+	}
+	return *item.Username == strings.TrimPrefix(item.Name, service.ExecutionNodeBuiltinProxyNamePrefix)
 }
 
 // AcceptExecutionNodePairing consumes the single-use invite and publishes both
