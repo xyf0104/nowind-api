@@ -163,6 +163,15 @@ func (s *SettingRepoSuite) TestSetMultiple_UpdateToEmpty() {
 }
 
 func (s *SettingRepoSuite) TestExecutionNodeJoinTargetAllowsBootstrapRuntimeProxyOnly() {
+	// Other repository integration tests intentionally exercise real commits on
+	// the shared harness database. Isolate this empty-target contract inside
+	// the suite transaction so its initial state does not depend on test order.
+	_, err := s.repo.client.ExecContext(s.ctx, `
+		TRUNCATE TABLE accounts, api_keys, usage_logs, proxies, groups, users
+		RESTART IDENTITY CASCADE
+	`)
+	s.Require().NoError(err)
+
 	empty, err := s.repo.IsExecutionNodeJoinTargetEmpty(s.ctx)
 	s.Require().NoError(err)
 	s.Require().True(empty)
