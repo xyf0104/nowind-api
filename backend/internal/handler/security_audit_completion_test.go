@@ -43,8 +43,9 @@ func TestOpenAISecurityAuditBlockReturnsCompletedResponsesObject(t *testing.T) {
 	require.Greater(t, payload.Get("created_at").Int(), int64(0))
 	require.Equal(t, "assistant", payload.Get("output.0.role").String())
 	require.Equal(t, "内容审计命中风险规则，请调整输入后重试", payload.Get("output.0.content.0.text").String())
-	require.NotContains(t, recorder.Body.String(), "content_policy_violation")
-	require.NotContains(t, recorder.Body.String(), "403")
+	require.False(t, payload.Get("error").Exists(), "completed responses must not contain an error object")
+	require.False(t, payload.Get("status_code").Exists(), "completed responses must not expose an HTTP status code")
+	require.False(t, payload.Get("output.0.status_code").Exists(), "completed output must not expose an HTTP status code")
 }
 
 func TestGatewayResponsesSecurityAuditBlockReturnsCompletedResponsesObject(t *testing.T) {
