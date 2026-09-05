@@ -343,6 +343,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 
 		upstreamStart := time.Now()
+		freezeOpenAIHTTPUpstreamProxy(c, account, proxyURL)
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
@@ -608,6 +609,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenCodeSessionHeader(c, account, targetURL, req.Header)
 	if account.Type == AccountTypeOAuth {
 		stripOpenAILegacyResponsesBeta(req.Header)
 	}
@@ -746,7 +748,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
 	canonicalModel := canonicalOpenAIAccountSchedulingModel(account, reqModel)
 	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, canonicalModel)
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -812,7 +814,7 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		canonicalModel := canonicalOpenAIAccountSchedulingModel(account, reqModel)
 		_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, canonicalModel)
 	}
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -1543,7 +1545,7 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 			event.AccountID = account.ID
 			event.AccountName = account.Name
 		}
-		appendOpsUpstreamError(c, event)
+		appendOpenAIOpsUpstreamError(c, event)
 	}
 	return message
 }

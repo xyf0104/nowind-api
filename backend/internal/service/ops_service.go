@@ -544,32 +544,47 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 		return nil
 	}
 
-	const maxEvents = 16
-	events := entry.UpstreamErrors
-	if len(events) > maxEvents {
-		events = events[len(events)-maxEvents:]
+	events := make([]*OpsUpstreamErrorEvent, 0, len(entry.UpstreamErrors))
+	for _, ev := range entry.UpstreamErrors {
+		if ev != nil {
+			events = append(events, ev)
+		}
+	}
+	firstEventWithBody := len(events) - opsUpstreamErrorsBodyWindow
+	if firstEventWithBody < 0 {
+		firstEventWithBody = 0
 	}
 
 	sanitized := make([]*OpsUpstreamErrorEvent, 0, len(events))
-	for _, ev := range events {
-		if ev == nil {
-			continue
-		}
+	droppedEarlier := 0
+	for i, ev := range events {
 		out := *ev
+		if out.DroppedEarlierAttempts > 0 {
+			droppedEarlier += out.DroppedEarlierAttempts
+		}
+		normalizeOpsUpstreamProxyAttribution(&out)
+		out.DroppedEarlierAttempts = 0
+		keepBody := i >= firstEventWithBody
+		urlMaxLen, messageMaxLen := 2048, 2048
+		if !keepBody {
+			urlMaxLen = opsUpstreamErrorsOlderURLMaxLen
+			messageMaxLen = opsUpstreamErrorsOlderMessageMaxLen
+		}
 
 		out.Platform = truncateString(strings.TrimSpace(out.Platform), 32)
 		out.AccountName = truncateString(strings.TrimSpace(out.AccountName), 128)
+		out.ProxyName = sanitizeOpsProxyName(out.ProxyName)
 		out.UpstreamRequestID = truncateString(strings.TrimSpace(out.UpstreamRequestID), 128)
-		out.UpstreamURL = truncateString(strings.TrimSpace(out.UpstreamURL), 2048)
-		if body := strings.TrimSpace(out.UpstreamResponseBody); body != "" {
+		out.UpstreamURL = truncateString(safeUpstreamURL(out.UpstreamURL), urlMaxLen)
+		if body := strings.TrimSpace(out.UpstreamResponseBody); keepBody && body != "" {
 			out.UpstreamResponseBody, _ = sanitizeErrorBodyForStorage(body, OpsErrorLogQueueBodyMaxBytes)
 		} else {
 			out.UpstreamResponseBody = ""
 		}
-		out.Kind = truncateString(strings.TrimSpace(out.Kind), 64)
-		out.Stage = truncateString(strings.TrimSpace(out.Stage), 64)
-		out.Scope = truncateString(strings.TrimSpace(out.Scope), 64)
-		out.Reason = truncateString(strings.TrimSpace(out.Reason), 128)
+		out.Kind = truncateString(strings.TrimSpace(strings.ToValidUTF8(out.Kind, "")), 64)
+		out.Stage = truncateString(strings.TrimSpace(strings.ToValidUTF8(out.Stage, "")), 64)
+		out.Scope = truncateString(strings.TrimSpace(strings.ToValidUTF8(out.Scope, "")), 64)
+		out.Reason = truncateString(strings.TrimSpace(strings.ToValidUTF8(out.Reason, "")), 128)
 
 		if out.AccountID < 0 {
 			out.AccountID = 0
@@ -582,11 +597,14 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 		}
 
 		msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(out.Message))
-		msg = truncateString(msg, 2048)
+		msg = truncateString(msg, messageMaxLen)
 		out.Message = msg
 
 		detail := strings.TrimSpace(out.Detail)
-		if detail != "" {
+		if out.UpstreamStatusCode == 0 && out.Message == "" && detail == "" {
+			continue
+		}
+		if keepBody && detail != "" {
 			// Keep upstream detail small while the event waits in the queue.
 			sanitizedDetail, _ := sanitizeErrorBodyForStorage(detail, OpsErrorLogQueueBodyMaxBytes)
 			out.Detail = sanitizedDetail
@@ -594,18 +612,91 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 			out.Detail = ""
 		}
 
-		// Drop fully-empty events (can happen if only status code was known).
-		if out.UpstreamStatusCode == 0 && out.Message == "" && out.Detail == "" {
-			continue
-		}
-
 		evCopy := out
 		sanitized = append(sanitized, &evCopy)
 	}
 
+	if len(sanitized) > 0 && droppedEarlier > 0 {
+		sanitized[0].DroppedEarlierAttempts = droppedEarlier
+	}
+	sanitized, _ = boundOpsUpstreamErrors(sanitized)
 	entry.UpstreamErrorsJSON = marshalOpsUpstreamErrors(sanitized)
 	entry.UpstreamErrors = nil
 	return nil
+}
+
+const (
+	opsUpstreamErrorsBodyWindow         = 16
+	opsUpstreamErrorsOlderURLMaxLen     = 512
+	opsUpstreamErrorsOlderMessageMaxLen = 512
+	opsUpstreamErrorsMaxEvents          = 256
+	opsUpstreamErrorsQueueMaxBytes      = 512 * 1024
+)
+
+func boundOpsUpstreamErrors(events []*OpsUpstreamErrorEvent) ([]*OpsUpstreamErrorEvent, int) {
+	if len(events) == 0 {
+		return events, 0
+	}
+	normalized := make([]*OpsUpstreamErrorEvent, 0, len(events))
+	dropped := 0
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		if event.DroppedEarlierAttempts > 0 {
+			dropped += event.DroppedEarlierAttempts
+		}
+		event.DroppedEarlierAttempts = 0
+		normalized = append(normalized, event)
+	}
+	events = normalized
+	if len(events) == 0 {
+		return events, dropped
+	}
+	keepFrom := len(events)
+	serializedBytes := 2 // opening and closing JSON array brackets
+	for i := len(events) - 1; i >= 0; i-- {
+		if len(events)-i > opsUpstreamErrorsMaxEvents {
+			break
+		}
+		raw, err := json.Marshal(events[i])
+		if err != nil {
+			continue
+		}
+		separatorBytes := 0
+		if keepFrom < len(events) {
+			separatorBytes = 1
+		}
+		if serializedBytes+separatorBytes+len(raw) > opsUpstreamErrorsQueueMaxBytes {
+			break
+		}
+		serializedBytes += separatorBytes + len(raw)
+		keepFrom = i
+	}
+	kept := append([]*OpsUpstreamErrorEvent(nil), events[keepFrom:]...)
+	dropped += keepFrom
+	if len(kept) == 0 {
+		return kept, dropped
+	}
+	if dropped > 0 {
+		kept[0].DroppedEarlierAttempts = dropped
+	}
+	// Account for the dropped counter itself. Sanitization caps every event well
+	// below the byte budget, so trimming older events always converges while the
+	// newest outcome remains retained.
+	for len(kept) > 0 {
+		raw, err := json.Marshal(kept)
+		if err == nil && len(raw) <= opsUpstreamErrorsQueueMaxBytes {
+			break
+		}
+		if len(kept) == 1 {
+			return nil, dropped + 1
+		}
+		kept = kept[1:]
+		dropped++
+		kept[0].DroppedEarlierAttempts = dropped
+	}
+	return kept, dropped
 }
 
 func (s *OpsService) GetErrorLogs(ctx context.Context, filter *OpsErrorLogFilter) (*OpsErrorLogList, error) {
@@ -681,6 +772,11 @@ func (s *OpsService) GetErrorLogByID(ctx context.Context, id int64) (*OpsErrorLo
 			return nil, infraerrors.NotFound("OPS_ERROR_NOT_FOUND", "ops error log not found")
 		}
 		return nil, infraerrors.InternalServer("OPS_ERROR_LOAD_FAILED", "Failed to load ops error log").WithCause(err)
+	}
+	if detail != nil && strings.TrimSpace(detail.UpstreamErrors) != "" {
+		if normalized, normalizeErr := normalizeOpsUpstreamErrorsJSON(detail.UpstreamErrors); normalizeErr == nil {
+			detail.UpstreamErrors = normalized
+		}
 	}
 	return detail, nil
 }

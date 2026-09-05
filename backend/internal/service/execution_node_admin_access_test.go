@@ -71,8 +71,8 @@ func TestExecutionNodeDefaultWeightsMigrationRunsOnlyOnConfiguredSource(t *testi
 		sourceID  string
 		wantCalls int
 	}{
-		{name: "source with custom node ID", localID: "api.xiass.com", sourceID: "api.xiass.com", wantCalls: 1},
-		{name: "joined node", localID: "api2", sourceID: "api.xiass.com", wantCalls: 0},
+		{name: "source with custom node ID", localID: "source-node", sourceID: "source-node", wantCalls: 1},
+		{name: "joined node", localID: "api2", sourceID: "source-node", wantCalls: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := &executionNodeDefaultWeightsMigratorStub{}

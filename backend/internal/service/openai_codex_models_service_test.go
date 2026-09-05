@@ -501,15 +501,21 @@ func TestFetchCodexModelsManifestAPIKeyConvertsStandardOpenAIModelList(t *testin
 }
 
 func TestAdjustAPIKeyCodexModelsManifest(t *testing.T) {
+	mappedToAstra := newCodexModelsAPIKeyTestAccount("https://upstream.example")
+	mappedToAstra.Credentials["model_mapping"] = map[string]any{"gpt-6": "gpt-6-astra"}
+	mappedAwayFromAstra := newCodexModelsAPIKeyTestAccount("https://upstream.example")
+	mappedAwayFromAstra.Credentials["model_mapping"] = map[string]any{"gpt-6": "vendor-reasoner"}
+
 	tests := []struct {
-		name string
-		body string
-		want string
+		name    string
+		body    string
+		account *Account
+		want    string
 	}{
 		{
 			name: "affected models disable responses lite and preserve unknown fields",
-			body: `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":true,"unknown_model":{"enabled":true}},{"slug":"gpt-5.6-terra","use_responses_lite":true},{"slug":"gpt-5.6-luna","use_responses_lite":true}],"unknown_top":{"version":1}}`,
-			want: `{"models":[{"slug":"gpt-5.6-sol","unknown_model":{"enabled":true},"use_responses_lite":false},{"slug":"gpt-5.6-terra","use_responses_lite":false},{"slug":"gpt-5.6-luna","use_responses_lite":false}],"unknown_top":{"version":1}}`,
+			body: `{"models":[{"slug":"gpt-6","use_responses_lite":true},{"slug":"gpt-6-astra","use_responses_lite":true},{"slug":"gpt-5.6-sol","use_responses_lite":true,"unknown_model":{"enabled":true}},{"slug":"gpt-5.6-terra","use_responses_lite":true},{"slug":"gpt-5.6-luna","use_responses_lite":true}],"unknown_top":{"version":1}}`,
+			want: `{"models":[{"slug":"gpt-6","use_responses_lite":false},{"slug":"gpt-6-astra","use_responses_lite":false},{"slug":"gpt-5.6-sol","unknown_model":{"enabled":true},"use_responses_lite":false},{"slug":"gpt-5.6-terra","use_responses_lite":false},{"slug":"gpt-5.6-luna","use_responses_lite":false}],"unknown_top":{"version":1}}`,
 		},
 		{
 			name: "unaffected model unchanged",
@@ -521,11 +527,23 @@ func TestAdjustAPIKeyCodexModelsManifest(t *testing.T) {
 			body: `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":false},{"slug":"gpt-5.6-terra"},null,"gpt-5.6-luna",{"slug":17,"use_responses_lite":true}]}`,
 			want: `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":false},{"slug":"gpt-5.6-terra"},null,"gpt-5.6-luna",{"slug":17,"use_responses_lite":true}]}`,
 		},
+		{
+			name:    "account mapping gpt-6 to Astra disables responses lite",
+			body:    `{"models":[{"slug":"gpt-6","use_responses_lite":true}]}`,
+			account: mappedToAstra,
+			want:    `{"models":[{"slug":"gpt-6","use_responses_lite":false}]}`,
+		},
+		{
+			name:    "account mapping is evaluated before Astra normalization",
+			body:    `{"models":[{"slug":"gpt-6","use_responses_lite":true}]}`,
+			account: mappedAwayFromAstra,
+			want:    `{"models":[{"slug":"gpt-6","use_responses_lite":true}]}`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := adjustAPIKeyCodexModelsManifest([]byte(tt.body))
+			got, err := adjustAPIKeyCodexModelsManifest([]byte(tt.body), tt.account)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, string(got))
 		})
@@ -965,6 +983,28 @@ func TestFetchCodexModelsManifestAPIKeyCacheBoundsEntriesAndBodySize(t *testing.
 	if got := calls.Load(); got != 69 {
 		t.Errorf("oldest cache entry was not evicted: calls=%d, want 69", got)
 	}
+}
+
+func TestCodexModelsManifestCacheReturnsImmutableCopies(t *testing.T) {
+	cache := &codexModelsManifestCache{}
+	now := time.Now()
+	original := &CodexModelsManifest{Body: []byte(`{"models":[{"slug":"original"}]}`), ETag: `"original"`}
+	cache.set("key", original, now)
+
+	original.Body[0] = 'x'
+	original.ETag = `"mutated-before-read"`
+	first, state := cache.get("key", now)
+	require.Equal(t, codexModelsManifestCacheFresh, state)
+	require.JSONEq(t, `{"models":[{"slug":"original"}]}`, string(first.Body))
+	require.Equal(t, `"original"`, first.ETag)
+
+	first.Body[0] = 'x'
+	first.ETag = `"mutated-after-read"`
+	second, state := cache.get("key", now)
+	require.Equal(t, codexModelsManifestCacheFresh, state)
+	require.JSONEq(t, `{"models":[{"slug":"original"}]}`, string(second.Body))
+	require.Equal(t, `"original"`, second.ETag)
+	require.NotSame(t, first, second)
 }
 
 func TestFetchCodexModelsManifestAPIKeyServesStaleWhileRefreshing(t *testing.T) {

@@ -3120,6 +3120,50 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	return nil
 }
 
+// UpdateUpstreamModelMetadataIfIdentityMatches atomically stores a capability
+// snapshot only while the upstream-facing account identity still matches the
+// probe. Usage and quota updates may continue without causing false conflicts.
+func (r *accountRepository) UpdateUpstreamModelMetadataIfIdentityMatches(
+	ctx context.Context,
+	id int64,
+	expectedPlatform string,
+	expectedType string,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	snapshot any,
+) (bool, error) {
+	payload, err := json.Marshal(map[string]any{service.UpstreamModelMetadataExtraKey: snapshot})
+	if err != nil {
+		return false, err
+	}
+	credentials, err := json.Marshal(expectedCredentials)
+	if err != nil {
+		return false, err
+	}
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(
+		ctx,
+		"UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW() "+
+			"WHERE id = $2 AND deleted_at IS NULL AND platform = $3 AND type = $4 "+
+			"AND credentials = $5::jsonb AND proxy_id IS NOT DISTINCT FROM $6",
+		string(payload), id, expectedPlatform, expectedType, string(credentials), expectedProxyID,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, nil
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		r.syncSchedulerAccountSnapshot(ctx, id)
+	}
+	return true, nil
+}
+
 const openAICodexCurrentTimestampExpression = `
 	jsonb_path_query_first_tz(
 		jsonb_build_object(

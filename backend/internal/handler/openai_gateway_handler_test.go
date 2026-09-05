@@ -1461,7 +1461,7 @@ func TestOpenAIResponsesWebSocket_PassthroughTracksModelPerTurn(t *testing.T) {
 		"each turn must be billed with its own channel-mapped model")
 }
 
-func TestOpenAIResponsesWebSocket_UnchangedChannelTargetOutsideAccountMappingKeysRemainsValid(t *testing.T) {
+func TestOpenAIResponsesWebSocket_ChannelAliasUsesChannelThenAccountMapping(t *testing.T) {
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:  `{"type":"response.create","model":"public-alias","stream":false}`,
 		secondPayload: `{"type":"response.create","stream":false}`,
@@ -1469,13 +1469,14 @@ func TestOpenAIResponsesWebSocket_UnchangedChannelTargetOutsideAccountMappingKey
 			"public-alias": "gpt-5.6-sol",
 		},
 		accountModelMapping: map[string]any{
-			"public-alias": "gpt-5.6-terra",
+			"public-alias": "wrong-direct-target",
+			"gpt-5.6-sol":  "gpt-5.6-terra",
 		},
 	})
 
 	require.Len(t, got.upstreamPayloads, 2)
-	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(got.upstreamPayloads[0], "model").String())
-	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(got.upstreamPayloads[1], "model").String())
+	require.Equal(t, "gpt-5.6-terra", gjson.GetBytes(got.upstreamPayloads[0], "model").String())
+	require.Equal(t, "gpt-5.6-terra", gjson.GetBytes(got.upstreamPayloads[1], "model").String())
 	require.Len(t, got.clientEvents, 2)
 	require.Equal(t, "public-alias", gjson.GetBytes(got.clientEvents[0], "response.model").String())
 	require.Equal(t, "public-alias", gjson.GetBytes(got.clientEvents[1], "response.model").String())
@@ -1483,9 +1484,9 @@ func TestOpenAIResponsesWebSocket_UnchangedChannelTargetOutsideAccountMappingKey
 	for _, usageLog := range got.logs {
 		require.Equal(t, "public-alias", usageLog.RequestedModel)
 		require.NotNil(t, usageLog.UpstreamModel)
-		require.Equal(t, "gpt-5.6-sol", *usageLog.UpstreamModel)
+		require.Equal(t, "gpt-5.6-terra", *usageLog.UpstreamModel)
 		require.NotNil(t, usageLog.ModelMappingChain)
-		require.Equal(t, "public-alias→gpt-5.6-sol", *usageLog.ModelMappingChain)
+		require.Equal(t, "public-alias→gpt-5.6-sol→gpt-5.6-terra", *usageLog.ModelMappingChain)
 	}
 }
 
@@ -1616,6 +1617,110 @@ func TestOpenAIWSTurnBillingModelPreservesImagePricingModel(t *testing.T) {
 			require.Equal(t, tt.wantBillingModel, openAIWSTurnBillingModel(result, tt.mapping, tt.requestedModel, tt.upstreamModel))
 		})
 	}
+}
+
+func TestOpenAIChannelForwardModelForScheduler(t *testing.T) {
+	tests := []struct {
+		name      string
+		mapping   service.ChannelMappingResult
+		requested string
+		want      string
+	}{
+		{
+			name:      "mapped model is used for capability filtering",
+			mapping:   service.ChannelMappingResult{Mapped: true, MappedModel: "  gpt-forward  "},
+			requested: "client-alias",
+			want:      "gpt-forward",
+		},
+		{
+			name:      "unmapped request preserves client model",
+			mapping:   service.ChannelMappingResult{MappedModel: "client-model"},
+			requested: "client-model",
+			want:      "client-model",
+		},
+		{
+			name:      "empty mapped model preserves client model",
+			mapping:   service.ChannelMappingResult{Mapped: true, MappedModel: "  "},
+			requested: "client-model",
+			want:      "client-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIChannelForwardModel(tt.mapping, tt.requested))
+		})
+	}
+}
+
+func TestOpenAIAccountScheduleModelComposesChannelThenAccountMapping(t *testing.T) {
+	requestedModel := "client-alias"
+	channelMapping := service.ChannelMappingResult{
+		Mapped:      true,
+		MappedModel: " channel-target ",
+	}
+	account := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"client-alias":   "wrong-direct-target",
+				"channel-target": "account-final-target",
+			},
+		},
+	}
+
+	forwardModel := openAIChannelForwardModel(channelMapping, requestedModel)
+	scheduleModel := openAIAccountScheduleModel(account, forwardModel)
+	require.Equal(t, "channel-target", forwardModel)
+	require.Equal(t, "account-final-target", scheduleModel)
+	require.Equal(t, "client-alias", requestedModel, "scheduler composition must not rewrite the client model")
+
+	result := &service.OpenAIForwardResult{
+		Model:         requestedModel,
+		UpstreamModel: "observed-upstream-model",
+		BillingModel:  "independent-billing-model",
+	}
+	require.Equal(t, "independent-billing-model", openAIWSTurnBillingModel(
+		result,
+		channelMapping,
+		requestedModel,
+		result.UpstreamModel,
+	))
+	require.Equal(t, "observed-upstream-model", result.UpstreamModel)
+	require.Equal(t, "account-final-target", scheduleModel,
+		"observed upstream and billing models must not replace the scheduler state key")
+}
+
+func TestOpenAIWSTurnScheduleModelUsesSnapshotForFailover(t *testing.T) {
+	account := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"initial-channel-target": "initial-account-target",
+				"turn-channel-target":    "turn-account-target",
+			},
+		},
+	}
+	snapshot := &openAIWSTurnChannelMappingSnapshot{
+		turn:           2,
+		requestedModel: "turn-client-alias",
+		mapping: service.ChannelMappingResult{
+			Mapped:      true,
+			MappedModel: "turn-channel-target",
+		},
+	}
+
+	require.Equal(t, "turn-account-target", openAIWSTurnScheduleModel(account, snapshot, "initial-client-alias"))
+	require.Equal(t, "initial-account-target", openAIWSTurnScheduleModel(account, &openAIWSTurnChannelMappingSnapshot{
+		turn:           1,
+		requestedModel: "initial-client-alias",
+		mapping: service.ChannelMappingResult{
+			Mapped:      true,
+			MappedModel: "initial-channel-target",
+		},
+	}, "ignored-fallback"))
 }
 
 func TestShouldReportOpenAIWSProxyAccountFailure(t *testing.T) {

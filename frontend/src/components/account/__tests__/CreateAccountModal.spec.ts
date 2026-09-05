@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
   createAccountMock,
+  syncUpstreamModelsMock,
   probeUpstreamBillingMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
   authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
+  syncUpstreamModelsMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       create: createAccountMock,
+      syncUpstreamModels: syncUpstreamModelsMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
       checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
       importCodexSession: importCodexSessionMock,
@@ -193,6 +196,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], warnings: [] })
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
@@ -269,6 +273,15 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await submitApiKeyAccount('openai')
 
     expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(true)
+  })
+
+  it('starts model capability sync without delaying successful account creation', async () => {
+    syncUpstreamModelsMock.mockImplementationOnce(() => new Promise(() => undefined))
+
+    const wrapper = await submitApiKeyAccount('openai', false, true)
+
+    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42)
+    expect(wrapper.emitted('created')).toHaveLength(1)
   })
 
   it('waits for the initial upstream billing probe before refreshing the account list', async () => {

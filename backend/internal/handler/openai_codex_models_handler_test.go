@@ -16,11 +16,14 @@ import (
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type codexModelsFailoverAccountRepo struct {
 	service.AccountRepository
-	accounts []service.Account
+	accounts          []service.Account
+	candidatesByGroup map[int64][]service.Account
 }
 
 func (r codexModelsFailoverAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
@@ -37,6 +40,30 @@ func (r codexModelsFailoverAccountRepo) ListSchedulableByPlatform(_ context.Cont
 	accounts := make([]service.Account, 0, len(r.accounts))
 	for _, account := range r.accounts {
 		if account.Platform == platform {
+			accounts = append(accounts, account)
+		}
+	}
+	return accounts, nil
+}
+
+func (r codexModelsFailoverAccountRepo) ListSchedulableByGroupID(_ context.Context, _ int64) ([]service.Account, error) {
+	return append([]service.Account(nil), r.accounts...), nil
+}
+
+func (r codexModelsFailoverAccountRepo) ListModelAvailabilityCandidates(_ context.Context, groupID *int64, platforms []string, _ bool) ([]service.Account, error) {
+	allowed := make(map[string]struct{}, len(platforms))
+	for _, platform := range platforms {
+		allowed[platform] = struct{}{}
+	}
+	source := r.accounts
+	if groupID != nil {
+		if candidates, ok := r.candidatesByGroup[*groupID]; ok {
+			source = candidates
+		}
+	}
+	accounts := make([]service.Account, 0, len(source))
+	for _, account := range source {
+		if _, ok := allowed[account.Platform]; ok {
 			accounts = append(accounts, account)
 		}
 	}
@@ -148,9 +175,7 @@ func TestCodexModelsFailsOverFromRetryableUpstreamStatus(t *testing.T) {
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("status: got %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 			}
-			if got, want := recorder.Body.String(), `{"models":[{"slug":"gpt-5.6-sol"}]}`; got != want {
-				t.Fatalf("body: got %q, want %q", got, want)
-			}
+			requireCodexModelsHandlerCapabilities(t, recorder.Body.Bytes(), false)
 		})
 	}
 }
@@ -183,9 +208,7 @@ func TestCodexModelsFailsOverFromInvalidManifestEnvelope(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if got, want := recorder.Body.String(), `{"models":[{"slug":"gpt-5.6-sol"}]}`; got != want {
-		t.Fatalf("body: got %q, want %q", got, want)
-	}
+	requireCodexModelsHandlerCapabilities(t, recorder.Body.Bytes(), false)
 }
 
 func TestCodexModelsDoesNotFailOverFromPermanentUpstreamStatus(t *testing.T) {
@@ -264,6 +287,84 @@ func TestCodexModelsHonorsAccountSwitchLimit(t *testing.T) {
 	}
 }
 
+func TestCodexModelsAPIKeyETagUsesFinalGroupCapabilities(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const model = "company-coding-model"
+	groupWithSearch := int64(42)
+	groupWithoutSearch := int64(43)
+	selected := service.Account{
+		ID:          1,
+		Name:        "shared-source",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":       "sk-shared",
+			"base_url":      "https://upstream.example/v1",
+			"model_mapping": map[string]any{model: model},
+		},
+		Extra: map[string]any{"openai_responses_supported": false},
+	}
+	native := selected
+	native.ID = 2
+	native.Name = "native-responses"
+	native.Extra = map[string]any{"openai_responses_supported": true}
+	repo := codexModelsFailoverAccountRepo{
+		accounts: []service.Account{selected},
+		candidatesByGroup: map[int64][]service.Account{
+			groupWithSearch:    {selected},
+			groupWithoutSearch: {selected, native},
+		},
+	}
+	upstream := &codexModelsFailoverHTTPUpstream{firstBody: `{"models":[{"slug":"company-coding-model"}]}`}
+	gatewayService := service.NewOpenAIGatewayService(
+		repo, nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil,
+		upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	handler := &OpenAIGatewayHandler{gatewayService: gatewayService, maxAccountSwitches: 3}
+
+	withSearch := performCodexModelsRequestWithETag(t, handler, groupWithSearch, service.PlatformOpenAI, "")
+	require.Equal(t, http.StatusOK, withSearch.Code, withSearch.Body.String())
+	require.Equal(t, model, gjson.GetBytes(withSearch.Body.Bytes(), "models.0.slug").String())
+	require.True(t, gjson.GetBytes(withSearch.Body.Bytes(), "models.0.supports_search_tool").Bool())
+	withSearchETag := withSearch.Header().Get("ETag")
+	require.NotEmpty(t, withSearchETag)
+
+	withoutSearch := performCodexModelsRequestWithETag(t, handler, groupWithoutSearch, service.PlatformOpenAI, withSearchETag)
+	require.Equal(t, http.StatusOK, withoutSearch.Code, withoutSearch.Body.String())
+	require.Equal(t, model, gjson.GetBytes(withoutSearch.Body.Bytes(), "models.0.slug").String())
+	require.False(t, gjson.GetBytes(withoutSearch.Body.Bytes(), "models.0.supports_search_tool").Bool())
+	withoutSearchETag := withoutSearch.Header().Get("ETag")
+	require.NotEmpty(t, withoutSearchETag)
+	require.NotEqual(t, withSearchETag, withoutSearchETag)
+
+	notModified := performCodexModelsRequestWithETag(t, handler, groupWithoutSearch, service.PlatformOpenAI, withoutSearchETag)
+	if notModified.Code != http.StatusNotModified {
+		t.Fatalf("same final representation returned status %d: sent_etag=%q response_etag=%q body=%s", notModified.Code, withoutSearchETag, notModified.Header().Get("ETag"), notModified.Body.String())
+	}
+	require.Empty(t, notModified.Body.String())
+	require.Equal(t, withoutSearchETag, notModified.Header().Get("ETag"))
+	require.Equal(t, []int64{selected.ID}, upstream.calls(), "the immutable source manifest should be shared across request-level variants")
+}
+
+func TestCodexModelsUsesValidatedGroupIDWhenGroupIDPointerIsMissing(t *testing.T) {
+	handler, _, groupID := newCodexModelsFailoverTestHandler(http.StatusServiceUnavailable)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.144.0", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI},
+	})
+
+	handler.CodexModels(c)
+	c.Writer.WriteHeaderNow()
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	requireCodexModelsHandlerCapabilities(t, recorder.Body.Bytes(), false)
+}
+
 func newCodexModelsFailoverTestHandler(firstStatus int) (*OpenAIGatewayHandler, *codexModelsFailoverHTTPUpstream, int64) {
 	return newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, 2, 3)
 }
@@ -304,16 +405,24 @@ func performCodexModelsRequest(t *testing.T, handler *OpenAIGatewayHandler, grou
 }
 
 func performCodexModelsRequestForPlatform(t *testing.T, handler *OpenAIGatewayHandler, groupID int64, platform string) *httptest.ResponseRecorder {
+	return performCodexModelsRequestWithETag(t, handler, groupID, platform, "")
+}
+
+func performCodexModelsRequestWithETag(t *testing.T, handler *OpenAIGatewayHandler, groupID int64, platform, etag string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.144.0", nil)
+	if etag != "" {
+		c.Request.Header.Set("If-None-Match", etag)
+	}
 	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
 		GroupID: &groupID,
 		Group:   &service.Group{ID: groupID, Platform: platform},
 	})
 
 	handler.CodexModels(c)
+	c.Writer.WriteHeaderNow()
 	return recorder
 }
 
@@ -327,4 +436,17 @@ func equalInt64Slices(got, want []int64) bool {
 		}
 	}
 	return true
+}
+
+func requireCodexModelsHandlerCapabilities(t *testing.T, body []byte, search bool) {
+	t.Helper()
+	if got := gjson.GetBytes(body, "models.0.slug").String(); got != "gpt-5.6-sol" {
+		t.Fatalf("model slug: got %q body=%s", got, body)
+	}
+	if got := gjson.GetBytes(body, "models.0.supports_search_tool").Bool(); got != search {
+		t.Fatalf("supports_search_tool: got %v want %v body=%s", got, search, body)
+	}
+	if gjson.GetBytes(body, `models.0.service_tiers.#(id=="ultrafast")`).Exists() {
+		t.Fatalf("unverified ultrafast service tier must not be synthesized: body=%s", body)
+	}
 }

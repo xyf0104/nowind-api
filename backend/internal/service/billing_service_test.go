@@ -205,6 +205,30 @@ func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
 }
 
+func TestGetModelPricing_OpenAIGPT6AstraFallbackAndChannelOverride(t *testing.T) {
+	svc := newTestBillingService()
+	for _, model := range []string{"gpt-6", "gpt-6-astra", "openai/gpt-6-astra-2026-09-01"} {
+		pricing, err := svc.GetModelPricing(model)
+		require.NoError(t, err, model)
+		require.InDelta(t, 10e-6, pricing.InputPricePerToken, 1e-12)
+		require.InDelta(t, 50e-6, pricing.OutputPricePerToken, 1e-12)
+		require.InDelta(t, 12.5e-6, pricing.CacheCreationPricePerToken, 1e-12)
+		require.InDelta(t, 1e-6, pricing.CacheReadPricePerToken, 1e-12)
+	}
+
+	input := 7e-6
+	output := 31e-6
+	pricing, err := svc.GetModelPricingWithChannel("gpt-6", &ChannelModelPricing{
+		InputPrice:  &input,
+		OutputPrice: &output,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, input, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, output, pricing.OutputPricePerToken, 1e-12)
+	require.InDelta(t, input*2, pricing.InputPricePerTokenPriority, 1e-12)
+	require.InDelta(t, output*2, pricing.OutputPricePerTokenPriority, 1e-12)
+}
+
 func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -1490,6 +1514,7 @@ func TestServiceTierCostMultiplier(t *testing.T) {
 	require.InDelta(t, 0.5, serviceTierCostMultiplier("flex"), 1e-12)
 	require.InDelta(t, 1.0, serviceTierCostMultiplier(""), 1e-12)
 	require.InDelta(t, 1.0, serviceTierCostMultiplier("default"), 1e-12)
+	require.InDelta(t, 2.0, serviceTierCostMultiplier("ultrafast"), 1e-12)
 }
 
 func TestCalculateCostWithServiceTier_OpenAIPriorityUsesPriorityPricing(t *testing.T) {

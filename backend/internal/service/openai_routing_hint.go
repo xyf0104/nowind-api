@@ -35,7 +35,7 @@ func setOpenAICodexRoutingHint(headers http.Header, account *Account, model, ser
 
 	canonicalTier := normalizedOpenAIServiceTierValue(serviceTier)
 	switch canonicalTier {
-	case OpenAIFastTierPriority, OpenAIFastTierFlex:
+	case OpenAIFastTierPriority, OpenAIFastTierFlex, OpenAIFastTierUltrafast:
 	default:
 		canonicalTier = ""
 	}

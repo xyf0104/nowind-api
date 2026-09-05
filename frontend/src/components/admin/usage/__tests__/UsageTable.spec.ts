@@ -26,6 +26,7 @@ const messages: Record<string, string> = {
   'usage.perMillionTokens': '/ 1M tokens',
   'usage.serviceTier': 'Service tier',
   'usage.serviceTierPriority': 'Fast',
+  'usage.serviceTierUltrafast': 'Ultrafast',
   'usage.serviceTierFlex': 'Flex',
   'usage.serviceTierStandard': 'Standard',
   'usage.rate': 'Rate',
@@ -216,7 +217,7 @@ describe('admin UsageTable tooltip', () => {
       total_cost: 0.092883,
       account_rate_multiplier: 1,
       rate_multiplier: 1,
-      service_tier: 'priority',
+      service_tier: 'ultrafast',
       input_cost: 0.020285,
       output_cost: 0.00303,
       cache_creation_cost: 0,
@@ -247,7 +248,7 @@ describe('admin UsageTable tooltip', () => {
 
     const text = wrapper.text()
     expect(text).toContain('Service tier')
-    expect(text).toContain('Fast')
+    expect(text).toContain('Ultrafast')
     expect(text).toContain('Rate')
     expect(text).toContain('1.00x')
     expect(text).toContain('Account rate')

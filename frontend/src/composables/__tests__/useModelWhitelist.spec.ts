@@ -29,6 +29,14 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('codex-auto-review')
     expect(models).toContain('gpt-5.6')
     expect(models).toContain('gpt-5.6-luna')
+    expect(models).toContain('gpt-6')
+    expect(models).toContain('gpt-6-astra')
+
+	const presets = getPresetMappingsByPlatform('openai')
+	expect(presets).toEqual(expect.arrayContaining([
+		expect.objectContaining({ from: 'gpt-6', to: 'gpt-6' }),
+		expect.objectContaining({ from: 'gpt-6-astra', to: 'gpt-6-astra' })
+	]))
   })
 
   it('OpenAI OAuth 默认支持 Luna，上游 API Key 需同步或显式选择后才声明支持', () => {

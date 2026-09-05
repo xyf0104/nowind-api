@@ -24,6 +24,9 @@ func TestNormalizeOpenAIReasoningEffortForGPT56(t *testing.T) {
 		{name: "Sol 保留 max", raw: "max", model: "gpt-5.6-sol", want: "max"},
 		{name: "Terra 保留 max", raw: "max", model: "openai/gpt-5.6-terra", want: "max"},
 		{name: "Luna 后缀保留 max", raw: "max", model: "gpt-5.6-luna-2026-07-09", want: "max"},
+		{name: "Astra 保留 max", raw: "max", model: "gpt-6-astra", want: "max"},
+		{name: "GPT-6 别名保留 max", raw: "max", model: "openai/gpt-6", want: "max"},
+		{name: "Astra 日期版本保留 max", raw: "max", model: "gpt-6-astra-2026-09-01", want: "max"},
 		{name: "DeepSeek V4 保留 max", raw: "max", model: "deepseek-v4-pro", want: "max"},
 		{name: "旧 GPT 模型沿用 xhigh", raw: "max", model: "gpt-5.5", want: "xhigh"},
 	}

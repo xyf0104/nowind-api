@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -83,6 +84,45 @@ func TestDetectOpenAICyberPolicy(t *testing.T) {
 				require.Equal(t, "cyber_policy", code)
 				require.Equal(t, tc.msg, msg)
 			}
+		})
+	}
+}
+
+func TestMarkOpenAICyberPolicyEventCoversErrorAndResponseFailedOnce(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload string
+		inTok   int
+		outTok  int
+	}{
+		{
+			name:    "error",
+			payload: `{"type":"error","error":{"code":"cyber_policy","message":"blocked"},"usage":{"input_tokens":5,"output_tokens":1}}`,
+			inTok:   5,
+			outTok:  1,
+		},
+		{
+			name:    "response_failed",
+			payload: `{"type":"response.failed","response":{"error":{"code":"cyber_policy","message":"blocked"},"usage":{"input_tokens":9,"output_tokens":2}}}`,
+			inTok:   9,
+			outTok:  2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			usage := OpenAIUsage{InputTokens: tt.inTok, OutputTokens: tt.outTok}
+			require.True(t, markOpenAICyberPolicyEvent(c, []byte(tt.payload), http.StatusOK, &usage))
+			mark := GetOpsCyberPolicy(c)
+			require.NotNil(t, mark)
+			require.Equal(t, tt.inTok, mark.UpstreamInTok)
+			require.Equal(t, tt.outTok, mark.UpstreamOutTok)
+
+			require.True(t, markOpenAICyberPolicyEvent(c, []byte(`{"error":{"code":"cyber_policy","message":"duplicate"}}`), http.StatusBadRequest, nil))
+			require.Equal(t, "blocked", GetOpsCyberPolicy(c).Message, "the second event in one attempt must not replace the first")
 		})
 	}
 }

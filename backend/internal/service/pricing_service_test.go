@@ -278,6 +278,33 @@ func TestGPT56DedicatedFallbacksUseOfficialRates(t *testing.T) {
 	}
 }
 
+func TestGPT6AstraDedicatedFallbackUsesConfirmedXIASSRates(t *testing.T) {
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}
+	for _, model := range []string{"gpt-6", "gpt-6-astra", "openai/gpt-6-astra-2026-09-01"} {
+		pricing := svc.GetModelPricing(model)
+		require.NotNil(t, pricing, model)
+		require.InDelta(t, 10e-6, pricing.InputCostPerToken, 1e-12)
+		require.InDelta(t, 50e-6, pricing.OutputCostPerToken, 1e-12)
+		require.InDelta(t, 12.5e-6, pricing.CacheCreationInputTokenCost, 1e-12)
+		require.InDelta(t, 1e-6, pricing.CacheReadInputTokenCost, 1e-12)
+	}
+}
+
+func TestGPT6AliasPrefersDynamicAstraPricing(t *testing.T) {
+	dynamic := &LiteLLMModelPricing{
+		InputCostPerToken:  7e-6,
+		OutputCostPerToken: 31e-6,
+	}
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"gpt-6-astra": dynamic,
+	}}
+
+	for _, model := range []string{"gpt-6", "openai/gpt-6"} {
+		pricing := svc.GetModelPricing(model)
+		require.Same(t, dynamic, pricing, model)
+	}
+}
+
 func assertGPT56FallbackPricing(t *testing.T, pricing *ModelPricing, input, cached, cacheWrite, output float64) {
 	t.Helper()
 	require.InDelta(t, input, pricing.InputPricePerToken, 1e-12)

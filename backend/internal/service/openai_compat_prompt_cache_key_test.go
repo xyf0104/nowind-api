@@ -26,6 +26,53 @@ func TestShouldAutoInjectPromptCacheKeyForCompat(t *testing.T) {
 	require.False(t, shouldAutoInjectPromptCacheKeyForCompat("gpt-4o"))
 }
 
+func TestShouldAutoInjectPromptCacheKeyForCompat_GPT6AstraForms(t *testing.T) {
+	for _, model := range []string{
+		"gpt-6",
+		"gpt-6-astra",
+		"openai/gpt-6",
+		"openai/gpt-6-astra",
+		"OPENAI/GPT-6_ASTRA",
+	} {
+		require.True(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
+	}
+
+	for _, model := range []string{
+		"gpt-6-terra",
+		"gpt-6.1",
+		"gpt-6-astra-preview",
+		"gpt-6-astra-2026-09-01",
+		"claude-sonnet-4-5",
+		"gpt-4o",
+	} {
+		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
+	}
+}
+
+func TestDeriveCompatPromptCacheKey_GPT6AstraStableAcrossLaterTurns(t *testing.T) {
+	base := &apicompat.ChatCompletionsRequest{
+		Model: "gpt-6-astra",
+		Messages: []apicompat.ChatMessage{
+			{Role: "system", Content: mustRawJSON(t, `"You are helpful."`)},
+			{Role: "user", Content: mustRawJSON(t, `"Inspect the repository"`)},
+		},
+	}
+	extended := &apicompat.ChatCompletionsRequest{
+		Model: "gpt-6-astra",
+		Messages: []apicompat.ChatMessage{
+			{Role: "system", Content: mustRawJSON(t, `"You are helpful."`)},
+			{Role: "user", Content: mustRawJSON(t, `"Inspect the repository"`)},
+			{Role: "assistant", Content: mustRawJSON(t, `"Done."`)},
+			{Role: "user", Content: mustRawJSON(t, `"Run the tests"`)},
+		},
+	}
+
+	first := deriveCompatPromptCacheKey(base, "gpt-6")
+	second := deriveCompatPromptCacheKey(extended, "gpt-6-astra")
+	require.NotEmpty(t, first)
+	require.Equal(t, first, second)
+}
+
 func TestDeriveCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T) {
 	base := &apicompat.ChatCompletionsRequest{
 		Model: "gpt-5.4",

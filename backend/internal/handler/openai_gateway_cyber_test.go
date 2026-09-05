@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -100,6 +102,16 @@ func TestClearCyberPolicyTurnState(t *testing.T) {
 	h.recordCyberPolicyIfMarked(c, nil, nil, nil, "gpt-5", false, "", service.ChannelUsageFields{}, "")
 	require.True(t, c.GetBool(cyberPolicyRecordedKey))
 	require.Equal(t, "turn2", service.GetOpsCyberPolicy(c).Message)
+}
+
+func TestOpenAIWSCyberPolicyBlockedNeverReportsAccountFailureOrFailover(t *testing.T) {
+	err := fmt.Errorf("wrapped terminal cyber rejection: %w", service.ErrOpenAIWSCyberPolicyBlocked)
+
+	require.True(t, service.IsOpenAIWSCyberPolicyBlocked(err))
+	require.False(t, shouldReportOpenAIWSProxyAccountFailure(err))
+	var failoverErr *service.UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "cyber policy must not select another account")
+	require.Equal(t, "内容审计命中风险规则，请调整输入后重试", service.OpenAIWSCyberPolicyClientMessage)
 }
 
 // TestBuildCyberSessionBlockedOpsEntry verifies the locally-rejected request is

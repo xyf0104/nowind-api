@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -1521,6 +1522,53 @@ func (s *AccountRepoSuite) TestUpdateExtra_NilExtra() {
 	s.Require().NoError(err)
 	s.Require().Equal("val", got.Extra["key"])
 }
+
+func (s *AccountRepoSuite) TestUpdateUpstreamModelMetadataIfIdentityMatchesRejectsStaleWrite() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:        "acc-upstream-metadata-cas",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "provider-key", "base_url": "https://provider.example/v1"},
+		Extra:       map[string]any{"custom_xiass_field": "keep"},
+	})
+	snapshot := service.UpstreamModelMetadataSnapshot{
+		Identity: "sha256:test-identity",
+		Source:   "upstream",
+		SyncedAt: "2026-09-05T00:00:00Z",
+		Models: map[string]service.UpstreamModelMetadata{
+			"provider-coder": {
+				ID:              "provider-coder",
+				Reasoning:       upstreamModelCapabilityBoolPtr(true),
+				InputModalities: []string{"text"},
+				ContextWindow:   131072,
+			},
+		},
+	}
+
+	updated, err := s.repo.UpdateUpstreamModelMetadataIfIdentityMatches(
+		s.ctx, account.ID, account.Platform, account.Type, account.Credentials, account.ProxyID, snapshot,
+	)
+	s.Require().NoError(err)
+	s.Require().True(updated)
+
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("keep", got.Extra["custom_xiass_field"])
+	rawSnapshot, err := json.Marshal(got.Extra[service.UpstreamModelMetadataExtraKey])
+	s.Require().NoError(err)
+	var storedSnapshot service.UpstreamModelMetadataSnapshot
+	s.Require().NoError(json.Unmarshal(rawSnapshot, &storedSnapshot))
+	s.Require().Equal(snapshot.Identity, storedSnapshot.Identity)
+
+	staleCredentials := map[string]any{"api_key": "replaced-key", "base_url": "https://provider.example/v1"}
+	updated, err = s.repo.UpdateUpstreamModelMetadataIfIdentityMatches(
+		s.ctx, account.ID, account.Platform, account.Type, staleCredentials, account.ProxyID, snapshot,
+	)
+	s.Require().NoError(err)
+	s.Require().False(updated, "the original row version must not overwrite a newer snapshot")
+}
+
+func upstreamModelCapabilityBoolPtr(value bool) *bool { return &value }
 
 func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFreshSnapshot() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{

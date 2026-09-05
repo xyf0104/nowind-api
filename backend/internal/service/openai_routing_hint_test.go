@@ -23,6 +23,7 @@ func TestSetOpenAICodexRoutingHintCanonicalizesOfficialServiceTiers(t *testing.T
 		{name: "fast alias", model: "gpt-5.6", tier: " fast ", want: "model=gpt-5.6;tier=priority"},
 		{name: "priority", model: "gpt-5.6", tier: "priority", want: "model=gpt-5.6;tier=priority"},
 		{name: "flex", model: "gpt-5.6", tier: "flex", want: "model=gpt-5.6;tier=flex"},
+		{name: "ultrafast", model: "gpt-5.6", tier: "ultrafast", want: "model=gpt-5.6;tier=ultrafast"},
 		{name: "default", model: "gpt-5.6", tier: "default", want: "model=gpt-5.6"},
 		{name: "omitted", model: "gpt-5.6", want: "model=gpt-5.6"},
 		{name: "unknown", model: "gpt-5.6", tier: "turbo", want: "model=gpt-5.6"},
@@ -74,6 +75,7 @@ func TestOpenAIOAuthHTTPBuildersSendRoutingHintFromFinalBody(t *testing.T) {
 	}{
 		{body: []byte(`{"model":"gpt-5.6-codex","service_tier":"fast"}`), want: "model=gpt-5.6-codex;tier=priority"},
 		{body: []byte(`{"model":"gpt-5.6-codex","service_tier":"flex"}`), want: "model=gpt-5.6-codex;tier=flex"},
+		{body: []byte(`{"model":"gpt-5.6-codex","service_tier":"ultrafast"}`), want: "model=gpt-5.6-codex;tier=ultrafast"},
 		{body: []byte(`{"model":"gpt-5.6-codex","service_tier":"default"}`), want: "model=gpt-5.6-codex"},
 	}
 
@@ -134,6 +136,7 @@ func TestBuildOpenAIWSHeadersSendsOAuthRoutingHintOnly(t *testing.T) {
 		},
 	}
 	require.Equal(t, "model=gpt-5.6-codex;tier=priority", build(t, oauth, "fast").Get(openAICodexRoutingHintHeader))
+	require.Equal(t, "model=gpt-5.6-codex;tier=ultrafast", build(t, oauth, "ultrafast").Get(openAICodexRoutingHintHeader))
 	require.Equal(t, "model=gpt-5.6-codex", build(t, oauth, "default").Get(openAICodexRoutingHintHeader))
 	require.Empty(t, build(t, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "priority").Get(openAICodexRoutingHintHeader))
 }

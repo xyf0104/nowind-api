@@ -86,3 +86,28 @@ func detectOpenAICyberPolicy(payload []byte) (bool, string, string) {
 	}
 	return true, "cyber_policy", strings.TrimSpace(msg)
 }
+
+// markOpenAICyberPolicyEvent normalizes HTTP, SSE and WebSocket evidence into
+// the same per-attempt marker. MarkOpsCyberPolicy is first-write-wins, so an
+// error followed by response.failed in one attempt cannot duplicate records.
+func markOpenAICyberPolicyEvent(c *gin.Context, payload []byte, upstreamStatus int, usage *OpenAIUsage) bool {
+	hit, code, message := detectOpenAICyberPolicy(payload)
+	if !hit {
+		return false
+	}
+	mark := CyberPolicyMark{
+		Code:           code,
+		Message:        message,
+		Body:           truncateString(string(payload), 4096),
+		UpstreamStatus: upstreamStatus,
+	}
+	if eventUsage, ok := extractOpenAIUsageFromJSONBytes(payload); ok {
+		mark.UpstreamInTok = eventUsage.InputTokens
+		mark.UpstreamOutTok = eventUsage.OutputTokens
+	} else if usage != nil {
+		mark.UpstreamInTok = usage.InputTokens
+		mark.UpstreamOutTok = usage.OutputTokens
+	}
+	MarkOpsCyberPolicy(c, mark)
+	return true
+}

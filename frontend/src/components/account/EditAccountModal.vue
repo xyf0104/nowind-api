@@ -4020,6 +4020,24 @@ const syncAntigravityUpstreamModels = async () => {
     } else {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))
     }
+    for (const warning of result.warnings ?? []) {
+      switch (warning.code) {
+        case 'upstream_model_list_mapping_fallback':
+          appStore.showWarning(t('admin.accounts.syncUpstreamModelsMappingFallback'))
+          break
+        case 'upstream_model_metadata_partial':
+          appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataPartial'))
+          break
+        case 'upstream_model_metadata_incomplete':
+          appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))
+          break
+        case 'upstream_model_metadata_too_large':
+          appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataTooLarge'))
+          break
+        default:
+          if (warning.message) appStore.showWarning(warning.message)
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : t('admin.accounts.syncUpstreamModelsFailed')
     appStore.showError(t('admin.accounts.syncUpstreamModelsError', { message }))

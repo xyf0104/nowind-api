@@ -5,6 +5,7 @@ package service
 import (
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,8 +63,8 @@ func TestCalculateImageCost_RateMultiplier_NegativeClampedToZero(t *testing.T) {
 	}
 }
 
-func TestComputeTokenBreakdown_GPT6AstraPricesAre2_5xGPT56Sol(t *testing.T) {
-	svc := &BillingService{}
+func TestComputeTokenBreakdown_GPT6AstraConfirmedPriceAndDiscount(t *testing.T) {
+	svc := NewBillingService(&config.Config{}, nil)
 	tokens := UsageTokens{
 		InputTokens:         1_000_000,
 		OutputTokens:        100_000,
@@ -71,32 +72,22 @@ func TestComputeTokenBreakdown_GPT6AstraPricesAre2_5xGPT56Sol(t *testing.T) {
 		CacheReadTokens:     300_000,
 	}
 
-	// These are the configured per-million-token prices shown in the admin
-	// pricing cards, expressed in the USD-per-token unit used by BillingService.
-	sol := svc.computeTokenBreakdown(&ModelPricing{
-		InputPricePerToken:         4e-6,
-		OutputPricePerToken:        20e-6,
-		CacheCreationPricePerToken: 5e-6,
-		CacheReadPricePerToken:     0.4e-6,
-	}, tokens, 1, "", false)
-	astra := svc.computeTokenBreakdown(&ModelPricing{
-		InputPricePerToken:         10e-6,
-		OutputPricePerToken:        50e-6,
-		CacheCreationPricePerToken: 12.5e-6,
-		CacheReadPricePerToken:     1e-6,
-	}, tokens, 1, "", false)
+	// Resolve through production pricing so the regression test cannot drift
+	// away from the actual billing path.
+	astraPricing, err := svc.GetModelPricing("openai/gpt-6-astra-2026-09-01")
+	require.NoError(t, err)
+	astra := svc.computeTokenBreakdown(astraPricing, tokens, 1, "", false)
 
-	require.InDelta(t, sol.TotalCost*2.5, astra.TotalCost, 1e-12)
+	want := float64(tokens.InputTokens)*10e-6 +
+		float64(tokens.OutputTokens)*50e-6 +
+		float64(tokens.CacheCreationTokens)*12.5e-6 +
+		float64(tokens.CacheReadTokens)*1e-6
+	require.InDelta(t, want, astra.TotalCost, 1e-12)
 	require.InDelta(t, astra.TotalCost, astra.ActualCost, 1e-12)
 
 	// The account/group multiplier is a separate layer. It changes the actual
 	// charge but must not change the model's standard cost or its 2.5x ratio.
-	astraDiscounted := svc.computeTokenBreakdown(&ModelPricing{
-		InputPricePerToken:         10e-6,
-		OutputPricePerToken:        50e-6,
-		CacheCreationPricePerToken: 12.5e-6,
-		CacheReadPricePerToken:     1e-6,
-	}, tokens, 0.178, "", false)
+	astraDiscounted := svc.computeTokenBreakdown(astraPricing, tokens, 0.178, "", false)
 	require.InDelta(t, astra.TotalCost, astraDiscounted.TotalCost, 1e-12)
 	require.InDelta(t, astra.TotalCost*0.178, astraDiscounted.ActualCost, 1e-12)
 }

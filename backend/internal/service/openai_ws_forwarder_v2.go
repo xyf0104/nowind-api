@@ -188,6 +188,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
 	defer acquireCancel()
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.requestProxyURL()
+	}
+	freezeOpenAIWSUpstreamProxy(c, account, proxyURL)
 
 	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
 		Account: account,
@@ -198,12 +203,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		},
 		PreferredConnID: preferredConnID,
 		ForceNewConn:    forceNewConn,
-		ProxyURL: func() string {
-			if account.ProxyID != nil && account.Proxy != nil {
-				return account.requestProxyURL()
-			}
-			return ""
-		}(),
+		ProxyURL:        proxyURL,
 	})
 	if err != nil {
 		var agentDialErr *openAIWSDialError
@@ -578,17 +578,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		imageCounter.AddSSEData(message)
 
-		if eventType == "response.failed" {
-			if hit, code, msg := detectOpenAICyberPolicy(message); hit {
-				MarkOpsCyberPolicy(c, CyberPolicyMark{
-					Code:           code,
-					Message:        msg,
-					Body:           truncateString(string(message), 4096),
-					UpstreamStatus: http.StatusOK,
-					UpstreamInTok:  usage.InputTokens,
-					UpstreamOutTok: usage.OutputTokens,
-				})
+		if (eventType == "error" || eventType == "response.failed") && markOpenAICyberPolicyEvent(c, message, http.StatusOK, usage) {
+			lease.MarkBroken()
+			if reqStream {
+				bufferedStreamEvents = bufferedStreamEvents[:0]
+				emitStreamMessage(openAIWSCyberPolicyClientErrorFrame(), true)
+			} else {
+				c.Data(http.StatusBadRequest, "application/json", openAIWSCyberPolicyClientErrorFrame())
 			}
+			return nil, ErrOpenAIWSCyberPolicyBlocked
 		}
 
 		if eventType == "error" {

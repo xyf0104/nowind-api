@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   createReasoningEffortMappingRow,
   normalizeReasoningEffortForPlatform,
+  normalizeReasoningEffortSourceForPlatform,
   reasoningEffortMappingsToAPI,
   reasoningEffortMappingsToRows,
   reasoningEffortOptionsForPlatform,
+  reasoningEffortSourceOptionsForPlatform,
   supportsReasoningEffortPolicyPlatform,
   validateReasoningEffortMappings,
 } from "../groupsReasoningEffort";
@@ -26,6 +28,11 @@ describe("groupsReasoningEffort", () => {
           (option) => option.value,
         ),
       ).toEqual(expected);
+      expect(
+        reasoningEffortSourceOptionsForPlatform(platform).map(
+          (option) => option.value,
+        ),
+      ).toEqual(["none", ...expected]);
       expect(supportsReasoningEffortPolicyPlatform(platform)).toBe(true);
     }
     for (const platform of [
@@ -35,6 +42,7 @@ describe("groupsReasoningEffort", () => {
       "grok",
     ] as const) {
       expect(reasoningEffortOptionsForPlatform(platform)).toEqual([]);
+      expect(reasoningEffortSourceOptionsForPlatform(platform)).toEqual([]);
       expect(supportsReasoningEffortPolicyPlatform(platform)).toBe(false);
     }
   });
@@ -61,6 +69,27 @@ describe("groupsReasoningEffort", () => {
     );
     expect(normalizeReasoningEffortForPlatform("grok", "max")).toBe("");
     expect(normalizeReasoningEffortForPlatform("openai", "none")).toBe("");
+  });
+
+  it("allows none only as a mapping source", () => {
+    const rows = reasoningEffortMappingsToRows(
+      [{ from: " NONE ", to: "low" }],
+      "openai",
+    );
+    expect(reasoningEffortMappingsToAPI(rows)).toEqual([
+      { from: "none", to: "low" },
+    ]);
+    expect(validateReasoningEffortMappings(rows, "openai")).toEqual({});
+    expect(normalizeReasoningEffortSourceForPlatform("composite", " NONE ")).toBe("none");
+    expect(normalizeReasoningEffortForPlatform("openai", "none")).toBe("");
+
+    const invalidTarget = createReasoningEffortMappingRow({
+      from: "low",
+      to: "none",
+    });
+    expect(validateReasoningEffortMappings([invalidTarget], "openai")).toEqual({
+      [invalidTarget.id]: { to: "unsupportedTo" },
+    });
   });
 
   it("requires both sides of every mapping", () => {

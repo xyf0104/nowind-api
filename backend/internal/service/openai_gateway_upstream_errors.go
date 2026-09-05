@@ -524,7 +524,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	}
 
 	if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, body) {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -571,7 +571,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -611,7 +611,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	if shouldDisable {
 		kind = "failover"
 	}
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -780,7 +780,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	// Check custom error codes — if the account does not handle this status,
 	// return a generic error without exposing upstream details.
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -810,7 +810,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	if shouldDisable {
 		kind = "failover"
 	}
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,

@@ -1205,6 +1205,20 @@ func TestNormalizeCodexModel_RemovedModelsFallbackToSupportedTargets(t *testing.
 	}
 }
 
+func TestNormalizeCodexModel_GPT6AstraAliases(t *testing.T) {
+	for input, expected := range map[string]string{
+		"gpt-6":                           "gpt-6-astra",
+		"gpt-6-astra":                     "gpt-6-astra",
+		"openai/gpt-6-astra":              "gpt-6-astra",
+		"gpt-6-astra-2026-09-01":          "gpt-6-astra",
+		"provider/gpt-6-astra-2026-09-01": "gpt-6-astra",
+	} {
+		t.Run(input, func(t *testing.T) {
+			require.Equal(t, expected, normalizeCodexModel(input))
+		})
+	}
+}
+
 func TestApplyCodexOAuthTransform_PreservesBareSparkModel(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",

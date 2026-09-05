@@ -26,13 +26,16 @@ const (
 	UpstreamModelSyncErrorUnsupported UpstreamModelSyncErrorKind = "unsupported"
 	// UpstreamModelSyncErrorUpstream means the configured upstream failed or returned an unusable response.
 	UpstreamModelSyncErrorUpstream UpstreamModelSyncErrorKind = "upstream"
+	// UpstreamModelSyncErrorInternal means local persistence failed after a valid upstream response.
+	UpstreamModelSyncErrorInternal UpstreamModelSyncErrorKind = "internal"
 )
 
 // UpstreamModelSyncError keeps internal failure details wrapped while exposing a safe client message.
 type UpstreamModelSyncError struct {
-	Kind    UpstreamModelSyncErrorKind
-	Message string
-	Err     error
+	Kind       UpstreamModelSyncErrorKind
+	Message    string
+	StatusCode int
+	Err        error
 }
 
 func (e *UpstreamModelSyncError) Error() string {
@@ -72,48 +75,63 @@ func newUpstreamModelSyncUpstreamError(message string, err error) error {
 	return &UpstreamModelSyncError{Kind: UpstreamModelSyncErrorUpstream, Message: message, Err: err}
 }
 
+func newUpstreamModelSyncInternalError(message string, err error) error {
+	return &UpstreamModelSyncError{Kind: UpstreamModelSyncErrorInternal, Message: message, Err: err}
+}
+
 // FetchUpstreamSupportedModels fetches the live model list from the account's upstream API format.
 func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, account *Account) ([]string, error) {
+	models, _, err := s.fetchUpstreamModelList(ctx, account)
+	return models, err
+}
+
+// fetchUpstreamModelList returns both normalized IDs and the original successful
+// response body. Capability sync needs the body, while legacy callers continue
+// using FetchUpstreamSupportedModels and only observe model IDs.
+func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account *Account) ([]string, []byte, error) {
 	if s == nil {
-		return nil, newUpstreamModelSyncConfigError("Account test service is not configured", nil)
+		return nil, nil, newUpstreamModelSyncConfigError("Account test service is not configured", nil)
 	}
 	if account == nil {
-		return nil, newUpstreamModelSyncConfigError("Account is required", nil)
+		return nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
-		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
+		models, err := s.fetchAntigravityOAuthUpstreamModels(ctx, account)
+		return models, nil, err
 	}
 
 	if s.httpUpstream == nil {
-		return nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
+		return nil, nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
 
 	req, err := s.buildUpstreamModelsRequest(ctx, account)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	proxyURL := upstreamModelsProxyURL(account)
 	resp, err := s.doUpstreamModelsRequest(req, proxyURL, account)
 	if err != nil {
-		return nil, newUpstreamModelSyncUpstreamError("Failed to request upstream model list", err)
+		return nil, nil, newUpstreamModelSyncUpstreamError("Failed to request upstream model list", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamModelsBodyLimit+1))
 	if err != nil {
-		return nil, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", err)
+		return nil, nil, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", err)
 	}
 	if int64(len(body)) > upstreamModelsBodyLimit {
-		return nil, newUpstreamModelSyncUpstreamError("Upstream model list response is too large", fmt.Errorf("response exceeds %d bytes", upstreamModelsBodyLimit))
+		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream model list response is too large", fmt.Errorf("response exceeds %d bytes", upstreamModelsBodyLimit))
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, newUpstreamModelSyncUpstreamError(
-			fmt.Sprintf("Upstream model list request failed with HTTP %d", resp.StatusCode),
-			fmt.Errorf("upstream model list returned HTTP %d", resp.StatusCode),
-		)
+		return nil, nil, &UpstreamModelSyncError{
+			Kind:       UpstreamModelSyncErrorUpstream,
+			Message:    fmt.Sprintf("Upstream model list request failed with HTTP %d", resp.StatusCode),
+			StatusCode: resp.StatusCode,
+			Err:        fmt.Errorf("upstream model list returned HTTP %d", resp.StatusCode),
+		}
 	}
 
 	extractModels := extractUpstreamModelIDs
@@ -122,16 +140,16 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	}
 	models, err := extractModels(body)
 	if err != nil {
-		return nil, newUpstreamModelSyncUpstreamError("Upstream model list response was not valid JSON", err)
+		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream model list response was not valid JSON", err)
 	}
 	if len(models) == 0 {
-		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
 	}
 	if account.Platform == PlatformAntigravity {
 		models = publicAntigravityModelIDs(models)
 	}
 
-	return models, nil
+	return models, body, nil
 }
 
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {

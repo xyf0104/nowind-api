@@ -276,6 +276,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIDefaultsToCurrentTestModels(t *t
 	}
 	require.Equal(t, []string{
 		"gpt-5.6-sol",
+		"gpt-6-astra",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
 		"gpt-5.5",
@@ -324,6 +325,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	}
 	require.Equal(t, []string{
 		"gpt-5.6-sol",
+		"gpt-6-astra",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
 		"gpt-5.5",

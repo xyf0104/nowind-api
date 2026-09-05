@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -115,7 +116,7 @@ func (s *OpenAIGatewayService) shouldBridgeOpenAIWSHTTP(account *Account, payloa
 	return threshold > 0 && int64(payloadBytes) >= threshold
 }
 
-func prepareOpenAIWSHTTPBridgeBody(payload []byte) ([]byte, error) {
+func prepareOpenAIWSHTTPBridgeBody(account *Account, payload []byte) ([]byte, error) {
 	var body map[string]any
 	if err := json.Unmarshal(payload, &body); err != nil {
 		return nil, err
@@ -126,6 +127,7 @@ func prepareOpenAIWSHTTPBridgeBody(payload []byte) ([]byte, error) {
 	delete(body, "type")
 	delete(body, "generate")
 	delete(body, "previous_response_id")
+	deleteOpenAIResponsesNoneReasoningEffortFromObject(account, body)
 	body["stream"] = true
 	return json.Marshal(body)
 }
@@ -156,11 +158,11 @@ func (c *openAIWSToolCallReplayCollector) AddEvent(eventType string, message []b
 }
 
 func (c *openAIWSToolCallReplayCollector) Items() []json.RawMessage {
-	return cloneOpenAIWSRawMessages(c.items)
+	return slices.Clone(c.items)
 }
 
 func (c *openAIWSToolCallReplayCollector) AllItems() []json.RawMessage {
-	return cloneOpenAIWSRawMessages(c.allItems)
+	return slices.Clone(c.allItems)
 }
 
 func (c *openAIWSToolCallReplayCollector) addAllItem(item gjson.Result) {
@@ -268,7 +270,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 	responseModelObserver := &upstreamResponseModelObserver{}
 
-	body, err := prepareOpenAIWSHTTPBridgeBody(payload)
+	body, err := prepareOpenAIWSHTTPBridgeBody(account, payload)
 	if err != nil {
 		return nil, fmt.Errorf("prepare http bridge body: %w", err)
 	}
@@ -364,6 +366,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 
 	turnStart := time.Now()
+	freezeOpenAIHTTPUpstreamProxy(c, account, proxyURL)
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		if turn == 1 {
@@ -377,6 +380,21 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, openAIWSHTTPBridgeErrorBodyLimitBytes))
+		if markOpenAICyberPolicyEvent(c, respBody, resp.StatusCode, nil) {
+			if writeErr := writeClientMessage(openAIWSCyberPolicyClientErrorFrame()); writeErr != nil {
+				return nil, fmt.Errorf("%w: write client websocket cyber policy event: %v", ErrOpenAIWSCyberPolicyBlocked, writeErr)
+			}
+			return nil, ErrOpenAIWSCyberPolicyBlocked
+		}
+		if resp.StatusCode == http.StatusBadRequest && extractUpstreamErrorCode(respBody) == openAIWSFallbackReasonInvalidEncryptedContent {
+			s.markOpenAIWSInvalidEncryptedContentLineageFromPayload(
+				c,
+				body,
+				"ingress_ws_http_bridge_invalid_encrypted_lineage_mark",
+				account.ID,
+				turn,
+			)
+		}
 		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 		if upstreamMsg == "" {
 			upstreamMsg = http.StatusText(resp.StatusCode)
@@ -523,6 +541,12 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if openAIWSEventShouldParseUsage(eventType) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(upstreamMessage, &usage)
 		}
+		if (eventType == "error" || eventType == "response.failed") && markOpenAICyberPolicyEvent(c, upstreamMessage, http.StatusOK, &usage) {
+			if writeErr := writeClientMessage(openAIWSCyberPolicyClientErrorFrame()); writeErr != nil {
+				return resultWithUsage(), fmt.Errorf("%w: write client websocket cyber policy event: %v", ErrOpenAIWSCyberPolicyBlocked, writeErr)
+			}
+			return resultWithUsage(), ErrOpenAIWSCyberPolicyBlocked
+		}
 		imageCounter.AddSSEData(upstreamMessage)
 
 		if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && strings.Contains(trimmedData, mappedModel) {
@@ -547,6 +571,15 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				errCodeRaw, errTypeRaw, _ := parseOpenAIWSErrorEventFields(upstreamMessage)
 				statusCode = openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 				shouldFailover = s.shouldFailoverOpenAIUpstreamResponse(statusCode, errMessage, upstreamMessage)
+				if reason, _ := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMessage); reason == openAIWSFallbackReasonInvalidEncryptedContent {
+					s.markOpenAIWSInvalidEncryptedContentLineageFromPayload(
+						c,
+						body,
+						"ingress_ws_http_bridge_invalid_encrypted_lineage_mark",
+						account.ID,
+						turn,
+					)
+				}
 			}
 			requestScopedCapacity := isOpenAIUpstreamCapacityShedEvent(upstreamMessage)
 			willReturnFailover := !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests)
@@ -693,7 +726,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 }
 
 func (s *OpenAIGatewayService) resolveGrokWSCacheIdentity(ctx context.Context, c *gin.Context, account *Account, seedPayload, currentPayload []byte, originalModel string) (string, error) {
-	body, err := prepareOpenAIWSHTTPBridgeBody(seedPayload)
+	body, err := prepareOpenAIWSHTTPBridgeBody(account, seedPayload)
 	if err != nil {
 		return "", err
 	}

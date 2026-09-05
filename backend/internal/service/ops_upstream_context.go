@@ -2,10 +2,17 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
+	"net"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Gin context keys used by Ops error logger for capturing upstream error details.
@@ -15,6 +22,7 @@ const (
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
+	opsOpenAIProxySnapshotKey  = "ops_openai_proxy_snapshot"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
 	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
@@ -214,6 +222,17 @@ type OpsUpstreamErrorEvent struct {
 	AccountID   int64  `json:"account_id,omitempty"`
 	AccountName string `json:"account_name,omitempty"`
 
+	// Proxy attribution is an immutable, credential-free snapshot of the route
+	// used by this attempt. ProxyID is null for direct and unknown routes;
+	// ProxyName distinguishes direct/no_proxy from unknown. Never add proxy
+	// URLs, hosts, IPs, usernames, passwords, or full proxy configuration here.
+	ProxyID   *int64 `json:"proxy_id"`
+	ProxyName string `json:"proxy_name"`
+
+	// DroppedEarlierAttempts is set on the oldest retained event when queue
+	// bounds force earlier attempts of this request to be discarded.
+	DroppedEarlierAttempts int `json:"dropped_earlier_attempts,omitempty"`
+
 	// Outcome
 	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
 	UpstreamRequestID  string `json:"upstream_request_id,omitempty"`
@@ -237,6 +256,220 @@ type OpsUpstreamErrorEvent struct {
 	Detail  string `json:"detail,omitempty"`
 }
 
+type opsUpstreamProxyMode uint8
+
+const (
+	opsUpstreamProxyUnknown opsUpstreamProxyMode = iota
+	opsUpstreamProxyDirect
+	opsUpstreamProxyManaged
+
+	opsProxyNameDirect  = "direct/no_proxy"
+	opsProxyNameUnknown = "unknown"
+	opsProxyNameUnnamed = "proxy"
+)
+
+var (
+	opsProxyCredentialPattern = regexp.MustCompile(`(?i)(?:^|[\s,;])(?:user(?:name)?|pass(?:word)?|passwd|pwd|token|secret)(?:\s*[:=]\s*|\s+)\S`)
+	opsProxyIPv4Pattern       = regexp.MustCompile(`(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])`)
+)
+
+// opsUpstreamProxySnapshot contains only scalar attribution. It deliberately
+// cannot retain the mutable Account/Proxy or any proxy connection material.
+type opsUpstreamProxySnapshot struct {
+	mode      opsUpstreamProxyMode
+	proxyID   int64
+	proxyName string
+}
+
+func newOpsUpstreamProxySnapshot(account *Account, proxyURL string, directWhenEmpty bool) opsUpstreamProxySnapshot {
+	if strings.TrimSpace(proxyURL) == "" {
+		if directWhenEmpty {
+			return opsUpstreamProxySnapshot{mode: opsUpstreamProxyDirect, proxyName: opsProxyNameDirect}
+		}
+		return opsUpstreamProxySnapshot{mode: opsUpstreamProxyUnknown, proxyName: opsProxyNameUnknown}
+	}
+	if account == nil {
+		return opsUpstreamProxySnapshot{mode: opsUpstreamProxyUnknown, proxyName: opsProxyNameUnknown}
+	}
+	proxy := account.requestProxy()
+	if proxy == nil || proxy.ID <= 0 {
+		return opsUpstreamProxySnapshot{mode: opsUpstreamProxyUnknown, proxyName: opsProxyNameUnknown}
+	}
+	name := sanitizeManagedOpsProxyName(proxy.Name)
+	return opsUpstreamProxySnapshot{mode: opsUpstreamProxyManaged, proxyID: proxy.ID, proxyName: name}
+}
+
+// freezeOpenAIHTTPUpstreamProxy snapshots the exact route input immediately
+// before an OpenAI HTTP attempt. An empty proxy URL is explicitly direct.
+func freezeOpenAIHTTPUpstreamProxy(c *gin.Context, account *Account, proxyURL string) {
+	if account == nil || !account.IsOpenAI() {
+		setOpsUpstreamProxySnapshot(c, opsUpstreamProxySnapshot{mode: opsUpstreamProxyUnknown, proxyName: opsProxyNameUnknown})
+		return
+	}
+	setOpsUpstreamProxySnapshot(c, newOpsUpstreamProxySnapshot(account, proxyURL, true))
+}
+
+// freezeOpenAIWSUpstreamProxy snapshots the exact route input immediately
+// before an OpenAI WebSocket acquire/dial. Without a managed proxy the
+// websocket default client may honor environment proxies, so attribution is
+// unknown rather than direct.
+func freezeOpenAIWSUpstreamProxy(c *gin.Context, account *Account, proxyURL string) {
+	if account == nil || !account.IsOpenAI() {
+		setOpsUpstreamProxySnapshot(c, opsUpstreamProxySnapshot{mode: opsUpstreamProxyUnknown, proxyName: opsProxyNameUnknown})
+		return
+	}
+	setOpsUpstreamProxySnapshot(c, newOpsUpstreamProxySnapshot(account, proxyURL, false))
+}
+
+func setOpsUpstreamProxySnapshot(c *gin.Context, snapshot opsUpstreamProxySnapshot) {
+	if c == nil {
+		return
+	}
+	c.Set(opsOpenAIProxySnapshotKey, snapshot)
+}
+
+func currentOpsUpstreamProxySnapshot(c *gin.Context) opsUpstreamProxySnapshot {
+	if c != nil {
+		if value, ok := c.Get(opsOpenAIProxySnapshotKey); ok {
+			if snapshot, ok := value.(opsUpstreamProxySnapshot); ok {
+				return snapshot
+			}
+		}
+	}
+	return opsUpstreamProxySnapshot{mode: opsUpstreamProxyUnknown, proxyName: opsProxyNameUnknown}
+}
+
+func applyOpsUpstreamProxySnapshot(ev *OpsUpstreamErrorEvent, snapshot opsUpstreamProxySnapshot) {
+	if ev == nil {
+		return
+	}
+	ev.ProxyID = nil
+	switch snapshot.mode {
+	case opsUpstreamProxyDirect:
+		ev.ProxyName = opsProxyNameDirect
+	case opsUpstreamProxyManaged:
+		if snapshot.proxyID <= 0 {
+			ev.ProxyName = opsProxyNameUnknown
+			return
+		}
+		proxyID := snapshot.proxyID
+		ev.ProxyID = &proxyID
+		ev.ProxyName = sanitizeManagedOpsProxyName(snapshot.proxyName)
+	default:
+		ev.ProxyName = opsProxyNameUnknown
+	}
+}
+
+// appendOpenAIOpsUpstreamError binds an OpenAI error to the immutable route
+// snapshot frozen before that attempt was dispatched.
+func appendOpenAIOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
+	applyOpsUpstreamProxySnapshot(&ev, currentOpsUpstreamProxySnapshot(c))
+	appendOpsUpstreamError(c, ev)
+}
+
+func setUnknownOpsUpstreamProxy(ev *OpsUpstreamErrorEvent) {
+	if ev == nil {
+		return
+	}
+	ev.ProxyID = nil
+	ev.ProxyName = opsProxyNameUnknown
+}
+
+func normalizeOpsUpstreamProxyAttribution(ev *OpsUpstreamErrorEvent) {
+	if ev == nil {
+		return
+	}
+	if ev.ProxyID != nil && *ev.ProxyID <= 0 {
+		ev.ProxyID = nil
+	}
+	if ev.ProxyID != nil {
+		ev.ProxyName = sanitizeManagedOpsProxyName(ev.ProxyName)
+		return
+	}
+	if strings.TrimSpace(strings.ToValidUTF8(ev.ProxyName, "")) != opsProxyNameDirect {
+		setUnknownOpsUpstreamProxy(ev)
+		return
+	}
+	ev.ProxyName = opsProxyNameDirect
+}
+
+func sanitizeManagedOpsProxyName(raw string) string {
+	name := sanitizeOpsProxyName(raw)
+	if name == opsProxyNameDirect || name == opsProxyNameUnknown {
+		return opsProxyNameUnnamed
+	}
+	return name
+}
+
+// sanitizeOpsProxyName keeps only an operator-friendly label. Any value that
+// resembles a proxy locator or credential is intentionally reduced to a
+// generic label; ProxyID remains the durable route attribution.
+func sanitizeOpsProxyName(raw string) string {
+	name := strings.TrimSpace(strings.ToValidUTF8(raw, ""))
+	if name == "" {
+		return opsProxyNameUnnamed
+	}
+	if strings.Contains(name, "://") || strings.ContainsAny(name, "@?#") ||
+		opsProxyCredentialPattern.MatchString(name) || containsOpsProxyNetworkLocator(name) {
+		return opsProxyNameUnnamed
+	}
+	return truncateString(name, 128)
+}
+
+func containsOpsProxyNetworkLocator(name string) bool {
+	for _, match := range opsProxyIPv4Pattern.FindAllStringSubmatch(name, -1) {
+		if len(match) > 1 && net.ParseIP(match[1]) != nil {
+			return true
+		}
+	}
+	for _, token := range strings.Fields(name) {
+		token = strings.Trim(token, `"'(),;<>`)
+		if token == "" {
+			continue
+		}
+		if host, port, err := net.SplitHostPort(token); err == nil && strings.TrimSpace(host) != "" && port != "" {
+			return true
+		}
+		if separator := strings.IndexAny(token, `/\\`); separator > 0 {
+			locator := strings.Trim(token[:separator], "[]{}")
+			if net.ParseIP(locator) != nil || looksLikeOpsProxyHostname(locator) {
+				return true
+			}
+		}
+		token = strings.Trim(token, "[]{}")
+		if net.ParseIP(token) != nil || looksLikeOpsProxyHostname(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeOpsProxyHostname(value string) bool {
+	value = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+	if value == "localhost" {
+		return true
+	}
+	labels := strings.Split(value, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	lastHasLetter := false
+	for i, label := range labels {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, ch := range label {
+			if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '-' {
+				return false
+			}
+			if i == len(labels)-1 && ch >= 'a' && ch <= 'z' {
+				lastHasLetter = true
+			}
+		}
+	}
+	return lastHasLetter
+}
+
 func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if c == nil {
 		return
@@ -245,13 +478,14 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
+	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
 	ev.Stage = strings.TrimSpace(ev.Stage)
 	ev.Scope = strings.TrimSpace(ev.Scope)
 	ev.Reason = strings.TrimSpace(ev.Reason)
-	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
+	ev.UpstreamURL = safeUpstreamURL(ev.UpstreamURL)
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
 	if ev.Message != "" {
@@ -267,9 +501,49 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 
 	evCopy := ev
 	existing = append(existing, &evCopy)
+	existing = boundOpsUpstreamErrorsInContext(existing)
 	c.Set(OpsUpstreamErrorsKey, existing)
 
 	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
+}
+
+func boundOpsUpstreamErrorsInContext(events []*OpsUpstreamErrorEvent) []*OpsUpstreamErrorEvent {
+	validCount := 0
+	dropped := 0
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
+		validCount++
+		if ev.DroppedEarlierAttempts > 0 {
+			dropped += ev.DroppedEarlierAttempts
+		}
+	}
+	if validCount == 0 {
+		return nil
+	}
+	keepCount := validCount
+	if keepCount > opsUpstreamErrorsMaxEvents {
+		dropped += keepCount - opsUpstreamErrorsMaxEvents
+		keepCount = opsUpstreamErrorsMaxEvents
+	}
+	skip := validCount - keepCount
+	bounded := make([]*OpsUpstreamErrorEvent, 0, keepCount)
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
+		ev.DroppedEarlierAttempts = 0
+		if skip > 0 {
+			skip--
+			continue
+		}
+		bounded = append(bounded, ev)
+	}
+	if dropped > 0 {
+		bounded[0].DroppedEarlierAttempts = dropped
+	}
+	return bounded
 }
 
 // checkSkipMonitoringForUpstreamEvent checks whether the upstream error event
@@ -323,6 +597,55 @@ func ParseOpsUpstreamErrors(raw string) ([]*OpsUpstreamErrorEvent, error) {
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return nil, err
 	}
+	for _, ev := range out {
+		normalizeOpsUpstreamProxyAttribution(ev)
+	}
+	return out, nil
+}
+
+// normalizeOpsUpstreamErrorsJSON materializes missing proxy attribution on
+// stored JSON while preserving unknown legacy keys and existing key order.
+func normalizeOpsUpstreamErrorsJSON(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw, nil
+	}
+	if !gjson.Valid(raw) {
+		return "", errors.New("upstream_errors is not valid JSON")
+	}
+	parsed := gjson.Parse(raw)
+	if !parsed.IsArray() {
+		return "", errors.New("upstream_errors is not a JSON array")
+	}
+	out := raw
+	for i, ev := range parsed.Array() {
+		if !ev.IsObject() {
+			continue
+		}
+		prefix := strconv.Itoa(i) + "."
+		proxyID := ev.Get("proxy_id")
+		proxyName := strings.TrimSpace(strings.ToValidUTF8(ev.Get("proxy_name").String(), ""))
+		hasValidID := proxyID.Exists() && proxyID.Type == gjson.Number && proxyID.Int() > 0
+		var err error
+		switch {
+		case hasValidID:
+			safeProxyName := sanitizeManagedOpsProxyName(proxyName)
+			if proxyName != safeProxyName {
+				out, err = sjson.Set(out, prefix+"proxy_name", safeProxyName)
+			}
+		case proxyName == opsProxyNameDirect:
+			if !proxyID.Exists() || proxyID.Type != gjson.Null {
+				out, err = sjson.Set(out, prefix+"proxy_id", nil)
+			}
+		default:
+			if out, err = sjson.Set(out, prefix+"proxy_id", nil); err == nil {
+				out, err = sjson.Set(out, prefix+"proxy_name", opsProxyNameUnknown)
+			}
+		}
+		if err != nil {
+			return "", err
+		}
+	}
 	return out, nil
 }
 
@@ -333,11 +656,17 @@ func safeUpstreamURL(rawURL string) string {
 	if rawURL == "" {
 		return ""
 	}
-	if idx := strings.IndexByte(rawURL, '?'); idx >= 0 {
-		rawURL = rawURL[:idx]
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed == nil || parsed.Opaque != "" || parsed.Host == "" {
+		return ""
 	}
-	if idx := strings.IndexByte(rawURL, '#'); idx >= 0 {
-		rawURL = rawURL[:idx]
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return ""
 	}
-	return rawURL
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
 }

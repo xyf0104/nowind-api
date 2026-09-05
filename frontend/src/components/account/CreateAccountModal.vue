@@ -5197,6 +5197,15 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
     const account = await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
     if (
       payload.type === 'apikey' &&
+      ['openai', 'kimi', 'zhipu', 'deepseek'].includes(payload.platform) &&
+      Number.isInteger(account.id) &&
+      account.id > 0
+    ) {
+      // Persist verified model capabilities without making account creation wait on the upstream.
+      void adminAPI.accounts.syncUpstreamModels(account.id).catch(() => undefined)
+    }
+    if (
+      payload.type === 'apikey' &&
       payload.upstream_billing_probe_enabled === true
     ) {
       try {

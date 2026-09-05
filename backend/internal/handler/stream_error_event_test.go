@@ -261,6 +261,30 @@ func TestMapResponsesErrorCode(t *testing.T) {
 		{"custom_thing", "custom_thing"},
 	}
 	for _, tc := range cases {
-		assert.Equal(t, tc.out, mapResponsesErrorCode(tc.in), "in=%q", tc.in)
+		assert.Equal(t, tc.out, mapResponsesErrorCode(tc.in, ""), "in=%q", tc.in)
 	}
+	assert.Equal(t, gatewayQueueFullCode, mapResponsesErrorCode("rate_limit_error", gatewayQueueFullCode))
+}
+
+func TestOpenAIAdmissionErrorResponsesIncludesGatewayCode(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointResponses)
+	h := &OpenAIGatewayHandler{}
+	h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error",
+		gatewayConcurrencyLimitCode, "Concurrency limit exceeded for account, please retry later", true, false)
+
+	_, errObj := parseResponsesFailedSSE(t, w.Body.String())
+	assert.Equal(t, gatewayConcurrencyLimitCode, errObj["code"])
+}
+
+func TestGatewayAdmissionErrorSynchronousIncludesGatewayCode(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointMessages)
+	h := &GatewayHandler{}
+	h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error",
+		gatewayQueueFullCode, "Too many pending requests, please retry later", false)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	errorObject, ok := body["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, gatewayQueueFullCode, errorObject["code"])
 }

@@ -1,11 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -1007,18 +1011,137 @@ func TestSetOpenAIWSPayloadInputSequence(t *testing.T) {
 	})
 }
 
-func TestCloneOpenAIWSRawMessages(t *testing.T) {
+func TestCombineOpenAIWSReplayItems(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil_slice", func(t *testing.T) {
-		cloned := cloneOpenAIWSRawMessages(nil)
-		require.Nil(t, cloned)
+	t.Run("empty_delta_preserves_history", func(t *testing.T) {
+		require.Nil(t, combineOpenAIWSReplayItems(nil, nil))
+		history := []json.RawMessage{json.RawMessage(`{"type":"input_text","text":"one"}`)}
+		require.Equal(t, history, combineOpenAIWSReplayItems(history, nil))
 	})
 
-	t.Run("empty_slice", func(t *testing.T) {
-		items := make([]json.RawMessage, 0)
-		cloned := cloneOpenAIWSRawMessages(items)
-		require.NotNil(t, cloned)
-		require.Len(t, cloned, 0)
+	t.Run("independent_header_shares_immutable_bodies", func(t *testing.T) {
+		history := make([]json.RawMessage, 1, 4)
+		history[0] = json.RawMessage(`{"type":"input_text","text":"one"}`)
+		delta := []json.RawMessage{json.RawMessage(`{"type":"input_text","text":"two"}`)}
+
+		combined := combineOpenAIWSReplayItems(history, delta)
+		require.Len(t, combined, 2)
+		require.NotSame(t, &history[0], &combined[0], "owners must not share the slice backing array")
+		require.Same(t, &history[0][0], &combined[0][0], "history body must not be copied")
+		require.Same(t, &delta[0][0], &combined[1][0], "delta body must not be copied")
+
+		originalHistory := string(history[0])
+		combined[0] = json.RawMessage(`{"type":"input_text","text":"replacement"}`)
+		require.Equal(t, originalHistory, string(history[0]), "replacing one owner's element must not pollute another owner")
 	})
+}
+
+func TestOpenAIWSReplaySequenceSharesBodiesWithoutChangingOrder(t *testing.T) {
+	t.Parallel()
+
+	firstPayload := []byte(`{"type":"response.create","input":[{"role":"user","content":"first"}]}`)
+	first, firstExists, err := buildOpenAIWSReplayInputSequence(nil, false, firstPayload, false)
+	require.NoError(t, err)
+	require.True(t, firstExists)
+	require.Len(t, first, 1)
+	firstOffset := bytes.Index(firstPayload, first[0])
+	require.GreaterOrEqual(t, firstOffset, 0)
+	require.Same(t, &firstPayload[firstOffset], &first[0][0])
+
+	toolCall := json.RawMessage(`{"type":"function_call","id":"item_1","call_id":"call_1","name":"exec","arguments":"{}"}`)
+	history := combineOpenAIWSReplayItems(first, []json.RawMessage{toolCall})
+	secondPayload := []byte(`{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"},{"role":"user","content":"second"}]}`)
+	replayed, replayedExists, err := buildOpenAIWSReplayInputSequence(history, true, secondPayload, true)
+	require.NoError(t, err)
+	require.True(t, replayedExists)
+	require.Len(t, replayed, 4)
+	require.Equal(t, []string{"user", "function_call", "function_call_output", "user"}, []string{
+		gjson.GetBytes(replayed[0], "role").String(),
+		gjson.GetBytes(replayed[1], "type").String(),
+		gjson.GetBytes(replayed[2], "type").String(),
+		gjson.GetBytes(replayed[3], "role").String(),
+	})
+	require.Same(t, &history[0][0], &replayed[0][0])
+	require.Same(t, &history[1][0], &replayed[1][0])
+	secondOffset := bytes.Index(secondPayload, replayed[2])
+	require.GreaterOrEqual(t, secondOffset, 0)
+	require.Same(t, &secondPayload[secondOffset], &replayed[2][0])
+
+	encoded, err := setOpenAIWSPayloadInputSequence([]byte(`{"type":"response.create"}`), replayed, true)
+	require.NoError(t, err)
+	require.Equal(t, "first", gjson.GetBytes(encoded, "input.0.content").String())
+	require.Equal(t, "call_1", gjson.GetBytes(encoded, "input.1.call_id").String())
+	require.Equal(t, "ok", gjson.GetBytes(encoded, "input.2.output").String())
+	require.Equal(t, "second", gjson.GetBytes(encoded, "input.3.content").String())
+}
+
+func TestOpenAIWSReplaySequencesDoNotPolluteEachOther(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"input":[{"role":"user","content":"shared"}]}`)
+	current, exists, err := openAIWSExtractNormalizedInputSequence(payload)
+	require.NoError(t, err)
+	require.True(t, exists)
+
+	normal, normalExists := buildOpenAIWSReplayInputSequenceFromItems(nil, false, current, exists, false)
+	failover, failoverExists := buildOpenAIWSReplayInputSequenceFromItems(nil, false, current, exists, false)
+	require.True(t, normalExists)
+	require.True(t, failoverExists)
+	require.Same(t, &normal[0][0], &failover[0][0], "both paths should share immutable bodies")
+
+	normal = combineOpenAIWSReplayItems(normal, []json.RawMessage{json.RawMessage(`{"role":"assistant","content":"delta"}`)})
+	require.Len(t, normal, 2)
+	require.Len(t, failover, 1, "appending normal replay must not change failover's slice header")
+	normal[0] = json.RawMessage(`{"role":"user","content":"replacement"}`)
+	require.Equal(t, "shared", gjson.GetBytes(failover[0], "content").String())
+}
+
+func buildOpenAIWSReplayAllocationPayload(turn, itemBytes int) []byte {
+	var builder strings.Builder
+	_, _ = builder.WriteString(`{"type":"response.create","model":"gpt-5.5","stream":true,"input":[`)
+	filler := strings.Repeat("x", itemBytes)
+	for index := 1; index <= turn; index++ {
+		if index > 1 {
+			_, _ = builder.WriteString(",")
+		}
+		_, _ = fmt.Fprintf(&builder, `{"type":"input_text","text":"turn-%d-%s"}`, index, filler)
+	}
+	_, _ = builder.WriteString(`]}`)
+	return []byte(builder.String())
+}
+
+func TestOpenAIWSReplayStateBuildAllocationBounded(t *testing.T) {
+	const (
+		turns     = 128
+		itemBytes = 10 * 1024
+	)
+
+	payloads := make([][]byte, 0, turns)
+	for turn := 1; turn <= turns; turn++ {
+		payloads = append(payloads, buildOpenAIWSReplayAllocationPayload(turn, itemBytes))
+	}
+
+	var history []json.RawMessage
+	historyExists := false
+	delta := []json.RawMessage{json.RawMessage(`{"type":"function_call","id":"item_1","call_id":"call_1","name":"exec","arguments":"{}"}`)}
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for turn := 1; turn <= turns; turn++ {
+		items, exists, err := buildOpenAIWSReplayInputSequence(history, historyExists, payloads[turn-1], turn > 1)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, turn)
+		history = combineOpenAIWSReplayItems(items, delta)
+		historyExists = true
+		history = history[:len(history)-1]
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+
+	const maxAllocatedBytes = 32 * 1024 * 1024
+	allocated := after.TotalAlloc - before.TotalAlloc
+	require.Lessf(t, allocated, uint64(maxAllocatedBytes), "replay state allocated %d bytes; immutable body sharing likely regressed", allocated)
 }

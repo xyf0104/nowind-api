@@ -218,11 +218,13 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	}
 	account.ApplyHeaderOverrides(upstreamReq.Header)
+	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header)
 
 	proxyURL := ""
 	if account.Proxy != nil {
 		proxyURL = account.requestProxyURL()
 	}
+	freezeOpenAIHTTPUpstreamProxy(c, account, proxyURL)
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)

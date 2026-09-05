@@ -185,9 +185,9 @@ func (c *codexModelsManifestCache) get(key string, now time.Time) (*CodexModelsM
 		return nil, codexModelsManifestCacheMiss
 	}
 	if now.Before(entry.expiresAt) {
-		return entry.manifest, codexModelsManifestCacheFresh
+		return cloneCodexModelsManifest(entry.manifest), codexModelsManifestCacheFresh
 	}
-	return entry.manifest, codexModelsManifestCacheStale
+	return cloneCodexModelsManifest(entry.manifest), codexModelsManifestCacheStale
 }
 
 func (c *codexModelsManifestCache) set(key string, manifest *CodexModelsManifest, now time.Time) {
@@ -218,11 +218,20 @@ func (c *codexModelsManifestCache) set(key string, manifest *CodexModelsManifest
 	}
 	c.nextOrder++
 	c.entries[key] = codexModelsManifestCacheEntry{
-		manifest:   manifest,
+		manifest:   cloneCodexModelsManifest(manifest),
 		order:      c.nextOrder,
 		expiresAt:  now.Add(codexModelsManifestCacheTTL),
 		staleUntil: now.Add(codexModelsManifestCacheStaleTTL),
 	}
+}
+
+func cloneCodexModelsManifest(manifest *CodexModelsManifest) *CodexModelsManifest {
+	if manifest == nil {
+		return nil
+	}
+	cloned := *manifest
+	cloned.Body = append([]byte(nil), manifest.Body...)
+	return &cloned
 }
 
 // FetchCodexModelsManifest fetches the live Codex models manifest from either
@@ -528,7 +537,7 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 		}
 	}
 	if request.useAPIKeyUpstream {
-		body, err = adjustAPIKeyCodexModelsManifest(body)
+		body, err = adjustAPIKeyCodexModelsManifest(body, request.credentialAccount)
 		if err != nil {
 			return nil, &codexModelsManifestUpstreamError{
 				err: infraerrors.Newf(
@@ -558,6 +567,7 @@ func codexModelsManifestBodyETag(body []byte) string {
 }
 
 var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
+	"gpt-6-astra":   {},
 	"gpt-5.6-sol":   {},
 	"gpt-5.6-terra": {},
 	"gpt-5.6-luna":  {},
@@ -567,7 +577,7 @@ var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
 // Lite for custom API key providers. Those clients do not install web.run in
 // Lite mode, so the affected model manifests must advertise the full Responses
 // path. Return the original body when no targeted true value is present.
-func adjustAPIKeyCodexModelsManifest(body []byte) ([]byte, error) {
+func adjustAPIKeyCodexModelsManifest(body []byte, account *Account) ([]byte, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("decode JSON object: %w", err)
@@ -587,7 +597,16 @@ func adjustAPIKeyCodexModelsManifest(body []byte) ([]byte, error) {
 		if err := json.Unmarshal(model["slug"], &slug); err != nil {
 			continue
 		}
-		if _, targeted := apiKeyCodexModelsWithoutResponsesLite[slug]; !targeted {
+		target := slug
+		if account != nil {
+			target = account.GetMappedModel(slug)
+		}
+		if normalized := normalizeKnownOpenAICodexModel(target); normalized != "" {
+			target = normalized
+		} else {
+			target = strings.TrimSpace(target)
+		}
+		if _, targeted := apiKeyCodexModelsWithoutResponsesLite[target]; !targeted {
 			continue
 		}
 		var useResponsesLite bool
@@ -616,6 +635,22 @@ func adjustAPIKeyCodexModelsManifest(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encode JSON object: %w", err)
 	}
 	return adjusted, nil
+}
+
+// FinalizeAPIKeyCodexModelsManifestForClient computes the ETag from the final
+// request-specific body, after group capability completion, and only then
+// evaluates the client's conditional request. OAuth manifests keep their
+// upstream ETag handling in FetchCodexModelsManifest.
+func (s *OpenAIGatewayService) FinalizeAPIKeyCodexModelsManifestForClient(manifest *CodexModelsManifest, account *Account, ifNoneMatch string) {
+	if s == nil || manifest == nil || manifest.NotModified || len(manifest.Body) == 0 ||
+		account == nil || !account.IsOpenAIApiKey() {
+		return
+	}
+	manifest.ETag = codexModelsManifestBodyETag(manifest.Body)
+	if codexModelsManifestETagMatches(ifNoneMatch, manifest.ETag) {
+		manifest.Body = nil
+		manifest.NotModified = true
+	}
 }
 
 // convertOpenAIModelListToCodexManifest rewrites a standard OpenAI
@@ -711,7 +746,7 @@ func codexModelsManifestForClient(manifest *CodexModelsManifest, ifNoneMatch str
 	if codexModelsManifestETagMatches(ifNoneMatch, manifest.ETag) {
 		return &CodexModelsManifest{ETag: manifest.ETag, NotModified: true}
 	}
-	return manifest
+	return cloneCodexModelsManifest(manifest)
 }
 
 func codexModelsManifestETagMatches(ifNoneMatch, etag string) bool {

@@ -46,7 +46,7 @@
               <Select
                 :id="`${idPrefix}-${row.id}-from`"
                 :model-value="row.from"
-                :options="reasoningEffortOptions"
+                :options="reasoningEffortSourceOptions"
                 :placeholder="t('admin.groups.form.reasoningEffortFromPlaceholder')"
                 :error="showValidation && !!validationErrors[row.id]?.from"
                 :aria-label="t('admin.groups.form.reasoningEffortFrom')"
@@ -120,6 +120,7 @@ import Select from "@/components/common/Select.vue";
 import {
   createReasoningEffortMappingRow,
   reasoningEffortOptionsForPlatform,
+  reasoningEffortSourceOptionsForPlatform,
   validateReasoningEffortMappings,
   type ReasoningEffortMappingErrorCode,
   type ReasoningEffortMappingRow,
@@ -141,6 +142,9 @@ const { t } = useI18n();
 const showValidation = ref(false);
 const reasoningEffortOptions = computed(() =>
   reasoningEffortOptionsForPlatform(props.platform),
+);
+const reasoningEffortSourceOptions = computed(() =>
+  reasoningEffortSourceOptionsForPlatform(props.platform),
 );
 const validationErrors = computed(() =>
   validateReasoningEffortMappings(props.mappings, props.platform),

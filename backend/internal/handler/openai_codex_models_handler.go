@@ -39,6 +39,7 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	switchCount := 0
 	var lastUpstreamErr error
+	clientETag := c.GetHeader("If-None-Match")
 
 	for {
 		account, err := h.gatewayService.SelectAccountForModelWithExclusions(c.Request.Context(), apiKey.GroupID, "", "", failedAccountIDs)
@@ -56,7 +57,15 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		// 让 ops 错误日志携带实际选中的上游账号，便于定位失效账号（#4544）。
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		manifest, err := h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), c.GetHeader("If-None-Match"))
+		sourceETag := clientETag
+		if account.IsOpenAIApiKey() {
+			// API key manifests are shared source documents. The client ETag
+			// identifies the final group-specific representation, so it must not
+			// short-circuit the source fetch before request-level capabilities are
+			// applied. OAuth manifests retain their upstream ETag semantics.
+			sourceETag = ""
+		}
+		manifest, err := h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), sourceETag)
 		if err != nil {
 			if c.Request.Context().Err() != nil {
 				return
@@ -73,6 +82,13 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		if c.Request.Context().Err() != nil {
 			return
 		}
+		if err := h.gatewayService.ApplyCodexBridgedRouteSearchCapability(
+			c.Request.Context(), manifest, account, apiKey.Group.ID, "",
+		); err != nil {
+			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to complete Codex model capabilities")
+			return
+		}
+		h.gatewayService.FinalizeAPIKeyCodexModelsManifestForClient(manifest, account, clientETag)
 
 		if manifest.ETag != "" {
 			c.Header("ETag", manifest.ETag)

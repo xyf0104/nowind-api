@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,63 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+func TestTLSFingerprintClientLogsDoNotExposeProxyConnectionMaterial(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	upstream := NewHTTPUpstream(nil)
+	svc, ok := upstream.(*httpUpstreamService)
+	require.True(t, ok)
+	const proxyURL = "socks5://proxy-user:proxy-password@198.51.100.22:1080"
+	profile := &tlsfingerprint.Profile{Name: "log-redaction-test"}
+
+	entry, err := svc.getClientEntryWithTLS(proxyURL, 991, 1, profile, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(t, err)
+	_, err = svc.getClientEntryWithTLS(proxyURL, 991, 1, profile, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(t, err)
+	entry.poolKey = "force-stale-for-test"
+	_, err = svc.getClientEntryWithTLS(proxyURL, 991, 1, profile, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodGet, "https://upstream.example/v1/responses", nil)
+	require.NoError(t, err)
+	_, err = svc.DoWithTLS(req, "socks5://proxy-user:proxy-password@%zz", 991, 1, profile)
+	require.Error(t, err)
+	svc.cfg = &config.Config{}
+	svc.cfg.Gateway.OpenAIHTTP2.Enabled = true
+	svc.cfg.Gateway.OpenAIHTTP2.AllowProxyFallbackToHTTP1 = true
+	svc.cfg.Gateway.OpenAIHTTP2.FallbackErrorThreshold = 1
+	svc.cfg.Gateway.OpenAIHTTP2.FallbackWindowSeconds = 60
+	svc.cfg.Gateway.OpenAIHTTP2.FallbackTTLSeconds = 60
+	svc.recordOpenAIHTTP2Failure(
+		service.HTTPUpstreamProfileOpenAI,
+		upstreamProtocolModeOpenAIH2,
+		"http://proxy-user:proxy-password@198.51.100.22:8080",
+		errors.New("protocol error"),
+	)
+
+	output := logs.String()
+	require.Contains(t, output, "tls_fingerprint_creating_new_client")
+	require.Contains(t, output, "tls_fingerprint_reusing_client")
+	require.Contains(t, output, "tls_fingerprint_evicting_stale_client")
+	require.Contains(t, output, "openai_http2_proxy_fallback_activated")
+	require.Contains(t, output, "proxy_mode=socks5")
+	require.Contains(t, output, "proxy_mode=http")
+	for _, sensitive := range []string{
+		proxyURL,
+		"proxy-user",
+		"proxy-password",
+		"198.51.100.22",
+		"cache_key",
+		"proxy_key",
+		"account:991|proxy:",
+	} {
+		require.NotContains(t, output, sensitive)
+	}
+}
 
 func TestHTTPUpstreamDoCanDisableRedirectsPerRequest(t *testing.T) {
 	var redirectedCalls atomic.Int64

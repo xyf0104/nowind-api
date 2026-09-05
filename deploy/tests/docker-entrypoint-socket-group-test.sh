@@ -13,16 +13,26 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ ! -S /var/run/docker.sock ]; then
-    echo "docker-entrypoint socket-group test requires /var/run/docker.sock" >&2
+if ! docker info >/dev/null 2>&1; then
+    echo "docker-entrypoint socket-group test requires a reachable Docker daemon" >&2
     exit 1
+fi
+
+# Bind sources are resolved by the daemon, not the Docker CLI. Desktop and
+# Colima expose a user-space client socket on macOS while the daemon still sees
+# its socket at /var/run/docker.sock inside the Linux VM.
+docker_socket="${XIASS_DOCKER_SOCKET_SOURCE:-/var/run/docker.sock}"
+if [ -z "${XIASS_DOCKER_SOCKET_SOURCE:-}" ] && [ "$(uname -s)" = "Linux" ]; then
+    case "${DOCKER_HOST:-}" in
+        unix://*) docker_socket="${DOCKER_HOST#unix://}" ;;
+    esac
 fi
 
 # Exercise the repository entrypoint against the host's real Docker socket.
 # The published image supplies the same Alpine runtime and su-exec binary
 # without depending on the image currently being built by the release job.
 docker run --rm \
-    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$docker_socket:/var/run/docker.sock" \
     -v "$ENTRYPOINT:/tmp/source-entrypoint.sh:ro" \
     --entrypoint /bin/sh \
     "$RUNTIME_IMAGE" \

@@ -82,7 +82,7 @@ func classifyOpenAITransportError(err error) openAITransportErrorClass {
 func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Context, c *gin.Context, account *Account, err error, passthrough bool) error {
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	setOpsUpstreamError(c, 0, safeErr, "")
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpenAIOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,

@@ -30,8 +30,99 @@ func TestResolveOpenAIWSClientFirstMessageTimeout(t *testing.T) {
 	require.Equal(t, 120*time.Second, ResolveOpenAIWSClientFirstMessageTimeout(cfg))
 }
 
+func TestProxyOpenAIWSHTTPBridgeTurnCyberPolicyShortCircuitsBeforeSideEffects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantStatus int
+		wantInput  int
+		wantOutput int
+		wantResult bool
+		wantError  bool
+	}{
+		{
+			name:       "http_429_body",
+			statusCode: http.StatusTooManyRequests,
+			body:       `{"error":{"type":"rate_limit_error","code":"cyber_policy","message":"blocked raw HTTP payload"}}`,
+			wantStatus: http.StatusTooManyRequests,
+			wantError:  true,
+		},
+		{
+			name:       "sse_error_event",
+			statusCode: http.StatusOK,
+			body:       "data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"cyber_policy\",\"message\":\"blocked raw SSE payload\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}\n\n",
+			wantStatus: http.StatusOK,
+			wantInput:  5,
+			wantOutput: 1,
+			wantResult: true,
+			wantError:  true,
+		},
+		{
+			name:       "sse_response_failed_event",
+			statusCode: http.StatusOK,
+			body:       "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_cyber\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"cyber_policy\",\"message\":\"blocked raw failed payload\"},\"usage\":{\"input_tokens\":9,\"output_tokens\":2}}}\n\n",
+			wantStatus: http.StatusOK,
+			wantInput:  9,
+			wantOutput: 2,
+			wantResult: true,
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rateLimitRepo := &openAIWSRateLimitSignalRepo{}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: tt.statusCode,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}}
+			svc := &OpenAIGatewayService{
+				cfg:              &config.Config{},
+				httpUpstream:     upstream,
+				rateLimitService: &RateLimitService{accountRepo: rateLimitRepo},
+			}
+			account := &Account{ID: 112, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Concurrency: 1}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi"}`)
+			var writes [][]byte
+
+			result, err := svc.proxyOpenAIWSHTTPBridgeTurn(
+				context.Background(), c, account, "sk-test", payload, len(payload),
+				"gpt-5", "", "", "", "", 1, func(message []byte) error {
+					writes = append(writes, append([]byte(nil), message...))
+					return nil
+				},
+			)
+
+			require.Equal(t, tt.wantResult, result != nil)
+			require.Equal(t, tt.wantError, err != nil)
+			require.ErrorIs(t, err, ErrOpenAIWSCyberPolicyBlocked)
+			var failoverErr *UpstreamFailoverError
+			require.False(t, errors.As(err, &failoverErr))
+			require.Len(t, writes, 1)
+			require.Equal(t, OpenAIWSCyberPolicyClientMessage, gjson.GetBytes(writes[0], "error.message").String())
+			require.NotContains(t, string(writes[0]), "blocked raw")
+			mark := GetOpsCyberPolicy(c)
+			require.NotNil(t, mark)
+			require.Equal(t, tt.wantStatus, mark.UpstreamStatus)
+			require.Equal(t, tt.wantInput, mark.UpstreamInTok)
+			require.Equal(t, tt.wantOutput, mark.UpstreamOutTok)
+			require.Empty(t, rateLimitRepo.rateLimitCalls)
+			require.Empty(t, rateLimitRepo.updateExtra)
+			require.Equal(t, StatusActive, account.Status)
+			require.Nil(t, account.RateLimitResetAt)
+			require.Nil(t, account.TempUnschedulableUntil)
+		})
+	}
+}
+
 func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
-	body, err := prepareOpenAIWSHTTPBridgeBody([]byte(`{"type":"response.create","generate":true,"model":"gpt-5","stream":false,"previous_response_id":"resp_prev","input":"hi"}`))
+	body, err := prepareOpenAIWSHTTPBridgeBody(&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, []byte(`{"type":"response.create","generate":true,"model":"gpt-5","stream":false,"previous_response_id":"resp_prev","input":"hi"}`))
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(body, "type").Exists())
 	require.False(t, gjson.GetBytes(body, "generate").Exists())
@@ -39,6 +130,79 @@ func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
 	require.Equal(t, "gpt-5", gjson.GetBytes(body, "model").String())
 	require.True(t, gjson.GetBytes(body, "stream").Bool())
 	require.Equal(t, "hi", gjson.GetBytes(body, "input").String())
+}
+
+func TestPrepareOpenAIWSHTTPBridgeBodyFiltersNoneByAccount(t *testing.T) {
+	tests := []struct {
+		name          string
+		account       *Account
+		wantNested    bool
+		wantFlat      bool
+		wantReasoning bool
+	}{
+		{
+			name:    "third-party compatible API key strips none",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://compat.example/v1"}},
+		},
+		{
+			name:          "official OpenAI API key preserves none",
+			account:       &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+			wantNested:    true,
+			wantFlat:      true,
+			wantReasoning: true,
+		},
+		{
+			name:          "OpenAI OAuth preserves none",
+			account:       &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://compat.example/v1"}},
+			wantNested:    true,
+			wantFlat:      true,
+			wantReasoning: true,
+		},
+		{
+			name: "explicit passthrough preserves none",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://compat.example/v1"},
+				Extra:       map[string]any{"openai_passthrough": true},
+			},
+			wantNested:    true,
+			wantFlat:      true,
+			wantReasoning: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := prepareOpenAIWSHTTPBridgeBody(tt.account, []byte(`{"type":"response.create","reasoning":{"effort":"none"},"reasoning_effort":"NONE"}`))
+			require.NoError(t, err)
+			require.Equal(t, tt.wantNested, gjson.GetBytes(body, "reasoning.effort").Exists())
+			require.Equal(t, tt.wantFlat, gjson.GetBytes(body, "reasoning_effort").Exists())
+			require.Equal(t, tt.wantReasoning, gjson.GetBytes(body, "reasoning").Exists())
+			require.True(t, gjson.GetBytes(body, "stream").Bool())
+		})
+	}
+}
+
+func TestOpenAIWSToolCallReplayCollectorReturnsIndependentHeaders(t *testing.T) {
+	t.Parallel()
+
+	collector := &openAIWSToolCallReplayCollector{}
+	collector.AddEvent("response.output_item.done", []byte(`{"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"exec","arguments":"{}"}}`))
+	require.Len(t, collector.items, 1)
+	require.Len(t, collector.allItems, 1)
+
+	items := collector.Items()
+	allItems := collector.AllItems()
+	require.NotSame(t, &collector.items[0], &items[0])
+	require.NotSame(t, &collector.allItems[0], &allItems[0])
+	require.Same(t, &collector.items[0][0], &items[0][0], "Items should share immutable bodies")
+	require.Same(t, &collector.allItems[0][0], &allItems[0][0], "AllItems should share immutable bodies")
+
+	items[0] = []byte(`{"type":"replacement"}`)
+	allItems[0] = []byte(`{"type":"replacement"}`)
+	require.Equal(t, "function_call", gjson.GetBytes(collector.items[0], "type").String())
+	require.Equal(t, "function_call", gjson.GetBytes(collector.allItems[0], "type").String())
 }
 
 func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyAdaptsClientTools(t *testing.T) {
