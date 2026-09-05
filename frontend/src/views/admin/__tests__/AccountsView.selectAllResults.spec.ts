@@ -10,7 +10,10 @@ const {
   getUpstreamBillingProbeSettings,
   getAllProxies,
   getAllGroups,
-  showError
+  getSettings,
+  getExecutionNodeStatus,
+  showError,
+  showWarning
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
@@ -18,7 +21,10 @@ const {
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
-  showError: vi.fn()
+  getSettings: vi.fn(),
+  getExecutionNodeStatus: vi.fn(),
+  showError: vi.fn(),
+  showWarning: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -38,7 +44,9 @@ vi.mock('@/api/admin', () => ({
     },
     groups: {
       getAll: getAllGroups
-    }
+    },
+    settings: { getSettings },
+    executionNodes: { getStatus: getExecutionNodeStatus }
   }
 }))
 
@@ -46,7 +54,8 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
     showSuccess: vi.fn(),
-    showInfo: vi.fn()
+    showInfo: vi.fn(),
+    showWarning
   })
 }))
 
@@ -115,7 +124,18 @@ const mountView = () => mount(AccountsView, {
       TablePageLayout: {
         template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
       },
-      DataTable: { props: ['data'], template: '<div data-test="data-table"></div>' },
+      DataTable: {
+        props: ['data'],
+        template: `
+          <div data-test="data-table">
+            <slot name="header-select" />
+            <div v-for="row in data" :key="row.id" :data-test="'account-row-' + row.id">
+              <slot name="cell-select" :row="row" />
+              <slot name="cell-name" :row="row" :value="row.name" />
+            </div>
+          </div>
+        `
+      },
       Pagination: true,
       ConfirmDialog: true,
       AccountTableActions: { template: '<div><slot name="beforeCreate" /><slot name="after" /></div>' },
@@ -140,7 +160,7 @@ const mountView = () => mount(AccountsView, {
       AccountTodayStatsCell: true,
       AccountGroupsCell: true,
       AccountUsageCell: true,
-      Icon: true
+      Icon: { props: ['name'], template: '<i :data-icon="name" />' }
     }
   }
 })
@@ -154,7 +174,10 @@ describe('admin AccountsView select all filtered results', () => {
     getUpstreamBillingProbeSettings.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
+    getSettings.mockReset()
+    getExecutionNodeStatus.mockReset()
     showError.mockReset()
+    showWarning.mockReset()
 
     listWithEtag.mockResolvedValue({
       notModified: true,
@@ -165,6 +188,26 @@ describe('admin AccountsView select all filtered results', () => {
     getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: true, interval_minutes: 30 })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
+    getSettings.mockResolvedValue({ team_child_creation_enabled: false })
+    getExecutionNodeStatus.mockResolvedValue({
+      balancing_enabled: false,
+      can_enable: true,
+      admin_write_allowed: true,
+      admin_write_mode: 'single_node',
+      database_reachable: true,
+      heartbeat_store_reachable: true,
+      runtime: {
+        enabled: false,
+        node_id: '',
+        default_proxy_id: 0,
+        emergency_local_egress: false,
+        control_plane: true,
+        legacy_unassigned_node_id: 'api',
+        legacy_unassigned_proxy_id: 0
+      },
+      nodes: [],
+      issues: []
+    })
   })
 
   it('selects all matching IDs in one commit and clears the selection when filters change', async () => {
@@ -325,5 +368,106 @@ describe('admin AccountsView select all filtered results', () => {
       lite: '1',
       include_scheduler_score: '0'
     }))
+  })
+
+  it('keeps an online remote api2 account amber, read-only, and outside page or result selection', async () => {
+    const localAccount = { ...makeAccounts(1)[0], id: 1, name: 'local', execution_node_id: 'api' }
+    const remoteAccount = { ...makeAccounts(1)[0], id: 2, name: 'remote', execution_node_id: 'api2' }
+    const accounts = [localAccount, remoteAccount]
+    listAccounts.mockResolvedValue({ items: accounts, total: 2, page: 1, page_size: 20, pages: 1 })
+    getExecutionNodeStatus.mockResolvedValue({
+      balancing_enabled: true,
+      can_enable: true,
+      admin_write_allowed: true,
+      admin_write_mode: 'primary',
+      database_reachable: true,
+      heartbeat_store_reachable: true,
+      runtime: {
+        enabled: true,
+        node_id: 'api',
+        default_proxy_id: 84,
+        emergency_local_egress: false,
+        control_plane: true,
+        legacy_unassigned_node_id: 'api',
+        legacy_unassigned_proxy_id: 84
+      },
+      nodes: [
+        { node_id: 'api', online: true, is_local: true },
+        { node_id: 'api2', online: true, is_local: false }
+      ],
+      issues: []
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const remoteRow = wrapper.get('[data-test="account-row-2"]')
+    const remoteCheckbox = remoteRow.get('input[type="checkbox"]')
+    const remoteBadge = remoteRow.get('span[title="admin.accounts.executionNodeRemoteReadOnly"]')
+    expect(remoteCheckbox.attributes('disabled')).toBeDefined()
+    expect(remoteBadge.classes()).toEqual(expect.arrayContaining([
+      'bg-amber-50',
+      'text-amber-700',
+      'whitespace-nowrap',
+      'shrink-0'
+    ]))
+    expect(remoteBadge.text()).toContain('api2')
+    expect(remoteBadge.text()).toContain('admin.accounts.executionNodeReadOnlyBadge')
+
+    await wrapper.get('[data-test="select-page"]').trigger('click')
+    expect(wrapper.get('[data-test="selected-count"]').text()).toBe('1')
+
+    await wrapper.get('[data-test="select-all-results"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="selected-count"]').text()).toBe('1')
+    expect(showWarning).toHaveBeenCalledWith('admin.accounts.executionNodeBulkExcluded')
+    wrapper.unmount()
+  })
+
+  it('keeps a taken-over remote api2 badge amber while restoring account selection', async () => {
+    const remoteAccount = { ...makeAccounts(1)[0], id: 2, name: 'remote', execution_node_id: 'api2' }
+    listAccounts.mockResolvedValue({ items: [remoteAccount], total: 1, page: 1, page_size: 20, pages: 1 })
+    getExecutionNodeStatus.mockResolvedValue({
+      balancing_enabled: true,
+      can_enable: true,
+      admin_write_allowed: true,
+      admin_write_mode: 'emergency_takeover',
+      database_reachable: true,
+      heartbeat_store_reachable: true,
+      runtime: {
+        enabled: true,
+        node_id: 'api',
+        default_proxy_id: 84,
+        emergency_local_egress: true,
+        control_plane: true,
+        legacy_unassigned_node_id: 'api',
+        legacy_unassigned_proxy_id: 84
+      },
+      nodes: [
+        { node_id: 'api', online: true, is_local: true },
+        { node_id: 'api2', online: false, is_local: false }
+      ],
+      issues: []
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const remoteRow = wrapper.get('[data-test="account-row-2"]')
+    const remoteCheckbox = remoteRow.get('input[type="checkbox"]')
+    const remoteBadge = remoteRow.get('span[title="admin.accounts.columns.executionNodeHint"]')
+    expect(remoteCheckbox.attributes('disabled')).toBeUndefined()
+    expect(remoteBadge.classes()).toEqual(expect.arrayContaining([
+      'bg-amber-50',
+      'text-amber-700',
+      'whitespace-nowrap',
+      'shrink-0'
+    ]))
+    expect(remoteBadge.text()).toContain('api2')
+    expect(remoteBadge.text()).toContain('admin.accounts.executionNodeTakeoverBadge')
+
+    await wrapper.get('[data-test="select-page"]').trigger('click')
+    expect(wrapper.get('[data-test="selected-count"]').text()).toBe('1')
+    wrapper.unmount()
   })
 })

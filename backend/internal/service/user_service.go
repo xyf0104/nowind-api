@@ -66,10 +66,14 @@ var (
 
 // UserListFilters contains all filter options for listing users
 type UserListFilters struct {
-	Status    string // User status filter
-	Role      string // User role filter
-	Search    string // Search in email, username
-	GroupName string // Filter by allowed group name (fuzzy match)
+	Status string // User status filter
+	Role   string // User role filter
+	Search string // Search in email, username
+	// RequireEmail limits the result to users with a non-empty email address.
+	// It is used by email delivery selectors so ineligible rows do not consume
+	// a bounded recipient list.
+	RequireEmail bool
+	GroupName    string // Filter by allowed group name (fuzzy match)
 	// APIKeyGroupID filters users who own at least one non-soft-deleted API key
 	// bound to this group (api_keys.group_id). 0 = no filter. Covers all three
 	// group types since it matches the key's group directly, not allowed_groups.

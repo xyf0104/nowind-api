@@ -11,5 +11,5 @@ services:
   xiass-api:
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: deploy/Dockerfile
     image: xiass-api:latest

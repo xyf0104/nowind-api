@@ -17,7 +17,7 @@ const (
 	AnnouncementEmailScopeAll      = "all"
 	AnnouncementEmailScopeSelected = "selected"
 
-	announcementEmailRecipientPageSize = 500
+	announcementEmailRecipientLimit    = 70
 	announcementEmailSelectedUserLimit = 1000
 	announcementEmailWorkerCount       = 4
 	announcementEmailContentLimit      = 40000
@@ -193,32 +193,27 @@ func (s *AnnouncementService) listAllActiveAnnouncementEmailRecipients(ctx conte
 	includeSubscriptions := false
 	filters := UserListFilters{
 		Status:               StatusActive,
+		Role:                 RoleUser,
+		RequireEmail:         true,
 		IncludeSubscriptions: &includeSubscriptions,
 	}
-	recipients := make([]User, 0)
+	recipients := make([]User, 0, announcementEmailRecipientLimit)
 	skipped := 0
-	page := 1
-	for {
-		items, result, err := s.userRepo.ListWithFilters(ctx, pagination.PaginationParams{
-			Page:      page,
-			PageSize:  announcementEmailRecipientPageSize,
-			SortBy:    "id",
-			SortOrder: pagination.SortOrderAsc,
-		}, filters)
-		if err != nil {
-			return nil, 0, fmt.Errorf("list active users for announcement email: %w", err)
+	items, _, err := s.userRepo.ListWithFilters(ctx, pagination.PaginationParams{
+		Page:      1,
+		PageSize:  announcementEmailRecipientLimit,
+		SortBy:    "last_activity_at",
+		SortOrder: pagination.SortOrderDesc,
+	}, filters)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list active users for announcement email: %w", err)
+	}
+	for _, user := range items {
+		if strings.TrimSpace(user.Email) == "" {
+			skipped++
+			continue
 		}
-		for _, user := range items {
-			if strings.TrimSpace(user.Email) != "" {
-				recipients = append(recipients, user)
-			} else {
-				skipped++
-			}
-		}
-		if result == nil || page >= result.Pages || len(items) == 0 {
-			break
-		}
-		page++
+		recipients = append(recipients, user)
 	}
 	return recipients, skipped, nil
 }

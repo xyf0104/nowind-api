@@ -18,7 +18,11 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
-ENV NODE_OPTIONS=--max-old-space-size=1536
+# Vite's production bundle includes the complete admin surface and can exceed
+# Node's default heap in small build VMs. Keep the limit explicit and
+# overridable so local 4 GiB builders and CI do not fail nondeterministically.
+ARG NODE_MAX_OLD_SPACE_SIZE=3072
+ENV NODE_OPTIONS=--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}
 
 # Install pnpm. Keep this pinned to the lockfile-compatible major version so
 # Docker builds remain reproducible when pnpm changes config validation rules.

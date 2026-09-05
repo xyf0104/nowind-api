@@ -174,7 +174,7 @@ type UsageProgress struct {
 	ResetsAt          *time.Time   `json:"resets_at"`                     // 重置时间
 	RemainingSeconds  int          `json:"remaining_seconds"`             // 距重置剩余秒数
 	WindowStats       *WindowStats `json:"window_stats,omitempty"`        // 窗口期统计（从窗口开始到当前的使用量）
-	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 进入整数百分点时冻结账号已用，并按上一个百分点推算的 100% 周额度
+	WeeklyEstimateUSD *float64     `json:"weekly_estimate_usd,omitempty"` // 按账号加入后的 XIASS 累计用量与实际百分点差推算 100% 周额度
 	UsedRequests      int64        `json:"used_requests,omitempty"`
 	LimitRequests     int64        `json:"limit_requests,omitempty"`
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# XIASS API 数据安全更新：先完整备份，再更新代码/镜像并重建应用。
+# XIASS API 数据安全更新：预拉镜像并仅替换应用容器，失败时恢复旧版本。
 
 set -Eeuo pipefail
 
@@ -36,6 +36,7 @@ RUNTIME_START_SCRIPT=""
 TEAM_CHILD_BROWSER_PROFILE_SOURCE=""
 TARGET_APP_IMAGE="ghcr.io/xyf0104/xiass-api:latest"
 TARGET_APP_IMAGE_PREFETCHED=false
+UPDATE_BACKUP_CREATED=false
 
 log() { printf '[XIASS] %s\n' "$*"; }
 die() { printf '[XIASS] 错误：%s\n' "$*" >&2; exit 1; }
@@ -50,6 +51,18 @@ read_env_compat() {
     value=$(read_env_value "$1")
     [ -n "$value" ] || value=$(read_env_value "$2")
     printf '%s\n' "$value"
+}
+
+update_full_backup_enabled() {
+    local value="${XIASS_UPDATE_FULL_BACKUP:-}"
+    if [ -z "$value" ]; then
+        value=$(read_env_value XIASS_UPDATE_FULL_BACKUP)
+    fi
+    value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+    case "$value" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 generate_runtime_token() {
@@ -520,7 +533,11 @@ rollback_update() {
 
     if ! git -C "$INSTALL_DIR" reset --hard "$PREVIOUS_REF" >/dev/null 2>&1; then
         remove_created_update_remote || true
-        log "无法自动恢复 Git 到 ${PREVIOUS_REF}；更新前完整备份仍位于 ${BACKUP_DIR}。"
+        if "$UPDATE_BACKUP_CREATED"; then
+            log "无法自动恢复 Git 到 ${PREVIOUS_REF}；更新前完整备份仍位于 ${BACKUP_DIR}。"
+        else
+            log "无法自动恢复 Git 到 ${PREVIOUS_REF}；数据卷未被更新器删除或替换，请保留现场排查。"
+        fi
         return
     fi
     remove_created_update_remote || true
@@ -611,9 +628,14 @@ main() {
     UPDATE_REF=$(git -C "$INSTALL_DIR" rev-parse "$UPDATE_REMOTE/main")
     snapshot_previous_compose
 
-    log "先创建更新前完整备份..."
-    curl -fsSL "$RAW_BASE_URL/xiass-backup.sh" \
-        | INSTALL_DIR="$INSTALL_DIR" BACKUP_DIR="$BACKUP_DIR" SKIP_MAINTENANCE_LOCK=true bash
+    if update_full_backup_enabled; then
+        log "已启用更新前完整冷备；备份期间服务会短暂停止..."
+        curl -fsSL "$RAW_BASE_URL/xiass-backup.sh" \
+            | INSTALL_DIR="$INSTALL_DIR" BACKUP_DIR="$BACKUP_DIR" SKIP_MAINTENANCE_LOCK=true bash
+        UPDATE_BACKUP_CREATED=true
+    else
+        log "使用低中断更新：保留现有数据卷，跳过会停止整套服务的完整冷备。"
+    fi
 
     local patch_file=""
     if ! git -C "$INSTALL_DIR" diff --quiet || ! git -C "$INSTALL_DIR" diff --cached --quiet; then
@@ -671,14 +693,14 @@ main() {
         if ! start_runtime_stack "$TARGET_APP_IMAGE_PREFETCHED"; then
             compose ps || true
             compose logs --tail 160 xiass-api || true
-            die "更新后健康检查失败。数据没有删除，更新前备份位于 ${BACKUP_DIR}，可使用 xiass-restore.sh 恢复。"
+            die "更新后健康检查失败。更新器没有删除或替换现有数据卷，将自动恢复旧应用版本。"
         fi
     fi
 
     if ! wait_for_health; then
         compose ps || true
         compose logs --tail 160 xiass-api || true
-        die "更新后健康检查失败。数据没有删除，更新前备份位于 ${BACKUP_DIR}，可使用 xiass-restore.sh 恢复。"
+        die "更新后健康检查失败。更新器没有删除或替换现有数据卷，将自动恢复旧应用版本。"
     fi
 
     UPDATE_SUCCEEDED=true

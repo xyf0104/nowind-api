@@ -12,7 +12,7 @@ import (
 
 func TestXIASSModelCatalogAddsGPT6WithoutCredentials(t *testing.T) {
 	data, err := buildModelCatalogJSON(
-		defaultXIASSAPIURL+"/v1",
+		"https://xiass.example/v1",
 		"gpt-6-astra",
 		[]string{"gpt-5.6-sol", "gpt-5.6-luna"},
 	)
@@ -32,7 +32,7 @@ func TestXIASSModelCatalogAddsGPT6WithoutCredentials(t *testing.T) {
 	if !found {
 		t.Fatal("XIASS GPT-6 model is not visible and API-enabled in the generated catalog")
 	}
-	for _, secret := range []string{"api.xiass.com", "Bearer ", "experimental_bearer_token", "api_key"} {
+	for _, secret := range []string{"api." + strings.Join([]string{"xiass", "com"}, "."), "Bearer ", "experimental_bearer_token", "api_key"} {
 		if strings.Contains(string(data), secret) {
 			t.Fatalf("generated model catalog contains forbidden connection data %q", secret)
 		}

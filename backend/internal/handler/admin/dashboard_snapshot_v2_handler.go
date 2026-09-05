@@ -46,6 +46,7 @@ type dashboardSnapshotV2Filters struct {
 	Stream                *bool
 	BillingType           *int8
 	UpstreamModelMismatch *bool
+	ExecutionNodeID       string
 }
 
 type dashboardSnapshotV2CacheKey struct {
@@ -61,6 +62,7 @@ type dashboardSnapshotV2CacheKey struct {
 	Stream                *bool  `json:"stream"`
 	BillingType           *int8  `json:"billing_type"`
 	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
+	ExecutionNodeID       string `json:"execution_node_id,omitempty"`
 	IncludeStats          bool   `json:"include_stats"`
 	IncludeTrend          bool   `json:"include_trend"`
 	IncludeModels         bool   `json:"include_models"`
@@ -107,6 +109,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		Stream:                filters.Stream,
 		BillingType:           filters.BillingType,
 		UpstreamModelMismatch: filters.UpstreamModelMismatch,
+		ExecutionNodeID:       filters.ExecutionNodeID,
 		IncludeStats:          includeStats,
 		IncludeTrend:          includeTrend,
 		IncludeModels:         includeModels,
@@ -188,6 +191,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Stream,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
+			filters.ExecutionNodeID,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get usage trend")
@@ -209,6 +213,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Stream,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
+			filters.ExecutionNodeID,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get model statistics")
@@ -229,6 +234,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Stream,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
+			filters.ExecutionNodeID,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get group statistics")
@@ -250,6 +256,11 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filters, error) {
 	filters := &dashboardSnapshotV2Filters{
 		Model: strings.TrimSpace(c.Query("model")),
+	}
+	var err error
+	filters.ExecutionNodeID, err = parseExecutionNodeFilter(c)
+	if err != nil {
+		return nil, err
 	}
 
 	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {

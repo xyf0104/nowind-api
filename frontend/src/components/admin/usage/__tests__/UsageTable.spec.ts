@@ -14,6 +14,8 @@ import UsageTable from '../UsageTable.vue'
 
 const messages: Record<string, string> = {
   'admin.usage.userDeletedBadge': 'Deleted',
+  'admin.accounts.executionNodeLocal': 'Local',
+  'admin.accounts.columns.executionNodeHint': 'Account egress node',
   'usage.costDetails': 'Cost Breakdown',
   'admin.usage.inputCost': 'Input Cost',
   'admin.usage.outputCost': 'Output Cost',
@@ -117,6 +119,48 @@ const baseImageRow = {
   image_size_source: null,
   image_size_breakdown: null,
 }
+
+describe('admin UsageTable execution-node badges', () => {
+  const AccountCellDataTableStub = {
+    props: ['data'],
+    template: `
+      <div>
+        <div v-for="row in data" :key="row.request_id">
+          <slot name="cell-account" :row="row" :value="row.account?.name" />
+        </div>
+      </div>
+    `,
+  }
+
+  it('uses distinct colors for local and remote account ownership', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          { ...baseImageRow, request_id: 'local-node', account: { name: 'Local account', execution_node_id: 'api' } },
+          { ...baseImageRow, request_id: 'remote-node', account: { name: 'Remote account', execution_node_id: 'api2' } },
+        ],
+        columns: [],
+        showExecutionNode: true,
+        executionNodeLocalId: 'api',
+      },
+      global: {
+        stubs: {
+          DataTable: AccountCellDataTableStub,
+          Icon: { template: '<i />' },
+        },
+      },
+    })
+
+    const badges = wrapper.findAll('span[title="Account egress node"]')
+    expect(badges).toHaveLength(2)
+    expect(badges[0].classes()).toContain('text-sky-700')
+    expect(badges[0].text()).toContain('Local')
+    expect(badges[1].classes()).toContain('text-amber-700')
+    expect(badges[1].classes()).toContain('whitespace-nowrap')
+    expect(badges[1].classes()).toContain('shrink-0')
+    expect(badges[1].text()).toContain('api2')
+  })
+})
 
 describe('admin UsageTable tooltip', () => {
   beforeEach(() => {

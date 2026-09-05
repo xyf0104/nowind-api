@@ -131,6 +131,10 @@ func (h *GrokOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -529,6 +533,10 @@ func (h *GrokOAuthHandler) ResetQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 	if h.quotaService == nil {

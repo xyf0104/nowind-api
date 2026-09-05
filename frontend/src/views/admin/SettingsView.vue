@@ -1,6 +1,7 @@
 <template>
   <AppLayout>
     <div class="mx-auto max-w-6xl space-y-6">
+      <ExecutionNodeAdminAccessNotice />
       <!-- Loading State -->
       <div v-if="loading" class="flex items-center justify-center py-12">
         <div
@@ -48,7 +49,7 @@
               v-if="activeTab !== 'backup'"
               type="submit"
               data-testid="settings-save-button"
-              :disabled="saving || loadFailed"
+              :disabled="sharedReadOnly || saving || loadFailed"
               class="settings-save-button btn btn-primary flex items-center justify-center gap-2 whitespace-nowrap"
             >
               <Icon :name="saving ? 'refresh' : 'check'" size="sm" :class="saving ? 'animate-spin' : ''" :stroke-width="2.25" />
@@ -8603,6 +8604,8 @@ import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
 import OpenAIFastPolicyUserSelector from "@/views/admin/settings/OpenAIFastPolicyUserSelector.vue";
 import { useClipboard } from "@/composables/useClipboard";
+import { useExecutionNodeAdminAccess } from "@/composables/useExecutionNodeAdminAccess";
+import ExecutionNodeAdminAccessNotice from "@/components/admin/ExecutionNodeAdminAccessNotice.vue";
 import {
   useStepUp,
   isStepUpCancelled,
@@ -8630,6 +8633,7 @@ import {
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
+const { sharedReadOnly, loadExecutionNodeAdminAccess } = useExecutionNodeAdminAccess();
 // 关闭 step-up 开关是敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 码重试
 const settingsStepUp = useStepUp();
 const adminSettingsStore = useAdminSettingsStore();
@@ -9586,7 +9590,7 @@ const form = reactive<SettingsForm>({
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
   execution_node_balancing_enabled: false,
-  execution_node_weights: { api: 1, api2: 1 },
+  execution_node_weights: { api: 9, api2: 1 },
   execution_node_proxy_ids: {},
   openai_low_upstream_rate_priority_enabled: false,
   openai_oauth_scheduling_rate_multiplier: 1,
@@ -10814,6 +10818,10 @@ function findDuplicateDefaultSubscription(
 }
 
 async function saveSettings() {
+  if (sharedReadOnly.value) {
+    appStore.showError(t("admin.executionNodes.sharedAccess.actionBlocked"));
+    return;
+  }
   saving.value = true;
   try {
     const normalizedTableDefaultPageSize = Math.floor(
@@ -12341,6 +12349,7 @@ async function handleDeleteProvider() {
 }
 
 onMounted(() => {
+  void loadExecutionNodeAdminAccess(true);
   loadSettings();
   loadSubscriptionGroups();
   loadAdminApiKey();

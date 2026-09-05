@@ -90,6 +90,7 @@ type Config struct {
 	Dashboard               DashboardCacheConfig          `mapstructure:"dashboard_cache"`
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
+	InactiveUserCleanup     InactiveUserCleanupConfig     `mapstructure:"inactive_user_cleanup"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -1749,6 +1750,13 @@ type UsageCleanupConfig struct {
 	TaskTimeoutSeconds int `mapstructure:"task_timeout_seconds"`
 }
 
+// InactiveUserCleanupConfig controls the opt-in warning/deletion workflow.
+// It is disabled by default so an upgrade can never delete accounts without an
+// explicit administrator decision.
+type InactiveUserCleanupConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 func NormalizeRunMode(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -2324,6 +2332,7 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.batch_size", 5000)
 	viper.SetDefault("usage_cleanup.worker_interval_seconds", 10)
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
+	viper.SetDefault("inactive_user_cleanup.enabled", false)
 
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)

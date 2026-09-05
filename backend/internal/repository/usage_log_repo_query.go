@@ -122,6 +122,7 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 	}
 	conditions, args = appendUsageLogModelWhereCondition(conditions, args, filters.Model, filters.ModelFilterSource)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
+	conditions, args = appendExecutionNodeUsageLogWhereCondition(conditions, args, filters.ExecutionNodeID, filters.ExecutionNodeLegacyID, "account_id")
 	if filters.BillingType != nil {
 		conditions = append(conditions, fmt.Sprintf("billing_type = $%d", len(args)+1))
 		args = append(args, int16(*filters.BillingType))

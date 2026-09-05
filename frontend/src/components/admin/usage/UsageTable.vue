@@ -49,7 +49,22 @@
         </template>
 
         <template #cell-account="{ row }">
-          <span class="text-sm text-gray-900 dark:text-white">{{ row.account?.name || '-' }}</span>
+          <div class="flex min-w-0 flex-col">
+            <span class="text-sm text-gray-900 dark:text-white">{{ row.account?.name || '-' }}</span>
+            <span
+              v-if="showExecutionNode && accountExecutionNodeID(row)"
+              :class="[
+                'mt-1 inline-flex w-fit shrink-0 items-center gap-0.5 whitespace-nowrap rounded px-1 py-px text-[11px] font-medium leading-4',
+                accountExecutionNodeID(row) === executionNodeLocalId
+                  ? 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+                  : 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800/70'
+              ]"
+              :title="t('admin.accounts.columns.executionNodeHint')"
+            >
+              <Icon name="server" size="xs" class="shrink-0" :stroke-width="2" />
+              <span>{{ accountExecutionNodeID(row) === executionNodeLocalId ? t('admin.accounts.executionNodeLocal') : accountExecutionNodeID(row) }}</span>
+            </span>
+          </div>
         </template>
 
         <template #cell-model="{ row }">
@@ -573,6 +588,9 @@ interface Props {
   showUpstreamEndpoint?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
+  showExecutionNode?: boolean
+  executionNodeLocalId?: string
+  executionNodeLegacyId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -582,7 +600,10 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   showAccountBilling: true,
   showUpstreamEndpoint: true,
-  flat: false
+	flat: false,
+  showExecutionNode: false,
+  executionNodeLocalId: 'api',
+  executionNodeLegacyId: 'api'
 })
 const emit = defineEmits<{
   userClick: [userID: number, email?: string]
@@ -593,6 +614,7 @@ const { t } = useI18n()
 const showAccountBilling = props.showAccountBilling
 const showUpstreamEndpoint = props.showUpstreamEndpoint
 const ipGeoBatchLoading = ref(false)
+const accountExecutionNodeID = (row: AdminUsageLog): string => row.account?.execution_node_id?.trim() || props.executionNodeLegacyId
 
 const showIpGeoToolbar = computed(() => props.columns.some((col) => col.key === 'ip_address'))
 

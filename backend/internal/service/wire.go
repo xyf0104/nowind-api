@@ -362,6 +362,24 @@ func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *Timing
 	return svc
 }
 
+// ProvideInactiveUserCleanupService creates the durable inactivity warning and
+// deletion worker. The worker is leader-gated, so every instance may start it
+// without sending duplicate reminders or deleting the same user twice.
+func ProvideInactiveUserCleanupService(
+	userRepo InactiveUserDeleter,
+	cleanupRepo InactiveUserCleanupRepository,
+	notificationEmailService *NotificationEmailService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+	cfg *config.Config,
+) *InactiveUserCleanupService {
+	svc := NewInactiveUserCleanupService(userRepo, cleanupRepo, notificationEmailService, lockCache, db)
+	if executionNodeControlPlaneEnabled(cfg) && cfg != nil && cfg.InactiveUserCleanup.Enabled {
+		svc.Start()
+	}
+	return svc
+}
+
 // ProvideAccountExpiryService creates and starts AccountExpiryService.
 func ProvideAccountExpiryService(accountRepo AccountRepository, cfg *config.Config) *AccountExpiryService {
 	svc := NewAccountExpiryService(accountRepo, time.Minute)
@@ -804,6 +822,9 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	if inspector, ok := settingRepo.(ExecutionNodeJoinTargetInspector); ok {
 		svc.SetExecutionNodeJoinInspector(inspector)
 	}
+	if _, err := svc.MigrateExecutionNodeDefaultWeights(context.Background()); err != nil {
+		logger.LegacyPrintf("service.setting", "Warning: migrate execution-node default weights failed: %v", err)
+	}
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)
 	}
@@ -884,6 +905,8 @@ var ProviderSet = wire.NewSet(
 	ProvideBillingCacheService,
 	ProvideAnnouncementService,
 	NewAdminService,
+	wire.Bind(new(AdminService), new(*adminServiceImpl)),
+	wire.Bind(new(InactiveUserDeleter), new(*adminServiceImpl)),
 	NewUserGroupAccountAllowlistService,
 	NewUserGroupAccountAllowlistPolicy,
 	NewAdminUserGroupAccountAllowlistService,
@@ -970,6 +993,7 @@ var ProviderSet = wire.NewSet(
 	ProvideTimingWheelService,
 	ProvideDashboardAggregationService,
 	ProvideUsageCleanupService,
+	ProvideInactiveUserCleanupService,
 	ProvideDeferredService,
 	NewAntigravityQuotaFetcher,
 	NewGrokQuotaFetcher,

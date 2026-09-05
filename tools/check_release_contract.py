@@ -478,16 +478,29 @@ def check_persistence(errors: list[str]) -> None:
             errors.append(f"{relative} 的在线更新目标不再限定为应用容器")
 
     historical_identifiers = [
-        "DATABASE_USER=${POSTGRES_USER:-sub2api}",
-        "DATABASE_DBNAME=${POSTGRES_DB:-sub2api}",
         "POSTGRES_USER=${POSTGRES_USER:-sub2api}",
         "POSTGRES_DB=${POSTGRES_DB:-sub2api}",
     ]
+    database_identity_fallbacks = {
+        "DATABASE_USER": (
+            "DATABASE_USER=${POSTGRES_USER:-sub2api}",
+            "DATABASE_USER=${DATABASE_USER:-${POSTGRES_USER:-sub2api}}",
+        ),
+        "DATABASE_DBNAME": (
+            "DATABASE_DBNAME=${POSTGRES_DB:-sub2api}",
+            "DATABASE_DBNAME=${DATABASE_DBNAME:-${POSTGRES_DB:-sub2api}}",
+        ),
+    }
     for relative, content in [
         ("deploy/docker-compose.local.yml", local_compose),
         ("deploy/docker-compose.yml", named_compose),
     ]:
         require_all(relative, content, historical_identifiers, errors)
+        for setting, variants in database_identity_fallbacks.items():
+            if not any(variant in content for variant in variants):
+                errors.append(
+                    f"{relative} 缺少发布契约内容: {setting} 必须保留 POSTGRES_* 回退"
+                )
 
     config = read("backend/internal/config/config.go")
     if 'viper.SetDefault("dashboard_cache.key_prefix", "sub2api:")' not in config:
@@ -651,6 +664,7 @@ def check_update_bridge(errors: list[str]) -> None:
             "compose up -d --no-deps --no-build --force-recreate xiass-api",
             "finalize_source",
             "自动回滚",
+            'set_env_value POSTGRES_PASSWORD "$database_pass"',
         ],
         errors,
     )

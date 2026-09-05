@@ -187,7 +187,9 @@ type UserBreakdownDimension struct {
 	// Additional filter conditions
 	UserID      int64  // filter by user_id (>0 to enable)
 	APIKeyID    int64  // filter by api_key_id (>0 to enable)
-	AccountID   int64  // filter by account_id (>0 to enable)
+	AccountID             int64  // filter by account_id (>0 to enable)
+	ExecutionNodeID       string // filter by execution-node owner
+	ExecutionNodeLegacyID string // legacy owner for accounts without a marker
 	RequestType *int16 // filter by request_type (non-nil to enable)
 	Stream      *bool  // filter by stream flag (non-nil to enable)
 	BillingType *int8  // filter by billing_type (non-nil to enable)
@@ -271,8 +273,13 @@ type UsageLogFilters struct {
 	APIKeyID  int64
 	AccountID int64
 	GroupID   int64
-	RequestID string
-	Model     string
+	// Usage logs inherit execution-node ownership from their account row.
+	// ExecutionNodeLegacyID is the owner used for historical accounts without
+	// an explicit xiass_execution_node_id marker.
+	ExecutionNodeID       string
+	ExecutionNodeLegacyID string
+	RequestID             string
+	Model                 string
 	// ModelFilterSource controls how Model is matched. Empty preserves raw usage_logs.model semantics.
 	ModelFilterSource     string
 	RequestType           *int16

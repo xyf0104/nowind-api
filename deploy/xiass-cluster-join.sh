@@ -184,11 +184,21 @@ main() {
     set_env_value GATEWAY_EXECUTION_NODE_CONTROL_PLANE false
     set_env_value GATEWAY_EXECUTION_NODE_LEGACY_UNASSIGNED_NODE_ID "$legacy_node_id"
     set_env_value GATEWAY_EXECUTION_NODE_LEGACY_UNASSIGNED_PROXY_ID "$legacy_proxy_id"
+    database_user=$(json_value database_user)
+    database_pass=$(json_value database_pass)
+    database_name=$(json_value database_name)
     set_env_value DATABASE_HOST 127.0.0.1
     set_env_value DATABASE_PORT 15432
-    set_env_value DATABASE_USER "$(json_value database_user)"
-    set_env_value DATABASE_PASSWORD "$(json_value database_pass)"
-    set_env_value DATABASE_DBNAME "$(json_value database_name)"
+    set_env_value DATABASE_USER "$database_user"
+    set_env_value DATABASE_PASSWORD "$database_pass"
+    set_env_value DATABASE_DBNAME "$database_name"
+    # Older XIASS Compose files source the application's database identity
+    # from POSTGRES_* instead of DATABASE_*. Keep both sets synchronized so a
+    # source-authoritative join also works before the host Compose file itself
+    # has been refreshed by a later installer/update.
+    set_env_value POSTGRES_USER "$database_user"
+    set_env_value POSTGRES_PASSWORD "$database_pass"
+    set_env_value POSTGRES_DB "$database_name"
     set_env_value DATABASE_SSLMODE "$(json_value database_sslmode)"
     set_env_value REDIS_HOST 127.0.0.1
     set_env_value REDIS_PORT 16379

@@ -125,6 +125,7 @@ services:
       # =======================================================================
       - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@xiass.local}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - INACTIVE_USER_CLEANUP_ENABLED=${INACTIVE_USER_CLEANUP_ENABLED:-false}
 
       # =======================================================================
       # JWT Configuration

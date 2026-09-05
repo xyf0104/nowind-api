@@ -52,13 +52,17 @@ func (h *AccountHandler) UpdateUpstreamBillingProbeSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) SetUpstreamBillingProbeEnabled(c *gin.Context) {
-	if h.upstreamBillingProbe == nil {
-		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
-		return
-	}
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if h.upstreamBillingProbe == nil {
+		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
 		return
 	}
 	var req upstreamBillingProbeEnabledRequest
@@ -74,13 +78,17 @@ func (h *AccountHandler) SetUpstreamBillingProbeEnabled(c *gin.Context) {
 }
 
 func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
-	if h.upstreamBillingProbe == nil {
-		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
-		return
-	}
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if h.upstreamBillingProbe == nil {
+		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
 		return
 	}
 	snapshot, err := h.upstreamBillingProbe.ProbeAccount(c.Request.Context(), accountID)
@@ -92,10 +100,6 @@ func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
 }
 
 func (h *AccountHandler) ProbeUpstreamBillingBatch(c *gin.Context) {
-	if h.upstreamBillingProbe == nil {
-		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
-		return
-	}
 	var req upstreamBillingProbeBatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -117,6 +121,16 @@ func (h *AccountHandler) ProbeUpstreamBillingBatch(c *gin.Context) {
 		}
 		seen[accountID] = struct{}{}
 		accountIDs = append(accountIDs, accountID)
+	}
+	for _, accountID := range accountIDs {
+		if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+	}
+	if h.upstreamBillingProbe == nil {
+		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
+		return
 	}
 	response.Success(c, gin.H{"results": h.upstreamBillingProbe.ProbeAccounts(c.Request.Context(), accountIDs)})
 }

@@ -7,6 +7,7 @@
             v-model:searchQuery="params.search"
             :filters="params"
             :groups="groups"
+            :execution-node-options="executionNodeOptions"
             @update:filters="(newFilters) => Object.assign(params, newFilters)"
             @change="debouncedReload"
             @update:searchQuery="debouncedReload"
@@ -273,12 +274,20 @@
               type="checkbox"
               class="h-4 w-4 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
               :checked="allVisibleSelected"
+              :disabled="selectableVisibleAccounts.length === 0"
               @click.stop
               @change="toggleSelectAllVisible($event)"
             />
           </template>
           <template #cell-select="{ row }">
-            <input type="checkbox" :checked="isSelected(row.id)" @change="toggleSel(row.id)" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+            <input
+              type="checkbox"
+              :checked="isSelected(row.id)"
+              :disabled="isAccountReadOnly(row)"
+              :title="isAccountReadOnly(row) ? accountManagementBlockReason(row) : undefined"
+              @change="toggleSel(row.id)"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40"
+            />
           </template>
           <template #cell-id="{ value }">
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
@@ -309,6 +318,22 @@
                 :title="accountDisplayEmail(row) + (row.parent_chatgpt_account_id ? ' · ' + row.parent_chatgpt_account_id : '')"
               >
                 {{ accountDisplayEmail(row) }}
+              </span>
+              <span
+                v-if="showExecutionNodeLabels"
+                :class="[
+                  'mt-1 inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium leading-4',
+                  isAccountRemote(row)
+                    ? 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800/70'
+                    : 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+                ]"
+                :title="isAccountReadOnly(row) ? accountManagementBlockReason(row) : t('admin.accounts.columns.executionNodeHint')"
+              >
+                <Icon :name="isAccountReadOnly(row) ? 'lock' : 'server'" size="xs" :stroke-width="2" />
+                <span>{{ executionNodeLabel(row) }}</span>
+                <span v-if="isAccountRemote(row)" class="border-l border-current/25 pl-1">
+                  {{ isAccountReadOnly(row) ? t('admin.accounts.executionNodeReadOnlyBadge') : t('admin.accounts.executionNodeTakeoverBadge') }}
+                </span>
               </span>
             </div>
           </template>
@@ -353,7 +378,7 @@
             </div>
           </template>
           <template #cell-schedulable="{ row }">
-            <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
+            <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id || isAccountReadOnly(row)" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="isAccountReadOnly(row) ? accountManagementBlockReason(row) : (row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled'))">
               <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
             </button>
           </template>
@@ -385,13 +410,6 @@
           </template>
           <template #cell-proxy="{ row }">
             <div class="flex flex-col gap-1">
-              <div
-                v-if="row.execution_node_id"
-                class="inline-flex w-fit items-center rounded bg-sky-50 px-1.5 py-0.5 text-[11px] font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-                :title="t('admin.accounts.columns.executionNodeHint')"
-              >
-                {{ t('admin.accounts.columns.executionNode') }}: {{ row.execution_node_id }}
-              </div>
               <div v-if="row.proxy" class="flex items-center gap-2">
                 <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
                 <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">
@@ -407,7 +425,7 @@
                 <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200" :title="t('admin.accounts.fallbackActiveTip', { origin: row.proxy_fallback_origin_name })">
                   {{ t('admin.accounts.fallbackActive') }}
                 </span>
-                <button class="text-xs px-1.5 py-0.5 rounded border border-gray-300 dark:border-dark-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-700" @click="onRevertFallback(row)">{{ t('admin.accounts.revertProxy') }}</button>
+                <button :disabled="isAccountReadOnly(row)" :title="isAccountReadOnly(row) ? accountManagementBlockReason(row) : undefined" class="text-xs px-1.5 py-0.5 rounded border border-gray-300 dark:border-dark-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-700 disabled:cursor-not-allowed disabled:opacity-50" @click="onRevertFallback(row)">{{ t('admin.accounts.revertProxy') }}</button>
               </div>
             </div>
           </template>
@@ -498,15 +516,15 @@
           </template>
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
-              <button @click="handleEdit(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400">
+              <button @click="handleEdit(row)" :disabled="isAccountReadOnly(row)" :title="isAccountReadOnly(row) ? accountManagementBlockReason(row) : t('common.edit')" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-dark-700 dark:hover:text-primary-400">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
                 <span class="text-xs">{{ t('common.edit') }}</span>
               </button>
-              <button @click="handleDelete(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400">
+              <button @click="handleDelete(row)" :disabled="isAccountReadOnly(row)" :title="isAccountReadOnly(row) ? accountManagementBlockReason(row) : t('common.delete')" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-900/20 dark:hover:text-red-400">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
                 <span class="text-xs">{{ t('common.delete') }}</span>
               </button>
-              <button @click="openMenu(row, $event)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white">
+            <button @click="openMenu(row, $event)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white">
                 <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" /></svg>
                 <span class="text-xs">{{ t('common.more') }}</span>
               </button>
@@ -529,7 +547,7 @@
       @close="closeOAuthBillingDetails"
     />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @manage-user-allowlist="openAccountUserAllowlist" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" :can-manage="menu.acc ? !isAccountReadOnly(menu.acc) : true" :management-block-reason="menu.acc ? accountManagementBlockReason(menu.acc) : ''" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @manage-user-allowlist="openAccountUserAllowlist" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <BaseDialog
       :show="showAccountAllowlistGroupPicker"
       :title="t('admin.groups.userAccountAllowlist.title')"
@@ -645,6 +663,7 @@ import { sanitizeUrl } from '@/utils/url'
 import { getFloatingPanelPosition } from '@/utils/floatingPanel'
 import { formatMultiplier } from '@/utils/formatters'
 import type { Account, AccountPlatform, AccountSchedulerGroupScore, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot } from '@/types'
+import type { ExecutionNodeAdminStatus } from '@/api/admin/executionNodes'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -695,6 +714,7 @@ type AccountBulkEditTarget =
         type?: string
         status?: string
         group?: string
+        execution_node_id?: string
         search?: string
         privacy_mode?: string
         sort_by?: string
@@ -723,6 +743,60 @@ const selTypes = computed<AccountType[]>(() => {
 const showCreate = ref(false)
 const teamChildCreationEnabled = ref(false)
 const teamChildSettingsReady = ref(false)
+const executionNodeStatus = ref<ExecutionNodeAdminStatus | null>(null)
+const executionNodeOptions = computed<SelectOption[]>(() => {
+  const status = executionNodeStatus.value
+  if (!status?.runtime.enabled || status.nodes.length === 0) return []
+  const localNodeID = status.runtime.node_id || 'api'
+  const seen = new Set<string>()
+  const options: SelectOption[] = [{ value: '', label: t('admin.accounts.executionNodeAll') }]
+  for (const node of [{ node_id: localNodeID, is_local: true }, ...status.nodes]) {
+    const nodeID = String(node.node_id || '').trim()
+    if (!nodeID || seen.has(nodeID)) continue
+    seen.add(nodeID)
+    options.push({
+      value: nodeID,
+      label: nodeID === localNodeID || node.is_local ? t('admin.accounts.executionNodeLocal') : nodeID
+    })
+  }
+  return options
+})
+const showExecutionNodeLabels = computed(() => executionNodeOptions.value.length > 0)
+const accountExecutionNodeID = (account: Account): string => {
+  const owner = account.execution_node_id?.trim()
+  return owner || executionNodeStatus.value?.runtime.legacy_unassigned_node_id || 'api'
+}
+const executionNodeLabel = (account: Account): string => {
+  const localNodeID = executionNodeStatus.value?.runtime.node_id || 'api'
+  const owner = accountExecutionNodeID(account)
+  return owner === localNodeID ? t('admin.accounts.executionNodeLocal') : owner
+}
+const isExecutionNodeOwnerReadOnly = (owner: string): boolean => {
+  const status = executionNodeStatus.value
+  if (!status?.runtime.enabled) return false
+  const localNodeID = status.runtime.node_id || 'api'
+  if (owner === localNodeID) return false
+  const ownerStatus = status.nodes.find(node => node.node_id === owner)
+  // A missing or online remote node is never writable here. Only an
+  // explicitly reported offline node plus the local takeover switch permits
+  // temporary management.
+  return !ownerStatus || ownerStatus.online || !status.runtime.emergency_local_egress
+}
+const isAccountRemote = (account: Account): boolean => {
+  const status = executionNodeStatus.value
+  if (!status?.runtime.enabled) return false
+  return accountExecutionNodeID(account) !== (status.runtime.node_id || 'api')
+}
+const isAccountReadOnly = (account: Account): boolean => {
+  return isExecutionNodeOwnerReadOnly(accountExecutionNodeID(account))
+}
+const accountManagementBlockReason = (account: Account): string => {
+  const owner = accountExecutionNodeID(account)
+  const node = executionNodeStatus.value?.nodes.find(item => item.node_id === owner)
+  if (node?.online) return t('admin.accounts.executionNodeRemoteReadOnly', { node: owner })
+  if (!executionNodeStatus.value?.runtime.emergency_local_egress) return t('admin.accounts.executionNodeTakeoverRequired', { node: owner })
+  return t('admin.accounts.executionNodeRemoteUnavailable')
+}
 const showEdit = ref(false)
 const showSync = ref(false)
 const showImportData = ref(false)
@@ -1048,6 +1122,7 @@ const {
     status: '',
     privacy_mode: '',
     group: '',
+    execution_node_id: '',
     active_concurrency_group: initialActiveConcurrencyGroup,
     account_id: initialFocusedAccountID,
     search: '',
@@ -1100,21 +1175,41 @@ const teamChildNeedsReauth = computed(() => {
 const {
   selectedSet,
   selectedIds: selIds,
-  allVisibleSelected,
   isSelected,
   setSelectedIds,
-  select,
-  deselect,
-  toggle: toggleSel,
+  select: selectRaw,
+  deselect: deselectRaw,
   clear: clearSelectedIds,
   removeMany: removeSelectedAccounts,
-  toggleVisible,
-  selectVisible: selectCurrentPage,
   batchUpdate
 } = useTableSelection<Account>({
   rows: accounts,
   getId: (account) => account.id
 })
+
+const selectableVisibleAccounts = computed(() => accounts.value.filter(account => !isAccountReadOnly(account)))
+const allVisibleSelected = computed(() => selectableVisibleAccounts.value.length > 0 && selectableVisibleAccounts.value.every(account => isSelected(account.id)))
+const select = (id: number) => {
+  const account = accounts.value.find(item => item.id === id)
+  if (account && !isAccountReadOnly(account)) selectRaw(id)
+}
+const deselect = (id: number) => deselectRaw(id)
+const toggleSel = (id: number) => {
+  if (isSelected(id)) {
+    deselectRaw(id)
+    return
+  }
+  select(id)
+}
+const toggleVisible = (checked: boolean) => {
+  batchUpdate((draft) => {
+    selectableVisibleAccounts.value.forEach((account) => {
+      if (checked) draft.add(account.id)
+      else draft.delete(account.id)
+    })
+  })
+}
+const selectCurrentPage = () => toggleVisible(true)
 
 const selectingAllResults = ref(false)
 const selectedAllResultIDs = ref<Set<number> | null>(null)
@@ -2040,6 +2135,7 @@ const buildBulkEditFilterSnapshot = () => {
     type: typeof rawParams.type === 'string' ? rawParams.type : '',
     status: typeof rawParams.status === 'string' ? rawParams.status : '',
     group: typeof rawParams.group === 'string' ? rawParams.group : '',
+    execution_node_id: typeof rawParams.execution_node_id === 'string' ? rawParams.execution_node_id : '',
     search: typeof rawParams.search === 'string' ? rawParams.search : '',
     privacy_mode: typeof rawParams.privacy_mode === 'string' ? rawParams.privacy_mode : '',
     account_id: typeof rawParams.account_id === 'string' ? rawParams.account_id : '',
@@ -2061,9 +2157,25 @@ const handleSelectAllResults = async () => {
     )
     if (requestVersion !== selectionRequestVersion.value) return
 
-    setSelectedIds(snapshot.ids)
-    selectedAllResultIDs.value = new Set(snapshot.ids)
-    selectedAllResultSnapshot.value = snapshot
+    const manageableAccounts = snapshot.accounts.filter((account) => {
+      const owner = account.execution_node_id?.trim()
+        || executionNodeStatus.value?.runtime.legacy_unassigned_node_id
+        || 'api'
+      return !isExecutionNodeOwnerReadOnly(owner)
+    })
+    const manageableSnapshot: AccountSelectionSnapshot = {
+      accounts: manageableAccounts,
+      ids: manageableAccounts.map(account => account.id),
+      selectedPlatforms: Array.from(new Set(manageableAccounts.map(account => account.platform))),
+      selectedTypes: Array.from(new Set(manageableAccounts.map(account => account.type)))
+    }
+    setSelectedIds(manageableSnapshot.ids)
+    selectedAllResultIDs.value = new Set(manageableSnapshot.ids)
+    selectedAllResultSnapshot.value = manageableSnapshot
+    const excluded = snapshot.ids.length - manageableSnapshot.ids.length
+    if (excluded > 0) {
+      appStore.showWarning(t('admin.accounts.executionNodeBulkExcluded', { count: excluded }))
+    }
   } catch (error) {
     if (requestVersion !== selectionRequestVersion.value) return
     console.error('Failed to select all account results:', error)
@@ -2129,6 +2241,17 @@ const openBulkEditSelected = async () => {
 const openBulkEditFiltered = async () => {
   try {
     const filters = buildBulkEditFilterSnapshot()
+    const status = executionNodeStatus.value
+    if (status?.runtime.enabled) {
+      const localNodeID = status.runtime.node_id || 'api'
+      if (filters.execution_node_id && isExecutionNodeOwnerReadOnly(filters.execution_node_id)) {
+        appStore.showError(t('admin.accounts.executionNodeBulkRemoteReadOnly'))
+        return
+      }
+      // A filter-wide write must never span machines implicitly. Emergency
+      // takeover can still manage explicitly selected peer rows.
+      if (!filters.execution_node_id) filters.execution_node_id = localNodeID
+    }
     const snapshot = await fetchAllAccountSelection(
       (page, pageSize, requestFilters) => adminAPI.accounts.list(page, pageSize, requestFilters),
       filters
@@ -2161,6 +2284,7 @@ const buildAccountQueryFilters = () => ({
   type: params.type || '',
   status: params.status || '',
   group: params.group || '',
+  execution_node_id: params.execution_node_id || '',
   privacy_mode: params.privacy_mode || '',
   search: params.search || '',
   account_id: params.account_id || '',
@@ -2198,6 +2322,10 @@ const accountMatchesCurrentFilters = (account: Account) => {
     } else if (!groupIds.includes(Number(filters.group))) {
       return false
     }
+  }
+  if (filters.execution_node_id) {
+    const owner = accountExecutionNodeID(account)
+    if (owner !== filters.execution_node_id) return false
   }
   const privacyMode = typeof account.extra?.privacy_mode === 'string' ? account.extra.privacy_mode : ''
   if (filters.privacy_mode) {
@@ -2556,14 +2684,16 @@ onMounted(async () => {
   load()
   loadUpstreamBillingProbeGlobalState()
   try {
-    const [p, g, settings] = await Promise.allSettled([
+    const [p, g, settings, executionNodes] = await Promise.allSettled([
       adminAPI.proxies.getAll(),
       adminAPI.groups.getAll(),
-      adminAPI.settings.getSettings()
+      adminAPI.settings.getSettings(),
+      adminAPI.executionNodes?.getStatus?.()
     ])
     if (p.status === 'fulfilled') proxies.value = p.value
     if (g.status === 'fulfilled') groups.value = g.value
     if (settings.status === 'fulfilled') teamChildCreationEnabled.value = settings.value.team_child_creation_enabled === true
+    if (executionNodes.status === 'fulfilled') executionNodeStatus.value = executionNodes.value
   } catch (error) {
     console.error('Failed to load proxies/groups:', error)
   } finally {

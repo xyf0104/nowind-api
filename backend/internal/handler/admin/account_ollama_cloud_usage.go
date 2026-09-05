@@ -68,11 +68,15 @@ func (h *AccountHandler) GetOllamaCloudUsage(c *gin.Context) {
 }
 
 func (h *AccountHandler) SaveOllamaCloudUsageSession(c *gin.Context) {
-	if !h.requireOllamaCloudUsage(c) {
-		return
-	}
 	accountID, ok := ollamaCloudUsageAccountID(c)
 	if !ok {
+		return
+	}
+	if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
 	var req ollamaCloudUsageSessionRequest
@@ -89,11 +93,15 @@ func (h *AccountHandler) SaveOllamaCloudUsageSession(c *gin.Context) {
 }
 
 func (h *AccountHandler) DeleteOllamaCloudUsageSession(c *gin.Context) {
-	if !h.requireOllamaCloudUsage(c) {
-		return
-	}
 	accountID, ok := ollamaCloudUsageAccountID(c)
 	if !ok {
+		return
+	}
+	if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
 	state, err := h.ollamaCloudUsage.DeleteSession(c.Request.Context(), accountID)
@@ -105,11 +113,15 @@ func (h *AccountHandler) DeleteOllamaCloudUsageSession(c *gin.Context) {
 }
 
 func (h *AccountHandler) SetOllamaCloudUsageAutoRefresh(c *gin.Context) {
-	if !h.requireOllamaCloudUsage(c) {
-		return
-	}
 	accountID, ok := ollamaCloudUsageAccountID(c)
 	if !ok {
+		return
+	}
+	if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
 	var req ollamaCloudUsageAutoRefreshRequest
@@ -126,11 +138,15 @@ func (h *AccountHandler) SetOllamaCloudUsageAutoRefresh(c *gin.Context) {
 }
 
 func (h *AccountHandler) RefreshOllamaCloudUsage(c *gin.Context) {
-	if !h.requireOllamaCloudUsage(c) {
-		return
-	}
 	accountID, ok := ollamaCloudUsageAccountID(c)
 	if !ok {
+		return
+	}
+	if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
 	state, err := h.ollamaCloudUsage.Refresh(c.Request.Context(), accountID)

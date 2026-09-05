@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import ExecutionNodesView from '../ExecutionNodesView.vue'
@@ -63,6 +63,8 @@ function statusFixture(overrides: Partial<ExecutionNodeAdminStatus> = {}): Execu
   return {
     balancing_enabled: false,
     can_enable: true,
+    admin_write_allowed: true,
+    admin_write_mode: 'primary',
     database_reachable: true,
     heartbeat_store_reachable: true,
     runtime: {
@@ -154,6 +156,10 @@ describe('ExecutionNodesView', () => {
     updateSettings.mockResolvedValue({})
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('loads node health, account counts, and current weights', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -200,6 +206,7 @@ describe('ExecutionNodesView', () => {
 
     expect(showError).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="execution-node-label-0"]').text()).toContain('admin.executionNodes.localNode')
+    expect(wrapper.get('[data-testid="execution-node-weight-0"]').element).toHaveProperty('value', '9')
     expect(wrapper.get('[data-testid="execution-node-generate-invite"]').attributes('disabled')).toBeDefined()
   })
 
@@ -305,5 +312,64 @@ describe('ExecutionNodesView', () => {
       execution_node_balancing_enabled: true,
       execution_node_weights: { api: 4, api2: 1 }
     }))
+  })
+
+  it('explains that the secondary machine is read-only while keeping shared weights editable', async () => {
+    getStatus.mockResolvedValue(statusFixture({
+      balancing_enabled: true,
+      admin_write_allowed: false,
+      admin_write_mode: 'secondary_read_only',
+      runtime: { ...statusFixture().runtime, node_id: 'api2', legacy_unassigned_node_id: 'api' },
+      nodes: statusFixture().nodes.map((node) => ({ ...node, is_local: node.node_id === 'api2' }))
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="execution-node-admin-access"]').text()).toContain('admin.executionNodes.adminWriteSecondary')
+    expect(wrapper.get('[data-testid="execution-node-weight-0"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('refreshes shared weights every five seconds without overwriting a dirty draft', async () => {
+    vi.useFakeTimers()
+    getStatus
+      .mockResolvedValueOnce(statusFixture({
+        balancing_enabled: true,
+        nodes: statusFixture().nodes.map((node) => (
+          node.node_id === 'api' ? { ...node, weight: 3 } : node
+        ))
+      }))
+      .mockResolvedValue(statusFixture({
+        balancing_enabled: true,
+        nodes: statusFixture().nodes.map((node) => (
+          node.node_id === 'api' ? { ...node, weight: 8 } : node
+        ))
+      }))
+
+    const wrapper = mountView()
+    await flushPromises()
+    const weightInput = wrapper.get('[data-testid="execution-node-weight-0"]')
+    expect(weightInput.element).toHaveProperty('value', '3')
+
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(getStatus).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(getStatus).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="execution-node-weight-0"]').element).toHaveProperty('value', '8')
+
+    await wrapper.get('[data-testid="execution-node-weight-0"]').setValue('7')
+    getStatus.mockResolvedValue(statusFixture({
+      balancing_enabled: true,
+      nodes: statusFixture().nodes.map((node) => (
+        node.node_id === 'api' ? { ...node, weight: 6 } : node
+      ))
+    }))
+    await vi.advanceTimersByTimeAsync(5_000)
+    await flushPromises()
+
+    expect(getStatus).toHaveBeenCalledTimes(3)
+    expect(wrapper.get('[data-testid="execution-node-weight-0"]').element).toHaveProperty('value', '7')
+    wrapper.unmount()
   })
 })

@@ -43,6 +43,7 @@ export async function list(
     type?: string
     status?: string
     group?: string
+    execution_node_id?: string
     search?: string
     privacy_mode?: string
     lite?: string
@@ -81,6 +82,7 @@ export async function listWithEtag(
     type?: string
     status?: string
     group?: string
+    execution_node_id?: string
     search?: string
     privacy_mode?: string
     lite?: string

@@ -136,6 +136,22 @@ type AccountIDFilteredLister interface {
 	ListWithFiltersByIDs(ctx context.Context, params pagination.PaginationParams, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error)
 }
 
+// AccountExecutionNodeFilteredLister is an optional extension used by the
+// admin account list. Keeping it separate preserves the existing repository
+// contract for gateway and focused test doubles while allowing exact,
+// database-level pagination for node ownership filters.
+type AccountExecutionNodeFilteredLister interface {
+	ListWithFiltersByExecutionNode(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, legacyNodeID string) ([]Account, *pagination.PaginationResult, error)
+	ListWithFiltersByIDsAndExecutionNode(ctx context.Context, params pagination.PaginationParams, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, legacyNodeID string) ([]Account, *pagination.PaginationResult, error)
+}
+
+// AccountManagementAccessChecker is implemented by the production admin
+// service. It is intentionally optional on AdminService so existing read-only
+// integrations and test doubles remain source-compatible.
+type AccountManagementAccessChecker interface {
+	CheckAccountManagementAccess(ctx context.Context, accountID int64) error
+}
+
 type AccountDuplicateRepository interface {
 	// CreateWithAccountGroups atomically persists an account, its exact group priorities,
 	// and the scheduler outbox event for the new routing snapshot.

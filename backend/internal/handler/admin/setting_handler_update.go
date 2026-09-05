@@ -475,6 +475,20 @@ func omittedSettingKeys(sentFields map[string]json.RawMessage) service.OmittedSe
 	return omitted
 }
 
+func isExecutionNodeOnlySettingsUpdate(sentFields map[string]json.RawMessage) bool {
+	if len(sentFields) == 0 {
+		return false
+	}
+	for field := range sentFields {
+		switch field {
+		case "execution_node_balancing_enabled", "execution_node_weights", "execution_node_proxy_ids":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func settingsAuditRequest(req UpdateSettingsRequest) UpdateSettingsRequest {
 	req.TencentCaptchaAppSecretKey = strings.TrimSpace(req.TencentCaptchaAppSecretKey)
 	req.TencentCaptchaCloudSecretID = strings.TrimSpace(req.TencentCaptchaCloudSecretID)
@@ -496,6 +510,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	auditReq := settingsAuditRequest(req)
 	omitted := omittedSettingKeys(sentFields)
+	if !h.settingService.CanWriteSharedAdminState(c.Request.Context()) && !isExecutionNodeOnlySettingsUpdate(sentFields) {
+		response.ErrorWithDetails(c, http.StatusForbidden,
+			"This machine is read-only for shared configuration while the primary machine is online",
+			"EXECUTION_NODE_ADMIN_READ_ONLY", nil)
+		return
+	}
 
 	previousSettings, err := h.settingService.GetAllSettings(c.Request.Context())
 	if err != nil {

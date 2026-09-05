@@ -257,6 +257,9 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		ProxyID:                 a.ProxyID,
 		ProxyFallbackOriginID:   a.ProxyFallbackOriginID,
 		ProxyFallbackOriginName: a.ProxyFallbackOriginName,
+		// Leave historical ownership empty here. The admin UI resolves it from
+		// the runtime's configured legacy node instead of assuming a node named
+		// "api", so arbitrary paired XIASS machine names remain correct.
 		ExecutionNodeID:         a.ExecutionNodeID(""),
 		Concurrency:             a.Concurrency,
 		LoadFactor:              a.LoadFactor,
@@ -649,8 +652,9 @@ func AccountSummaryFromService(a *service.Account) *AccountSummary {
 		return nil
 	}
 	return &AccountSummary{
-		ID:   a.ID,
-		Name: a.Name,
+		ID:              a.ID,
+		Name:            a.Name,
+		ExecutionNodeID: a.ExecutionNodeID(""),
 	}
 }
 

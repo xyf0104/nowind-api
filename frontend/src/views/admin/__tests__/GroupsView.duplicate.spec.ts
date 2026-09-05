@@ -25,6 +25,28 @@ const {
   showError: vi.fn()
 }))
 
+const executionAccessState = vi.hoisted(() => ({ readOnly: false }))
+
+vi.mock('@/composables/useExecutionNodeAdminAccess', () => ({
+  useExecutionNodeAdminAccess: () => {
+    const readOnly = executionAccessState.readOnly
+    return {
+      executionNodeStatus: {
+        __v_isRef: true,
+        value: {
+          admin_write_allowed: !readOnly,
+          admin_write_mode: readOnly ? 'secondary_read_only' : 'primary',
+          runtime: { enabled: readOnly }
+        }
+      },
+      sharedWriteAllowed: { __v_isRef: true, value: !readOnly },
+      sharedReadOnly: { __v_isRef: true, value: readOnly },
+      emergencyTakeover: { __v_isRef: true, value: false },
+      loadExecutionNodeAdminAccess: vi.fn().mockResolvedValue(null)
+    }
+  }
+}))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     groups: {
@@ -161,6 +183,7 @@ function mountView() {
 
 describe('GroupsView duplicate action', () => {
   beforeEach(() => {
+    executionAccessState.readOnly = false
     localStorage.clear()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     for (const fn of [
@@ -268,6 +291,20 @@ describe('GroupsView duplicate action', () => {
     expect(showSuccess).toHaveBeenCalledWith('admin.groups.duplicateSuccess')
     expect(showError).toHaveBeenCalledWith('admin.groups.failedToLoad')
     expect(showError).not.toHaveBeenCalledWith('admin.groups.duplicateFailed')
+    wrapper.unmount()
+  })
+
+  it('shows the secondary read-only notice and disables shared group writes', async () => {
+    executionAccessState.readOnly = true
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="execution-node-shared-access-notice"]').text()).toContain(
+      'admin.executionNodes.sharedAccess.readOnlyTitle'
+    )
+    expect(wrapper.get('[data-tour="groups-create-btn"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('button[title="admin.groups.sortOrder"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="group-duplicate"]').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 })

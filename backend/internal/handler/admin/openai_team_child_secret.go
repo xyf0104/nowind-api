@@ -49,6 +49,10 @@ func (h *OpenAIOAuthHandler) SaveOpenAIAccountReauthorizationCredentials(c *gin.
 		response.BadRequest(c, "OpenAI OAuth 账号 ID 无效")
 		return
 	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	var req openAIAccountReauthorizationCredentialsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "登录邮箱无效")

@@ -50,7 +50,19 @@ type cachedExecutionNodeRoutingSettings struct {
 }
 
 func defaultExecutionNodeWeights() map[string]float64 {
-	return map[string]float64{"api": 1, "api2": 1}
+	return map[string]float64{"api": 9, "api2": 1}
+}
+
+// defaultExecutionNodeWeightFor returns the weight used when a node is first
+// prepared and no shared policy exists yet. The legacy node is the original
+// public instance, so it receives the primary share; every newly joined peer
+// starts at the secondary share. Once a policy is persisted, its exact values
+// always win and this helper is no longer consulted.
+func defaultExecutionNodeWeightFor(nodeID, legacyNodeID string) float64 {
+	if strings.TrimSpace(nodeID) != "" && strings.TrimSpace(nodeID) == strings.TrimSpace(legacyNodeID) {
+		return 9
+	}
+	return 1
 }
 
 func cloneExecutionNodeWeights(weights map[string]float64) map[string]float64 {

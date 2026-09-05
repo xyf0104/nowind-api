@@ -49,6 +49,8 @@ type ExecutionNodeAdminNode struct {
 type ExecutionNodeAdminStatus struct {
 	BalancingEnabled        bool                       `json:"balancing_enabled"`
 	CanEnable               bool                       `json:"can_enable"`
+	AdminWriteAllowed       bool                       `json:"admin_write_allowed"`
+	AdminWriteMode          string                     `json:"admin_write_mode"`
 	DatabaseReachable       bool                       `json:"database_reachable"`
 	HeartbeatStoreReachable bool                       `json:"heartbeat_store_reachable"`
 	Runtime                 ExecutionNodeRuntimeStatus `json:"runtime"`
@@ -59,6 +61,8 @@ type ExecutionNodeAdminStatus struct {
 func (s *SettingService) GetExecutionNodeAdminStatus(ctx context.Context) (*ExecutionNodeAdminStatus, error) {
 	status := &ExecutionNodeAdminStatus{
 		DatabaseReachable: true,
+		AdminWriteAllowed: true,
+		AdminWriteMode:    "single_node",
 		Nodes:             make([]ExecutionNodeAdminNode, 0),
 		Issues:            make([]ExecutionNodeAdminIssue, 0),
 	}
@@ -73,6 +77,7 @@ func (s *SettingService) GetExecutionNodeAdminStatus(ctx context.Context) (*Exec
 			LegacyUnassignedNodeID:  strings.TrimSpace(cfg.LegacyUnassignedNodeID),
 			LegacyUnassignedProxyID: cfg.LegacyUnassignedProxyID,
 		}
+		status.AdminWriteAllowed, status.AdminWriteMode = s.ExecutionNodeAdminWriteAccess(ctx)
 	}
 	addIssue := func(code, severity, message string) {
 		status.Issues = append(status.Issues, ExecutionNodeAdminIssue{Code: code, Severity: severity, Message: message})

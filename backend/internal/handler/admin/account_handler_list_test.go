@@ -100,27 +100,37 @@ func TestAccountHandlerListRejectsInvalidExactAccountID(t *testing.T) {
 func TestAccountHandlerListLiteUsesStrictCredentialFreeAllowlist(t *testing.T) {
 	router, adminSvc := setupAccountListRouter()
 	notes := "visible note"
-	adminSvc.accounts = []service.Account{{
-		ID:          17,
-		Name:        "safe picker entry",
-		Notes:       &notes,
-		Platform:    service.PlatformOpenAI,
-		Type:        service.AccountTypeOAuth,
-		Concurrency: 3,
-		Priority:    2,
-		Status:      service.StatusActive,
-		Schedulable: true,
-		Credentials: map[string]any{
-			"accessToken":   "must-not-render",
-			"refreshToken":  "must-not-render",
-			"client_secret": "must-not-render",
-			"nested":        map[string]any{"token": "must-not-render"},
+	adminSvc.accounts = []service.Account{
+		{
+			ID:          17,
+			Name:        "safe picker entry",
+			Notes:       &notes,
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeOAuth,
+			Concurrency: 3,
+			Priority:    2,
+			Status:      service.StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{
+				"accessToken":   "must-not-render",
+				"refreshToken":  "must-not-render",
+				"client_secret": "must-not-render",
+				"nested":        map[string]any{"token": "must-not-render"},
+			},
+			Extra: map[string]any{
+				"sessionToken":                       "must-not-render",
+				"custom_headers":                     map[string]any{"Authorization": "must-not-render"},
+				service.AccountExecutionNodeExtraKey: "api2",
+			},
 		},
-		Extra: map[string]any{
-			"sessionToken":   "must-not-render",
-			"custom_headers": map[string]any{"Authorization": "must-not-render"},
+		{
+			ID:       18,
+			Name:     "legacy picker entry",
+			Platform: service.PlatformAnthropic,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
 		},
-	}}
+	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?page=1&page_size=20&lite=true", nil)
@@ -138,15 +148,19 @@ func TestAccountHandlerListLiteUsesStrictCredentialFreeAllowlist(t *testing.T) {
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
-	require.Len(t, payload.Data.Items, 1)
+	require.Len(t, payload.Data.Items, 2)
 	item := payload.Data.Items[0]
 	require.Equal(t, "safe picker entry", item["name"])
 	require.Equal(t, "visible note", item["notes"])
-	for _, forbidden := range []string{
-		"credentials", "credentials_status", "extra", "proxy", "proxy_id",
-		"account_groups", "groups", "error_message", "rate_limit_reset_at",
-	} {
-		require.NotContains(t, item, forbidden)
+	require.Equal(t, "api2", item["execution_node_id"])
+	require.Equal(t, "", payload.Data.Items[1]["execution_node_id"])
+	for _, listedAccount := range payload.Data.Items {
+		for _, forbidden := range []string{
+			"credentials", "credentials_status", "extra", "proxy", "proxy_id",
+			"account_groups", "groups", "error_message", "rate_limit_reset_at",
+		} {
+			require.NotContains(t, listedAccount, forbidden)
+		}
 	}
 }
 

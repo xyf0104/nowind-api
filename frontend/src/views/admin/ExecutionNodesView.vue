@@ -32,6 +32,10 @@
             <StatusTile :label="t('admin.executionNodes.dataConnection')" :value="status.database_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')" :tone="status.database_reachable ? 'ok' : 'bad'" />
             <StatusTile :label="t('admin.executionNodes.machineConnection')" :value="status.runtime.enabled ? (status.heartbeat_store_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')) : t('admin.executionNodes.notRequired')" :tone="status.runtime.enabled ? (status.heartbeat_store_reachable ? 'ok' : 'warn') : 'warn'" />
           </div>
+          <div v-if="status.runtime.enabled" class="mx-5 mb-5 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm leading-6 sm:mx-6" :class="status.admin_write_mode === 'emergency_takeover' ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300' : status.admin_write_allowed ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-300' : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-300'" data-testid="execution-node-admin-access">
+            <Icon :name="status.admin_write_allowed ? 'check' : 'lock'" size="sm" class="mt-1 shrink-0" />
+            <span>{{ status.admin_write_mode === 'emergency_takeover' ? t('admin.executionNodes.adminWriteTakeover') : status.admin_write_allowed ? t('admin.executionNodes.adminWritePrimary') : t('admin.executionNodes.adminWriteSecondary') }}</span>
+          </div>
         </section>
 
         <section v-if="!status.runtime.enabled" class="card overflow-hidden">
@@ -136,6 +140,10 @@
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.nodesTitle') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.weightHint') }}</p>
             </div>
+            <span v-if="lastSyncedAt" class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400" data-testid="execution-node-sync-status">
+              <Icon name="refresh" size="xs" />
+              {{ t('admin.executionNodes.syncStatus', { time: formatSyncTime(lastSyncedAt) }) }}
+            </span>
           </div>
           <div class="space-y-3 p-5 sm:px-6">
             <div v-for="(node, index) in draftNodes" :key="node.key" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600" :data-testid="`execution-node-row-${index}`">
@@ -148,7 +156,7 @@
                 </div>
                 <label class="block min-w-0" :for="`execution-node-weight-${index}`">
                   <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.weight') }}</span>
-                  <input :id="`execution-node-weight-${index}`" v-model.number="node.weight" class="input mt-1 w-full" min="0" max="1000000" step="0.1" inputmode="decimal" type="number" :disabled="saving" :data-testid="`execution-node-weight-${index}`" />
+                  <input :id="`execution-node-weight-${index}`" v-model.number="node.weight" class="input mt-1 w-full" min="0" max="1000000" step="0.1" inputmode="decimal" type="number" :disabled="saving" :data-testid="`execution-node-weight-${index}`" @input="draftDirty = true" />
                 </label>
               </div>
               <div v-if="nodeStatus(node.nodeID)" class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
@@ -242,7 +250,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { ExecutionNodeAdminNode, ExecutionNodeAdminStatus, ExecutionNodePairingInvite, ExecutionNodePairingStatus } from '@/api/admin/executionNodes'
@@ -288,7 +296,10 @@ const takeoverSaving = ref(false)
 const showEnableConfirm = ref(false)
 const showUnpairConfirm = ref(false)
 const draftEnabled = ref(false)
+const draftDirty = ref(false)
+const lastSyncedAt = ref<number | null>(null)
 let nodeSequence = 0
+let statusPollTimer: number | null = null
 
 interface NodeDraft { key: number; nodeID: string; weight: number; proxyID: number }
 const draftNodes = ref<NodeDraft[]>([])
@@ -349,8 +360,12 @@ function syncDraft(next: ExecutionNodeAdminStatus): void {
     pairingTargetID.value = next.runtime.node_id
   }
   draftNodes.value = (next.nodes ?? []).map((node) => ({ key: ++nodeSequence, nodeID: node.node_id, weight: node.weight, proxyID: node.proxy_id || 0 }))
-  if (!draftNodes.value.length) draftNodes.value = [{ key: ++nodeSequence, nodeID: localNodeID.value, weight: 1, proxyID: 0 }]
+  if (!draftNodes.value.length) {
+    // Before a second machine joins, this is the first/source machine.
+    draftNodes.value = [{ key: ++nodeSequence, nodeID: localNodeID.value, weight: 9, proxyID: 0 }]
+  }
   if (!pairingTargetURL.value) pairingTargetURL.value = browserOrigin()
+  draftDirty.value = false
 }
 
 async function initializeRuntime(): Promise<void> {
@@ -366,14 +381,16 @@ async function initializeRuntime(): Promise<void> {
   }
 }
 
-async function load(): Promise<void> {
+async function load(silent = false): Promise<void> {
+  if (loading.value) return
   loading.value = true
   try {
     const nextStatus = await adminAPI.executionNodes.getStatus()
     status.value = nextStatus
-    syncDraft(nextStatus)
+    lastSyncedAt.value = Date.now()
+    if (!silent || !draftDirty.value) syncDraft(nextStatus)
   } catch (error) {
-    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.reloadFailed')))
+    if (!silent) appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.reloadFailed')))
   } finally {
     loading.value = false
   }
@@ -492,11 +509,13 @@ function requestToggle(next: boolean): void {
     return
   }
   draftEnabled.value = false
+  draftDirty.value = true
 }
 
 function confirmEnable(): void {
   showEnableConfirm.value = false
   draftEnabled.value = true
+  draftDirty.value = true
 }
 
 async function save(): Promise<void> {
@@ -523,5 +542,20 @@ async function save(): Promise<void> {
   }
 }
 
-onMounted(() => { void refreshAll() })
+function formatSyncTime(value: number): string {
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+onMounted(() => {
+  void refreshAll()
+  statusPollTimer = window.setInterval(() => {
+    if (document.visibilityState === 'visible' && !saving.value && !pairingSaving.value && !runtimeSaving.value) {
+      void load(true)
+    }
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (statusPollTimer !== null) window.clearInterval(statusPollTimer)
+})
 </script>

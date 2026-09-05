@@ -37,6 +37,8 @@ export interface ExecutionNodeAdminNode {
 export interface ExecutionNodeAdminStatus {
   balancing_enabled: boolean
   can_enable: boolean
+  admin_write_allowed: boolean
+  admin_write_mode: string
   database_reachable: boolean
   heartbeat_store_reachable: boolean
   runtime: ExecutionNodeRuntimeStatus
@@ -87,8 +89,17 @@ export interface ExecutionNodeRuntimeConfig {
 
 export async function getStatus(): Promise<ExecutionNodeAdminStatus> {
   const { data } = await apiClient.get<ExecutionNodeAdminStatus>('/admin/settings/execution-nodes/status')
+  const runtime = data.runtime
+  const localNodeID = runtime?.node_id?.trim() ?? ''
+  const primaryNodeID = runtime?.legacy_unassigned_node_id?.trim() ?? ''
+  const legacyResponseAllowed = !runtime?.enabled || (localNodeID !== '' && localNodeID === primaryNodeID)
   return {
     ...data,
+    // During a rolling update an older backend does not return the permission
+    // fields yet. Only a confirmed single/primary node may stay writable; an
+    // unknown secondary fails closed until its backend has been upgraded.
+    admin_write_allowed: typeof data.admin_write_allowed === 'boolean' ? data.admin_write_allowed : legacyResponseAllowed,
+    admin_write_mode: data.admin_write_mode ?? (legacyResponseAllowed ? (runtime?.enabled ? 'primary' : 'single_node') : 'secondary_read_only'),
     nodes: data.nodes ?? [],
     issues: data.issues ?? []
   }

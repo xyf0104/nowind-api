@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -100,6 +102,112 @@ func (r *settingRepository) SetMultiple(ctx context.Context, settings map[string
 		OnConflictColumns(setting.FieldKey).
 		UpdateNewValues().
 		Exec(ctx)
+}
+
+// MigrateExecutionNodeDefaultWeights atomically claims the one-time migration
+// and changes only an untouched two-node 1:1 policy. Explicit custom ratios,
+// drained nodes, malformed values, and already-migrated installations remain
+// unchanged.
+func (r *settingRepository) MigrateExecutionNodeDefaultWeights(ctx context.Context, sourceNodeID string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("settings database is unavailable")
+	}
+	sourceNodeID = strings.TrimSpace(sourceNodeID)
+	if sourceNodeID == "" {
+		return false, errors.New("source execution node ID is empty")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	rollback := func() { _ = tx.Rollback() }
+
+	var claimed string
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO settings (key, value, updated_at)
+		VALUES ($1, 'pending', NOW())
+		ON CONFLICT (key) DO NOTHING
+		RETURNING value
+	`, service.SettingKeyExecutionNodeDefaultWeightsMigrated).Scan(&claimed)
+	if errors.Is(err, sql.ErrNoRows) {
+		rollback()
+		return false, nil
+	}
+	if err != nil {
+		rollback()
+		return false, err
+	}
+
+	var rawWeights string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = $1 FOR UPDATE`, service.SettingKeyExecutionNodeWeights).Scan(&rawWeights)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Do not consume the one-time marker before a two-node policy exists.
+		// Pairing can then complete the migration atomically when the peer joins.
+		rollback()
+		return false, nil
+	}
+	if err != nil {
+		rollback()
+		return false, err
+	}
+
+	weights := map[string]float64{}
+	if err := json.Unmarshal([]byte(rawWeights), &weights); err != nil {
+		if err := finalizeExecutionNodeDefaultWeightsMigration(ctx, tx, sourceNodeID, "preserved_invalid"); err != nil {
+			rollback()
+			return false, err
+		}
+		return false, tx.Commit()
+	}
+	if len(weights) < 2 {
+		rollback()
+		return false, nil
+	}
+
+	migrated := len(weights) == 2
+	if _, exists := weights[sourceNodeID]; !exists {
+		migrated = false
+	}
+	for _, weight := range weights {
+		if weight != 1 {
+			migrated = false
+			break
+		}
+	}
+	if migrated {
+		weights[sourceNodeID] = 9
+		encoded, err := json.Marshal(weights)
+		if err != nil {
+			rollback()
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = $1, updated_at = NOW() WHERE key = $2`, string(encoded), service.SettingKeyExecutionNodeWeights); err != nil {
+			rollback()
+			return false, err
+		}
+	}
+	result := "preserved_custom"
+	if migrated {
+		result = "migrated_9_to_1"
+	}
+	if err := finalizeExecutionNodeDefaultWeightsMigration(ctx, tx, sourceNodeID, result); err != nil {
+		rollback()
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return migrated, nil
+}
+
+func finalizeExecutionNodeDefaultWeightsMigration(ctx context.Context, tx *sql.Tx, sourceNodeID, result string) error {
+	marker, err := json.Marshal(map[string]string{"source_node_id": sourceNodeID, "result": result})
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET value = $1, updated_at = NOW() WHERE key = $2`, string(marker), service.SettingKeyExecutionNodeDefaultWeightsMigrated)
+	return err
 }
 
 func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, error) {

@@ -555,6 +555,13 @@ func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.
 			),
 		)
 	}
+	if filters.RequireEmail {
+		q = q.Where(predicate.User(func(s *entsql.Selector) {
+			s.Where(entsql.P(func(b *entsql.Builder) {
+				b.WriteString("BTRIM(").Ident(s.C(dbuser.FieldEmail)).WriteString(") <> ''")
+			}))
+		}))
+	}
 
 	if filters.GroupName != "" {
 		q = q.Where(dbuser.HasAllowedGroupsWith(
@@ -659,6 +666,9 @@ func userListOrder(params pagination.PaginationParams) []func(*entsql.Selector) 
 
 	if sortBy == "last_used_at" {
 		return userLastUsedAtOrder(sortOrder)
+	}
+	if sortBy == "last_activity_at" {
+		return userLastActivityAtOrder(sortOrder)
 	}
 
 	var field string
@@ -782,6 +792,34 @@ func userLastUsedAtOrder(sortOrder string) []func(*entsql.Selector) {
 	return []func(*entsql.Selector){
 		orderExpr("DESC", "LAST", entsql.Desc),
 	}
+}
+
+// userLastActivityAtOrder orders by the latest login or usage-log timestamp.
+// Usage is read from usage_logs because users do not persist a separate
+// last-used column; the expression stays in the database so pagination keeps
+// the newest eligible users instead of sorting only the current page.
+func userLastActivityAtOrder(sortOrder string) []func(*entsql.Selector) {
+	return []func(*entsql.Selector){func(s *entsql.Selector) {
+		userID := s.C(dbuser.FieldID)
+		lastUsage := fmt.Sprintf("(SELECT MAX(created_at) FROM usage_logs WHERE user_id = %s)", userID)
+		lastActivity := fmt.Sprintf(
+			"GREATEST(COALESCE(%s, '-infinity'::timestamptz), COALESCE(%s, '-infinity'::timestamptz))",
+			s.C(dbuser.FieldLastLoginAt),
+			lastUsage,
+		)
+		lastActivity = fmt.Sprintf(
+			"GREATEST(%s, COALESCE(%s, '-infinity'::timestamptz))",
+			lastActivity,
+			s.C(dbuser.FieldLastActiveAt),
+		)
+		if sortOrder == pagination.SortOrderAsc {
+			s.OrderExpr(entsql.Expr(lastActivity + " ASC NULLS FIRST"))
+			s.OrderBy(entsql.Asc(s.C(dbuser.FieldID)))
+			return
+		}
+		s.OrderExpr(entsql.Expr(lastActivity + " DESC NULLS LAST"))
+		s.OrderBy(entsql.Desc(s.C(dbuser.FieldID)))
+	}}
 }
 
 // filterUsersByAttributes returns user IDs that match ALL the given attribute filters

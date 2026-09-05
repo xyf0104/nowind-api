@@ -123,6 +123,7 @@ type BindUserAuthIdentityChannelRequest struct {
 //   - api_key_group_id: filter by the exact group bound to the user's API keys
 func (h *UserHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
+	emailEligible := c.Query("email_eligible") == "true"
 
 	search := c.Query("search")
 	// 标准化和验证 search 参数
@@ -138,6 +139,17 @@ func (h *UserHandler) List(c *gin.Context) {
 		GroupName:  strings.TrimSpace(c.Query("group_name")),
 		Attributes: parseAttributeFilters(c),
 	}
+	if emailEligible {
+		// Announcement email selection has a deliberately bounded, stable
+		// audience: the 70 most recently active ordinary users with an email.
+		// Keep this special projection here so the UI's count cannot disagree
+		// with the dispatch service's recipient policy.
+		page = 1
+		pageSize = 70
+		filters.Status = service.StatusActive
+		filters.Role = service.RoleUser
+		filters.RequireEmail = true
+	}
 	if raw := strings.TrimSpace(c.Query("api_key_group_id")); raw != "" {
 		if id, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil && id > 0 {
 			filters.APIKeyGroupID = id
@@ -145,6 +157,10 @@ func (h *UserHandler) List(c *gin.Context) {
 	}
 	sortBy := c.DefaultQuery("sort_by", "created_at")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
+	if emailEligible {
+		sortBy = "last_activity_at"
+		sortOrder = "desc"
+	}
 	if raw, ok := c.GetQuery("include_subscriptions"); ok {
 		includeSubscriptions := parseBoolQueryWithDefault(raw, true)
 		filters.IncludeSubscriptions = &includeSubscriptions
@@ -154,6 +170,11 @@ func (h *UserHandler) List(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if emailEligible {
+		// The repository total includes every eligible user, while this endpoint
+		// intentionally exposes only the bounded first page.
+		total = int64(len(users))
 	}
 
 	// Batch get current concurrency (nil map if unavailable)

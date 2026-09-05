@@ -125,7 +125,7 @@
         </div>
 
         <Pagination
-          v-if="userPagination.total > 0"
+          v-if="userPagination.total > 0 && userPagination.pages > 1"
           :page="userPagination.page"
           :total="userPagination.total"
           :page-size="userPagination.page_size"
@@ -232,7 +232,7 @@ const dispatching = ref(false)
 const showConfirmDialog = ref(false)
 const lastDispatchResult = ref<AnnouncementEmailDispatchResult | null>(null)
 const deliverySummary = reactive<AnnouncementEmailDeliverySummary>({ total: 0, claimed: 0, sent: 0, failed: 0 })
-const userPagination = reactive({ page: 1, page_size: 20, total: 0 })
+const userPagination = reactive({ page: 1, page_size: 70, total: 0, pages: 1 })
 
 let usersController: AbortController | null = null
 let searchTimer: number | null = null
@@ -256,15 +256,18 @@ async function loadUsers() {
     const response = await adminAPI.users.list(userPagination.page, userPagination.page_size, {
       status: 'active',
       search: searchQuery.value.trim() || undefined,
-      sort_by: 'email',
-      sort_order: 'asc',
-      include_subscriptions: false,
+    sort_by: 'last_activity_at',
+    sort_order: 'desc',
+    include_subscriptions: false,
+    role: 'user',
+    email_eligible: true,
     }, { signal: controller.signal })
     if (controller.signal.aborted || usersController !== controller) return
     users.value = response.items
     userPagination.total = response.total
     userPagination.page = response.page
     userPagination.page_size = response.page_size
+    userPagination.pages = response.pages
   } catch (error: any) {
     if (controller.signal.aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return
     appStore.showError(error?.response?.data?.message || t('admin.announcements.emailDispatch.failedToLoadUsers'))
@@ -298,7 +301,8 @@ function resetDialogState() {
   selectedUserIDs.value = new Set()
   searchQuery.value = ''
   userPagination.page = 1
-  userPagination.page_size = 20
+  userPagination.page_size = 70
+  userPagination.pages = 1
   userPagination.total = 0
   lastDispatchResult.value = null
   deliverySummary.total = 0

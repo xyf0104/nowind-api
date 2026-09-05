@@ -493,6 +493,10 @@ func (h *OpenAIOAuthHandler) CreateTeamChildMailboxShare(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, account.ID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	h.createTeamMailboxShare(c, email, account.ID, req.Replace)
 }
 
@@ -505,6 +509,10 @@ func (h *OpenAIOAuthHandler) RevokeTeamChildMailboxShare(c *gin.Context) {
 	}
 	account, email, ok := h.teamMailboxShareAccount(c)
 	if !ok {
+		return
+	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, account.ID); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 	h.revokeTeamMailboxShare(c, email, account.ID)
@@ -535,6 +543,12 @@ func (h *OpenAIOAuthHandler) CreatePendingTeamChildMailboxShare(c *gin.Context) 
 	if !ok {
 		return
 	}
+	if accountID > 0 {
+		if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+	}
 	h.createTeamMailboxShare(c, email, accountID, replace)
 }
 
@@ -549,6 +563,12 @@ func (h *OpenAIOAuthHandler) RevokePendingTeamChildMailboxShare(c *gin.Context) 
 	if !ok {
 		return
 	}
+	if accountID > 0 {
+		if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+	}
 	h.revokeTeamMailboxShare(c, email, accountID)
 }
 
@@ -559,6 +579,10 @@ func (h *OpenAIOAuthHandler) respondTeamMailboxShareStatus(c *gin.Context, email
 		return
 	}
 	if active && accountID > 0 && record.AccountID == 0 {
+		if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
 		if err := h.ensureTeamMailboxShareRegistry().attachAccount(email, accountID); err != nil {
 			response.InternalError(c, "无法关联接码链接")
 			return

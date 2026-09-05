@@ -356,15 +356,25 @@ func (s *SettingService) executionNodePairingRoutingSettings(ctx context.Context
 	if err != nil {
 		return nil, fmt.Errorf("read execution-node routing settings: %w", err)
 	}
-	weights := map[string]float64{localNodeID: 1}
+	weights := map[string]float64{localNodeID: 9}
 	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeWeights]); raw != "" {
 		weights, err = decodeExecutionNodeWeights(raw)
 		if err != nil {
 			return nil, err
 		}
 	}
-	weights[localNodeID] = maxFloat(weights[localNodeID], 1)
-	weights[targetNodeID] = maxFloat(weights[targetNodeID], 1)
+	// Older single-node runtimes were initialized with weight 1. When their
+	// first peer is added, finish the default migration in the same atomic
+	// pairing write so the cluster never starts life as an accidental 1:1 pool.
+	if len(weights) == 1 && weights[localNodeID] == 1 {
+		weights[localNodeID] = 9
+	}
+	if _, exists := weights[localNodeID]; !exists {
+		weights[localNodeID] = 9
+	}
+	if _, exists := weights[targetNodeID]; !exists {
+		weights[targetNodeID] = 1
+	}
 	proxyIDs := map[string]int64{}
 	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeProxyIDs]); raw != "" {
 		proxyIDs, err = decodeExecutionNodeProxyIDs(raw)

@@ -1875,6 +1875,7 @@ export interface UsageLog {
 export interface UsageLogAccountSummary {
   id: number
   name: string
+	execution_node_id?: string
 }
 
 export interface AdminUsageLog extends UsageLog {
@@ -2277,6 +2278,7 @@ export interface UsageQueryParams {
   timezone?: string
   sort_by?: string
   sort_order?: 'asc' | 'desc'
+	execution_node_id?: string
 }
 
 // ==================== Account Usage Statistics ====================

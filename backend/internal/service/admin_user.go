@@ -436,6 +436,123 @@ func (s *adminServiceImpl) DeleteUser(ctx context.Context, id int64) error {
 	return nil
 }
 
+// DeleteInactiveUserIfStillInactive performs the inactivity worker's final
+// check and complete deletion under one PostgreSQL transaction. The user row
+// lock closes the race where a login or API request arrives after the due list
+// was read but before the delete starts.
+func (s *adminServiceImpl) DeleteInactiveUserIfStillInactive(ctx context.Context, id int64, cutoff time.Time) (bool, error) {
+	if s == nil || s.entClient == nil || id <= 0 {
+		return false, ErrUserNotFound
+	}
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		role       string
+		status     string
+		deletedAt  sql.NullTime
+		lastActive time.Time
+	)
+	rows, err := tx.Client().QueryContext(ctx, `
+		SELECT u.role, u.status, u.deleted_at,
+		       GREATEST(
+		           u.created_at,
+		           COALESCE(u.last_login_at, '-infinity'::timestamptz),
+		           COALESCE(u.last_active_at, '-infinity'::timestamptz),
+		           COALESCE((SELECT MAX(ak.last_used_at) FROM api_keys ak WHERE ak.user_id = u.id), '-infinity'::timestamptz),
+		           COALESCE((SELECT MAX(ul.created_at) FROM usage_logs ul WHERE ul.user_id = u.id), '-infinity'::timestamptz)
+		       ) AS last_activity_at
+		FROM users u
+		WHERE u.id = $1
+		FOR UPDATE`, id)
+	if err != nil {
+		return false, err
+	}
+	if !rows.Next() {
+		rowErr := rows.Err()
+		_ = rows.Close()
+		if rowErr != nil {
+			return false, rowErr
+		}
+		return false, ErrUserNotFound
+	}
+	if err := rows.Scan(&role, &status, &deletedAt, &lastActive); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if deletedAt.Valid || role == RoleAdmin || status != StatusActive || !lastActive.Before(cutoff) {
+		return false, nil
+	}
+
+	// Preserve the established admin deletion semantics: tombstone every active
+	// API key in the same transaction before soft-deleting the user and its auth
+	// identities. The raw query is deliberately transaction-local.
+	type keyRef struct {
+		id  int64
+		key string
+	}
+	keys := make([]keyRef, 0)
+	rows, err = tx.Client().QueryContext(ctx, `
+		SELECT id, key
+		FROM api_keys
+		WHERE user_id = $1 AND deleted_at IS NULL
+		ORDER BY id
+		FOR UPDATE`, id)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var key keyRef
+		if err := rows.Scan(&key.id, &key.key); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+
+	if s.apiKeyRepo != nil {
+		txCtx := dbent.NewTxContext(ctx, tx)
+		for _, key := range keys {
+			if err := s.apiKeyRepo.DeleteWithAudit(txCtx, key.id); err != nil {
+				return false, fmt.Errorf("delete inactive user api key %d: %w", key.id, err)
+			}
+		}
+		if err := s.userRepo.Delete(txCtx, id); err != nil {
+			return false, err
+		}
+	} else {
+		if err := s.userRepo.Delete(dbent.NewTxContext(ctx, tx), id); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+
+	if s.authCacheInvalidator != nil {
+		for _, key := range keys {
+			if strings.TrimSpace(key.key) != "" {
+				s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, key.key)
+			}
+		}
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, id)
+	}
+	return true, nil
+}
+
 func (s *adminServiceImpl) listUserAPIKeysForDeletion(ctx context.Context, userID int64) ([]APIKey, error) {
 	if s.apiKeyRepo == nil {
 		return nil, nil

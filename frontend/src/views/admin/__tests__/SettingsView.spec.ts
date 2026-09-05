@@ -76,6 +76,49 @@ const {
 }));
 
 const localeRef = vi.hoisted(() => ({ value: "zh-CN" }));
+const executionAccessState = vi.hoisted(() => ({ readOnly: false }));
+
+vi.mock("@/composables/useExecutionNodeAdminAccess", () => ({
+  useExecutionNodeAdminAccess: () => {
+    const readOnly = executionAccessState.readOnly;
+    return {
+      executionNodeStatus: {
+        __v_isRef: true,
+        value: {
+          admin_write_allowed: !readOnly,
+          admin_write_mode: readOnly ? "secondary_read_only" : "primary",
+          runtime: { enabled: readOnly },
+        },
+      },
+      sharedWriteAllowed: { __v_isRef: true, value: !readOnly },
+      sharedReadOnly: { __v_isRef: true, value: readOnly },
+      emergencyTakeover: { __v_isRef: true, value: false },
+      loadExecutionNodeAdminAccess: vi.fn().mockResolvedValue(null),
+    };
+  },
+}));
+
+vi.mock("@/api/admin/executionNodes", () => ({
+  executionNodesAPI: {
+    getStatus: vi.fn().mockResolvedValue(null),
+  },
+  default: {
+    getStatus: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+vi.mock("@/components/account/PixlabSMSCardKeyManager.vue", () => ({
+  default: { template: "<div data-test=\"pixlab-card-key-manager-stub\" />" },
+}));
+
+vi.mock("@/api/client", () => ({
+  apiClient: {
+    get: vi.fn().mockResolvedValue({ data: { items: [], total: 0 } }),
+    post: vi.fn().mockResolvedValue({ data: {} }),
+    put: vi.fn().mockResolvedValue({ data: {} }),
+    delete: vi.fn().mockResolvedValue({ data: {} }),
+  },
+}));
 
 vi.mock("@/api", () => ({
   adminAPI: {
@@ -456,7 +499,7 @@ const baseSettingsResponse = {
   max_claude_code_version: "",
   allow_ungrouped_key_scheduling: false,
   execution_node_balancing_enabled: false,
-  execution_node_weights: { api: 1, api2: 1 },
+  execution_node_weights: { api: 9, api2: 1 },
   execution_node_proxy_ids: {},
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
@@ -554,6 +597,7 @@ function mountView() {
         ProxySelector: true,
         ImageUpload: ImageUploadStub,
         BackupSettings: true,
+        PixlabSMSCardKeyManager: true,
       },
     },
   });
@@ -601,6 +645,7 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
 
 describe("admin SettingsView payment visible method controls", () => {
   beforeEach(() => {
+    executionAccessState.readOnly = false;
     getSettings.mockReset();
     updateSettings.mockReset();
     getWebSearchEmulationConfig.mockReset();
@@ -712,6 +757,22 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(backupTabButton).toBeDefined();
     await backupTabButton!.trigger("click");
     expect(wrapper.find('[data-testid="settings-save-button"]').exists()).toBe(false);
+  });
+
+  it("shows the secondary read-only notice and disables the shared settings save action", async () => {
+    executionAccessState.readOnly = true;
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="execution-node-shared-access-notice"]').text()).toContain(
+      "admin.executionNodes.sharedAccess.readOnlyTitle",
+    );
+    expect(wrapper.get('[data-testid="settings-save-button"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    wrapper.unmount();
   });
 
   it("renders panel rate limit card and saves settings", async () => {

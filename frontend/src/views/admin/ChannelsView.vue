@@ -1,5 +1,6 @@
 <template>
   <AppLayout>
+    <ExecutionNodeAdminAccessNotice class="mb-4" />
     <TablePageLayout>
       <template #filters>
         <div class="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
@@ -39,7 +40,7 @@
             >
               <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
             </button>
-            <button @click="openCreateDialog" class="btn btn-primary">
+            <button @click="openCreateDialog" :disabled="sharedReadOnly" class="btn btn-primary disabled:cursor-not-allowed disabled:opacity-50">
               <Icon name="plus" size="md" class="mr-2" />
               {{ t('admin.channels.createChannel', 'Create Channel') }}
             </button>
@@ -68,6 +69,7 @@
           <template #cell-status="{ row }">
             <Toggle
               :modelValue="row.status === 'active'"
+              :disabled="sharedReadOnly"
               @update:modelValue="toggleChannelStatus(row)"
             />
           </template>
@@ -100,14 +102,16 @@
             <div class="flex items-center gap-1">
               <button
                 @click="openEditDialog(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
+                :disabled="sharedReadOnly"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-dark-700 dark:hover:text-primary-400"
               >
                 <Icon name="edit" size="sm" />
                 <span class="text-xs">{{ t('common.edit', 'Edit') }}</span>
               </button>
               <button
                 @click="handleDelete(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                :disabled="sharedReadOnly"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-900/20 dark:hover:text-red-400"
               >
                 <Icon name="trash" size="sm" />
                 <span class="text-xs">{{ t('common.delete', 'Delete') }}</span>
@@ -119,7 +123,7 @@
             <EmptyState
               :title="t('admin.channels.noChannelsYet', 'No Channels Yet')"
               :description="t('admin.channels.createFirstChannel', 'Create your first channel to manage model pricing')"
-              :action-text="t('admin.channels.createChannel', 'Create Channel')"
+              :action-text="sharedReadOnly ? '' : t('admin.channels.createChannel', 'Create Channel')"
               @action="openCreateDialog"
             />
           </template>
@@ -597,7 +601,7 @@
           <button
             type="submit"
             form="channel-form"
-            :disabled="submitting"
+            :disabled="sharedReadOnly || submitting"
             class="btn btn-primary"
           >
             {{ submitting
@@ -652,9 +656,17 @@ import Toggle from '@/components/common/Toggle.vue'
 import PricingEntryCard from '@/components/admin/channel/PricingEntryCard.vue'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
+import { useExecutionNodeAdminAccess } from '@/composables/useExecutionNodeAdminAccess'
+import ExecutionNodeAdminAccessNotice from '@/components/admin/ExecutionNodeAdminAccessNotice.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const { sharedReadOnly, loadExecutionNodeAdminAccess } = useExecutionNodeAdminAccess()
+const ensureSharedWrite = (): boolean => {
+  if (!sharedReadOnly.value) return true
+  appStore.showError(t('admin.executionNodes.sharedAccess.actionBlocked'))
+  return false
+}
 
 // Web Search global enabled state (loaded once on mount)
 const webSearchGlobalEnabled = ref(false)
@@ -1348,6 +1360,7 @@ function resetForm() {
 }
 
 async function openCreateDialog() {
+  if (!ensureSharedWrite()) return
   editingChannel.value = null
   resetForm()
   await Promise.all([loadGroups(), loadAllChannelsForConflict()])
@@ -1355,6 +1368,7 @@ async function openCreateDialog() {
 }
 
 async function openEditDialog(channel: Channel) {
+  if (!ensureSharedWrite()) return
   editingChannel.value = channel
   form.name = channel.name
   form.description = channel.description || ''
@@ -1455,6 +1469,7 @@ function closeDialog() {
 }
 
 async function handleSubmit() {
+  if (!ensureSharedWrite()) return
   if (submitting.value) return
   if (!form.name.trim()) {
     appStore.showError(t('admin.channels.nameRequired', 'Please enter a channel name'))
@@ -1595,6 +1610,7 @@ async function handleSubmit() {
 
 // ── Toggle status ──
 async function toggleChannelStatus(channel: Channel) {
+  if (!ensureSharedWrite()) return
   const newStatus = channel.status === 'active' ? 'disabled' : 'active'
   try {
     await adminAPI.channels.update(channel.id, { status: newStatus })
@@ -1612,11 +1628,13 @@ async function toggleChannelStatus(channel: Channel) {
 
 // ── Delete ──
 function handleDelete(channel: Channel) {
+  if (!ensureSharedWrite()) return
   deletingChannel.value = channel
   showDeleteDialog.value = true
 }
 
 async function confirmDelete() {
+  if (!ensureSharedWrite()) return
   if (!deletingChannel.value) return
 
   try {
@@ -1632,6 +1650,7 @@ async function confirmDelete() {
 
 // ── Lifecycle ──
 onMounted(() => {
+  void loadExecutionNodeAdminAccess(true)
   loadChannels()
   loadGroups()
   loadWebSearchGlobalState()

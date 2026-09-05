@@ -373,6 +373,10 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	// Get account
 	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
@@ -727,6 +731,10 @@ func (h *OpenAIOAuthHandler) RefreshQuota(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	if h.quotaService == nil {
 		response.BadRequest(c, "openai quota service is not enabled")
 		return
@@ -771,6 +779,10 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, parentID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	var req CreateShadowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -798,6 +810,10 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if err := ensureAdminAccountManagementAccess(c.Request.Context(), h.adminService, accountID); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 	if h.quotaService == nil {

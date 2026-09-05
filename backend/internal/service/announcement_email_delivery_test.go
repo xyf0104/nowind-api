@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,7 +28,9 @@ func (r *announcementEmailRepoStub) GetByID(_ context.Context, id int64) (*Annou
 
 type announcementEmailUserRepoStub struct {
 	UserRepository
-	users map[int64]User
+	users      map[int64]User
+	listParams pagination.PaginationParams
+	listFilter UserListFilters
 }
 
 func (r *announcementEmailUserRepoStub) ListWithFilters(_ context.Context, params pagination.PaginationParams, filters UserListFilters) ([]User, *pagination.PaginationResult, error) {
@@ -34,14 +39,56 @@ func (r *announcementEmailUserRepoStub) ListWithFilters(_ context.Context, param
 		if filters.Status != "" && user.Status != filters.Status {
 			continue
 		}
+		if filters.Role != "" && user.Role != filters.Role {
+			continue
+		}
+		if filters.RequireEmail && strings.TrimSpace(user.Email) == "" {
+			continue
+		}
 		items = append(items, user)
 	}
+	r.listParams = params
+	r.listFilter = filters
+	if params.SortBy == "last_activity_at" {
+		sort.Slice(items, func(i, j int) bool {
+			left := announcementEmailUserActivity(items[i])
+			right := announcementEmailUserActivity(items[j])
+			if left.Equal(right) {
+				return items[i].ID > items[j].ID
+			}
+			return left.After(right)
+		})
+	}
+	total := len(items)
+	start := params.Offset()
+	if start > len(items) {
+		start = len(items)
+	}
+	end := start + params.Limit()
+	if end > len(items) {
+		end = len(items)
+	}
+	items = items[start:end]
 	return items, &pagination.PaginationResult{
-		Total:    int64(len(items)),
+		Total:    int64(total),
 		Page:     params.Page,
 		PageSize: params.PageSize,
-		Pages:    1,
+		Pages:    (total + params.Limit() - 1) / params.Limit(),
 	}, nil
+}
+
+func announcementEmailUserActivity(user User) time.Time {
+	var latest time.Time
+	if user.LastLoginAt != nil {
+		latest = *user.LastLoginAt
+	}
+	if user.LastActiveAt != nil && user.LastActiveAt.After(latest) {
+		latest = *user.LastActiveAt
+	}
+	if user.LastUsedAt != nil && user.LastUsedAt.After(latest) {
+		latest = *user.LastUsedAt
+	}
+	return latest
 }
 
 func (r *announcementEmailUserRepoStub) GetByID(_ context.Context, id int64) (*User, error) {
@@ -171,6 +218,9 @@ func (r *announcementEmailDeliveryMemoryRepo) Summary(_ context.Context, announc
 func newAnnouncementEmailTestService(users ...User) (*AnnouncementService, *announcementEmailSenderStub, *announcementEmailDeliveryMemoryRepo) {
 	userRepo := &announcementEmailUserRepoStub{users: make(map[int64]User, len(users))}
 	for _, user := range users {
+		if user.Role == "" {
+			user.Role = RoleUser
+		}
 		userRepo.users[user.ID] = user
 	}
 	announcementRepo := &announcementEmailRepoStub{announcement: &Announcement{
@@ -253,8 +303,59 @@ func TestAnnouncementEmailDispatchSkipsActiveUsersWithoutEmail(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Targeted)
 	require.Equal(t, 1, result.Sent)
-	require.Equal(t, 1, result.Skipped)
+	require.Equal(t, 0, result.Skipped)
 	require.Len(t, sender.sentInputs(), 1)
+}
+
+func TestAnnouncementEmailDispatchAllTargetsThe70MostRecentlyActiveEligibleUsers(t *testing.T) {
+	base := time.Now().UTC().Add(-10 * time.Hour)
+	users := make([]User, 0, 75)
+	for id := int64(1); id <= 75; id++ {
+		lastUsed := base.Add(time.Duration(id) * time.Minute)
+		user := User{
+			ID:         id,
+			Email:      fmt.Sprintf("user-%d@example.com", id),
+			Role:       RoleUser,
+			Status:     StatusActive,
+			LastUsedAt: &lastUsed,
+		}
+		if id == 1 {
+			lastLogin := base.Add(30 * time.Hour)
+			user.LastLoginAt = &lastLogin
+		}
+		users = append(users, user)
+	}
+	adminLogin := base.Add(24 * time.Hour)
+	users = append(users, User{ID: 100, Email: "admin@example.com", Role: RoleAdmin, Status: StatusActive, LastLoginAt: &adminLogin})
+	disabledLogin := base.Add(25 * time.Hour)
+	users = append(users, User{ID: 101, Email: "disabled@example.com", Role: RoleUser, Status: StatusDisabled, LastLoginAt: &disabledLogin})
+	users = append(users, User{ID: 102, Email: "", Role: RoleUser, Status: StatusActive, LastLoginAt: &adminLogin})
+
+	svc, sender, _ := newAnnouncementEmailTestService(users...)
+	result, err := svc.DispatchEmailNotifications(context.Background(), 41, DispatchAnnouncementEmailInput{Scope: AnnouncementEmailScopeAll})
+
+	require.NoError(t, err)
+	require.Equal(t, 70, result.Targeted)
+	require.Equal(t, 70, result.Sent)
+	require.Equal(t, "last_activity_at", svc.userRepo.(*announcementEmailUserRepoStub).listParams.SortBy)
+	require.Equal(t, 70, svc.userRepo.(*announcementEmailUserRepoStub).listParams.PageSize)
+	require.Equal(t, RoleUser, svc.userRepo.(*announcementEmailUserRepoStub).listFilter.Role)
+	require.Equal(t, StatusActive, svc.userRepo.(*announcementEmailUserRepoStub).listFilter.Status)
+	require.True(t, svc.userRepo.(*announcementEmailUserRepoStub).listFilter.RequireEmail)
+	require.Len(t, sender.sentInputs(), 70)
+	require.Contains(t, recipientEmails(sender.sentInputs()), "user-1@example.com")
+	require.NotContains(t, recipientEmails(sender.sentInputs()), "user-6@example.com")
+	for _, input := range sender.sentInputs() {
+		require.NotContains(t, input.RecipientEmail, "user-5@example.com")
+	}
+}
+
+func recipientEmails(inputs []NotificationEmailSendInput) []string {
+	emails := make([]string, 0, len(inputs))
+	for _, input := range inputs {
+		emails = append(emails, input.RecipientEmail)
+	}
+	return emails
 }
 
 func TestAnnouncementEmailDispatchNeverRetriesAFailedRecipient(t *testing.T) {

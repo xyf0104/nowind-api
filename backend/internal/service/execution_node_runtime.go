@@ -61,7 +61,15 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_MAPPING_INVALID", "the existing node egress mapping is invalid; repair it before initializing this node")
 		}
 	}
-	weights := map[string]float64{nodeID: 1}
+	legacyNodeID := nodeID
+	if s.cfg != nil && validExecutionNodeID(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID) {
+		legacyNodeID = strings.TrimSpace(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID)
+	}
+	// The first machine prepared in an empty installation is the source node,
+	// regardless of whether its browser-derived name happens to equal the
+	// legacy placeholder "api". Joined peers receive their default later in the
+	// source-authoritative pairing transaction.
+	weights := map[string]float64{nodeID: 9}
 	// A fresh installation may expose the legacy api/api2 defaults before any
 	// execution-node runtime exists. Once an administrator prepares the first
 	// real machine, replace those placeholders with its detected name. Existing
@@ -74,7 +82,9 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 			}
 		}
 	}
-	weights[nodeID] = maxFloat(weights[nodeID], 1)
+	if _, exists := weights[nodeID]; !exists {
+		weights[nodeID] = 9
+	}
 	if old, exists := proxyIDs[nodeID]; exists && old != proxy.ID {
 		return nil, infraerrors.Conflict("EXECUTION_NODE_RUNTIME_PROXY_CONFLICT", "this node ID is already mapped to a different fixed egress")
 	}
@@ -94,7 +104,7 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 		return nil, fmt.Errorf("persist execution-node runtime mapping: %w", err)
 	}
 
-	legacyNodeID := nodeID
+	legacyNodeID = nodeID
 	legacyProxyID := proxy.ID
 	if s.cfg != nil && s.cfg.Gateway.ExecutionNode.Enabled {
 		if validExecutionNodeID(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID) {
@@ -135,13 +145,6 @@ func (s *SettingService) SetExecutionNodeEmergencyLocalEgress(ctx context.Contex
 		s.executionNodeRoutingCache.Store(&expired)
 	}
 	return nil
-}
-
-func maxFloat(value, fallback float64) float64 {
-	if value > 0 {
-		return value
-	}
-	return fallback
 }
 
 func (s *SettingService) ensureExecutionNodeBuiltinProxy(ctx context.Context, nodeID, token string) (*Proxy, string, error) {

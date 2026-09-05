@@ -61,3 +61,42 @@ func TestCalculateImageCost_RateMultiplier_NegativeClampedToZero(t *testing.T) {
 		})
 	}
 }
+
+func TestComputeTokenBreakdown_GPT6AstraPricesAre2_5xGPT56Sol(t *testing.T) {
+	svc := &BillingService{}
+	tokens := UsageTokens{
+		InputTokens:         1_000_000,
+		OutputTokens:        100_000,
+		CacheCreationTokens: 200_000,
+		CacheReadTokens:     300_000,
+	}
+
+	// These are the configured per-million-token prices shown in the admin
+	// pricing cards, expressed in the USD-per-token unit used by BillingService.
+	sol := svc.computeTokenBreakdown(&ModelPricing{
+		InputPricePerToken:         4e-6,
+		OutputPricePerToken:        20e-6,
+		CacheCreationPricePerToken: 5e-6,
+		CacheReadPricePerToken:     0.4e-6,
+	}, tokens, 1, "", false)
+	astra := svc.computeTokenBreakdown(&ModelPricing{
+		InputPricePerToken:         10e-6,
+		OutputPricePerToken:        50e-6,
+		CacheCreationPricePerToken: 12.5e-6,
+		CacheReadPricePerToken:     1e-6,
+	}, tokens, 1, "", false)
+
+	require.InDelta(t, sol.TotalCost*2.5, astra.TotalCost, 1e-12)
+	require.InDelta(t, astra.TotalCost, astra.ActualCost, 1e-12)
+
+	// The account/group multiplier is a separate layer. It changes the actual
+	// charge but must not change the model's standard cost or its 2.5x ratio.
+	astraDiscounted := svc.computeTokenBreakdown(&ModelPricing{
+		InputPricePerToken:         10e-6,
+		OutputPricePerToken:        50e-6,
+		CacheCreationPricePerToken: 12.5e-6,
+		CacheReadPricePerToken:     1e-6,
+	}, tokens, 0.178, "", false)
+	require.InDelta(t, astra.TotalCost, astraDiscounted.TotalCost, 1e-12)
+	require.InDelta(t, astra.TotalCost*0.178, astraDiscounted.ActualCost, 1e-12)
+}

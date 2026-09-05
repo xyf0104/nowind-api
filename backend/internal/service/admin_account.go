@@ -29,6 +29,37 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 	return accounts, result.Total, nil
 }
 
+// ListAccountsWithExecutionNode applies the ownership filter in the
+// repository before pagination, so the displayed total and page boundaries
+// remain correct for a paired XIASS installation.
+func (s *adminServiceImpl) ListAccountsWithExecutionNode(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, sortBy, sortOrder string) ([]Account, int64, error) {
+	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+	lister, ok := s.accountRepo.(AccountExecutionNodeFilteredLister)
+	if !ok {
+		return nil, 0, errors.New("account repository does not support execution-node filtering")
+	}
+	accounts, result, err := lister.ListWithFiltersByExecutionNode(ctx, params, platform, accountType, status, search, groupID, privacyMode, executionNodeID, s.legacyExecutionNodeID())
+	if err != nil {
+		return nil, 0, err
+	}
+	return accounts, result.Total, nil
+}
+
+// ListAccountsByIDsWithExecutionNode combines the focused-account path with
+// the same ownership predicate used by the regular list.
+func (s *adminServiceImpl) ListAccountsByIDsWithExecutionNode(ctx context.Context, page, pageSize int, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, sortBy, sortOrder string) ([]Account, int64, error) {
+	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+	lister, ok := s.accountRepo.(AccountExecutionNodeFilteredLister)
+	if !ok {
+		return nil, 0, errors.New("account repository does not support execution-node filtering")
+	}
+	accounts, result, err := lister.ListWithFiltersByIDsAndExecutionNode(ctx, params, accountIDs, platform, accountType, status, search, groupID, privacyMode, executionNodeID, s.legacyExecutionNodeID())
+	if err != nil {
+		return nil, 0, err
+	}
+	return accounts, result.Total, nil
+}
+
 func (s *adminServiceImpl) ListAccountsByIDs(ctx context.Context, page, pageSize int, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
 	lister, ok := s.accountRepo.(AccountIDFilteredLister)
@@ -265,6 +296,9 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 
 	source, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureAccountManagementAccess(ctx, source); err != nil {
 		return nil, err
 	}
 	if source.IsCredentialShadow() {
@@ -681,6 +715,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureAccountManagementAccess(ctx, account); err != nil {
 		return nil, err
 	}
 	var normalizedExtra map[string]any
@@ -1108,6 +1145,9 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureAccountManagementAccess(ctx, account); err != nil {
+		return nil, err
+	}
 	if account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth {
 		return nil, infraerrors.BadRequest("NOT_ANTIGRAVITY_OAUTH", "account is not an Antigravity OAuth account")
 	}
@@ -1180,6 +1220,11 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OllamaCloudUsageSessionExtraKey)
 	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
+	if len(updates) > 0 {
+		if err := s.ensureAccountManagementAccessByID(ctx, id); err != nil {
+			return err
+		}
+	}
 	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -1250,14 +1295,35 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
 
-	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
+	// 仅在需要读取账号内容时预取目标账号，供凭据守卫/代理守卫/混合
+	// 渠道检查共用，避免多次 DB 查询。节点管理模式即使只是改调度开关，
+	// 也必须先读取归属以阻止跨节点修改；单机模式保留原有轻量批量更新路径。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || hasFingerprintModeUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	needCachedTargets := s.executionNodeManagementAccessEnforced() ||
+		len(input.Credentials) > 0 ||
+		input.ProxyID != nil ||
+		needMixedChannelCheck ||
+		hasLongContextBillingUpdate ||
+		hasFingerprintModeUpdate ||
+		input.ProbeEnabled != nil ||
+		input.RateMultiplier != nil
+	if needCachedTargets {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
 		cachedTargets = loaded
+	}
+	if s.executionNodeManagementAccessEnforced() {
+		for _, accountID := range input.AccountIDs {
+			account, found := findAccountByID(cachedTargets, accountID)
+			if !found {
+				return nil, ErrAccountNotFound
+			}
+			if err := s.ensureAccountManagementAccess(ctx, account); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if hasFingerprintModeUpdate {
 		targetsByID := make(map[int64]*Account, len(cachedTargets))
@@ -1544,19 +1610,20 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 	accountIDs := make([]int64, 0, pageSize)
 
 	for {
-		accounts, total, err := s.ListAccounts(
-			ctx,
-			page,
-			pageSize,
-			filters.Platform,
-			filters.Type,
-			filters.Status,
-			filters.Search,
-			groupID,
-			filters.PrivacyMode,
-			"",
-			"",
-		)
+		var accounts []Account
+		var total int64
+		var err error
+		if strings.TrimSpace(filters.ExecutionNodeID) != "" {
+			accounts, total, err = s.ListAccountsWithExecutionNode(
+				ctx, page, pageSize, filters.Platform, filters.Type, filters.Status,
+				filters.Search, groupID, filters.PrivacyMode, filters.ExecutionNodeID, "", "",
+			)
+		} else {
+			accounts, total, err = s.ListAccounts(
+				ctx, page, pageSize, filters.Platform, filters.Type, filters.Status,
+				filters.Search, groupID, filters.PrivacyMode, "", "",
+			)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1571,6 +1638,9 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 }
 
 func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
+	if err := s.ensureAccountManagementAccessByID(ctx, id); err != nil {
+		return err
+	}
 	// 级联删除 spark 影子账号（先删影子，再删母账号）
 	shadows, err := s.accountRepo.ListShadowsByParent(ctx, id)
 	if err != nil {
@@ -1592,11 +1662,17 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureAccountManagementAccess(ctx, account); err != nil {
+		return nil, err
+	}
 	// TODO: Implement refresh logic
 	return account, nil
 }
 
 func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Account, error) {
+	if err := s.ensureAccountManagementAccessByID(ctx, id); err != nil {
+		return nil, err
+	}
 	if err := s.accountRepo.ClearError(ctx, id); err != nil {
 		return nil, err
 	}
@@ -1623,6 +1699,9 @@ func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorM
 }
 
 func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error) {
+	if err := s.ensureAccountManagementAccessByID(ctx, id); err != nil {
+		return nil, err
+	}
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err
 	}
@@ -1634,6 +1713,9 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id int64) error {
+	if err := s.ensureAccountManagementAccessByID(ctx, id); err != nil {
+		return err
+	}
 	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.ExecutionNode.Enabled {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -1681,6 +1763,9 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 	parent, err := s.accountRepo.GetByID(ctx, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent account: %w", err)
+	}
+	if err := s.ensureAccountManagementAccess(ctx, parent); err != nil {
+		return nil, err
 	}
 	if !parent.IsOpenAIOAuth() {
 		return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_INVALID_PARENT",
@@ -1931,6 +2016,9 @@ func (e *MixedChannelError) Error() string {
 }
 
 func (s *adminServiceImpl) ResetAccountQuota(ctx context.Context, id int64) error {
+	if err := s.ensureAccountManagementAccessByID(ctx, id); err != nil {
+		return err
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return err

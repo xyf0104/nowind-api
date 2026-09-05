@@ -237,7 +237,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		// 分组隔离（默认不允许未分组 Key 调度）
 		SettingKeyAllowUngroupedKeyScheduling:                        "false",
 		SettingKeyExecutionNodeBalancingEnabled:                      "false",
-		SettingKeyExecutionNodeWeights:                               `{"api":1,"api2":1}`,
+		SettingKeyExecutionNodeWeights:                               `{"api":9,"api2":1}`,
 		SettingKeyExecutionNodeProxyIDs:                              `{}`,
 		SettingKeyOpenAILowUpstreamRatePriorityEnabled:               "false",
 		SettingKeyOpenAIOAuthSchedulingRateMultiplier:                "1",

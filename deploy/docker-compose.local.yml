@@ -120,9 +120,9 @@ services:
       # =======================================================================
       - DATABASE_HOST=${DATABASE_HOST:-postgres}
       - DATABASE_PORT=${DATABASE_PORT:-5432}
-      - DATABASE_USER=${POSTGRES_USER:-sub2api}
-      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      - DATABASE_DBNAME=${POSTGRES_DB:-sub2api}
+      - DATABASE_USER=${DATABASE_USER:-${POSTGRES_USER:-sub2api}}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}}
+      - DATABASE_DBNAME=${DATABASE_DBNAME:-${POSTGRES_DB:-sub2api}}
       - DATABASE_SSLMODE=disable
       - DATABASE_MAX_OPEN_CONNS=${DATABASE_MAX_OPEN_CONNS:-50}
       - DATABASE_MAX_IDLE_CONNS=${DATABASE_MAX_IDLE_CONNS:-10}
@@ -146,6 +146,7 @@ services:
       # =======================================================================
       - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@xiass.local}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - INACTIVE_USER_CLEANUP_ENABLED=${INACTIVE_USER_CLEANUP_ENABLED:-false}
 
       # =======================================================================
       # JWT Configuration

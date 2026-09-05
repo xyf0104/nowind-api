@@ -169,6 +169,13 @@ type SettingRepository interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// ExecutionNodeDefaultWeightsMigrator upgrades the former two-node 1:1
+// default only on the authoritative source node. The repository implementation
+// performs the marker claim and settings update in one transaction.
+type ExecutionNodeDefaultWeightsMigrator interface {
+	MigrateExecutionNodeDefaultWeights(ctx context.Context, sourceNodeID string) (bool, error)
+}
+
 // ExecutionNodeAccountPreparer performs the one-time, idempotent account
 // attribution required before shared multi-node scheduling can be enabled.
 type ExecutionNodeAccountPreparer interface {

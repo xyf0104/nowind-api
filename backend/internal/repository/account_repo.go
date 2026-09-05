@@ -1235,10 +1235,14 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 }
 
 func (r *accountRepository) accountListFilteredQuery(platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
-	return r.accountListFilteredQueryByIDs(nil, platform, accountType, status, search, groupID, privacyMode)
+	return r.accountListFilteredQueryByIDsAndExecutionNode(nil, platform, accountType, status, search, groupID, privacyMode, "", "")
 }
 
 func (r *accountRepository) accountListFilteredQueryByIDs(accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
+	return r.accountListFilteredQueryByIDsAndExecutionNode(accountIDs, platform, accountType, status, search, groupID, privacyMode, "", "")
+}
+
+func (r *accountRepository) accountListFilteredQueryByIDsAndExecutionNode(accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, legacyNodeID string) *dbent.AccountQuery {
 	q := r.client.Account.Query()
 	if accountIDs != nil {
 		q = q.Where(dbaccount.IDIn(accountIDs...))
@@ -1333,6 +1337,20 @@ func (r *accountRepository) accountListFilteredQueryByIDs(accountIDs []int64, pl
 			}
 		}))
 	}
+	if executionNodeID = strings.TrimSpace(executionNodeID); executionNodeID != "" {
+		legacyNodeID = strings.TrimSpace(legacyNodeID)
+		if legacyNodeID == "" {
+			legacyNodeID = executionNodeID
+		}
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			s.Where(entsql.P(func(b *entsql.Builder) {
+				b.WriteString("COALESCE(NULLIF(BTRIM(").Ident(s.C(dbaccount.FieldExtra)).
+					WriteString(" ->> ").Arg(service.AccountExecutionNodeExtraKey).
+					WriteString("), ''), ").Arg(legacyNodeID).
+					WriteString(") = ").Arg(executionNodeID)
+			}))
+		}))
+	}
 
 	return q
 }
@@ -1347,6 +1365,19 @@ func (r *accountRepository) ListWithFiltersByIDs(ctx context.Context, params pag
 		return []service.Account{}, paginationResultFromTotal(0, params), nil
 	}
 	q := r.accountListFilteredQueryByIDs(accountIDs, platform, accountType, status, search, groupID, privacyMode)
+	return r.listAccountQuery(ctx, params, q)
+}
+
+func (r *accountRepository) ListWithFiltersByExecutionNode(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, legacyNodeID string) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.accountListFilteredQueryByIDsAndExecutionNode(nil, platform, accountType, status, search, groupID, privacyMode, executionNodeID, legacyNodeID)
+	return r.listAccountQuery(ctx, params, q)
+}
+
+func (r *accountRepository) ListWithFiltersByIDsAndExecutionNode(ctx context.Context, params pagination.PaginationParams, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode, executionNodeID, legacyNodeID string) ([]service.Account, *pagination.PaginationResult, error) {
+	if len(accountIDs) == 0 {
+		return []service.Account{}, paginationResultFromTotal(0, params), nil
+	}
+	q := r.accountListFilteredQueryByIDsAndExecutionNode(accountIDs, platform, accountType, status, search, groupID, privacyMode, executionNodeID, legacyNodeID)
 	return r.listAccountQuery(ctx, params, q)
 }
 

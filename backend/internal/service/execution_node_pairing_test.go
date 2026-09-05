@@ -317,11 +317,42 @@ func TestAuthoritativePairingPublishesTargetURLAndFixedEgressMapping(t *testing.
 
 	var weights map[string]float64
 	require.NoError(t, json.Unmarshal([]byte(sourceRepo.values[SettingKeyExecutionNodeWeights]), &weights))
-	require.Equal(t, map[string]float64{"primary-us": 1, "edge-jp": 1}, weights)
+	require.Equal(t, map[string]float64{"primary-us": 9, "edge-jp": 1}, weights)
 	var proxyIDs map[string]int64
 	require.NoError(t, json.Unmarshal([]byte(sourceRepo.values[SettingKeyExecutionNodeProxyIDs]), &proxyIDs))
 	require.Equal(t, map[string]int64{"primary-us": 84, "edge-jp": 100}, proxyIDs)
 	require.Equal(t, "true", sourceRepo.values[executionNodeEmergencyEgressSettingKey("edge-jp")])
+}
+
+func TestExecutionNodePairingRoutingPreservesExplicitZeroWeight(t *testing.T) {
+	source, repo := newExecutionNodePairingService("primary-us", "source-db", "source-redis")
+	source.cfg.Gateway.ExecutionNode.DefaultProxyID = 84
+	source.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID = "primary-us"
+	repo.values[SettingKeyExecutionNodeWeights] = `{"primary-us":0,"edge-jp":1}`
+	repo.values[SettingKeyExecutionNodeProxyIDs] = `{"primary-us":84,"edge-jp":100}`
+
+	updates, err := source.executionNodePairingRoutingSettings(context.Background(), "edge-jp", 100)
+	require.NoError(t, err)
+
+	var weights map[string]float64
+	require.NoError(t, json.Unmarshal([]byte(updates[SettingKeyExecutionNodeWeights]), &weights))
+	require.Equal(t, map[string]float64{"primary-us": 0, "edge-jp": 1}, weights,
+		"a deliberately drained node must not be re-enabled by re-pairing")
+}
+
+func TestExecutionNodePairingRoutingUpgradesLegacySingleNodeDefault(t *testing.T) {
+	source, repo := newExecutionNodePairingService("primary.example.com", "source-db", "source-redis")
+	source.cfg.Gateway.ExecutionNode.DefaultProxyID = 84
+	source.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID = "api"
+	repo.values[SettingKeyExecutionNodeWeights] = `{"primary.example.com":1}`
+	repo.values[SettingKeyExecutionNodeProxyIDs] = `{"primary.example.com":84}`
+
+	updates, err := source.executionNodePairingRoutingSettings(context.Background(), "edge.example.com", 100)
+	require.NoError(t, err)
+
+	var weights map[string]float64
+	require.NoError(t, json.Unmarshal([]byte(updates[SettingKeyExecutionNodeWeights]), &weights))
+	require.Equal(t, map[string]float64{"primary.example.com": 9, "edge.example.com": 1}, weights)
 }
 
 func TestAuthoritativePairingReturnsEncryptedJoinBundleToTargetApplier(t *testing.T) {

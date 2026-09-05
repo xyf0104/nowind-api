@@ -34,6 +34,7 @@ const (
 	NotificationEmailEventOpsAlert                    = "ops.alert"
 	NotificationEmailEventOpsScheduledReport          = "ops.scheduled_report"
 	NotificationEmailEventAnnouncementPublished       = "announcement.published"
+	NotificationEmailEventUserInactivityWarning       = "user.inactivity_warning"
 
 	notificationEmailTemplateKeyPrefix    = "notification_email_template:"
 	notificationEmailPreferenceKeyPrefix  = "notification_email_preference:"
@@ -989,6 +990,8 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 			"announcement_title":        "限时活动公告",
 			"announcement_content_html": "<p>活动内容预览</p>",
 			"login_url":                 "https://example.com/login",
+			"inactive_since":            "2026-07-01 12:00",
+			"deletion_time":             "2026-08-03 12:00",
 		}
 		addNotificationEmailOpsSummarySampleVariables(variables)
 		return variables
@@ -1040,6 +1043,8 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 		"announcement_title":        "Limited-time announcement",
 		"announcement_content_html": "<p>Announcement preview content</p>",
 		"login_url":                 "https://example.com/login",
+		"inactive_since":            "2026-07-01 12:00",
+		"deletion_time":             "2026-08-03 12:00",
 	}
 	addNotificationEmailOpsSummarySampleVariables(variables)
 	return variables
@@ -1086,6 +1091,7 @@ var notificationEmailEventOrder = []string{
 	NotificationEmailEventOpsAlert,
 	NotificationEmailEventOpsScheduledReport,
 	NotificationEmailEventAnnouncementPublished,
+	NotificationEmailEventUserInactivityWarning,
 }
 
 var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
@@ -1212,6 +1218,15 @@ var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
 		Optional:    false,
 		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...),
 			"announcement_title", "announcement_content_html", "login_url"),
+	},
+	NotificationEmailEventUserInactivityWarning: {
+		Event:       NotificationEmailEventUserInactivityWarning,
+		Label:       "Inactive user deletion warning",
+		Description: "Transactional warning sent once before an inactive user account is automatically deleted.",
+		Category:    "account",
+		Optional:    false,
+		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...),
+			"inactive_since", "deletion_time", "login_url"),
 	},
 }
 
@@ -1513,6 +1528,26 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 <div style="margin: 22px 0; border: 1px solid #dbeafe; border-radius: 10px; background: #f8fbff; padding: 20px;">{{announcement_content_html}}</div>
 <a class="button" href="{{login_url}}">登录 {{site_name}}</a>
 <p class="muted">点击上方按钮即可登录并继续使用您的账号。</p>`),
+		},
+	},
+	NotificationEmailEventUserInactivityWarning: {
+		notificationEmailDefaultLocale: {
+			Subject: "[{{site_name}}] Your account will be deleted in 3 days",
+			HTML: notificationEmailCard("#dc2626", "Account inactivity warning", `
+<p>Hello {{recipient_name}},</p>
+<p>We have not seen a login or API usage from your account since <strong>{{inactive_since}}</strong>.</p>
+<p>To avoid accidental deletion, please sign in within 3 days. Your account is scheduled for deletion at <strong>{{deletion_time}}</strong>.</p>
+<p><a class="button" href="{{login_url}}">Sign in to keep your account</a></p>
+<p class="muted">If you have already signed in or used the service, no action is needed. This message is sent once for this inactivity period.</p>`),
+		},
+		notificationEmailLocaleChinese: {
+			Subject: "[{{site_name}}] 账户闲置提醒：3天后将自动删除",
+			HTML: notificationEmailCard("#dc2626", "账户闲置提醒", `
+<p>{{recipient_name}}，您好：</p>
+<p>系统检测到您的账户自 <strong>{{inactive_since}}</strong> 起没有登录或使用记录。</p>
+<p>为避免误删，系统计划在 <strong>{{deletion_time}}</strong> 自动删除您的账户。请在 3 天内打开官网登录一次，即可保留账户。</p>
+<p><a class="button" href="{{login_url}}">立即登录保留账户</a></p>
+<p class="muted">如果您已经登录或使用过服务，则无需其他操作。本提醒在本次闲置周期内只发送一次。</p>`),
 		},
 	},
 }
