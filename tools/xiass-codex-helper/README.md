@@ -38,36 +38,44 @@ Before applying a configuration, the helper:
    Provider metadata in normal and archived rollouts plus compatible
    `threads.model_provider` columns is synchronized to the active provider so
    every conversation remains visible after switching providers.
-8. The explicit history-repair action also removes only incompatible internal
+8. When the configured default model changes, compatible `threads.model`
+   columns are synchronized so existing regular conversations can use newly
+   enabled models such as `gpt-6-astra`; `codex-auto-review` threads, rollout
+   messages, and provider-bound continuation IDs are left untouched. A
+   same-provider model change uses a database-only fast path with the same
+   coherent snapshot, transaction verification, and rollback guarantees. Older
+   Codex databases without a thread model column remain supported and are
+   reported without being modified.
+9. The explicit history-repair action also removes only incompatible internal
    Responses continuation records (encrypted reasoning/compaction entries and
    invalid message IDs) when the active provider is external. It keeps visible
    user and assistant messages, attachments, tool calls, and tool output; the
    first-party `openai` provider is left untouched.
-9. Validates project paths and `rootPaths`, repairs malformed macOS workspace
+10. Validates project paths and `rootPaths`, repairs malformed macOS workspace
    mappings that can hide intact conversations from the sidebar, and leaves
    valid Windows paths unchanged.
-10. Preserves unrelated MCP, plugin, project, desktop, and reasoning settings.
-11. Uses atomic file replacement and SQLite transactions, then verifies database
+11. Preserves unrelated MCP, plugin, project, desktop, and reasoning settings.
+12. Uses atomic file replacement and SQLite transactions, then verifies database
    integrity, provider consistency, the exact thread-ID sets, the rollout file
    set, and workspace mappings.
-12. Records durable repair states, recovers interrupted operations on the next
+13. Records durable repair states, recovers interrupted operations on the next
     run, rolls back configuration/history on failure, and starts Codex only
     after every verification succeeds.
-13. On Windows, Microsoft Store/WindowsApps installations are launched through
+14. On Windows, Microsoft Store/WindowsApps installations are launched through
     their registered `shell:AppsFolder` target instead of executing the
     protected package binary directly. Optional SQLite files that cannot be
     confirmed as thread-provider databases are skipped; `state_*` databases
     remain strictly validated.
-14. Windows process polling uses native Toolhelp APIs. Remaining PowerShell and
+15. Windows process polling uses native Toolhelp APIs. Remaining PowerShell and
     task-control commands run with no-window flags, preventing repeated console
     flashes during shutdown and launch verification.
-15. SQLite file URIs normalize Windows drive letters and percent-encode Unicode
+16. SQLite file URIs normalize Windows drive letters and percent-encode Unicode
     profile paths, including Codex homes under non-ASCII Windows user names.
-16. Windows discovery prioritizes the registered `OpenAI.Codex` AppX package
+17. Windows discovery prioritizes the registered `OpenAI.Codex` AppX package
     (whose current desktop process is `ChatGPT.exe`) and rejects Antigravity,
     editor-extension, desktop-managed CLI, npm, Cargo, Scoop, and Chocolatey
     `codex.exe` paths as desktop App candidates.
-17. The local page supports compatible, balanced, and 1M context profiles, plus
+18. The local page supports compatible, balanced, and 1M context profiles, plus
     validated custom values for `model_context_window` and
     `model_auto_compact_token_limit`. The selected values are carried through
     the XIASS key-selection redirect and are written with the same atomic
@@ -75,8 +83,9 @@ Before applying a configuration, the helper:
     configuration.
 
 Restore operations validate the selected backup and create another safety
-backup before replacing the current configuration. A same-provider model,
-context, or key update leaves conversation history and its indexes untouched,
+backup before replacing the current configuration. A same-provider context or
+key update leaves conversation history and its indexes untouched; a
+same-provider model update synchronizes only the thread-model database column,
 so these common operations avoid the expensive full history scan. Changing the
 model provider, restoring a legacy XIASS provider configuration, and the
 explicit history-repair action still take verified history snapshots and run

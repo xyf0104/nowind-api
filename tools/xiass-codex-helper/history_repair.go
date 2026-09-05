@@ -51,6 +51,7 @@ type HistoryRepairer struct {
 
 type HistoryRepairResult struct {
 	TargetProvider      string                      `json:"target_provider"`
+	TargetModel         string                      `json:"target_model,omitempty"`
 	SourceProviders     []string                    `json:"source_providers,omitempty"`
 	Skipped             bool                        `json:"skipped,omitempty"`
 	SkipReason          string                      `json:"skip_reason,omitempty"`
@@ -59,6 +60,8 @@ type HistoryRepairResult struct {
 	SanitizedRecords    int                         `json:"sanitized_records"`
 	ScannedDatabases    int                         `json:"scanned_databases"`
 	UpdatedDatabaseRows int64                       `json:"updated_database_rows"`
+	UpdatedModelRows    int64                       `json:"updated_model_rows,omitempty"`
+	UnsupportedModelDBs int                         `json:"unsupported_model_databases,omitempty"`
 	ThreadCount         int64                       `json:"thread_count"`
 	BackupID            string                      `json:"backup_id,omitempty"`
 	WorkspaceState      *WorkspaceStateRepairResult `json:"workspace_state,omitempty"`
@@ -89,6 +92,7 @@ func (e *HistoryRepairApplyError) Unwrap() error {
 
 type historyRepairPlan struct {
 	TargetProvider     string
+	TargetModel        string
 	SourceProviders    []string
 	Sessions           []historySessionPlan
 	Databases          []historyDatabasePlan
@@ -110,12 +114,16 @@ type historySessionPlan struct {
 }
 
 type historyDatabasePlan struct {
-	Path                string `json:"-"`
-	RelativePath        string `json:"path"`
-	ThreadCount         int64  `json:"thread_count"`
-	MismatchedRows      int64  `json:"mismatched_rows"`
-	ThreadIDsSHA256     string `json:"thread_ids_sha256"`
-	ThreadContentSHA256 string `json:"thread_content_sha256"`
+	Path                     string `json:"-"`
+	RelativePath             string `json:"path"`
+	ThreadCount              int64  `json:"thread_count"`
+	MismatchedRows           int64  `json:"mismatched_rows"`
+	ModelMismatchedRows      int64  `json:"model_mismatched_rows,omitempty"`
+	HasModelColumn           bool   `json:"has_model_column,omitempty"`
+	ThreadIDsSHA256          string `json:"thread_ids_sha256"`
+	ThreadContentSHA256      string `json:"thread_content_sha256"`
+	StableThreadContentHash  string `json:"stable_thread_content_sha256,omitempty"`
+	AppliedThreadContentHash string `json:"applied_thread_content_sha256,omitempty"`
 }
 
 type historyBackupFile struct {
@@ -132,6 +140,7 @@ type historyBackupManifest struct {
 	CreatedAt          time.Time             `json:"created_at"`
 	CodexHome          string                `json:"codex_home"`
 	TargetProvider     string                `json:"target_provider"`
+	TargetModel        string                `json:"target_model,omitempty"`
 	SourceProviders    []string              `json:"source_providers,omitempty"`
 	ScannedFiles       int                   `json:"scanned_files"`
 	RolloutFilesSHA256 string                `json:"rollout_files_sha256"`
@@ -160,6 +169,45 @@ func (r *HistoryRepairer) RepairCurrentProvider() (HistoryRepairResult, error) {
 	return r.Repair(target)
 }
 
+func (r *HistoryRepairer) RepairCurrentProviderModel() (HistoryRepairResult, error) {
+	configPath := filepath.Join(r.CodexHome, "config.toml")
+	targetProvider, err := readCurrentProvider(configPath)
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	targetModel, err := readCurrentModel(configPath)
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	return r.repairWithModel(targetProvider, targetModel, false, true)
+}
+
+func (r *HistoryRepairer) RepairCurrentProviderModelCompatibility() (HistoryRepairResult, error) {
+	configPath := filepath.Join(r.CodexHome, "config.toml")
+	targetProvider, err := readCurrentProvider(configPath)
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	targetModel, err := readCurrentModel(configPath)
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	return r.repairWithModel(targetProvider, targetModel, true, true)
+}
+
+func (r *HistoryRepairer) SyncCurrentModel() (HistoryRepairResult, error) {
+	configPath := filepath.Join(r.CodexHome, "config.toml")
+	targetProvider, err := readCurrentProvider(configPath)
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	targetModel, err := readCurrentModel(configPath)
+	if err != nil {
+		return HistoryRepairResult{}, err
+	}
+	return r.repairWithModel(targetProvider, targetModel, false, false)
+}
+
 func (r *HistoryRepairer) RepairCurrentProviderCompatibility() (HistoryRepairResult, error) {
 	target, err := readCurrentProvider(filepath.Join(r.CodexHome, "config.toml"))
 	if err != nil {
@@ -169,17 +217,21 @@ func (r *HistoryRepairer) RepairCurrentProviderCompatibility() (HistoryRepairRes
 }
 
 func (r *HistoryRepairer) Repair(targetProvider string) (HistoryRepairResult, error) {
-	return r.repair(targetProvider, false)
+	return r.repairWithModel(targetProvider, "", false, true)
 }
 
 func (r *HistoryRepairer) RepairWithCompatibility(targetProvider string) (HistoryRepairResult, error) {
-	return r.repair(targetProvider, true)
+	return r.repairWithModel(targetProvider, "", true, true)
 }
 
-func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool) (HistoryRepairResult, error) {
+func (r *HistoryRepairer) repairWithModel(targetProvider, targetModel string, repairCompatibility, scanSessionMetadata bool) (HistoryRepairResult, error) {
 	targetProvider = strings.TrimSpace(targetProvider)
 	if !validHistoryProviderID(targetProvider) {
 		return HistoryRepairResult{}, errors.New("invalid model provider for history repair")
+	}
+	targetModel = strings.TrimSpace(targetModel)
+	if !validHistoryModelID(targetModel) {
+		return HistoryRepairResult{}, errors.New("invalid model for history repair")
 	}
 
 	var result HistoryRepairResult
@@ -192,21 +244,26 @@ func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool
 			return fmt.Errorf("repair Codex workspace state: %w", err)
 		}
 		var sourceProviders []string
-		if targetProvider != legacyProviderID {
+		if scanSessionMetadata && targetProvider != legacyProviderID {
 			var err error
 			sourceProviders, err = r.discoverSourceProviders(targetProvider)
 			if err != nil {
 				return err
 			}
 		}
-		plan, err := r.buildPlanWithCompatibility(targetProvider, sourceProviders, repairCompatibility)
+		plan, err := r.buildPlanWithCompatibilityAndModel(targetProvider, targetModel, sourceProviders, repairCompatibility, scanSessionMetadata)
 		if err != nil {
 			return err
 		}
+		scannedSessionFiles := plan.ScannedFiles
+		if !scanSessionMetadata {
+			scannedSessionFiles = 0
+		}
 		result = HistoryRepairResult{
 			TargetProvider:      targetProvider,
+			TargetModel:         targetModel,
 			SourceProviders:     append([]string(nil), sourceProviders...),
-			ScannedSessionFiles: plan.ScannedFiles,
+			ScannedSessionFiles: scannedSessionFiles,
 			ScannedDatabases:    len(plan.Databases),
 			ThreadCount:         plan.ThreadCount,
 			SanitizedRecords:    plan.SanitizedRecords,
@@ -214,9 +271,11 @@ func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool
 		}
 		needsDatabaseUpdate := false
 		for _, database := range plan.Databases {
-			if database.MismatchedRows > 0 {
+			if database.MismatchedRows > 0 || database.ModelMismatchedRows > 0 {
 				needsDatabaseUpdate = true
-				break
+			}
+			if targetModel != "" && database.ThreadCount > 0 && !database.HasModelColumn {
+				result.UnsupportedModelDBs++
 			}
 		}
 		if len(plan.Sessions) == 0 && !needsDatabaseUpdate {
@@ -235,6 +294,7 @@ func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool
 
 		appliedSessions := make([]historySessionPlan, 0, len(plan.Sessions))
 		var updatedRows int64
+		var updatedModelRows int64
 		applyErr := func() error {
 			for _, sessions := range groupHistorySessionPlans(plan.Sessions) {
 				if err := replaceHistorySessionLines(sessions, false); err != nil {
@@ -243,14 +303,25 @@ func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool
 				appliedSessions = append(appliedSessions, sessions...)
 			}
 			for _, database := range plan.Databases {
-				rows, err := updateDatabaseProvider(database, targetProvider, plan.SourceProviders)
+				rows, modelRows, err := updateDatabaseMetadata(database, targetProvider, targetModel, plan.SourceProviders)
 				if err != nil {
 					return err
 				}
 				updatedRows += rows
+				updatedModelRows += modelRows
 			}
 			if err := r.verifyPlan(plan); err != nil {
 				return err
+			}
+			for index, databasePlan := range plan.Databases {
+				actual, ok, err := inspectHistoryDatabase(r.CodexHome, databasePlan.Path, plan.SourceProviders, plan.TargetModel)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("conversation database disappeared after repair: %s", databasePlan.RelativePath)
+				}
+				manifest.DatabasePlans[index].AppliedThreadContentHash = actual.ThreadContentSHA256
 			}
 			manifest.Status = historyStatusCommitted
 			manifest.StatusMessage = "history repair verified"
@@ -277,23 +348,28 @@ func (r *HistoryRepairer) repair(targetProvider string, repairCompatibility bool
 
 		result.UpdatedSessionFiles = uniqueSessionFileCount(appliedSessions)
 		result.UpdatedDatabaseRows = updatedRows
+		result.UpdatedModelRows = updatedModelRows
 		return nil
 	})
 	return result, err
 }
 
 func (r *HistoryRepairer) buildPlan(targetProvider string, sourceProviders []string) (historyRepairPlan, error) {
-	return r.buildPlanWithCompatibility(targetProvider, sourceProviders, false)
+	return r.buildPlanWithCompatibilityAndModel(targetProvider, "", sourceProviders, false, true)
 }
 
 func (r *HistoryRepairer) buildPlanWithCompatibility(targetProvider string, sourceProviders []string, repairCompatibility bool) (historyRepairPlan, error) {
-	plan := historyRepairPlan{TargetProvider: targetProvider, SourceProviders: append([]string(nil), sourceProviders...)}
+	return r.buildPlanWithCompatibilityAndModel(targetProvider, "", sourceProviders, repairCompatibility, true)
+}
+
+func (r *HistoryRepairer) buildPlanWithCompatibilityAndModel(targetProvider, targetModel string, sourceProviders []string, repairCompatibility, scanSessionMetadata bool) (historyRepairPlan, error) {
+	plan := historyRepairPlan{TargetProvider: targetProvider, TargetModel: targetModel, SourceProviders: append([]string(nil), sourceProviders...)}
 	databasePaths, err := discoverHistoryDatabases(r.CodexHome)
 	if err != nil {
 		return plan, err
 	}
 	for _, path := range databasePaths {
-		database, ok, err := inspectHistoryDatabase(r.CodexHome, path, sourceProviders)
+		database, ok, err := inspectHistoryDatabase(r.CodexHome, path, sourceProviders, targetModel)
 		if err != nil {
 			return plan, err
 		}
@@ -310,6 +386,9 @@ func (r *HistoryRepairer) buildPlanWithCompatibility(targetProvider string, sour
 	}
 	plan.ScannedFiles = len(rollouts)
 	plan.RolloutFilesSHA256 = historyPathSetSHA256(r.CodexHome, rollouts)
+	if !scanSessionMetadata {
+		return plan, nil
+	}
 	for _, path := range rollouts {
 		_, needsUpdate, err := inspectSessionMetadata(r.CodexHome, path, targetProvider, sourceProviders)
 		if err != nil {
@@ -347,6 +426,7 @@ func (r *HistoryRepairer) createBackup(plan historyRepairPlan) (historyBackupMan
 		CreatedAt:          time.Now().UTC(),
 		CodexHome:          r.CodexHome,
 		TargetProvider:     plan.TargetProvider,
+		TargetModel:        plan.TargetModel,
 		SourceProviders:    append([]string(nil), plan.SourceProviders...),
 		ScannedFiles:       plan.ScannedFiles,
 		RolloutFilesSHA256: plan.RolloutFilesSHA256,
@@ -460,11 +540,18 @@ func (r *HistoryRepairer) validateInterruptedRollbackBaseline(manifest historyBa
 	}
 	for _, expected := range manifest.DatabasePlans {
 		path := filepath.Join(r.CodexHome, filepath.FromSlash(expected.RelativePath))
-		actual, ok, err := inspectHistoryDatabase(r.CodexHome, path, manifest.SourceProviders)
+		actual, ok, err := inspectHistoryDatabase(r.CodexHome, path, manifest.SourceProviders, manifest.TargetModel)
 		if err != nil {
 			return err
 		}
-		if !ok || actual.ThreadCount != expected.ThreadCount || actual.ThreadIDsSHA256 != expected.ThreadIDsSHA256 || actual.ThreadContentSHA256 != expected.ThreadContentSHA256 {
+		contentMatches := actual.ThreadContentSHA256 == expected.ThreadContentSHA256
+		if manifest.TargetModel != "" {
+			contentMatches = actual.StableThreadContentHash == expected.StableThreadContentHash
+			if manifest.Status == historyStatusCommitted && expected.AppliedThreadContentHash != "" {
+				contentMatches = contentMatches && actual.ThreadContentSHA256 == expected.AppliedThreadContentHash && actual.ModelMismatchedRows == 0
+			}
+		}
+		if !ok || actual.ThreadCount != expected.ThreadCount || actual.ThreadIDsSHA256 != expected.ThreadIDsSHA256 || !contentMatches {
 			return fmt.Errorf("thread identity set changed after the interrupted repair: %s", expected.RelativePath)
 		}
 	}
@@ -620,18 +707,25 @@ func (r *HistoryRepairer) verifyPlan(plan historyRepairPlan) error {
 		}
 	}
 	for _, expected := range plan.Databases {
-		actual, ok, err := inspectHistoryDatabase(r.CodexHome, expected.Path, plan.SourceProviders)
+		actual, ok, err := inspectHistoryDatabase(r.CodexHome, expected.Path, plan.SourceProviders, plan.TargetModel)
 		if err != nil {
 			return err
 		}
-		if !ok || actual.ThreadCount != expected.ThreadCount || actual.ThreadIDsSHA256 != expected.ThreadIDsSHA256 || actual.ThreadContentSHA256 != expected.ThreadContentSHA256 {
+		contentMatches := actual.ThreadContentSHA256 == expected.ThreadContentSHA256
+		if plan.TargetModel != "" {
+			contentMatches = actual.StableThreadContentHash == expected.StableThreadContentHash
+		}
+		if !ok || actual.ThreadCount != expected.ThreadCount || actual.ThreadIDsSHA256 != expected.ThreadIDsSHA256 || !contentMatches {
 			return fmt.Errorf("thread identity set changed during repair: %s", expected.RelativePath)
 		}
 		if actual.MismatchedRows != 0 {
 			return fmt.Errorf("database provider verification failed: %s", expected.RelativePath)
 		}
+		if actual.ModelMismatchedRows != 0 {
+			return fmt.Errorf("database model verification failed: %s", expected.RelativePath)
+		}
 	}
-	if plan.TargetProvider != legacyProviderID {
+	if plan.TargetProvider != legacyProviderID && len(plan.SourceProviders) > 0 {
 		remaining, err := r.discoverSourceProviders(plan.TargetProvider)
 		if err != nil {
 			return err
@@ -803,6 +897,30 @@ func readCurrentProvider(configPath string) (string, error) {
 		return "", errors.New("Codex config contains an invalid model provider")
 	}
 	return provider, nil
+}
+
+func readCurrentModel(configPath string) (string, error) {
+	data, err := os.ReadFile(configPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read Codex config: %w", err)
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return "", fmt.Errorf("read model from Codex config: %w", err)
+	}
+	model, _ := root["model"].(string)
+	model = strings.TrimSpace(model)
+	if !validHistoryModelID(model) {
+		return "", errors.New("Codex config contains an invalid model")
+	}
+	return model, nil
+}
+
+func validHistoryModelID(value string) bool {
+	return len(value) <= 200 && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func validHistoryProviderID(value string) bool {
@@ -1478,7 +1596,7 @@ func optionalHistoryDatabaseHasProviderThreads(path string) (bool, error) {
 	return relevant, nil
 }
 
-func inspectHistoryDatabase(codexHome, path string, sourceProviders []string) (historyDatabasePlan, bool, error) {
+func inspectHistoryDatabase(codexHome, path string, sourceProviders []string, targetModel string) (historyDatabasePlan, bool, error) {
 	var plan historyDatabasePlan
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -1511,10 +1629,22 @@ func inspectHistoryDatabase(codexHome, path string, sourceProviders []string) (h
 	if err != nil {
 		return plan, false, err
 	}
+	_, _, plan.StableThreadContentHash, err = databaseThreadStableIdentity(database)
+	if err != nil {
+		return plan, false, err
+	}
 	if len(sourceProviders) > 0 {
 		where, arguments := historyProviderWhereClause("model_provider", sourceProviders)
 		if err := database.QueryRow("SELECT COUNT(*) FROM threads WHERE "+where, arguments...).Scan(&plan.MismatchedRows); err != nil {
 			return plan, false, err
+		}
+	}
+	if targetModel != "" {
+		if _, ok := columns["model"]; ok {
+			plan.HasModelColumn = true
+			if err := database.QueryRow("SELECT COUNT(*) FROM threads WHERE COALESCE(model, '') <> ? AND COALESCE(model, '') <> 'codex-auto-review'", targetModel).Scan(&plan.ModelMismatchedRows); err != nil {
+				return plan, false, err
+			}
 		}
 	}
 	relative, err := filepath.Rel(codexHome, path)
@@ -1526,40 +1656,60 @@ func inspectHistoryDatabase(codexHome, path string, sourceProviders []string) (h
 	return plan, true, nil
 }
 
-func updateDatabaseProvider(plan historyDatabasePlan, targetProvider string, sourceProviders []string) (int64, error) {
-	if plan.MismatchedRows == 0 {
-		return 0, nil
+func updateDatabaseMetadata(plan historyDatabasePlan, targetProvider, targetModel string, sourceProviders []string) (int64, int64, error) {
+	if plan.MismatchedRows == 0 && plan.ModelMismatchedRows == 0 {
+		return 0, 0, nil
 	}
 	database, err := openHistoryDatabase(plan.Path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer database.Close()
 	transaction, err := database.Begin()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	where, sourceArguments := historyProviderWhereClause("model_provider", sourceProviders)
-	arguments := make([]any, 0, len(sourceArguments)+1)
-	arguments = append(arguments, targetProvider)
-	arguments = append(arguments, sourceArguments...)
-	result, err := transaction.Exec("UPDATE threads SET model_provider = ? WHERE "+where, arguments...)
-	if err != nil {
-		_ = transaction.Rollback()
-		return 0, err
+	var providerRows, modelRows int64
+	if plan.MismatchedRows > 0 {
+		where, sourceArguments := historyProviderWhereClause("model_provider", sourceProviders)
+		arguments := make([]any, 0, len(sourceArguments)+1)
+		arguments = append(arguments, targetProvider)
+		arguments = append(arguments, sourceArguments...)
+		result, err := transaction.Exec("UPDATE threads SET model_provider = ? WHERE "+where, arguments...)
+		if err != nil {
+			_ = transaction.Rollback()
+			return 0, 0, err
+		}
+		providerRows, err = result.RowsAffected()
+		if err != nil {
+			_ = transaction.Rollback()
+			return 0, 0, err
+		}
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		_ = transaction.Rollback()
-		return 0, err
+	if plan.ModelMismatchedRows > 0 && plan.HasModelColumn && targetModel != "" {
+		result, err := transaction.Exec("UPDATE threads SET model = ? WHERE COALESCE(model, '') <> ? AND COALESCE(model, '') <> 'codex-auto-review'", targetModel, targetModel)
+		if err != nil {
+			_ = transaction.Rollback()
+			return 0, 0, err
+		}
+		modelRows, err = result.RowsAffected()
+		if err != nil {
+			_ = transaction.Rollback()
+			return 0, 0, err
+		}
 	}
 	if err := transaction.Commit(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	if rows != plan.MismatchedRows {
-		return rows, fmt.Errorf("database changed concurrently: updated %d rows, expected %d", rows, plan.MismatchedRows)
+	if providerRows != plan.MismatchedRows || modelRows != plan.ModelMismatchedRows {
+		return providerRows, modelRows, fmt.Errorf("database changed concurrently: updated %d provider and %d model rows, expected %d and %d", providerRows, modelRows, plan.MismatchedRows, plan.ModelMismatchedRows)
 	}
-	return rows, nil
+	return providerRows, modelRows, nil
+}
+
+func updateDatabaseProvider(plan historyDatabasePlan, targetProvider string, sourceProviders []string) (int64, error) {
+	providerRows, _, err := updateDatabaseMetadata(plan, targetProvider, "", sourceProviders)
+	return providerRows, err
 }
 
 func historyProviderWhereClause(column string, providers []string) (string, []any) {
@@ -1573,7 +1723,15 @@ func historyProviderWhereClause(column string, providers []string) (string, []an
 }
 
 func databaseThreadIdentity(database *sql.DB) (int64, string, string, error) {
-	columns, err := orderedDatabaseColumns(database, "threads", "model_provider")
+	return databaseThreadIdentityExcluding(database, "model_provider")
+}
+
+func databaseThreadStableIdentity(database *sql.DB) (int64, string, string, error) {
+	return databaseThreadIdentityExcluding(database, "model_provider", "model")
+}
+
+func databaseThreadIdentityExcluding(database *sql.DB, excluded ...string) (int64, string, string, error) {
+	columns, err := orderedDatabaseColumns(database, "threads", excluded...)
 	if err != nil {
 		return 0, "", "", err
 	}

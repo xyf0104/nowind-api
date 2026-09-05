@@ -70,6 +70,141 @@ func TestHistoryRepairSynchronizesAllProvidersAcrossLegacyAndCurrentStores(t *te
 	}
 }
 
+func TestHistoryRepairSynchronizesExistingThreadModelsAndRestoresBackup(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfigWithModel(t, home, providerID, "gpt-6-astra")
+	session := writeHistoryRollout(t, home, "sessions/rollout-thread-old.jsonl", providerID, "thread-old")
+	appendHistoryRecords(t, session, map[string]any{
+		"type": "turn_context",
+		"payload": map[string]any{
+			"model":   "gpt-5.6-sol",
+			"turn_id": "turn-old",
+		},
+	})
+	beforeSession, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(home, "sqlite", "state_5.sqlite")
+	createHistoryModelDatabase(t, databasePath, map[string]string{
+		"thread-old":     "gpt-5.6-sol",
+		"thread-empty":   "",
+		"thread-review":  "codex-auto-review",
+		"thread-current": "gpt-6-astra",
+	})
+
+	repairer := NewHistoryRepairer(home)
+	result, err := repairer.SyncCurrentModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetModel != "gpt-6-astra" || result.UpdatedModelRows != 2 || result.UpdatedDatabaseRows != 0 || result.BackupID == "" {
+		t.Fatalf("model synchronization result = %+v", result)
+	}
+	assertHistoryDatabaseModels(t, databasePath, map[string]string{
+		"thread-old":     "gpt-6-astra",
+		"thread-empty":   "gpt-6-astra",
+		"thread-review":  "codex-auto-review",
+		"thread-current": "gpt-6-astra",
+	})
+	afterSession, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeSession, afterSession) {
+		t.Fatal("thread model synchronization rewrote rollout history")
+	}
+
+	second, err := repairer.SyncCurrentModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.UpdatedModelRows != 0 || second.BackupID != "" {
+		t.Fatalf("idempotent model synchronization changed data: %+v", second)
+	}
+
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE threads SET model = 'gpt-5.6-sol' WHERE id = 'thread-old'"); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := repairer.RestoreBackup(result.BackupID); err == nil || !strings.Contains(err.Error(), "thread identity set changed") {
+		t.Fatalf("restore accepted a newer thread-model selection: %v", err)
+	}
+	database, err = sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE threads SET model = 'gpt-6-astra' WHERE id = 'thread-old'"); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repairer.RestoreBackup(result.BackupID); err != nil {
+		t.Fatal(err)
+	}
+	assertHistoryDatabaseModels(t, databasePath, map[string]string{
+		"thread-old":     "gpt-5.6-sol",
+		"thread-empty":   "",
+		"thread-review":  "codex-auto-review",
+		"thread-current": "gpt-6-astra",
+	})
+}
+
+func TestHistoryRepairRollsBackFailedThreadModelSynchronization(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfigWithModel(t, home, providerID, "gpt-6-astra")
+	databasePath := filepath.Join(home, "state_5.sqlite")
+	createHistoryModelDatabase(t, databasePath, map[string]string{"thread-old": "gpt-5.6-sol"})
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TRIGGER reject_model_update BEFORE UPDATE OF model ON threads BEGIN SELECT RAISE(FAIL, 'blocked by test'); END`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewHistoryRepairer(home).SyncCurrentModel()
+	if err == nil {
+		t.Fatal("model synchronization unexpectedly succeeded despite a forced database failure")
+	}
+	var applyErr *HistoryRepairApplyError
+	if !errors.As(err, &applyErr) || applyErr.RollbackErr != nil {
+		t.Fatalf("model synchronization error = %v", err)
+	}
+	if result.BackupID == "" {
+		t.Fatal("failed model synchronization did not retain a recovery backup")
+	}
+	assertHistoryDatabaseModels(t, databasePath, map[string]string{"thread-old": "gpt-5.6-sol"})
+}
+
+func TestHistoryRepairReportsLegacyDatabaseWithoutThreadModelColumn(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfigWithModel(t, home, providerID, "gpt-6-astra")
+	createHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), map[string]string{"thread-a": providerID})
+
+	result, err := NewHistoryRepairer(home).SyncCurrentModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UnsupportedModelDBs != 1 || result.UpdatedModelRows != 0 || result.BackupID != "" {
+		t.Fatalf("legacy model-column result = %+v", result)
+	}
+}
+
 func TestHistoryRepairRejectsCorruptDatabaseBeforeChangingSessions(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, "codex_local_access")
@@ -672,6 +807,14 @@ func writeHistoryConfig(t *testing.T, home, provider string) {
 	}
 }
 
+func writeHistoryConfigWithModel(t *testing.T, home, provider, model string) {
+	t.Helper()
+	content := []byte("model_provider = \"" + provider + "\"\nmodel = \"" + model + "\"\n")
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeHistoryRollout(t *testing.T, home, relative, provider, threadID string) string {
 	t.Helper()
 	path := filepath.Join(home, filepath.FromSlash(relative))
@@ -736,6 +879,66 @@ func createHistoryDatabase(t *testing.T, path string, providers map[string]strin
 	for id, provider := range providers {
 		if _, err := database.Exec("INSERT INTO threads (id, rollout_path, model_provider) VALUES (?, ?, ?)", id, "rollout-"+id+".jsonl", provider); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func createHistoryModelDatabase(t *testing.T, path string, models map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`CREATE TABLE threads (
+		id TEXT PRIMARY KEY,
+		rollout_path TEXT NOT NULL,
+		model_provider TEXT NOT NULL,
+		model TEXT,
+		has_user_event INTEGER NOT NULL DEFAULT 1,
+		cwd TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for id, model := range models {
+		if _, err := database.Exec("INSERT INTO threads (id, rollout_path, model_provider, model) VALUES (?, ?, ?, ?)", id, "rollout-"+id+".jsonl", providerID, model); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertHistoryDatabaseModels(t *testing.T, path string, expected map[string]string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	rows, err := database.Query("SELECT id, COALESCE(model, '') FROM threads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	actual := map[string]string{}
+	for rows.Next() {
+		var id, model string
+		if err := rows.Scan(&id, &model); err != nil {
+			t.Fatal(err)
+		}
+		actual[id] = model
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != len(expected) {
+		t.Fatalf("database models = %+v, want %+v", actual, expected)
+	}
+	for id, model := range expected {
+		if actual[id] != model {
+			t.Fatalf("database model for %s = %q, want %q", id, actual[id], model)
 		}
 	}
 }

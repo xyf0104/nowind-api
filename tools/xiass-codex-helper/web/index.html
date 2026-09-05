@@ -76,7 +76,7 @@
       <div class="row"><span class="label">程序位置</span><span id="codex-path" class="value">-</span></div>
       <div class="row"><span class="label">配置位置</span><span id="config-path" class="value">-</span></div>
       <div class="row"><span class="label">可恢复备份</span><span id="backup-count" class="value">0</span></div>
-		  <div class="row"><span class="label">历史会话保护</span><span class="value"><span class="status"><span class="dot ok"></span>切换 provider 或手动修复时完整校验</span></span></div>
+		  <div class="row"><span class="label">历史会话保护</span><span class="value"><span class="status"><span class="dot ok"></span>同步 provider 与已有会话模型，修改前完整备份</span></span></div>
 		  <div class="row">
 			<label class="label" for="codex-app-path">自定义程序路径</label>
 			<div class="path-entry">
@@ -93,7 +93,7 @@
         <button id="refresh-button" type="button">重新检测</button>
 		<button id="select-app-button" type="button">浏览选择 Codex App</button>
       </div>
-      <p class="hint">填写您当前使用的 XIASS API 网站地址。连接 XIASS API 时，助手会先完整备份本地配置，再将当前 model provider 切换为 XIASS API；有效的 MCP、插件和其他非 XIASS 设置会保留，原配置可随时恢复。随后助手会安全退出 Codex、同步历史对话并校验会话数量，只有全部成功才会重新启动。</p>
+	  <p class="hint">填写您当前使用的 XIASS API 网站地址。连接 XIASS API 时，助手会先完整备份本地配置，再将当前 model provider 切换为 XIASS API，并把所选默认模型应用到已有普通会话；审查会话和历史正文保持不变。有效的 MCP、插件和其他非 XIASS 设置会保留，原配置可随时恢复。随后助手会安全退出 Codex、同步历史对话并校验会话数量，只有全部成功才会重新启动。</p>
     </section>
 
 	<section class="panel">
@@ -150,7 +150,7 @@
       <div class="actions">
         <button id="manual-apply-button" type="button">写入手动配置并重启 Codex</button>
       </div>
-	  <p class="hint">默认会话模型与审查模型可以独立设置，不构成服务端模型白名单。点击“读取模型列表”会由本机助手使用当前 Base URL 和密钥读取兼容 API 的 <code>/v1/models</code>，也可以直接手动输入。API 密钥只会提交给本机配置助手并写入本地配置，不会发送到 XIASS API。</p>
+		  <p class="hint">默认会话模型与审查模型可以独立设置，不构成服务端模型白名单。默认会话模型发生变化时，助手会通过带备份和回滚的轻量同步，将它应用到已有普通会话；<code>codex-auto-review</code> 审查会话保持不变。点击“读取模型列表”会由本机助手使用当前 Base URL 和密钥读取兼容 API 的 <code>/v1/models</code>，也可以直接手动输入。API 密钥只会提交给本机配置助手并写入本地配置，不会发送到 XIASS API。</p>
     </section>
 
 	<section class="panel">
@@ -159,7 +159,7 @@
 	  <div class="actions">
 		<button id="repair-history-button" type="button">修复历史会话兼容性并重启 Codex</button>
 	  </div>
-	  <p class="hint">用于切换 provider 后历史对话不显示，或旧会话在第三方 API 下无法继续的情况。助手会同步普通会话、归档会话和数据库索引到当前 provider，并移除无法被第三方 Responses API 验证的内部续接记录；用户消息、助手正文、附件引用与工具结果均保留。官方 OpenAI provider 不会改动这些续接记录。修改前会创建包含 WAL 已提交数据的 SQLite 一致性快照并备份原始会话元数据；失败或意外中断会自动恢复。</p>
+		  <p class="hint">用于切换 provider 后历史对话不显示，或旧会话在第三方 API 下无法继续的情况。助手会同步普通会话、归档会话、数据库 provider 索引和已有普通会话的当前模型，并移除无法被第三方 Responses API 验证的内部续接记录；用户消息、助手正文、附件引用与工具结果均保留。官方 OpenAI provider 不会改动这些续接记录。修改前会创建包含 WAL 已提交数据的 SQLite 一致性快照并备份原始会话元数据；失败或意外中断会自动恢复。</p>
 	  <div class="row">
 		<label class="label" for="history-backup-select">兼容性备份</label>
 		<select id="history-backup-select"><option value="">正在读取备份...</option></select>
@@ -498,7 +498,7 @@
       button.disabled = true;
       try {
 		const context = readContextValues();
-		showMessage('正在安全写入配置并重启 Codex。模型 provider 未变化时会跳过全量历史扫描。', 'success');
+		showMessage('正在安全写入配置并重启 Codex。仅默认模型变化时会轻量同步已有会话，不扫描或改写历史正文。', 'success');
         const data = await request('/api/apply-manual', {
           method: 'POST',
 		  body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model, review_model: reviewModel, ...context })
@@ -519,7 +519,7 @@
       const button = document.getElementById('restore-button');
       button.disabled = true;
       try {
-		showMessage('正在恢复配置并重启 Codex。模型 provider 未变化时会跳过全量历史扫描。', 'success');
+		showMessage('正在恢复配置并重启 Codex。仅默认模型变化时会轻量同步已有会话，不扫描或改写历史正文。', 'success');
         const data = await request('/api/restore', { method: 'POST', body: JSON.stringify({ backup_id: backupID }) });
         showMessage(data.message, 'success');
         await refresh();
@@ -565,7 +565,8 @@
 	  try {
 		const data = await request('/api/repair-history', { method: 'POST', body: '{}' });
 		const history = data.history || {};
-		const summary = `扫描 ${history.scanned_session_files || 0} 个会话文件、${history.scanned_databases || 0} 个数据库；修复 ${history.updated_session_files || 0} 个会话文件、${history.updated_database_rows || 0} 行索引，并清理 ${history.sanitized_records || 0} 条不兼容内部记录。`;
+		const legacyModelNotice = history.unsupported_model_databases ? `；${history.unsupported_model_databases} 个旧版数据库不含线程模型字段` : '';
+		const summary = `扫描 ${history.scanned_session_files || 0} 个会话文件、${history.scanned_databases || 0} 个数据库；修复 ${history.updated_session_files || 0} 个会话文件、${history.updated_database_rows || 0} 行 provider 索引，将 ${history.updated_model_rows || 0} 个已有普通会话切换到 ${history.target_model || '当前模型'}，并清理 ${history.sanitized_records || 0} 条不兼容内部记录${legacyModelNotice}。`;
 		document.getElementById('history-result').textContent = summary;
 		showMessage(`${data.message} ${summary}`, 'success');
 	  } catch (error) {

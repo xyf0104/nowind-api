@@ -29,6 +29,7 @@ type helperServer struct {
 	restoreConfig              func(string) (RestoreResult, error)
 	repairHistory              func() (HistoryRepairResult, error)
 	repairCompatibilityHistory func() (HistoryRepairResult, error)
+	syncHistoryModel           func() (HistoryRepairResult, error)
 	restoreHistory             func(string) error
 	listHistoryBackups         func() ([]HistoryBackupInfo, error)
 	deleteConfigBackup         func(string) error
@@ -106,8 +107,9 @@ func newHelperServer(manager *ConfigManager, site string, state string) (*helper
 		manager:                    manager,
 		applyConfig:                manager.Apply,
 		restoreConfig:              manager.Restore,
-		repairHistory:              repairer.RepairCurrentProvider,
-		repairCompatibilityHistory: repairer.RepairCurrentProviderCompatibility,
+		repairHistory:              repairer.RepairCurrentProviderModel,
+		repairCompatibilityHistory: repairer.RepairCurrentProviderModelCompatibility,
+		syncHistoryModel:           repairer.SyncCurrentModel,
 		restoreHistory:             repairer.RestoreBackup,
 		listHistoryBackups:         repairer.ListBackups,
 		deleteConfigBackup:         manager.DeleteBackup,
@@ -459,7 +461,7 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, operationFailure("configuration was not changed", err, startErr))
 		return
 	}
-	history, err := s.repairHistoryIfProviderChanged(previousHistoryProvider)
+	history, err := s.repairHistoryForConfigChange(previousHistoryProvider)
 	if err != nil {
 		historyRollbackUnsafe := historyRollbackFailed(err)
 		_, rollbackErr := s.restoreConfig(result.BackupID)
@@ -806,7 +808,7 @@ func (s *helperServer) handleRestore(w http.ResponseWriter, r *http.Request) {
 	if upgradedLegacyProvider {
 		history, err = s.repairHistory()
 	} else {
-		history, err = s.repairHistoryIfProviderChanged(previousHistoryProvider)
+		history, err = s.repairHistoryForConfigChange(previousHistoryProvider)
 	}
 	if err != nil {
 		historyRollbackUnsafe := historyRollbackFailed(err)
@@ -1067,21 +1069,17 @@ func historyProviderForConfig(configPath string) string {
 	return provider
 }
 
-func (s *helperServer) repairHistoryIfProviderChanged(previousProvider string) (HistoryRepairResult, error) {
+func (s *helperServer) repairHistoryForConfigChange(previousProvider string) (HistoryRepairResult, error) {
 	targetProvider := historyProviderForConfig(s.manager.ConfigPath)
 	if previousProvider != "" && targetProvider != "" && previousProvider == targetProvider {
-		return HistoryRepairResult{
-			TargetProvider: targetProvider,
-			Skipped:        true,
-			SkipReason:     "model provider unchanged",
-		}, nil
+		return s.syncHistoryModel()
 	}
 	return s.repairHistory()
 }
 
 func historySummary(result HistoryRepairResult) string {
 	if result.Skipped {
-		return "模型 provider 未变化，已跳过全量历史迁移；会话和索引保持原样。"
+		return "模型 provider 与默认模型均未变化，已跳过历史迁移；会话和索引保持原样。"
 	}
 	workspaceSummary := "项目映射校验通过；"
 	if result.WorkspaceState != nil && result.WorkspaceState.Updated {
@@ -1091,10 +1089,18 @@ func historySummary(result HistoryRepairResult) string {
 	if result.SanitizedRecords > 0 {
 		compatibilitySummary = fmt.Sprintf("已清理 %d 条无法续接的内部协议记录；", result.SanitizedRecords)
 	}
+	modelSummary := ""
+	if result.TargetModel != "" {
+		modelSummary = fmt.Sprintf("已将 %d 个已有普通会话切换到 %s；", result.UpdatedModelRows, result.TargetModel)
+		if result.UnsupportedModelDBs > 0 {
+			modelSummary += fmt.Sprintf("%d 个旧版会话数据库不含模型字段，已保持原样；", result.UnsupportedModelDBs)
+		}
+	}
 	return fmt.Sprintf(
-		"%s%s已扫描 %d 个会话文件和 %d 个会话数据库，校验 %d 行会话索引，修复 %d 个文件和 %d 行索引；可见会话和正文未删除。",
+		"%s%s%s已扫描 %d 个会话文件和 %d 个会话数据库，校验 %d 行会话索引，修复 %d 个文件和 %d 行 provider 索引；可见会话、审查会话和正文未删除。",
 		workspaceSummary,
 		compatibilitySummary,
+		modelSummary,
 		result.ScannedSessionFiles,
 		result.ScannedDatabases,
 		result.ThreadCount,

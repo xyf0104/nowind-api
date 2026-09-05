@@ -251,9 +251,9 @@ func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
 	}
 }
 
-func TestHelperServerSkipsFullHistoryRepairWhenProviderDoesNotChange(t *testing.T) {
+func TestHelperServerUsesLightweightModelCheckWhenProviderDoesNotChange(t *testing.T) {
 	home := t.TempDir()
-	writeHistoryConfig(t, home, providerID)
+	writeHistoryConfigWithModel(t, home, providerID, defaultModel)
 	helper, err := newTestHelperServer(NewConfigManager(home), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
 		t.Fatal(err)
@@ -264,18 +264,55 @@ func TestHelperServerSkipsFullHistoryRepairWhenProviderDoesNotChange(t *testing.
 	helper.stop = func(CodexInstallation) error { return nil }
 	helper.start = func(CodexInstallation) error { return nil }
 	var repairs atomic.Int32
+	var modelSyncs atomic.Int32
 	helper.repairHistory = func() (HistoryRepairResult, error) {
 		repairs.Add(1)
 		return HistoryRepairResult{}, nil
 	}
+	helper.syncHistoryModel = func() (HistoryRepairResult, error) {
+		modelSyncs.Add(1)
+		return HistoryRepairResult{TargetProvider: providerID, TargetModel: defaultModel}, nil
+	}
 
 	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`), http.StatusOK)
-	if repairs.Load() != 0 {
-		t.Fatalf("same-provider configuration unexpectedly repaired history %d times", repairs.Load())
+	if repairs.Load() != 0 || modelSyncs.Load() != 1 {
+		t.Fatalf("same-provider configuration ran full repair %d times and model check %d times", repairs.Load(), modelSyncs.Load())
 	}
 	history, _ := response["history"].(map[string]any)
-	if skipped, _ := history["skipped"].(bool); !skipped {
-		t.Fatalf("same-provider history response did not report a fast-path skip: %+v", response)
+	if history["target_model"] != defaultModel || history["scanned_session_files"] != float64(0) {
+		t.Fatalf("same-provider history response did not report the lightweight path: %+v", response)
+	}
+}
+
+func TestHelperServerSynchronizesExistingThreadsWhenOnlyModelChanges(t *testing.T) {
+	home := t.TempDir()
+	writeHistoryConfigWithModel(t, home, providerID, "gpt-5.6-sol")
+	helper, err := newTestHelperServer(NewConfigManager(home), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	var repairs, modelSyncs atomic.Int32
+	helper.repairHistory = func() (HistoryRepairResult, error) {
+		repairs.Add(1)
+		return HistoryRepairResult{}, nil
+	}
+	helper.syncHistoryModel = func() (HistoryRepairResult, error) {
+		modelSyncs.Add(1)
+		return HistoryRepairResult{TargetProvider: providerID, TargetModel: "gpt-6-astra", UpdatedModelRows: 3}, nil
+	}
+
+	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex","model":"gpt-6-astra"}`), http.StatusOK)
+	if repairs.Load() != 0 || modelSyncs.Load() != 1 {
+		t.Fatalf("same-provider model change ran full repair %d times and model sync %d times", repairs.Load(), modelSyncs.Load())
+	}
+	history, _ := response["history"].(map[string]any)
+	if history["target_model"] != "gpt-6-astra" || history["updated_model_rows"] != float64(3) {
+		t.Fatalf("model sync response = %+v", response)
 	}
 }
 
