@@ -39,18 +39,21 @@ var managedTopLevelKeys = map[string]struct{}{
 	"review_model":                   {},
 	"model_context_window":           {},
 	"model_auto_compact_token_limit": {},
+	"model_catalog_json":             {},
 	"web_search":                     {},
 }
 
 type ApplyConfig struct {
-	BaseURL                    string `json:"base_url"`
-	APIKey                     string `json:"api_key"`
-	KeyName                    string `json:"key_name"`
-	Model                      string `json:"model,omitempty"`
-	ReviewModel                string `json:"review_model,omitempty"`
-	ProviderName               string `json:"provider_name,omitempty"`
-	ModelContextWindow         int64  `json:"model_context_window,omitempty"`
-	ModelAutoCompactTokenLimit int64  `json:"model_auto_compact_token_limit,omitempty"`
+	BaseURL                    string   `json:"base_url"`
+	APIKey                     string   `json:"api_key"`
+	KeyName                    string   `json:"key_name"`
+	Model                      string   `json:"model,omitempty"`
+	ReviewModel                string   `json:"review_model,omitempty"`
+	ModelCatalogModels         []string `json:"model_catalog_models,omitempty"`
+	ProviderName               string   `json:"provider_name,omitempty"`
+	ModelContextWindow         int64    `json:"model_context_window,omitempty"`
+	ModelAutoCompactTokenLimit int64    `json:"model_auto_compact_token_limit,omitempty"`
+	ModelCatalogPath           string   `json:"-"`
 	// ForceCanonicalProvider is only set by the trusted local XIASS helper
 	// endpoint. It is deliberately not accepted from JSON payloads.
 	ForceCanonicalProvider bool `json:"-"`
@@ -83,6 +86,7 @@ type BackupInfo struct {
 type ApplyResult struct {
 	BackupID   string `json:"backup_id"`
 	ConfigSHA  string `json:"config_sha256"`
+	CatalogSHA string `json:"catalog_sha256"`
 	ProviderID string `json:"provider_id"`
 }
 
@@ -108,16 +112,18 @@ func (e *ConfigMutationError) Unwrap() error {
 }
 
 type ConfigManager struct {
-	ConfigPath string
-	BackupRoot string
-	LockPath   string
+	ConfigPath       string
+	ModelCatalogRoot string
+	BackupRoot       string
+	LockPath         string
 }
 
 func NewConfigManager(codexHome string) *ConfigManager {
 	return &ConfigManager{
-		ConfigPath: filepath.Join(codexHome, "config.toml"),
-		BackupRoot: filepath.Join(codexHome, "xiass-helper", "backups"),
-		LockPath:   filepath.Join(codexHome, "xiass-helper", "operation.lock"),
+		ConfigPath:       filepath.Join(codexHome, "config.toml"),
+		ModelCatalogRoot: filepath.Join(codexHome, "xiass-helper", "model-catalogs"),
+		BackupRoot:       filepath.Join(codexHome, "xiass-helper", "backups"),
+		LockPath:         filepath.Join(codexHome, "xiass-helper", "operation.lock"),
 	}
 }
 
@@ -128,6 +134,15 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 		if err != nil {
 			return err
 		}
+		catalogData, err := buildModelCatalogJSON(normalized.BaseURL, normalized.Model, normalized.ModelCatalogModels)
+		if err != nil {
+			return fmt.Errorf("prepare local model catalog: %w", err)
+		}
+		if bytes.Contains(catalogData, []byte(normalized.APIKey)) {
+			return errors.New("generated model catalog unexpectedly contains the API key")
+		}
+		catalogSHA := sha256Hex(catalogData)
+		normalized.ModelCatalogPath = filepath.Join(m.ModelCatalogRoot, "model-catalog-"+catalogSHA[:16]+".json")
 
 		original, existed, mode, err := readConfigFile(m.ConfigPath)
 		if err != nil {
@@ -173,12 +188,27 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 		if err := verifyManagedConfig(updated, normalized, managedProviderID); err != nil {
 			return fmt.Errorf("generated config verification failed: %w", err)
 		}
+		if err := validateModelCatalog(catalogData); err != nil {
+			return fmt.Errorf("generated model catalog verification failed: %w", err)
+		}
 
 		if err := os.MkdirAll(filepath.Dir(m.ConfigPath), 0o700); err != nil {
 			return fmt.Errorf("create Codex config directory: %w", err)
 		}
 		if err := ensureConfigUnchanged(m.ConfigPath, original, existed); err != nil {
 			return err
+		}
+		existingCatalog, catalogExisted, _, err := readManagedFile(normalized.ModelCatalogPath)
+		if err != nil {
+			return err
+		}
+		if catalogExisted && !bytes.Equal(existingCatalog, catalogData) {
+			return errors.New("model catalog checksum collision; no changes were made")
+		}
+		if !catalogExisted {
+			if err := writeFileAtomic(normalized.ModelCatalogPath, catalogData, 0o600); err != nil {
+				return fmt.Errorf("write model catalog: %w", err)
+			}
 		}
 		if err := writeFileAtomic(m.ConfigPath, updated, secureMode(mode)); err != nil {
 			return fmt.Errorf("write config.toml: %w", err)
@@ -197,6 +227,19 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 				m.ConfigPath, original, existed, mode,
 			)
 		}
+		writtenCatalog, err := os.ReadFile(normalized.ModelCatalogPath)
+		if err != nil {
+			return rollbackConfigError(
+				fmt.Errorf("read back model catalog: %w", err),
+				m.ConfigPath, original, existed, mode,
+			)
+		}
+		if !bytes.Equal(writtenCatalog, catalogData) {
+			return rollbackConfigError(
+				errors.New("model catalog read-back verification failed"),
+				m.ConfigPath, original, existed, mode,
+			)
+		}
 
 		manifest.AppliedSHA256 = sha256Hex(written)
 		if err := m.writeManifest(manifest); err != nil {
@@ -206,7 +249,7 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 			)
 		}
 
-		result = ApplyResult{BackupID: manifest.ID, ConfigSHA: manifest.AppliedSHA256, ProviderID: managedProviderID}
+		result = ApplyResult{BackupID: manifest.ID, ConfigSHA: manifest.AppliedSHA256, CatalogSHA: catalogSHA, ProviderID: managedProviderID}
 		return nil
 	})
 	return result, err
@@ -272,7 +315,6 @@ func (m *ConfigManager) Restore(backupID string) (RestoreResult, error) {
 		if filepath.Clean(target.ConfigPath) != filepath.Clean(m.ConfigPath) {
 			return errors.New("backup belongs to a different Codex config path")
 		}
-
 		current, currentExisted, currentMode, err := readConfigFile(m.ConfigPath)
 		if err != nil {
 			return err
@@ -282,8 +324,9 @@ func (m *ConfigManager) Restore(backupID string) (RestoreResult, error) {
 			return fmt.Errorf("create pre-restore safety backup: %w", err)
 		}
 
+		var backupBytes []byte
 		if target.OriginalExisted {
-			backupBytes, err := os.ReadFile(m.originalPath(target.ID))
+			backupBytes, err = os.ReadFile(m.originalPath(target.ID))
 			if err != nil {
 				return fmt.Errorf("read backup: %w", err)
 			}
@@ -295,9 +338,12 @@ func (m *ConfigManager) Restore(backupID string) (RestoreResult, error) {
 					return fmt.Errorf("backup TOML is invalid; restore cancelled: %w", err)
 				}
 			}
-			if err := ensureConfigUnchanged(m.ConfigPath, current, currentExisted); err != nil {
-				return err
-			}
+		}
+		if err := ensureConfigUnchanged(m.ConfigPath, current, currentExisted); err != nil {
+			return err
+		}
+
+		if target.OriginalExisted {
 			targetMode := fs.FileMode(target.OriginalMode)
 			if err := writeFileAtomic(m.ConfigPath, backupBytes, secureMode(targetMode)); err != nil {
 				return rollbackConfigError(
@@ -305,6 +351,14 @@ func (m *ConfigManager) Restore(backupID string) (RestoreResult, error) {
 					m.ConfigPath, current, currentExisted, currentMode,
 				)
 			}
+		} else if err := os.Remove(m.ConfigPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return rollbackConfigError(
+				fmt.Errorf("remove helper-created config.toml: %w", err),
+				m.ConfigPath, current, currentExisted, currentMode,
+			)
+		}
+
+		if target.OriginalExisted {
 			restored, err := os.ReadFile(m.ConfigPath)
 			if err != nil || sha256Hex(restored) != target.OriginalSHA256 {
 				cause := errors.New("restore read-back verification failed")
@@ -313,22 +367,11 @@ func (m *ConfigManager) Restore(backupID string) (RestoreResult, error) {
 				}
 				return rollbackConfigError(cause, m.ConfigPath, current, currentExisted, currentMode)
 			}
-		} else {
-			if err := ensureConfigUnchanged(m.ConfigPath, current, currentExisted); err != nil {
-				return err
-			}
-			if err := os.Remove(m.ConfigPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return rollbackConfigError(
-					fmt.Errorf("remove helper-created config.toml: %w", err),
-					m.ConfigPath, current, currentExisted, currentMode,
-				)
-			}
-			if _, err := os.Lstat(m.ConfigPath); !errors.Is(err, fs.ErrNotExist) {
-				return rollbackConfigError(
-					errors.New("restore verification failed; config.toml still exists"),
-					m.ConfigPath, current, currentExisted, currentMode,
-				)
-			}
+		} else if _, err := os.Lstat(m.ConfigPath); !errors.Is(err, fs.ErrNotExist) {
+			return rollbackConfigError(
+				errors.New("restore verification failed; config.toml still exists"),
+				m.ConfigPath, current, currentExisted, currentMode,
+			)
 		}
 
 		result = RestoreResult{RestoredBackupID: target.ID, SafetyBackupID: safety.ID}
@@ -477,7 +520,9 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.KeyName = strings.TrimSpace(input.KeyName)
 	input.Model = strings.TrimSpace(input.Model)
-	input.ReviewModel = strings.TrimSpace(input.ReviewModel)
+	// review_model is intentionally ignored. Leaving it unset preserves Codex's
+	// official default review behavior, including future client changes.
+	input.ReviewModel = ""
 	input.ProviderName = strings.TrimSpace(input.ProviderName)
 	if input.APIKey == "" || len(input.APIKey) > 8192 || strings.ContainsAny(input.APIKey, "\r\n\x00") {
 		return input, errors.New("invalid API key")
@@ -485,17 +530,16 @@ func normalizeApplyConfig(input ApplyConfig) (ApplyConfig, error) {
 	if input.Model == "" {
 		input.Model = defaultModel
 	}
-	if input.ReviewModel == "" {
-		input.ReviewModel = input.Model
-	}
 	if input.ProviderName == "" {
 		input.ProviderName = providerName
 	}
 	if len(input.Model) > 200 || strings.ContainsAny(input.Model, "\r\n\x00") {
 		return input, errors.New("invalid model name")
 	}
-	if len(input.ReviewModel) > 200 || strings.ContainsAny(input.ReviewModel, "\r\n\x00") {
-		return input, errors.New("invalid review model name")
+	var err error
+	input.ModelCatalogModels, err = normalizeModelIDs(input.ModelCatalogModels)
+	if err != nil {
+		return input, err
 	}
 	if len(input.ProviderName) > 200 || strings.ContainsAny(input.ProviderName, "\r\n\x00") {
 		return input, errors.New("invalid provider name")
@@ -684,10 +728,12 @@ func patchConfig(original []byte, input ApplyConfig, managedProviderID string) [
 	top := []string{
 		`model_provider = "` + managedProviderID + `"`,
 		`model = "` + escapeTOML(input.Model) + `"`,
-		`review_model = "` + escapeTOML(input.ReviewModel) + `"`,
 		"model_context_window = " + strconv.FormatInt(input.ModelContextWindow, 10),
 		"model_auto_compact_token_limit = " + strconv.FormatInt(input.ModelAutoCompactTokenLimit, 10),
 		`web_search = "live"`,
+	}
+	if input.ModelCatalogPath != "" {
+		top = append(top, `model_catalog_json = "`+escapeTOML(input.ModelCatalogPath)+`"`)
 	}
 	provider := []string{
 		"[model_providers." + managedProviderID + "]",
@@ -761,12 +807,19 @@ func verifyManagedConfig(data []byte, expected ApplyConfig, managedProviderID st
 	checks := map[string]string{
 		"model_provider": managedProviderID,
 		"model":          expected.Model,
-		"review_model":   expected.ReviewModel,
 		"web_search":     "live",
 	}
 	for key, want := range checks {
 		if got, _ := root[key].(string); got != want {
 			return fmt.Errorf("%s mismatch", key)
+		}
+	}
+	if _, exists := root["review_model"]; exists {
+		return errors.New("review_model must be omitted so Codex uses its official default")
+	}
+	if expected.ModelCatalogPath != "" {
+		if got, _ := root["model_catalog_json"].(string); filepath.Clean(got) != filepath.Clean(expected.ModelCatalogPath) {
+			return errors.New("model_catalog_json mismatch")
 		}
 	}
 	if !numberEquals(root["model_context_window"], expected.ModelContextWindow) || !numberEquals(root["model_auto_compact_token_limit"], expected.ModelAutoCompactTokenLimit) {
@@ -888,6 +941,30 @@ func readConfigFile(path string) ([]byte, bool, fs.FileMode, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("read config.toml: %w", err)
+	}
+	return data, true, info.Mode().Perm(), nil
+}
+
+func readManagedFile(path string) ([]byte, bool, fs.FileMode, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, false, 0o600, errors.New("managed file path is empty")
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, 0o600, nil
+	}
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("inspect managed file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, 0, errors.New("managed file is a symbolic link; no changes were made")
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, 0, errors.New("managed file is not a regular file; no changes were made")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("read managed file: %w", err)
 	}
 	return data, true, info.Mode().Perm(), nil
 }

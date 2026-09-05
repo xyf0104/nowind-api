@@ -471,6 +471,16 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	if len(input.ModelCatalogModels) == 0 {
+		// Older website callbacks and manual setup do not always preload the
+		// model list. Discover it before stopping Codex so the generated startup
+		// catalog still exposes every model available to this API key. Discovery
+		// is best-effort: a temporary model endpoint failure must not block an
+		// otherwise valid configuration change.
+		if models, discoveryErr := s.listModels(input.BaseURL, input.APIKey); discoveryErr == nil {
+			input.ModelCatalogModels = s.augmentConfiguredXIASSModels(input.BaseURL, models)
+		}
+	}
 
 	if !s.beginOperation(w) {
 		return

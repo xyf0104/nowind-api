@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -258,6 +260,168 @@ func TestApplyWritesAndReadsSelectedContextSettings(t *testing.T) {
 	}
 }
 
+func TestApplyWritesLocalModelCatalogAndUsesOfficialReviewDefault(t *testing.T) {
+	home := t.TempDir()
+	manager := NewConfigManager(home)
+	if err := os.WriteFile(manager.ConfigPath, []byte("review_model = \"old-review\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Apply(ApplyConfig{
+		BaseURL:            "https://gateway.example.com",
+		APIKey:             "sk-test-1234567890",
+		Model:              "gpt-6-astra",
+		ReviewModel:        "gpt-5.6-sol",
+		ModelCatalogModels: []string{"gpt-5.6-sol", "gpt-6-astra", "gpt-5.6-sol"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CatalogSHA == "" {
+		t.Fatal("Apply() did not return a model catalog checksum")
+	}
+	config, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(config), "review_model") {
+		t.Fatal("old review_model was not removed")
+	}
+	catalogPath := configuredCatalogPath(t, config)
+	if !strings.HasPrefix(catalogPath, manager.ModelCatalogRoot+string(os.PathSeparator)+"model-catalog-") {
+		t.Fatal("config.toml does not point Codex at the local model catalog")
+	}
+	catalog, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateModelCatalog(catalog); err != nil {
+		t.Fatal(err)
+	}
+	var parsed modelCatalogFile
+	if err := json.Unmarshal(catalog, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(parsed.Models))
+	for _, model := range parsed.Models {
+		ids = append(ids, model.Slug)
+	}
+	if got := strings.Join(ids, ","); got != "gpt-6-astra,gpt-5.6-sol" {
+		t.Fatalf("catalog model IDs = %q", got)
+	}
+	if strings.Contains(string(catalog), "sk-test-1234567890") || strings.Contains(string(catalog), "gateway.example.com") {
+		t.Fatal("model catalog contains provider credentials or URL")
+	}
+	var configRoot map[string]any
+	if err := toml.Unmarshal(config, &configRoot); err != nil {
+		t.Fatal(err)
+	}
+	if configRoot["web_search"] != "live" {
+		t.Fatalf("web_search = %v, want live", configRoot["web_search"])
+	}
+	byID := make(map[string]modelCatalogModel, len(parsed.Models))
+	for _, model := range parsed.Models {
+		byID[model.Slug] = model
+	}
+	for _, id := range []string{"gpt-6-astra", "gpt-5.6-sol"} {
+		model, ok := byID[id]
+		if !ok || !modelCatalogContains(model.InputModalities, "image") || !model.SupportsImageDetailOriginal || !model.SupportsSearchTool {
+			t.Fatalf("%s lost image/search capabilities: %+v", id, model)
+		}
+	}
+}
+
+func TestModelCatalogKeepsBuiltInImageModelCapabilities(t *testing.T) {
+	data, err := buildModelCatalogJSON(
+		"https://gateway.example.com/v1",
+		"gpt-5.6-sol",
+		[]string{"gpt-image-2", "gpt-5.6-sol"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog modelCatalogFile
+	if err := json.Unmarshal(data, &catalog); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range catalog.Models {
+		if model.Slug != "gpt-image-2" {
+			continue
+		}
+		if !modelCatalogContains(model.InputModalities, "image") || !model.SupportsImageDetailOriginal {
+			t.Fatalf("built-in image model capabilities = %+v", model)
+		}
+		return
+	}
+	t.Fatal("built-in image model was missing from the generated catalog")
+}
+
+func modelCatalogContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRestoreRestoresModelCatalogTogetherWithConfig(t *testing.T) {
+	manager := NewConfigManager(t.TempDir())
+	if _, err := manager.Apply(ApplyConfig{
+		BaseURL:            "https://gateway.example.com",
+		APIKey:             "sk-first-1234567890",
+		Model:              "gpt-5.6-sol",
+		ModelCatalogModels: []string{"gpt-5.6-sol"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstConfig, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCatalogPath := configuredCatalogPath(t, firstConfig)
+	firstCatalog, err := os.ReadFile(firstCatalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Apply(ApplyConfig{
+		BaseURL:            "https://gateway.example.com",
+		APIKey:             "sk-second-1234567890",
+		Model:              "gpt-6-astra",
+		ModelCatalogModels: []string{"gpt-6-astra"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Restore(second.BackupID); err != nil {
+		t.Fatal(err)
+	}
+	restoredConfig, err := os.ReadFile(manager.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredCatalogPath := configuredCatalogPath(t, restoredConfig)
+	restoredCatalog, err := os.ReadFile(restoredCatalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredCatalogPath != firstCatalogPath || !bytes.Equal(restoredConfig, firstConfig) || !bytes.Equal(restoredCatalog, firstCatalog) {
+		t.Fatal("restoring a configuration backup did not restore its model catalog")
+	}
+}
+
+func configuredCatalogPath(t *testing.T, config []byte) string {
+	t.Helper()
+	var root map[string]any
+	if err := toml.Unmarshal(config, &root); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := root["model_catalog_json"].(string)
+	if strings.TrimSpace(path) == "" {
+		t.Fatal("model_catalog_json is missing")
+	}
+	return path
+}
+
 func TestReadContextSettingsUsesCompatibilityDefaultsWhenAbsent(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
 	settings, err := manager.ReadContextSettings()
@@ -291,7 +455,6 @@ func TestApplySupportsCustomProviderAndModel(t *testing.T) {
 	text := string(written)
 	for _, expected := range []string{
 		`model = "local-codex-model"`,
-		`review_model = "local-review-model"`,
 		`name = "Custom API"`,
 		`base_url = "http://127.0.0.1:54843/V1"`,
 		`experimental_bearer_token = "local-key"`,
@@ -300,6 +463,9 @@ func TestApplySupportsCustomProviderAndModel(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Errorf("custom config is missing %q", expected)
 		}
+	}
+	if strings.Contains(text, "review_model") {
+		t.Fatal("custom config persisted review_model instead of using Codex's official default")
 	}
 }
 

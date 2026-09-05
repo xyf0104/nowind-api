@@ -135,22 +135,18 @@
         <label class="label" for="manual-api-key">API 密钥</label>
         <input id="manual-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="请输入 API 密钥">
       </div>
-      <div class="row">
+	  <div class="row">
 		<label class="label" for="manual-model">默认会话模型</label>
 		<div class="model-entry">
 		  <input id="manual-model" type="text" list="manual-model-options" autocomplete="off" spellcheck="false" value="gpt-5.6-sol" placeholder="选择或输入默认模型">
 		  <button id="load-manual-models-button" type="button">读取模型列表</button>
 		</div>
 	  </div>
-	  <div class="row">
-		<label class="label" for="manual-review-model">审查模型</label>
-		<input id="manual-review-model" type="text" list="manual-model-options" autocomplete="off" spellcheck="false" placeholder="留空则跟随默认会话模型">
-	  </div>
 	  <datalist id="manual-model-options"></datalist>
       <div class="actions">
         <button id="manual-apply-button" type="button">写入手动配置并重启 Codex</button>
       </div>
-		  <p class="hint">默认会话模型与审查模型可以独立设置，不构成服务端模型白名单。默认会话模型发生变化时，助手会通过带备份和回滚的轻量同步，将它应用到已有普通会话；<code>codex-auto-review</code> 审查会话保持不变。点击“读取模型列表”会由本机助手使用当前 Base URL 和密钥读取兼容 API 的 <code>/v1/models</code>，也可以直接手动输入。API 密钥只会提交给本机配置助手并写入本地配置，不会发送到 XIASS API。</p>
+			  <p class="hint">这里只配置默认会话模型。点击“读取模型列表”会由本机助手使用当前 Base URL 和密钥读取兼容 API 的 <code>/v1/models</code>，也可以直接手动输入。助手会把模型目录保存到本机供 Codex 启动时加载；API 密钥只会提交给本机配置助手并写入本地配置，不会发送到 XIASS API。审查模型不单独配置，Codex 使用官方默认行为。</p>
     </section>
 
 	<section class="panel">
@@ -189,7 +185,8 @@
 	const helperState = document.querySelector('meta[name="xiass-helper-state"]').content;
 	const message = document.getElementById('message');
 	let keepHelperRunningForAuthorization = false;
-	let contextDirty = false;
+	  let contextDirty = false;
+	  let manualCatalogModels = [];
 	let compactLimitManuallyEdited = false;
 	const contextPresets = {
 	  compat: { window: 235000, compact: 211500 },
@@ -471,12 +468,13 @@
 		const models = Array.isArray(data.models) ? data.models : [];
 		const options = document.getElementById('manual-model-options');
 		options.innerHTML = '';
-		for (const model of models) {
+			for (const model of models) {
 		  const option = document.createElement('option');
 		  option.value = model;
-		  options.append(option);
-		}
-		showMessage(`已读取 ${models.length} 个模型。可以分别为默认会话和审查模型选择，或继续手动输入。`, 'success');
+			  options.append(option);
+			}
+			manualCatalogModels = models.slice();
+			showMessage(`已读取 ${models.length} 个模型。选择默认会话模型后，助手会把这份目录保存到本机供 Codex 启动时加载。`, 'success');
 	  } catch (error) {
 		showMessage(error.message, 'error');
 	  } finally {
@@ -484,12 +482,13 @@
 	  }
 	}
 	document.getElementById('load-manual-models-button').addEventListener('click', loadManualModels);
-    document.getElementById('manual-apply-button').addEventListener('click', async () => {
+	document.getElementById('manual-base-url').addEventListener('input', () => { manualCatalogModels = []; });
+	document.getElementById('manual-api-key').addEventListener('input', () => { manualCatalogModels = []; });
+	    document.getElementById('manual-apply-button').addEventListener('click', async () => {
       const baseURL = document.getElementById('manual-base-url').value.trim();
-      const apiKeyInput = document.getElementById('manual-api-key');
-      const apiKey = apiKeyInput.value.trim();
-      const model = document.getElementById('manual-model').value.trim();
-	  const reviewModel = document.getElementById('manual-review-model').value.trim() || model;
+	      const apiKeyInput = document.getElementById('manual-api-key');
+	      const apiKey = apiKeyInput.value.trim();
+	      const model = document.getElementById('manual-model').value.trim();
       if (!baseURL || !apiKey || !model) {
         showMessage('请完整填写 Base URL、API 密钥和默认模型。', 'error');
         return;
@@ -499,9 +498,9 @@
       try {
 		const context = readContextValues();
 		showMessage('正在安全写入配置并重启 Codex。仅默认模型变化时会轻量同步已有会话，不扫描或改写历史正文。', 'success');
-        const data = await request('/api/apply-manual', {
-          method: 'POST',
-		  body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model, review_model: reviewModel, ...context })
+	        const data = await request('/api/apply-manual', {
+	          method: 'POST',
+			  body: JSON.stringify({ base_url: baseURL, api_key: apiKey, model, model_catalog_models: manualCatalogModels, ...context })
         });
         apiKeyInput.value = '';
 		contextDirty = false;

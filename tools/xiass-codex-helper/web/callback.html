@@ -32,12 +32,8 @@
 		<label for="session-model">默认会话模型</label>
 		<select id="session-model"></select>
 	  </div>
-	  <div class="field">
-		<label for="review-model">审查模型</label>
-		<select id="review-model"></select>
-	  </div>
 	  <button id="apply-selection" type="button">确认模型并配置 Codex</button>
-	  <p class="note">模型名称来自当前 XIASS 目录；旧版目录缺少时，助手会保留已启用的 <code>gpt-6-astra</code> 选项。</p>
+	  <p class="note">模型名称来自当前 XIASS 目录；旧版目录缺少时，助手会保留已启用的 <code>gpt-6-astra</code> 选项。审查模型不单独配置，Codex 使用官方默认行为。</p>
 	</section>
   </main>
 	<script>
@@ -46,7 +42,6 @@
 	  let pendingPayload = null;
 	  const modelChooser = document.getElementById('model-chooser');
 	  const sessionModel = document.getElementById('session-model');
-	  const reviewModel = document.getElementById('review-model');
 	  const applySelection = document.getElementById('apply-selection');
 
 	  function releaseHelperOnPageClose() {
@@ -92,27 +87,20 @@
 	  const unique = [...new Set(models)];
 	  if (!unique.length) throw new Error('服务端没有返回可用模型');
 	  sessionModel.innerHTML = '';
-	  reviewModel.innerHTML = '';
 	  for (const model of unique) {
 		const sessionOption = document.createElement('option');
 		sessionOption.value = model;
 		sessionOption.textContent = model;
 		sessionModel.append(sessionOption);
-		const reviewOption = document.createElement('option');
-		reviewOption.value = model;
-		reviewOption.textContent = model;
-		reviewModel.append(reviewOption);
 	  }
 	  const preferred = payload.model && unique.includes(payload.model)
 		? payload.model
 		: unique.includes('gpt-6-astra') ? 'gpt-6-astra' : unique[0];
 	  sessionModel.value = preferred;
-	  reviewModel.value = payload.review_model && unique.includes(payload.review_model)
-		? payload.review_model : sessionModel.value;
-	  pendingPayload = payload;
+	  pendingPayload = { ...payload, model_catalog_models: unique };
 	  document.getElementById('title').textContent = '请选择 Codex 模型';
 	  document.getElementById('title').className = '';
-	  document.getElementById('detail').textContent = '当前密钥尚未携带完整模型选择，请确认默认会话模型和审查模型后继续。';
+	  document.getElementById('detail').textContent = '当前密钥尚未携带完整模型选择，请确认默认会话模型后继续。审查模型将保留 Codex 官方默认行为。';
 	  modelChooser.hidden = false;
 	}
 
@@ -130,10 +118,12 @@
 	}
 
 	async function submitConfiguration(payload) {
+	  const sanitizedPayload = { ...payload };
+	  delete sanitizedPayload.review_model;
 	  const response = await fetch('/api/apply', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', 'X-XIASS-Helper-State': helperState },
-		body: JSON.stringify(payload)
+		body: JSON.stringify(sanitizedPayload)
 	  });
 	  const data = await response.json();
 	  if (!response.ok) throw new Error(data.message || `配置失败 (${response.status})`);
@@ -143,11 +133,12 @@
 	applySelection.addEventListener('click', async () => {
 	  if (!pendingPayload) return;
 	  const model = sessionModel.value.trim();
-	  const selectedReviewModel = reviewModel.value.trim() || model;
 	  if (!model) return;
 	  applySelection.disabled = true;
 	  try {
-		await submitConfiguration({ ...pendingPayload, model, review_model: selectedReviewModel });
+		const payload = { ...pendingPayload, model, model_catalog_models: [...new Set(readModelIDs(pendingPayload.model_catalog_models).concat(readModelIDs([model])))] };
+		delete payload.review_model;
+		await submitConfiguration(payload);
 	  } catch (error) {
 		showResult('配置未完成', error instanceof Error ? error.message : '配置失败', 'error');
 	  } finally {

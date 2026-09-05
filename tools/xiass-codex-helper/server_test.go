@@ -18,6 +18,9 @@ func newTestHelperServer(manager *ConfigManager, site, state string) (*helperSer
 	helper, err := newHelperServer(manager, site, state)
 	if err == nil {
 		helper.prepare = func() error { return nil }
+		helper.listModels = func(string, string) ([]string, error) {
+			return nil, errors.New("model discovery unavailable in this test")
+		}
 	}
 	return helper, err
 }
@@ -352,6 +355,99 @@ func TestHelperServerSynchronizesExistingThreadsWhenOnlyModelChanges(t *testing.
 	}
 }
 
+func TestHelperServerApplyDiscoversCompleteModelCatalogWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	var discoveries atomic.Int32
+	helper.listModels = func(baseURL, apiKey string) ([]string, error) {
+		discoveries.Add(1)
+		if baseURL != defaultXIASSAPIURL+"/v1" || apiKey != "xiass-key" {
+			t.Fatalf("model discovery input = %q / %q", baseURL, apiKey)
+		}
+		return []string{"gpt-5.6-luna", "gpt-5.6-sol"}, nil
+	}
+	var applied ApplyConfig
+	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
+		applied = input
+		return ApplyResult{BackupID: "unused"}, nil
+	}
+
+	body := []byte(`{"base_url":"` + defaultXIASSAPIURL + `","api_key":"xiass-key","model":"gpt-5.6-sol"}`)
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusOK)
+	if discoveries.Load() != 1 {
+		t.Fatalf("model discovery calls = %d, want 1", discoveries.Load())
+	}
+	want := "gpt-5.6-luna,gpt-5.6-sol,gpt-6-astra"
+	if got := strings.Join(applied.ModelCatalogModels, ","); got != want {
+		t.Fatalf("applied model catalog = %q, want %q", got, want)
+	}
+}
+
+func TestHelperServerApplyKeepsSuppliedModelCatalogWithoutRediscovery(t *testing.T) {
+	home := t.TempDir()
+	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	helper.listModels = func(string, string) ([]string, error) {
+		t.Fatal("supplied model catalog triggered an unnecessary rediscovery")
+		return nil, nil
+	}
+	var applied ApplyConfig
+	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
+		applied = input
+		return ApplyResult{BackupID: "unused"}, nil
+	}
+
+	body := []byte(`{"base_url":"` + defaultXIASSAPIURL + `","api_key":"xiass-key","model":"gpt-6-astra","model_catalog_models":["gpt-6-astra","gpt-5.6-sol"]}`)
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusOK)
+	if got := strings.Join(applied.ModelCatalogModels, ","); got != "gpt-6-astra,gpt-5.6-sol" {
+		t.Fatalf("supplied model catalog changed unexpectedly: %q", got)
+	}
+}
+
+func TestHelperServerApplyContinuesWhenAutomaticModelDiscoveryFails(t *testing.T) {
+	home := t.TempDir()
+	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.detect = func() CodexInstallation {
+		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
+	}
+	helper.stop = func(CodexInstallation) error { return nil }
+	helper.start = func(CodexInstallation) error { return nil }
+	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
+	helper.listModels = func(string, string) ([]string, error) {
+		return nil, errors.New("temporary model endpoint failure")
+	}
+
+	body := []byte(`{"base_url":"` + defaultXIASSAPIURL + `","api_key":"xiass-key","model":"gpt-6-astra"}`)
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusOK)
+	config, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), `model = "gpt-6-astra"`) || !strings.Contains(string(config), "model_catalog_json") {
+		t.Fatalf("fallback configuration is incomplete:\n%s", config)
+	}
+}
+
 func TestHelperServerRunsHistoryRepairWhenProviderChanges(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, legacyProviderID)
@@ -417,13 +513,15 @@ func TestHelperServerManualApplySupportsLoopbackAndRejectsRemoteHTTP(t *testing.
 	}
 	for _, expected := range []string{
 		`model = "local-codex-model"`,
-		`review_model = "local-review-model"`,
 		`name = "Custom API"`,
 		`base_url = "http://127.0.0.1:54843/V1"`,
 	} {
 		if !strings.Contains(string(written), expected) {
 			t.Errorf("manual config is missing %q", expected)
 		}
+	}
+	if strings.Contains(string(written), "review_model") {
+		t.Fatal("manual endpoint persisted review_model instead of using Codex's official default")
 	}
 	if stopped.Load() != 1 || started.Load() != 1 {
 		t.Fatalf("manual lifecycle counts = stop %d, start %d", stopped.Load(), started.Load())
@@ -728,11 +826,14 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	if !strings.Contains(body, `id="repair-history-button"`) || !strings.Contains(body, `id="history-backup-select"`) || !strings.Contains(body, `id="delete-history-backup-button"`) {
 		t.Fatal("helper index does not expose history compatibility repair and recovery controls")
 	}
-	if !strings.Contains(body, `id="delete-backup-button"`) || !strings.Contains(body, `id="load-manual-models-button"`) || !strings.Contains(body, `id="manual-review-model"`) {
+	if !strings.Contains(body, `id="delete-backup-button"`) || !strings.Contains(body, `id="load-manual-models-button"`) || strings.Contains(body, `id="manual-review-model"`) {
 		t.Fatal("helper index does not expose backup cleanup and multi-model manual configuration controls")
 	}
 	if !strings.Contains(string(helper.callback), `id="model-chooser"`) || !strings.Contains(string(helper.callback), `gpt-6-astra`) {
 		t.Fatal("helper callback does not expose the legacy direct-key model chooser")
+	}
+	if strings.Contains(string(helper.callback), `id="review-model"`) || strings.Contains(string(helper.callback), `id="manual-review-model"`) {
+		t.Fatal("helper callback still exposes a review model selector")
 	}
 	if !strings.Contains(body, "334800") || !strings.Contains(body, "defaultCompactLimit") {
 		t.Fatal("helper index does not expose the corrected 90% context defaults")
