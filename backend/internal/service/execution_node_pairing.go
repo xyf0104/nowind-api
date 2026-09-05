@@ -391,8 +391,10 @@ func (s *SettingService) executionNodePairingRoutingSettings(ctx context.Context
 		return nil, err
 	}
 	return map[string]string{
-		SettingKeyExecutionNodeWeights:  string(weightsJSON),
-		SettingKeyExecutionNodeProxyIDs: string(proxyJSON),
+		SettingKeyExecutionNodeWeights:                       string(weightsJSON),
+		SettingKeyExecutionNodeProxyIDs:                      string(proxyJSON),
+		executionNodeEmergencyEgressSettingKey(localNodeID):  fmt.Sprintf("%t", s.cfg.Gateway.ExecutionNode.EmergencyLocalEgress),
+		executionNodeEmergencyEgressSettingKey(targetNodeID): "true",
 	}, nil
 }
 

@@ -177,10 +177,21 @@ func (r *settingRepository) IsExecutionNodeJoinTargetEmpty(ctx context.Context) 
 			EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL)
 			OR EXISTS (SELECT 1 FROM api_keys WHERE deleted_at IS NULL)
 			OR EXISTS (SELECT 1 FROM usage_logs)
-			OR EXISTS (SELECT 1 FROM proxies WHERE deleted_at IS NULL)
+			OR EXISTS (
+				SELECT 1
+				FROM proxies
+				WHERE deleted_at IS NULL
+					AND NOT (
+						name LIKE $1 || '%'
+						AND protocol = 'socks5'
+						AND host = '127.0.0.1'
+						AND port = 19080
+						AND username = substring(name FROM char_length($1) + 1)
+					)
+			)
 			OR EXISTS (SELECT 1 FROM groups WHERE deleted_at IS NULL)
 			OR (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) > 1
-	`).Scan(&hasBusinessData)
+	`, service.ExecutionNodeBuiltinProxyNamePrefix).Scan(&hasBusinessData)
 	if err != nil {
 		return false, fmt.Errorf("inspect target business data: %w", err)
 	}

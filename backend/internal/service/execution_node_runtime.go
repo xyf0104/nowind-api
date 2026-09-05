@@ -13,6 +13,11 @@ import (
 
 const executionNodeBuiltinProxyNamePrefix = "XIASS 内置节点出口 - "
 
+// ExecutionNodeBuiltinProxyNamePrefix identifies the private loopback egress
+// created automatically for an execution node. Repositories use the same
+// marker when distinguishing bootstrap runtime state from business proxies.
+const ExecutionNodeBuiltinProxyNamePrefix = executionNodeBuiltinProxyNamePrefix
+
 // InitializeExecutionNodeRuntime prepares the durable local egress record and
 // launches the host-side controller that writes the deployment environment.
 // Routing remains disabled until the administrator explicitly enables it from
@@ -49,14 +54,6 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 		return nil, err
 	}
 
-	weights := map[string]float64{nodeID: 1}
-	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeWeights]); raw != "" {
-		weights, err = decodeExecutionNodeWeights(raw)
-		if err != nil {
-			return nil, infraerrors.BadRequest("EXECUTION_NODE_WEIGHTS_INVALID", "the existing node weights are invalid; repair them before initializing this node")
-		}
-	}
-	weights[nodeID] = maxFloat(weights[nodeID], 1)
 	proxyIDs := map[string]int64{}
 	if raw := strings.TrimSpace(values[SettingKeyExecutionNodeProxyIDs]); raw != "" {
 		proxyIDs, err = decodeExecutionNodeProxyIDs(raw)
@@ -64,6 +61,20 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_MAPPING_INVALID", "the existing node egress mapping is invalid; repair it before initializing this node")
 		}
 	}
+	weights := map[string]float64{nodeID: 1}
+	// A fresh installation may expose the legacy api/api2 defaults before any
+	// execution-node runtime exists. Once an administrator prepares the first
+	// real machine, replace those placeholders with its detected name. Existing
+	// installations with a durable node-to-egress map keep their exact weights.
+	if len(proxyIDs) > 0 {
+		if raw := strings.TrimSpace(values[SettingKeyExecutionNodeWeights]); raw != "" {
+			weights, err = decodeExecutionNodeWeights(raw)
+			if err != nil {
+				return nil, infraerrors.BadRequest("EXECUTION_NODE_WEIGHTS_INVALID", "the existing node weights are invalid; repair them before initializing this node")
+			}
+		}
+	}
+	weights[nodeID] = maxFloat(weights[nodeID], 1)
 	if old, exists := proxyIDs[nodeID]; exists && old != proxy.ID {
 		return nil, infraerrors.Conflict("EXECUTION_NODE_RUNTIME_PROXY_CONFLICT", "this node ID is already mapped to a different fixed egress")
 	}
@@ -101,6 +112,29 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_RUNTIME_APPLY_FAILED", "the host could not apply the local node runtime: "+err.Error())
 	}
 	return &runtime, nil
+}
+
+// SetExecutionNodeEmergencyLocalEgress changes only this machine's offline
+// takeover permission. It is shared through PostgreSQL and picked up by the
+// routing cache without recreating the application container.
+func (s *SettingService) SetExecutionNodeEmergencyLocalEgress(ctx context.Context, enabled bool) error {
+	if s == nil || s.cfg == nil || s.settingRepo == nil {
+		return errors.New("execution-node runtime is unavailable")
+	}
+	nodeID := strings.TrimSpace(s.cfg.Gateway.ExecutionNode.ID)
+	if !s.cfg.Gateway.ExecutionNode.Enabled || !validExecutionNodeID(nodeID) {
+		return infraerrors.BadRequest("EXECUTION_NODE_RUNTIME_NODE_INVALID", "prepare this machine before changing offline takeover")
+	}
+	key := executionNodeEmergencyEgressSettingKey(nodeID)
+	if err := s.settingRepo.Set(ctx, key, fmt.Sprintf("%t", enabled)); err != nil {
+		return fmt.Errorf("save execution-node offline takeover settings: %w", err)
+	}
+	if cached, ok := s.executionNodeRoutingCache.Load().(*cachedExecutionNodeRoutingSettings); ok && cached != nil {
+		expired := *cached
+		expired.expiresAt = 0
+		s.executionNodeRoutingCache.Store(&expired)
+	}
+	return nil
 }
 
 func maxFloat(value, fallback float64) float64 {

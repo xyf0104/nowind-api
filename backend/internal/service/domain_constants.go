@@ -577,6 +577,9 @@ const (
 	// egress proxy ID. The mapping is shared so every replica can validate that
 	// an account keeps the proxy belonging to its execution node.
 	SettingKeyExecutionNodeProxyIDs = "execution_node_proxy_ids"
+	// SettingKeyExecutionNodeEmergencyEgressPrefix stores one independent
+	// offline-takeover switch per node, avoiding cross-node lost updates.
+	SettingKeyExecutionNodeEmergencyEgressPrefix = "execution_node_emergency_egress:"
 	// The following settings are owned by the execution-node pairing protocol.
 	// Pairing is deliberately separate from the routing policy so a failed or
 	// incomplete handshake can never enable scheduling by itself.

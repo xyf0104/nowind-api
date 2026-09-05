@@ -604,6 +604,7 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.PUT("", h.Admin.Setting.UpdateSettings)
 		adminSettings.GET("/execution-nodes/status", h.Admin.Setting.GetExecutionNodeStatus)
 		adminSettings.POST("/execution-nodes/runtime/initialize", h.Admin.Setting.InitializeExecutionNodeRuntime)
+		adminSettings.POST("/execution-nodes/runtime/offline-takeover", h.Admin.Setting.UpdateExecutionNodeEmergencyEgress)
 		adminSettings.GET("/execution-nodes/pairing", h.Admin.Setting.GetExecutionNodePairingStatus)
 		adminSettings.POST("/execution-nodes/pairing/invite", h.Admin.Setting.GenerateExecutionNodePairingInvite)
 		adminSettings.POST("/execution-nodes/pairing/join", h.Admin.Setting.PairExecutionNode)

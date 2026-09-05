@@ -104,6 +104,10 @@ export async function initializeRuntime(nodeID: string): Promise<ExecutionNodeRu
   return data
 }
 
+export async function updateOfflineTakeover(enabled: boolean): Promise<void> {
+  await apiClient.post('/admin/settings/execution-nodes/runtime/offline-takeover', { enabled })
+}
+
 export async function generatePairingInvite(): Promise<ExecutionNodePairingInvite> {
   const { data } = await apiClient.post<ExecutionNodePairingInvite>('/admin/settings/execution-nodes/pairing/invite')
   return data
@@ -123,6 +127,6 @@ export async function unpairExecutionNode(): Promise<void> {
   await apiClient.post('/admin/settings/execution-nodes/pairing/unpair')
 }
 
-export const executionNodesAPI = { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, pairExecutionNode, unpairExecutionNode }
+export const executionNodesAPI = { getStatus, getPairingStatus, initializeRuntime, updateOfflineTakeover, generatePairingInvite, pairExecutionNode, unpairExecutionNode }
 
 export default executionNodesAPI

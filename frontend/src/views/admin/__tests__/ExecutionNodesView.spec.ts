@@ -4,10 +4,11 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ExecutionNodesView from '../ExecutionNodesView.vue'
 import type { ExecutionNodeAdminStatus } from '@/api/admin/executionNodes'
 
-const { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, pairExecutionNode, unpairExecutionNode, getAllWithCount, updateSettings, showError, showSuccess } = vi.hoisted(() => ({
+const { getStatus, getPairingStatus, initializeRuntime, updateOfflineTakeover, generatePairingInvite, pairExecutionNode, unpairExecutionNode, getAllWithCount, updateSettings, showError, showSuccess } = vi.hoisted(() => ({
   getStatus: vi.fn(),
   getPairingStatus: vi.fn(),
   initializeRuntime: vi.fn(),
+  updateOfflineTakeover: vi.fn(),
   generatePairingInvite: vi.fn(),
   pairExecutionNode: vi.fn(),
   unpairExecutionNode: vi.fn(),
@@ -19,7 +20,7 @@ const { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, p
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
-    executionNodes: { getStatus, getPairingStatus, initializeRuntime, generatePairingInvite, pairExecutionNode, unpairExecutionNode },
+    executionNodes: { getStatus, getPairingStatus, initializeRuntime, updateOfflineTakeover, generatePairingInvite, pairExecutionNode, unpairExecutionNode },
     proxies: { getAllWithCount },
     settings: { updateSettings }
   }
@@ -132,6 +133,7 @@ describe('ExecutionNodesView', () => {
     })
     generatePairingInvite.mockResolvedValue({ token: 'a'.repeat(64), expires_at: '2026-09-04T12:10:00Z' })
     initializeRuntime.mockResolvedValue({ node_id: 'api', tunnel_token: 'b'.repeat(64), default_proxy_id: 84, legacy_unassigned_node_id: 'api', legacy_unassigned_proxy_id: 84 })
+    updateOfflineTakeover.mockResolvedValue(undefined)
     pairExecutionNode.mockResolvedValue({
       protocol_version: 1,
       local_node_id: 'api',
@@ -156,10 +158,11 @@ describe('ExecutionNodesView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="execution-node-id-0"]').element).toHaveProperty('value', 'api')
+    expect(wrapper.get('[data-testid="execution-node-label-0"]').text()).toContain('admin.executionNodes.localNode')
+    expect(wrapper.get('[data-testid="execution-node-label-1"]').text()).toContain('admin.executionNodes.otherNode')
     expect(wrapper.get('[data-testid="execution-node-weight-0"]').element).toHaveProperty('value', '3')
     expect(wrapper.text()).toContain('5')
-    expect(wrapper.text()).toContain('JP egress')
+    expect(wrapper.find('[data-testid="execution-node-proxy-1"]').exists()).toBe(false)
   })
 
   it('renders disabled multi-node runtime as a neutral single-node state', async () => {
@@ -177,7 +180,8 @@ describe('ExecutionNodesView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('MULTI_NODE_DISABLED')
+    expect(wrapper.text()).toContain('single node is healthy')
+    expect(wrapper.text()).not.toContain('MULTI_NODE_DISABLED')
     expect(wrapper.text()).not.toContain('LOCAL_NODE_ID_INVALID')
     expect(wrapper.text()).not.toContain('NODE_PROXY_UNAVAILABLE')
   })
@@ -195,7 +199,7 @@ describe('ExecutionNodesView', () => {
     await flushPromises()
 
     expect(showError).not.toHaveBeenCalled()
-    expect(wrapper.get('[data-testid="execution-node-id-0"]').element).toHaveProperty('value', 'api')
+    expect(wrapper.get('[data-testid="execution-node-label-0"]').text()).toContain('admin.executionNodes.localNode')
     expect(wrapper.get('[data-testid="execution-node-generate-invite"]').attributes('disabled')).toBeDefined()
   })
 
@@ -228,11 +232,10 @@ describe('ExecutionNodesView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.get('[data-testid="execution-node-local-id"]').setValue('api')
     await wrapper.get('[data-testid="execution-node-initialize"]').trigger('click')
     await flushPromises()
 
-    expect(initializeRuntime).toHaveBeenCalledWith('api')
+    expect(initializeRuntime).toHaveBeenCalledWith('node1')
     expect(showSuccess).toHaveBeenCalled()
     expect(wrapper.get('[data-testid="execution-node-generate-invite"]').attributes('disabled')).toBeDefined()
   })
@@ -248,7 +251,8 @@ describe('ExecutionNodesView', () => {
     await wrapper.get('[data-testid="execution-node-balancing-toggle"]').trigger('click')
 
     expect(wrapper.find('[data-testid="execution-node-confirm"]').exists()).toBe(false)
-    expect(showError).toHaveBeenCalledWith('runtime disabled')
+    expect(wrapper.get('[data-testid="execution-node-balancing-toggle"]').attributes('disabled')).toBeDefined()
+    expect(showError).not.toHaveBeenCalled()
   })
 
   it('generates a one-time invite and pairs through the peer URL', async () => {
@@ -265,17 +269,32 @@ describe('ExecutionNodesView', () => {
     await wrapper.get('[data-testid="execution-node-pair"]').trigger('click')
     await flushPromises()
 
-    expect(pairExecutionNode).toHaveBeenCalledWith('https://api2.example.com', 'b'.repeat(64), 'api2', expect.any(String))
+    expect(pairExecutionNode).toHaveBeenCalledWith('https://api2.example.com', 'b'.repeat(64), 'api', window.location.origin)
     expect(wrapper.text()).toContain('admin.executionNodes.pairingReady')
   })
 
-  it('locks node identity and egress while active but still permits weight changes', async () => {
+  it('auto-detects local pairing details and changes offline takeover without a restart', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="execution-node-target-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="execution-node-target-url"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="execution-node-takeover-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(updateOfflineTakeover).toHaveBeenCalledWith(false)
+    expect(showSuccess).toHaveBeenCalled()
+  })
+
+  it('hides internal identity and egress while still permitting weight changes', async () => {
     getStatus.mockResolvedValue(statusFixture({ balancing_enabled: true }))
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="execution-node-id-0"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="execution-node-proxy-0"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="execution-node-id-0"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="execution-node-proxy-0"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="execution-node-label-0"]').text()).toContain('admin.executionNodes.localNode')
     expect(wrapper.get('[data-testid="execution-node-weight-0"]').attributes('disabled')).toBeUndefined()
 
     await wrapper.get('[data-testid="execution-node-weight-0"]').setValue('4')

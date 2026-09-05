@@ -82,20 +82,30 @@ func (s *SettingService) GetExecutionNodeAdminStatus(ctx context.Context) (*Exec
 	// malformed. Read only the three routing keys instead of loading the entire
 	// settings document used by the general settings page.
 	values := map[string]string{}
-	if s == nil || s.settingRepo == nil {
-		status.DatabaseReachable = false
-		addIssue("DATABASE_UNAVAILABLE", "error", "the settings repository is unavailable")
-	} else if loaded, err := s.settingRepo.GetMultiple(ctx, []string{
+	emergencyEgressKey := executionNodeEmergencyEgressSettingKey(status.Runtime.NodeID)
+	settingKeys := []string{
 		SettingKeyExecutionNodeBalancingEnabled,
 		SettingKeyExecutionNodeWeights,
 		SettingKeyExecutionNodeProxyIDs,
-	}); err != nil {
+	}
+	if emergencyEgressKey != "" {
+		settingKeys = append(settingKeys, emergencyEgressKey)
+	}
+	if s == nil || s.settingRepo == nil {
+		status.DatabaseReachable = false
+		addIssue("DATABASE_UNAVAILABLE", "error", "the settings repository is unavailable")
+	} else if loaded, err := s.settingRepo.GetMultiple(ctx, settingKeys); err != nil {
 		status.DatabaseReachable = false
 		addIssue("DATABASE_UNAVAILABLE", "error", fmt.Sprintf("read execution node settings: %v", err))
 	} else {
 		values = loaded
 	}
 	status.BalancingEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyExecutionNodeBalancingEnabled]), "true")
+	if override, err := decodeExecutionNodeEmergencyEgress(values[emergencyEgressKey], status.Runtime.EmergencyLocalEgress); err != nil {
+		addIssue("EMERGENCY_EGRESS_SETTING_INVALID", "error", err.Error())
+	} else {
+		status.Runtime.EmergencyLocalEgress = override
+	}
 	// A regular single-node installation intentionally has no execution-node
 	// identity, private egress mapping, heartbeat, or pairing state. Keep that
 	// default mode healthy and quiet; these checks become blocking only when an

@@ -63,9 +63,10 @@ func executionNodeAdminProxyMap() *executionNodeAdminProxyRepo {
 
 func TestGetExecutionNodeAdminStatusReportsRuntimeAndAccountPool(t *testing.T) {
 	repo := &executionNodeSettingRepo{values: map[string]string{
-		SettingKeyExecutionNodeBalancingEnabled: "true",
-		SettingKeyExecutionNodeWeights:          `{"api":3,"api2":1}`,
-		SettingKeyExecutionNodeProxyIDs:         `{"api":84,"api2":83}`,
+		SettingKeyExecutionNodeBalancingEnabled:       "true",
+		SettingKeyExecutionNodeWeights:                `{"api":3,"api2":1}`,
+		SettingKeyExecutionNodeProxyIDs:               `{"api":84,"api2":83}`,
+		executionNodeEmergencyEgressSettingKey("api"): "false",
 	}}
 	svc := NewSettingService(repo, executionNodeAdminTestConfig())
 	svc.SetProxyRepository(executionNodeAdminProxyMap())
@@ -80,6 +81,7 @@ func TestGetExecutionNodeAdminStatusReportsRuntimeAndAccountPool(t *testing.T) {
 	require.True(t, status.DatabaseReachable)
 	require.True(t, status.HeartbeatStoreReachable)
 	require.True(t, status.BalancingEnabled)
+	require.False(t, status.Runtime.EmergencyLocalEgress)
 	require.True(t, status.CanEnable)
 	require.Len(t, status.Nodes, 2)
 	require.Equal(t, "api", status.Nodes[0].NodeID)

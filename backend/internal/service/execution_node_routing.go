@@ -35,12 +35,13 @@ type ExecutionNodeRoutingSettings struct {
 	// Available distinguishes a successful read of the shared policy from a
 	// local/default value. A configured multi-node instance must fail closed when
 	// the shared policy cannot be read for the first time.
-	Available  bool               `json:"-"`
-	Enabled    bool               `json:"enabled"`
-	Weights    map[string]float64 `json:"weights"`
-	ProxyIDs   map[string]int64   `json:"proxy_ids"`
-	Healthy    map[string]bool    `json:"-"`
-	LocalProxy *Proxy             `json:"-"`
+	Available            bool               `json:"-"`
+	Enabled              bool               `json:"enabled"`
+	Weights              map[string]float64 `json:"weights"`
+	ProxyIDs             map[string]int64   `json:"proxy_ids"`
+	Healthy              map[string]bool    `json:"-"`
+	LocalProxy           *Proxy             `json:"-"`
+	EmergencyLocalEgress bool               `json:"-"`
 }
 
 type cachedExecutionNodeRoutingSettings struct {
@@ -74,6 +75,27 @@ func cloneExecutionNodeProxyIDs(proxyIDs map[string]int64) map[string]int64 {
 	return cloned
 }
 
+func executionNodeEmergencyEgressSettingKey(nodeID string) string {
+	nodeID = strings.TrimSpace(nodeID)
+	if !validExecutionNodeID(nodeID) {
+		return ""
+	}
+	return SettingKeyExecutionNodeEmergencyEgressPrefix + nodeID
+}
+
+func decodeExecutionNodeEmergencyEgress(raw string, fallback bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return fallback, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return fallback, errors.New("execution node offline-takeover setting must be true or false")
+	}
+}
+
 func validExecutionNodeID(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 64 {
@@ -93,8 +115,11 @@ func normalizeExecutionNodeWeights(weights map[string]float64) (map[string]float
 	if weights == nil {
 		return defaultExecutionNodeWeights(), nil
 	}
-	if len(weights) == 0 || len(weights) > maxExecutionNodeCount {
+	if len(weights) == 0 {
 		return nil, infraerrors.BadRequest("INVALID_EXECUTION_NODE_WEIGHTS", "execution node weights must contain between 1 and 32 nodes")
+	}
+	if len(weights) > maxExecutionNodeCount {
+		return nil, infraerrors.BadRequest("INVALID_EXECUTION_NODE_WEIGHTS", "execution node weights must contain at most 32 nodes")
 	}
 
 	normalized := make(map[string]float64, len(weights))
@@ -278,11 +303,17 @@ func (s *SettingService) loadExecutionNodeRoutingSettings(ctx context.Context, p
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), executionNodeRoutingDBTimeout)
 	defer cancel()
 
-	values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+	localNodeID := strings.TrimSpace(s.cfg.Gateway.ExecutionNode.ID)
+	emergencyEgressKey := executionNodeEmergencyEgressSettingKey(localNodeID)
+	settingKeys := []string{
 		SettingKeyExecutionNodeBalancingEnabled,
 		SettingKeyExecutionNodeWeights,
 		SettingKeyExecutionNodeProxyIDs,
-	})
+	}
+	if emergencyEgressKey != "" {
+		settingKeys = append(settingKeys, emergencyEgressKey)
+	}
+	values, err := s.settingRepo.GetMultiple(dbCtx, settingKeys)
 	if err != nil {
 		settings := ExecutionNodeRoutingSettings{Available: false}
 		if prior != nil {
@@ -299,9 +330,15 @@ func (s *SettingService) loadExecutionNodeRoutingSettings(ctx context.Context, p
 	enabled := strings.EqualFold(strings.TrimSpace(values[SettingKeyExecutionNodeBalancingEnabled]), "true")
 	weights := parseExecutionNodeWeights(values[SettingKeyExecutionNodeWeights])
 	proxyIDs := parseExecutionNodeProxyIDs(values[SettingKeyExecutionNodeProxyIDs])
+	emergencyLocalEgress, overrideErr := decodeExecutionNodeEmergencyEgress(values[emergencyEgressKey], s.cfg.Gateway.ExecutionNode.EmergencyLocalEgress)
+	if overrideErr != nil {
+		slog.Warn("parse execution node offline-takeover setting failed; using local deployment default", "error", overrideErr)
+	}
 	if enabled {
-		var validationErr error
-		weights, validationErr = decodeExecutionNodeWeights(values[SettingKeyExecutionNodeWeights])
+		validationErr := overrideErr
+		if validationErr == nil {
+			weights, validationErr = decodeExecutionNodeWeights(values[SettingKeyExecutionNodeWeights])
+		}
 		if validationErr == nil {
 			proxyIDs, validationErr = decodeExecutionNodeProxyIDs(values[SettingKeyExecutionNodeProxyIDs])
 		}
@@ -341,7 +378,6 @@ func (s *SettingService) loadExecutionNodeRoutingSettings(ctx context.Context, p
 			s.executionNodeRoutingCache.Store(entry)
 			return entry, validationErr
 		}
-		localNodeID := strings.TrimSpace(s.cfg.Gateway.ExecutionNode.ID)
 		// The process serving this request is necessarily alive. Marking its own
 		// heartbeat healthy avoids a startup race before the first Redis SET.
 		healthy[localNodeID] = true
@@ -364,12 +400,13 @@ func (s *SettingService) loadExecutionNodeRoutingSettings(ctx context.Context, p
 		}
 		entry := &cachedExecutionNodeRoutingSettings{
 			settings: ExecutionNodeRoutingSettings{
-				Available:  true,
-				Enabled:    true,
-				Weights:    weights,
-				ProxyIDs:   proxyIDs,
-				Healthy:    healthy,
-				LocalProxy: localProxy,
+				Available:            true,
+				Enabled:              true,
+				Weights:              weights,
+				ProxyIDs:             proxyIDs,
+				Healthy:              healthy,
+				LocalProxy:           localProxy,
+				EmergencyLocalEgress: emergencyLocalEgress,
 			},
 			expiresAt: time.Now().Add(executionNodeRoutingCacheTTL).UnixNano(),
 		}
@@ -379,10 +416,11 @@ func (s *SettingService) loadExecutionNodeRoutingSettings(ctx context.Context, p
 
 	entry := &cachedExecutionNodeRoutingSettings{
 		settings: ExecutionNodeRoutingSettings{
-			Available: true,
-			Enabled:   enabled,
-			Weights:   weights,
-			ProxyIDs:  proxyIDs,
+			Available:            true,
+			Enabled:              enabled,
+			Weights:              weights,
+			ProxyIDs:             proxyIDs,
+			EmergencyLocalEgress: emergencyLocalEgress,
 		},
 		expiresAt: time.Now().Add(executionNodeRoutingCacheTTL).UnixNano(),
 	}
@@ -435,7 +473,7 @@ func resolveExecutionNodeRoutingPolicy(ctx context.Context, cfg *config.Config, 
 		enabled:              true,
 		legacyNodeID:         legacyNodeID,
 		localNodeID:          strings.TrimSpace(cfg.Gateway.ExecutionNode.ID),
-		emergencyLocalEgress: cfg.Gateway.ExecutionNode.EmergencyLocalEgress,
+		emergencyLocalEgress: settings.EmergencyLocalEgress,
 		weights:              cloneExecutionNodeWeights(settings.Weights),
 		proxyIDs:             cloneExecutionNodeProxyIDs(settings.ProxyIDs),
 		healthy:              settings.Healthy,

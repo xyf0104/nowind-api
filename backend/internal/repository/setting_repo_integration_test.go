@@ -161,3 +161,35 @@ func (s *SettingRepoSuite) TestSetMultiple_UpdateToEmpty() {
 	s.Require().NoError(err)
 	s.Require().Equal("", got, "value should be updated to empty string")
 }
+
+func (s *SettingRepoSuite) TestExecutionNodeJoinTargetAllowsBootstrapRuntimeProxyOnly() {
+	empty, err := s.repo.IsExecutionNodeJoinTargetEmpty(s.ctx)
+	s.Require().NoError(err)
+	s.Require().True(empty)
+
+	_, err = s.repo.client.Proxy.Create().
+		SetName(service.ExecutionNodeBuiltinProxyNamePrefix + "api2").
+		SetProtocol("socks5").
+		SetHost("127.0.0.1").
+		SetPort(19080).
+		SetUsername("api2").
+		SetPassword("runtime-token").
+		Save(s.ctx)
+	s.Require().NoError(err)
+
+	empty, err = s.repo.IsExecutionNodeJoinTargetEmpty(s.ctx)
+	s.Require().NoError(err)
+	s.Require().True(empty, "the automatic local egress is bootstrap state, not customer data")
+
+	_, err = s.repo.client.Proxy.Create().
+		SetName("customer proxy").
+		SetProtocol("socks5").
+		SetHost("192.0.2.10").
+		SetPort(1080).
+		Save(s.ctx)
+	s.Require().NoError(err)
+
+	empty, err = s.repo.IsExecutionNodeJoinTargetEmpty(s.ctx)
+	s.Require().NoError(err)
+	s.Require().False(empty, "an administrator-created proxy must still block an implicit ledger switch")
+}

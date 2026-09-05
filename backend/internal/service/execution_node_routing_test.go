@@ -509,6 +509,35 @@ func (r *executionNodeSettingRepo) GetMultiple(_ context.Context, keys []string)
 	return out, nil
 }
 
+func (r *executionNodeSettingRepo) Set(_ context.Context, key, value string) error {
+	if r.err != nil {
+		return r.err
+	}
+	if r.values == nil {
+		r.values = make(map[string]string)
+	}
+	r.values[key] = value
+	return nil
+}
+
+func TestExecutionNodeOfflineTakeoverCanBeChangedPerMachine(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.ExecutionNode = config.GatewayExecutionNodeConfig{
+		Enabled:                true,
+		ID:                     "api2",
+		EmergencyLocalEgress:   true,
+		LegacyUnassignedNodeID: "api",
+	}
+	repo := &executionNodeSettingRepo{values: map[string]string{
+		executionNodeEmergencyEgressSettingKey("api"): "true",
+	}}
+	svc := NewSettingService(repo, cfg)
+
+	require.NoError(t, svc.SetExecutionNodeEmergencyLocalEgress(context.Background(), false))
+	require.Equal(t, "false", repo.values[executionNodeEmergencyEgressSettingKey("api2")])
+	require.Equal(t, "true", repo.values[executionNodeEmergencyEgressSettingKey("api")])
+}
+
 func TestExecutionNodeExpiredCacheRefreshesBeforeNewPlacement(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.ExecutionNode.Enabled = true

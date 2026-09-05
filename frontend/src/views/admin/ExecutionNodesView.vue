@@ -18,49 +18,36 @@
 
       <template v-else-if="status">
         <section class="card overflow-hidden">
-          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
-            <div class="flex min-w-0 items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" :class="status.balancing_enabled ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'">
-                <Icon name="server" size="lg" />
-              </div>
-              <div class="min-w-0">
-                <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.enabled') }}</h2>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.enabledHint') }}</p>
-              </div>
+          <div class="flex min-w-0 items-start gap-3 border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" :class="pairingStatus?.production_ready ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'">
+              <Icon name="server" size="lg" />
             </div>
-            <div class="flex items-center gap-3">
-              <span class="text-sm font-medium" :class="status.balancing_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'">
-                {{ status.balancing_enabled ? t('admin.executionNodes.on') : t('admin.executionNodes.off') }}
-              </span>
-              <Toggle :model-value="draftEnabled" :disabled="saving" :aria-label="t('admin.executionNodes.enabled')" :title="t('admin.executionNodes.enabled')" data-testid="execution-node-balancing-toggle" @update:model-value="requestToggle" />
+            <div class="min-w-0">
+              <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.statusTitle') }}</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ pairingStatus?.production_ready ? t('admin.executionNodes.pairingReadyHint') : pairingStatus?.paired ? t('admin.executionNodes.pairingMismatchHint') : t('admin.executionNodes.pairingNotPaired') }}</p>
             </div>
           </div>
-          <div class="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-4 sm:px-6">
-            <StatusTile :label="t('admin.executionNodes.localNode')" :value="status.runtime.node_id || t('admin.executionNodes.notConfigured')" :tone="status.runtime.node_id ? 'ok' : 'bad'" />
-            <StatusTile :label="t('admin.executionNodes.runtimeEnabled')" :value="status.runtime.enabled ? t('admin.executionNodes.configured') : t('admin.executionNodes.notConfigured')" :tone="status.runtime.enabled ? 'ok' : 'bad'" />
-            <StatusTile :label="t('admin.executionNodes.database')" :value="status.database_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')" :tone="status.database_reachable ? 'ok' : 'bad'" />
-            <StatusTile :label="t('admin.executionNodes.redis')" :value="status.runtime.enabled ? (status.heartbeat_store_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')) : t('admin.executionNodes.notRequired')" :tone="status.runtime.enabled ? (status.heartbeat_store_reachable ? 'ok' : 'warn') : 'warn'" />
+          <div class="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 sm:px-6">
+            <StatusTile :label="t('admin.executionNodes.localNode')" :value="status.runtime.enabled ? t('admin.executionNodes.configured') : t('admin.executionNodes.notConfigured')" :tone="status.runtime.enabled ? 'ok' : 'bad'" />
+            <StatusTile :label="t('admin.executionNodes.dataConnection')" :value="status.database_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')" :tone="status.database_reachable ? 'ok' : 'bad'" />
+            <StatusTile :label="t('admin.executionNodes.machineConnection')" :value="status.runtime.enabled ? (status.heartbeat_store_reachable ? t('admin.executionNodes.healthy') : t('admin.executionNodes.unavailable')) : t('admin.executionNodes.notRequired')" :tone="status.runtime.enabled ? (status.heartbeat_store_reachable ? 'ok' : 'warn') : 'warn'" />
           </div>
         </section>
 
-        <section class="card overflow-hidden">
+        <section v-if="!status.runtime.enabled" class="card overflow-hidden">
           <div class="border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.runtimeTitle') }}</h2>
           </div>
-          <div class="grid gap-x-8 gap-y-4 p-5 sm:grid-cols-2 lg:grid-cols-4 sm:px-6">
-            <RuntimeValue :label="t('admin.executionNodes.localNode')" :value="status.runtime.node_id || '-'" />
-            <RuntimeValue :label="t('admin.executionNodes.controlPlane')" :value="status.runtime.control_plane ? t('admin.executionNodes.yes') : t('admin.executionNodes.no')" />
-            <RuntimeValue :label="t('admin.executionNodes.emergencyEgress')" :value="status.runtime.emergency_local_egress ? t('admin.executionNodes.yes') : t('admin.executionNodes.no')" />
-            <RuntimeValue :label="t('admin.executionNodes.egress')" :value="status.runtime.default_proxy_id > 0 ? `#${status.runtime.default_proxy_id}` : t('admin.executionNodes.proxyMissing')" />
-          </div>
-          <div v-if="!status.runtime.enabled" class="border-t border-gray-100 bg-sky-50 px-5 py-4 dark:border-dark-700 dark:bg-sky-950/20 sm:px-6">
+          <div class="bg-sky-50 px-5 py-4 dark:bg-sky-950/20 sm:px-6">
             <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 class="text-sm font-semibold text-sky-900 dark:text-sky-200">{{ t('admin.executionNodes.initializeTitle') }}</h3>
-                <p class="mt-1 text-xs leading-5 text-sky-800 dark:text-sky-300">{{ t('admin.executionNodes.initializeHint') }}</p>
+              <div class="flex min-w-0 items-start gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-sky-900 dark:text-sky-200">{{ t('admin.executionNodes.initializeTitle') }}</h3>
+                  <p class="mt-1 text-xs leading-5 text-sky-800 dark:text-sky-300">{{ t('admin.executionNodes.initializeHint') }}</p>
+                </div>
               </div>
               <div class="flex items-center gap-2">
-                <input v-model.trim="localNodeID" class="input h-9 w-36" maxlength="64" type="text" :placeholder="t('admin.executionNodes.nodeIDPlaceholder')" data-testid="execution-node-local-id" />
+                <span class="text-xs text-sky-800 dark:text-sky-300">{{ t('admin.executionNodes.detectedMachine', { name: localNodeID }) }}</span>
                 <button type="button" class="btn btn-primary btn-sm" :disabled="runtimeSaving || !localNodeID" data-testid="execution-node-initialize" @click="initializeRuntime">
                   <Icon :name="runtimeSaving ? 'refresh' : 'server'" size="sm" :class="runtimeSaving ? 'animate-spin' : ''" />
                   <span>{{ runtimeSaving ? t('admin.executionNodes.initializing') : t('admin.executionNodes.initialize') }}</span>
@@ -118,15 +105,7 @@
               </div>
               <label class="block" for="execution-node-peer-url">
                 <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.peerURL') }}</span>
-                <input id="execution-node-peer-url" v-model.trim="pairingPeerURL" class="input mt-1 w-full" type="url" autocomplete="url" placeholder="https://api2.example.com" data-testid="execution-node-peer-url" />
-              </label>
-              <label class="block" for="execution-node-target-id">
-                <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.targetNodeID') }}</span>
-                <input id="execution-node-target-id" v-model.trim="pairingTargetID" class="input mt-1 w-full" maxlength="64" type="text" autocomplete="off" :placeholder="t('admin.executionNodes.nodeIDPlaceholder')" data-testid="execution-node-target-id" />
-              </label>
-              <label class="block" for="execution-node-target-url">
-                <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.targetURL') }}</span>
-                <input id="execution-node-target-url" v-model.trim="pairingTargetURL" class="input mt-1 w-full" type="url" autocomplete="url" :placeholder="t('admin.executionNodes.targetURLPlaceholder')" data-testid="execution-node-target-url" />
+                <input id="execution-node-peer-url" v-model.trim="pairingPeerURL" class="input mt-1 w-full" type="url" autocomplete="url" :placeholder="t('admin.executionNodes.peerURLPlaceholder')" data-testid="execution-node-peer-url" />
               </label>
               <label class="block" for="execution-node-peer-token">
                 <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.inviteToken') }}</span>
@@ -145,15 +124,8 @@
             </div>
           </div>
           <div v-if="pairingStatus?.paired" class="border-t border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
-            <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-              <PairingCheck :label="t('admin.executionNodes.protocolCheck')" :ok="pairingStatus.protocol_compatible" />
-              <PairingCheck :label="t('admin.executionNodes.databaseCheck')" :ok="pairingStatus.database_shared" />
-              <PairingCheck :label="t('admin.executionNodes.redisCheck')" :ok="pairingStatus.redis_shared" />
-              <PairingCheck :label="t('admin.executionNodes.authCheck')" :ok="pairingStatus.auth_compatible" />
-              <PairingCheck :label="t('admin.executionNodes.productionCheck')" :ok="pairingStatus.production_ready" />
-            </div>
             <p class="mt-3 text-xs leading-5" :class="pairingStatus.production_ready ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-              {{ pairingStatus.production_ready ? t('admin.executionNodes.pairingReadyHint') : pairingStatus.state_error || t('admin.executionNodes.pairingMismatchHint') }}
+              {{ pairingStatus.production_ready ? t('admin.executionNodes.pairingReadyHint') : t('admin.executionNodes.pairingMismatchHint') }}
             </p>
           </div>
         </section>
@@ -163,34 +135,21 @@
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.nodesTitle') }}</h2>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.weightHint') }}</p>
-              <p class="mt-1 max-w-3xl text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.egressHint') }}</p>
             </div>
-            <button type="button" class="btn btn-secondary btn-sm" :disabled="draftNodes.length >= 32 || saving || mappingLocked" @click="addNode">
-              <Icon name="plus" size="sm" />
-              <span>{{ t('admin.executionNodes.addNode') }}</span>
-            </button>
           </div>
           <div class="space-y-3 p-5 sm:px-6">
             <div v-for="(node, index) in draftNodes" :key="node.key" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600" :data-testid="`execution-node-row-${index}`">
-              <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_9rem_minmax(0,1.2fr)_auto] lg:items-end">
-                <label class="block min-w-0" :for="`execution-node-id-${index}`">
+              <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_9rem] lg:items-end">
+                <div class="block min-w-0">
                   <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.node') }}</span>
-                  <input :id="`execution-node-id-${index}`" v-model.trim="node.nodeID" class="input mt-1 w-full" maxlength="64" type="text" :disabled="saving || mappingLocked" :data-testid="`execution-node-id-${index}`" />
-                </label>
+                  <div class="mt-1 flex min-h-10 items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-gray-900 dark:border-dark-600 dark:bg-dark-800/60 dark:text-white" :data-testid="`execution-node-label-${index}`">
+                    {{ nodeLabel(node, index) }}
+                  </div>
+                </div>
                 <label class="block min-w-0" :for="`execution-node-weight-${index}`">
                   <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.weight') }}</span>
                   <input :id="`execution-node-weight-${index}`" v-model.number="node.weight" class="input mt-1 w-full" min="0" max="1000000" step="0.1" inputmode="decimal" type="number" :disabled="saving" :data-testid="`execution-node-weight-${index}`" />
                 </label>
-                <label class="block min-w-0" :for="`execution-node-proxy-${index}`">
-                  <span class="text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.executionNodes.egress') }}</span>
-                  <select :id="`execution-node-proxy-${index}`" v-model.number="node.proxyID" class="input mt-1 w-full" :disabled="saving || mappingLocked" :data-testid="`execution-node-proxy-${index}`">
-                    <option :value="0">{{ t('admin.executionNodes.proxyMissing') }}</option>
-                    <option v-for="proxy in proxies" :key="proxy.id" :value="proxy.id">#{{ proxy.id }} · {{ proxy.name }}</option>
-                  </select>
-                </label>
-                <button v-if="draftNodes.length > 1" type="button" class="btn btn-secondary h-10 px-3 text-red-600 dark:text-red-400" :title="t('admin.executionNodes.removeNode')" :disabled="saving || mappingLocked" @click="removeNode(index)">
-                  <Icon name="trash" size="sm" />
-                </button>
               </div>
               <div v-if="nodeStatus(node.nodeID)" class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
                 <span class="inline-flex items-center gap-1.5" :class="nodeStatus(node.nodeID)!.online ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'">
@@ -198,22 +157,48 @@
                   {{ nodeStatus(node.nodeID)!.online ? t('admin.executionNodes.online') : t('admin.executionNodes.offline') }}
                   <span v-if="nodeStatus(node.nodeID)!.is_local">· {{ t('admin.executionNodes.local') }}</span>
                 </span>
-                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.accounts') }} {{ nodeStatus(node.nodeID)!.account_stats.total }} / {{ t('admin.executionNodes.activeAccounts') }} {{ nodeStatus(node.nodeID)!.account_stats.active }} / {{ t('admin.executionNodes.schedulableAccounts') }} {{ nodeStatus(node.nodeID)!.account_stats.schedulable }}</span>
-                <span class="text-gray-500 dark:text-gray-400">{{ nodeStatus(node.nodeID)!.proxy_valid ? (nodeStatus(node.nodeID)!.proxy_name || `#${nodeStatus(node.nodeID)!.proxy_id}`) : t('admin.executionNodes.proxyInvalid') }}</span>
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.accounts') }} {{ nodeStatus(node.nodeID)!.account_stats.total }} / {{ t('admin.executionNodes.schedulableAccounts') }} {{ nodeStatus(node.nodeID)!.account_stats.schedulable }}</span>
+                <span class="text-gray-500 dark:text-gray-400">{{ nodeStatus(node.nodeID)!.proxy_valid ? t('admin.executionNodes.accountPathReady') : t('admin.executionNodes.accountPathInvalid') }}</span>
               </div>
             </div>
           </div>
         </section>
 
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="text-sm" :class="status.can_enable ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'">
-            {{ status.can_enable ? t('admin.executionNodes.canEnable') : t('admin.executionNodes.cannotEnable') }}
+        <section class="card overflow-hidden">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
+            <div class="min-w-0">
+              <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.enabled') }}</h2>
+              <p class="mt-1 max-w-3xl text-sm text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.enabledHint') }}</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-sm font-medium" :class="draftEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'">
+                {{ draftEnabled ? t('admin.executionNodes.on') : t('admin.executionNodes.off') }}
+              </span>
+              <Toggle :model-value="draftEnabled" :disabled="saving || (!draftEnabled && !status.can_enable)" :aria-label="t('admin.executionNodes.enabled')" :title="t('admin.executionNodes.enabled')" data-testid="execution-node-balancing-toggle" @update:model-value="requestToggle" />
+            </div>
           </div>
-          <button type="button" class="btn btn-primary" :disabled="saving || !hasValidDraft" data-testid="execution-node-save" @click="save">
-            <Icon :name="saving ? 'refresh' : 'check'" size="sm" :class="saving ? 'animate-spin' : ''" />
-            <span>{{ saving ? t('admin.executionNodes.saving') : t('admin.executionNodes.save') }}</span>
-          </button>
-        </div>
+          <div class="flex flex-wrap items-center justify-between gap-3 px-5 py-4 sm:px-6">
+            <div class="text-sm" :class="status.can_enable ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'">
+              {{ status.can_enable ? t('admin.executionNodes.canEnable') : t('admin.executionNodes.cannotEnable') }}
+            </div>
+            <button type="button" class="btn btn-primary" :disabled="saving || !hasValidDraft" data-testid="execution-node-save" @click="save">
+              <Icon :name="saving ? 'refresh' : 'check'" size="sm" :class="saving ? 'animate-spin' : ''" />
+              <span>{{ saving ? t('admin.executionNodes.saving') : t('admin.executionNodes.save') }}</span>
+            </button>
+          </div>
+          <div v-if="status.runtime.enabled" class="flex flex-wrap items-center justify-between gap-4 border-t border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
+            <div class="min-w-0">
+              <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.offlineTakeover') }}</h3>
+              <p class="mt-1 max-w-3xl text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.offlineTakeoverHint') }}</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-sm font-medium" :class="status.runtime.emergency_local_egress ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'">
+                {{ status.runtime.emergency_local_egress ? t('admin.executionNodes.on') : t('admin.executionNodes.off') }}
+              </span>
+              <Toggle :model-value="status.runtime.emergency_local_egress" :disabled="takeoverSaving" :aria-label="t('admin.executionNodes.offlineTakeover')" :title="t('admin.executionNodes.offlineTakeover')" data-testid="execution-node-takeover-toggle" @update:model-value="updateOfflineTakeover" />
+            </div>
+          </div>
+        </section>
 
         <section class="rounded-lg border border-sky-200 bg-sky-50 p-5 dark:border-sky-900/60 dark:bg-sky-950/20">
           <h2 class="text-sm font-semibold text-sky-900 dark:text-sky-200">{{ t('admin.executionNodes.ingressTitle') }}</h2>
@@ -227,7 +212,7 @@
           <div v-if="statusIssues.length" class="divide-y divide-gray-100 dark:divide-dark-700">
             <div v-for="issue in statusIssues" :key="`${issue.code}-${issue.message}`" class="flex gap-3 px-5 py-3 text-sm sm:px-6">
               <Icon :name="issue.severity === 'error' ? 'exclamationTriangle' : 'infoCircle'" size="sm" :class="issue.severity === 'error' ? 'text-red-500' : issue.severity === 'info' ? 'text-sky-500' : 'text-amber-500'" />
-              <div class="min-w-0"><span class="font-medium text-gray-800 dark:text-gray-200">{{ issueText(issue) }}</span><span class="ml-2 font-mono text-xs text-gray-400 dark:text-gray-500">{{ issue.code }}</span></div>
+              <div class="min-w-0"><span class="font-medium text-gray-800 dark:text-gray-200">{{ issueText(issue) }}</span></div>
             </div>
           </div>
           <p v-else class="px-5 py-4 text-sm text-gray-500 dark:text-gray-400 sm:px-6">{{ t('admin.executionNodes.noIssues') }}</p>
@@ -261,7 +246,6 @@ import { computed, defineComponent, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { ExecutionNodeAdminNode, ExecutionNodeAdminStatus, ExecutionNodePairingInvite, ExecutionNodePairingStatus } from '@/api/admin/executionNodes'
-import type { Proxy } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -271,19 +255,36 @@ import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+
+function browserOrigin(): string {
+  if (typeof window === 'undefined' || !/^https?:$/.test(window.location.protocol)) return ''
+  return window.location.origin
+}
+
+function detectedMachineName(): string {
+  if (typeof window === 'undefined') return 'node1'
+  const hostname = window.location.hostname.toLowerCase()
+  if (!hostname || hostname === 'localhost') return 'node1'
+  const candidate = `${/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) ? 'node-' : ''}${hostname}`.replace(/[^a-z0-9._-]/g, '-')
+  if (candidate.length <= 64) return candidate || 'node1'
+  let hash = 2166136261
+  for (const char of candidate) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
+  return `${candidate.slice(0, 54)}-${(hash >>> 0).toString(36)}`.slice(0, 64)
+}
+
 const status = ref<ExecutionNodeAdminStatus | null>(null)
 const pairingStatus = ref<ExecutionNodePairingStatus | null>(null)
 const pairingInvite = ref<ExecutionNodePairingInvite | null>(null)
 const pairingPeerURL = ref('')
 const pairingToken = ref('')
-const pairingTargetID = ref('api2')
-const pairingTargetURL = ref('')
-const localNodeID = ref('api')
-const proxies = ref<Proxy[]>([])
+const pairingTargetID = ref(detectedMachineName())
+const pairingTargetURL = ref(browserOrigin())
+const localNodeID = ref(detectedMachineName())
 const loading = ref(false)
 const saving = ref(false)
 const pairingSaving = ref(false)
 const runtimeSaving = ref(false)
+const takeoverSaving = ref(false)
 const showEnableConfirm = ref(false)
 const showUnpairConfirm = ref(false)
 const draftEnabled = ref(false)
@@ -291,7 +292,6 @@ let nodeSequence = 0
 
 interface NodeDraft { key: number; nodeID: string; weight: number; proxyID: number }
 const draftNodes = ref<NodeDraft[]>([])
-const mappingLocked = computed(() => Boolean(status.value?.balancing_enabled))
 const statusIssues = computed(() => status.value?.issues ?? [])
 const canGenerateInvite = computed(() => Boolean(
   status.value?.runtime.enabled &&
@@ -306,23 +306,6 @@ const StatusTile = defineComponent({
     return () => h('div', { class: 'rounded-lg border border-gray-200 p-4 dark:border-dark-600' }, [
       h('div', { class: 'text-xs text-gray-500 dark:text-gray-400' }, props.label),
       h('div', { class: ['mt-1 text-sm font-semibold', props.tone === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : props.tone === 'warn' ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'] }, props.value)
-    ])
-  }
-})
-
-const RuntimeValue = defineComponent({
-  props: { label: { type: String, required: true }, value: { type: String, required: true } },
-  setup(props) {
-    return () => h('div', [h('div', { class: 'text-xs text-gray-500 dark:text-gray-400' }, props.label), h('div', { class: 'mt-1 text-sm font-medium text-gray-900 dark:text-white' }, props.value)])
-  }
-})
-
-const PairingCheck = defineComponent({
-  props: { label: { type: String, required: true }, ok: { type: Boolean, required: true } },
-  setup(props) {
-    return () => h('div', { class: 'rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-600' }, [
-      h('div', { class: 'text-xs text-gray-500 dark:text-gray-400' }, props.label),
-      h('div', { class: ['mt-1 text-sm font-semibold', props.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'] }, props.ok ? t('admin.executionNodes.passed') : t('admin.executionNodes.failed'))
     ])
   }
 })
@@ -347,6 +330,12 @@ function nodeStatus(nodeID: string): ExecutionNodeAdminNode | undefined {
   return (status.value?.nodes ?? []).find((node) => node.node_id === nodeID.trim())
 }
 
+function nodeLabel(node: NodeDraft, index: number): string {
+  const current = nodeStatus(node.nodeID)
+  if (current?.is_local || node.nodeID.trim() === localNodeID.value.trim()) return t('admin.executionNodes.localNode')
+  return t('admin.executionNodes.otherNode', { number: index + 1 })
+}
+
 function issueText(issue: ExecutionNodeAdminStatus['issues'][number]): string {
   const key = `admin.executionNodes.issues.${issue.code}`
   const translated = t(key)
@@ -355,9 +344,13 @@ function issueText(issue: ExecutionNodeAdminStatus['issues'][number]): string {
 
 function syncDraft(next: ExecutionNodeAdminStatus): void {
   draftEnabled.value = next.balancing_enabled
+  if (next.runtime.node_id) {
+    localNodeID.value = next.runtime.node_id
+    pairingTargetID.value = next.runtime.node_id
+  }
   draftNodes.value = (next.nodes ?? []).map((node) => ({ key: ++nodeSequence, nodeID: node.node_id, weight: node.weight, proxyID: node.proxy_id || 0 }))
-  if (!draftNodes.value.length) draftNodes.value = [{ key: ++nodeSequence, nodeID: 'api', weight: 1, proxyID: 0 }]
-  if (next.runtime.node_id) localNodeID.value = next.runtime.node_id
+  if (!draftNodes.value.length) draftNodes.value = [{ key: ++nodeSequence, nodeID: localNodeID.value, weight: 1, proxyID: 0 }]
+  if (!pairingTargetURL.value) pairingTargetURL.value = browserOrigin()
 }
 
 async function initializeRuntime(): Promise<void> {
@@ -376,14 +369,26 @@ async function initializeRuntime(): Promise<void> {
 async function load(): Promise<void> {
   loading.value = true
   try {
-    const [nextStatus, nextProxies] = await Promise.all([adminAPI.executionNodes.getStatus(), adminAPI.proxies.getAllWithCount()])
+    const nextStatus = await adminAPI.executionNodes.getStatus()
     status.value = nextStatus
-    proxies.value = nextProxies
     syncDraft(nextStatus)
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.reloadFailed')))
   } finally {
     loading.value = false
+  }
+}
+
+async function updateOfflineTakeover(enabled: boolean): Promise<void> {
+  takeoverSaving.value = true
+  try {
+    await adminAPI.executionNodes.updateOfflineTakeover(enabled)
+    appStore.showSuccess(enabled ? t('admin.executionNodes.offlineTakeoverEnabled') : t('admin.executionNodes.offlineTakeoverDisabled'))
+    await load()
+  } catch (error) {
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.offlineTakeoverFailed')))
+  } finally {
+    takeoverSaving.value = false
   }
 }
 
@@ -428,6 +433,11 @@ async function pairNode(): Promise<void> {
   try {
     pairingStatus.value = await adminAPI.executionNodes.pairExecutionNode(pairingPeerURL.value, pairingToken.value, pairingTargetID.value, pairingTargetURL.value)
     pairingToken.value = ''
+    if (pairingStatus.value.paired && !pairingStatus.value.production_ready) {
+      appStore.showSuccess(t('admin.executionNodes.pairApplying'))
+      void waitForJoinedServer()
+      return
+    }
     appStore.showSuccess(t('admin.executionNodes.pairSuccess'))
     await load()
   } catch (error) {
@@ -435,6 +445,23 @@ async function pairNode(): Promise<void> {
   } finally {
     pairingSaving.value = false
   }
+}
+
+async function waitForJoinedServer(): Promise<void> {
+  await new Promise(resolve => window.setTimeout(resolve, 3000))
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    try {
+      const response = await fetch('/health', { cache: 'no-store' })
+      if (response.ok) {
+        window.location.assign('/login')
+        return
+      }
+    } catch {
+      // The application is expected to be briefly unavailable while it switches state.
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 2000))
+  }
+  appStore.showError(t('admin.executionNodes.pairRecoveryTimeout'))
 }
 
 async function unpairNode(): Promise<void> {
@@ -453,18 +480,6 @@ async function unpairNode(): Promise<void> {
 
 function formatPairingTime(value: string): string {
   return new Date(value).toLocaleString()
-}
-
-function addNode(): void {
-  const used = new Set(draftNodes.value.map((node) => node.nodeID))
-  let suffix = draftNodes.value.length + 1
-  let nodeID = `node${suffix}`
-  while (used.has(nodeID)) nodeID = `node${++suffix}`
-  draftNodes.value.push({ key: ++nodeSequence, nodeID, weight: 1, proxyID: 0 })
-}
-
-function removeNode(index: number): void {
-  if (draftNodes.value.length > 1) draftNodes.value.splice(index, 1)
 }
 
 function requestToggle(next: boolean): void {
