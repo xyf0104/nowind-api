@@ -27,12 +27,12 @@ func nodeReadTestRouter(local, legacy string) *gin.Engine {
 
 func TestExecutionNodeUsageFiltersUseSourceOwnerFromEitherPanel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, local := range []string{"api.xiass.com", "api2"} {
-		for _, owner := range []string{"api.xiass.com", "api2"} {
+	for _, local := range []string{"source.example.invalid", "api2"} {
+		for _, owner := range []string{"source.example.invalid", "api2"} {
 			t.Run(local+"/"+owner, func(t *testing.T) {
 				repo := &adminUsageRepoCapture{}
 				h := NewUsageHandler(service.NewUsageService(repo, nil, nil, nil), nil, nil, nil)
-				router := nodeReadTestRouter(local, "api.xiass.com")
+				router := nodeReadTestRouter(local, "source.example.invalid")
 				router.GET("/usage", h.List)
 				router.GET("/stats", h.Stats)
 				for _, path := range []string{"/usage", "/stats"} {
@@ -42,7 +42,7 @@ func TestExecutionNodeUsageFiltersUseSourceOwnerFromEitherPanel(t *testing.T) {
 				}
 				for _, filters := range []usagestats.UsageLogFilters{repo.listFilters, repo.statsFilters} {
 					require.Equal(t, owner, filters.ExecutionNodeID)
-					require.Equal(t, "api.xiass.com", filters.ExecutionNodeLegacyID)
+					require.Equal(t, "source.example.invalid", filters.ExecutionNodeLegacyID)
 				}
 			})
 		}
