@@ -269,22 +269,31 @@ func calculateOpenAIWeeklyFrozenEstimate(account *Account, progress *UsageProgre
 		next := rebaseOpenAIWeeklyFrozenEstimate(state, percent, snapshotCost, resetAt, identity, observedAt, source)
 		return save(next)
 	}
-	// CompletedCost is the local cumulative cost at the current sampling
-	// boundary, not the most recent partial observation. This avoids labeling a
-	// delayed percentage update as external usage after local partial spending.
-	if percent > state.SnapshotPercent && snapshotCost <= state.CompletedCost {
+	// A provider-only advance is conclusive at an aligned endpoint, or when the
+	// cumulative XIASS cost has not passed the last completed endpoint. A partial
+	// sample may carry local spend before the provider percentage catches up, so
+	// do not misclassify that delayed update as external use. CompletedCost remains
+	// the first cost aligned to the displayed endpoint and stays frozen.
+	lastSampleAligned := math.Abs(state.SnapshotPercent-state.CompletedPercent) <= openAIWeeklyEstimateEpsilon
+	if percent > state.SnapshotPercent && snapshotCost <= state.SnapshotCost &&
+		(snapshotCost <= state.CompletedCost || lastSampleAligned) {
 		next := rebaseOpenAIWeeklyFrozenEstimate(state, percent, snapshotCost, resetAt, identity, observedAt, "external_only_rebase")
 		return save(next)
+	}
+	if state.HasEstimate && percent < state.CompletedPercent+1 {
+		// Keep the displayed estimate and completed jump endpoint frozen until a
+		// full percentage interval finishes. The latest raw sample is still saved
+		// so ordered observations and external-use detection remain accurate.
+		state.ResetAt, state.ObservedAt = resetAt, observedAt
+		state.SnapshotPercent, state.SnapshotCost = percent, snapshotCost
+		state.PercentBucket = openAIWeeklyEstimatePercentBucket(percent)
+		state.AwaitingInterval = true
+		return save(state)
 	}
 
 	state.ResetAt, state.ObservedAt = resetAt, observedAt
 	state.SnapshotPercent, state.SnapshotCost = percent, snapshotCost
 	state.PercentBucket = openAIWeeklyEstimatePercentBucket(percent)
-	if state.HasEstimate && percent == state.CompletedPercent && snapshotCost > state.CompletedCost {
-		// Track the aligned endpoint maximum for external-use detection, but
-		// both confirmed formulas keep the displayed result frozen here.
-		state.CompletedCost = snapshotCost
-	}
 	state.updateEstimate()
 	if !validOpenAIWeeklyEstimateValue(state.EstimateUSD) {
 		return keep()
@@ -538,19 +547,22 @@ func readOpenAIWeeklyFrozenEstimateState(extra map[string]any) (openAIWeeklyFroz
 		state.ObservedAt = observedAt.UTC()
 	}
 	if version == openAIWeeklyFrozenEstimatePreviousVersion {
-		knownZero := mode == openAIWeeklyEstimateModeLegacy && source == "observed_zero" && baselinePercent == 0
-		knownJoin := false
-		switch source {
-		case "observed_mid_join", "first_observation_mid_join_candidate", "first_aligned_observation", "sampling_reset":
-			knownJoin = mode == openAIWeeklyEstimateModeJoinAverage && snapshotPercentOK
-		}
-		if !knownZero && !knownJoin {
+		// v14 itself persisted the first aligned local baseline. A zero/zero
+		// baseline is direct evidence that the account was observed from 0%; any
+		// positive baseline is the saved mid-window join point. Reclassifying these
+		// records as unknown made valid accounts remain "统计中" forever.
+		state.CompletedPercent, state.CompletedCost = baselinePercent, baselineCost
+		state.HasEstimate, state.EstimateUSD, state.AwaitingInterval = false, 0, true
+		switch {
+		case baselinePercent == 0 && baselineCost == 0:
+			state.Mode, state.BaselineSource = openAIWeeklyEstimateModeLegacy, "v14_persisted_zero_start"
+		case baselinePercent > 0:
+			state.Mode, state.BaselineSource = openAIWeeklyEstimateModeJoinAverage, "v14_persisted_join_baseline"
+		default:
 			state.Mode, state.BaselineSource = openAIWeeklyEstimateModeUnknown, "legacy_start_unclassified_v14"
 		}
-		// v14 completed endpoints could be floored. Retain the cumulative
-		// baseline, but require a new complete observable interval after upgrade.
-		state.CompletedPercent, state.CompletedCost = snapshotPercent, snapshotCost
-		state.AwaitingInterval, state.needsPersist = true, true
+		state.updateEstimate()
+		state.needsPersist = true
 		return state, state.valid()
 	}
 	var completedOK, completedCostOK, hasEstimateOK, awaitingOK bool
@@ -570,7 +582,49 @@ func readOpenAIWeeklyFrozenEstimateState(extra map[string]any) (openAIWeeklyFroz
 		}
 		state.EstimateUSD = estimate
 	}
-	return state, state.valid()
+	if !state.valid() {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	if recovered, ok := recoverOpenAIWeeklyV15LegacyEvidence(state, raw); ok {
+		return recovered, true
+	}
+	return state, true
+}
+
+// recoverOpenAIWeeklyV15LegacyEvidence repairs v15 states written by v1.1.85
+// after it incorrectly downgraded a valid v14 baseline to unknown. The original
+// v14 object was retained verbatim, so recovery does not infer a join point from
+// audit logs or from a later sample.
+func recoverOpenAIWeeklyV15LegacyEvidence(current openAIWeeklyFrozenEstimateState, raw map[string]any) (openAIWeeklyFrozenEstimateState, bool) {
+	if current.Mode != openAIWeeklyEstimateModeUnknown {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	legacyRaw, ok := raw["legacy_evidence"].(map[string]any)
+	if !ok || parseExtraInt(legacyRaw["version"]) != openAIWeeklyFrozenEstimatePreviousVersion {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	legacy, ok := readOpenAIWeeklyFrozenEstimateState(map[string]any{openAIWeeklyEstimateBaselineKey: legacyRaw})
+	if !ok || legacy.Mode == openAIWeeklyEstimateModeUnknown || legacy.Identity != current.Identity ||
+		!sameOpenAIWeeklyEstimateWindow(legacy.ResetAt, current.ResetAt, time.Now().UTC()) {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+
+	// The retained v14 endpoint is the first cost aligned to its percentage.
+	// Keep it when a later v15 read is still in that same percentage bucket.
+	recovered := legacy
+	if current.SnapshotPercent > legacy.SnapshotPercent && current.SnapshotCost >= legacy.SnapshotCost {
+		recovered.ResetAt = current.ResetAt
+		recovered.ObservedAt = current.ObservedAt
+		recovered.SnapshotPercent = current.SnapshotPercent
+		recovered.SnapshotCost = current.SnapshotCost
+		recovered.PercentBucket = openAIWeeklyEstimatePercentBucket(current.SnapshotPercent)
+		recovered.updateEstimate()
+	}
+	recovered.needsPersist = true
+	if !recovered.valid() {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	return recovered, true
 }
 
 func readOpenAIWeeklyFrozenEstimateLegacyState(extra map[string]any) (openAIWeeklyFrozenEstimateState, bool) {

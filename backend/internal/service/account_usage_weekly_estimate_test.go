@@ -608,7 +608,7 @@ func TestOpenAIWeeklyFrozenEstimateFullQuotaValidatesScopeAndTime(t *testing.T) 
 	}
 }
 
-func TestOpenAIWeeklyFrozenEstimateV14UnknownClassificationStaysPending(t *testing.T) {
+func TestOpenAIWeeklyFrozenEstimateV14UsesPersistedJoinBaseline(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"", openAIWeeklyEstimateModeLegacy, openAIWeeklyEstimateModeJoinAverage} {
 		t.Run("mode="+mode, func(t *testing.T) {
@@ -629,14 +629,15 @@ func TestOpenAIWeeklyFrozenEstimateV14UnknownClassificationStaysPending(t *testi
 				}
 			}
 			account.Extra[openAIWeeklyEstimateBaselineKey] = raw
+			want := []float64{2400, 140.0 / 6 * 100, 1600}
 			for i, percent := range []float64{25, 26, 30} {
 				cost := 120 + float64(i)*20
 				progress := openAIWeeklyEstimateProgress(percent, cost, reset)
 				applyOpenAIWeeklyFrozenEstimateForTest(t, account, progress, cost, cost, true, at.Add(time.Duration(i)*time.Minute))
-				requireOpenAIWeeklyEstimatePending(t, progress)
+				requireOpenAIWeeklyEstimate(t, progress, want[i])
 				state := requireOpenAIWeeklyTwoRuleState(t, account)
-				if state.Mode != openAIWeeklyEstimateModeUnknown {
-					t.Fatal("legacy classification was invented")
+				if state.Mode != openAIWeeklyEstimateModeJoinAverage || state.BaselinePercent != 20 || state.BaselineCost != 0 {
+					t.Fatalf("persisted v14 join baseline was not retained: %+v", state)
 				}
 			}
 			baseline, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
@@ -666,7 +667,7 @@ func TestOpenAIWeeklyFrozenEstimateV14KnownJoinRequiresNewRawInterval(t *testing
 		progress := openAIWeeklyEstimateProgress(sample.percent, sample.cost, reset)
 		applyOpenAIWeeklyFrozenEstimateForTest(t, account, progress, sample.cost, sample.cost, true, at.Add(time.Duration(i)*time.Minute))
 		if i < 2 {
-			requireOpenAIWeeklyEstimatePending(t, progress)
+			requireOpenAIWeeklyEstimate(t, progress, 120.0/5.4*100)
 		} else {
 			requireOpenAIWeeklyEstimate(t, progress, 2500)
 		}
@@ -674,6 +675,79 @@ func TestOpenAIWeeklyFrozenEstimateV14KnownJoinRequiresNewRawInterval(t *testing
 	state := requireOpenAIWeeklyTwoRuleState(t, account)
 	if state.BaselinePercent != 20 || state.CompletedPercent != 26.4 {
 		t.Fatal("migration changed the cumulative baseline or floored the new endpoint")
+	}
+}
+
+func TestOpenAIWeeklyFrozenEstimateV14ZeroStartUsesRuleB(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(116)
+	at := time.Date(2026, time.September, 6, 0, 0, 0, 0, time.UTC)
+	reset := openAIWeeklyEstimateTestResetAt()
+	account.Extra[openAIWeeklyEstimateBaselineKey] = map[string]any{
+		"version": 14, "baseline_percent": 0.0, "baseline_cost": 0.0, "percent_bucket": 9.0,
+		"snapshot_cost": 240.0, "reset_at": reset.Format(time.RFC3339Nano), "identity": "workspace-a",
+		"observed_at": at.Format(time.RFC3339Nano), "estimate_usd": 2666.6666666666665, "has_weekly_estimate": true,
+	}
+	progress := openAIWeeklyEstimateProgress(9, 240, reset)
+	applyOpenAIWeeklyFrozenEstimateForTest(t, account, progress, 240, 240, true, at)
+	requireOpenAIWeeklyEstimate(t, progress, 3000)
+	state := requireOpenAIWeeklyTwoRuleState(t, account)
+	if state.Mode != openAIWeeklyEstimateModeLegacy || state.BaselineSource != "v14_persisted_zero_start" {
+		t.Fatalf("persisted zero start was not restored as Rule B: %+v", state)
+	}
+}
+
+func TestOpenAIWeeklyFrozenEstimateRecoversV15UnknownFromRetainedV14Evidence(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(117)
+	at := time.Date(2026, time.September, 6, 0, 0, 0, 0, time.UTC)
+	reset := openAIWeeklyEstimateTestResetAt()
+	legacy := map[string]any{
+		"version": 14, "baseline_percent": 0.0, "baseline_cost": 0.0, "percent_bucket": 25.0,
+		"snapshot_cost": 598.0, "reset_at": reset.Format(time.RFC3339Nano), "identity": "workspace-a",
+		"observed_at": at.Format(time.RFC3339Nano), "estimate_usd": 2392.0, "has_weekly_estimate": true,
+	}
+	account.Extra[openAIWeeklyEstimateBaselineKey] = map[string]any{
+		"version": 15, "mode": openAIWeeklyEstimateModeUnknown, "baseline_source": "legacy_start_unclassified_v14",
+		"baseline_percent": 0.0, "baseline_cost": 0.0, "percent_bucket": 26.0,
+		"snapshot_percent": 26.0, "snapshot_cost": 620.0, "completed_percent": 25.0, "completed_cost": 598.0,
+		"awaiting_interval": true, "has_weekly_estimate": false, "terminal": false,
+		"reset_at": reset.Format(time.RFC3339Nano), "identity": "workspace-a", "observed_at": at.Add(time.Minute).Format(time.RFC3339Nano),
+		"legacy_evidence": legacy,
+	}
+	progress := openAIWeeklyEstimateProgress(26, 620, reset)
+	applyOpenAIWeeklyFrozenEstimateForTest(t, account, progress, 620, 620, true, at.Add(time.Minute))
+	requireOpenAIWeeklyEstimate(t, progress, 2480)
+	state := requireOpenAIWeeklyTwoRuleState(t, account)
+	if state.Mode != openAIWeeklyEstimateModeLegacy || state.BaselinePercent != 0 || state.CompletedPercent != 26 {
+		t.Fatalf("retained v14 evidence did not recover the v15 state: %+v", state)
+	}
+}
+
+func TestOpenAIWeeklyFrozenEstimateRecoveryKeepsFirstCostInSameBucket(t *testing.T) {
+	t.Parallel()
+	account := newOpenAIWeeklyEstimateTestAccount(118)
+	at := time.Date(2026, time.September, 6, 0, 0, 0, 0, time.UTC)
+	reset := openAIWeeklyEstimateTestResetAt()
+	legacy := map[string]any{
+		"version": 14, "baseline_percent": 41.0, "baseline_cost": 480.0, "percent_bucket": 93.0,
+		"snapshot_cost": 1323.0, "reset_at": reset.Format(time.RFC3339Nano), "identity": "workspace-a",
+		"observed_at": at.Format(time.RFC3339Nano), "estimate_usd": 1621.1538461538462, "has_weekly_estimate": true,
+	}
+	account.Extra[openAIWeeklyEstimateBaselineKey] = map[string]any{
+		"version": 15, "mode": openAIWeeklyEstimateModeUnknown, "baseline_source": "legacy_start_unclassified_v14",
+		"baseline_percent": 41.0, "baseline_cost": 480.0, "percent_bucket": 93.0,
+		"snapshot_percent": 93.0, "snapshot_cost": 1328.0, "completed_percent": 93.0, "completed_cost": 1323.0,
+		"awaiting_interval": true, "has_weekly_estimate": false, "terminal": false,
+		"reset_at": reset.Format(time.RFC3339Nano), "identity": "workspace-a", "observed_at": at.Add(time.Minute).Format(time.RFC3339Nano),
+		"legacy_evidence": legacy,
+	}
+	progress := openAIWeeklyEstimateProgress(93, 1328, reset)
+	applyOpenAIWeeklyFrozenEstimateForTest(t, account, progress, 1328, 1328, true, at.Add(time.Minute))
+	requireOpenAIWeeklyEstimate(t, progress, (1323.0-480.0)/(93.0-41.0)*100)
+	state := requireOpenAIWeeklyTwoRuleState(t, account)
+	if state.SnapshotCost != 1328 || state.CompletedCost != 1323 {
+		t.Fatalf("later same-bucket cost replaced the first aligned endpoint: %+v", state)
 	}
 }
 
