@@ -428,20 +428,6 @@ func (state openAIWeeklyFrozenEstimateState) value() *float64 {
 	return &estimate
 }
 
-func (state openAIWeeklyFrozenEstimateState) valueForCost(currentCost float64) *float64 {
-	if state.SnapshotPercent == 100 && state.HasEstimate && validOpenAIWeeklyEstimateValue(currentCost) {
-		return &currentCost
-	}
-	return state.value()
-}
-
-func migrationUpdate(state openAIWeeklyFrozenEstimateState) map[string]any {
-	if !state.needsPersist {
-		return nil
-	}
-	return openAIWeeklyFrozenEstimateStateUpdate(state)
-}
-
 func openAIWeeklyFrozenEstimateStateUpdate(state openAIWeeklyFrozenEstimateState) map[string]any {
 	// The write boundary assigns revision from the original account, so staging
 	// a historical seed and then calculating cannot consume two revisions.
@@ -466,7 +452,10 @@ func openAIWeeklyFrozenEstimateStateUpdate(state openAIWeeklyFrozenEstimateState
 
 func openAIWeeklyFrozenEstimateUpdateWithEvidence(state openAIWeeklyFrozenEstimateState, extra map[string]any) map[string]any {
 	updates := openAIWeeklyFrozenEstimateStateUpdate(state)
-	raw := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	raw, ok := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	if !ok {
+		return updates
+	}
 	previous, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
 	if !ok {
 		return updates

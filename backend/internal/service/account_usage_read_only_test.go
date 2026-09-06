@@ -145,7 +145,9 @@ func TestOpenAIPassiveUsageOnlyDisplaysMatchingPersistedEstimate(t *testing.T) {
 			a.Extra["codex_usage_updated_at"] = time.Now().Add(-2 * time.Hour).Format(time.RFC3339Nano)
 		}},
 		{"legacy state", func(a *Account, _ *readOnlyUsageStatsRepo) {
-			a.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)["version"] = openAIWeeklyFrozenEstimateLegacyStateVersion
+			baseline, ok := a.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+			require.True(t, ok)
+			baseline["version"] = openAIWeeklyFrozenEstimateLegacyStateVersion
 		}},
 		{"stats unavailable", func(_ *Account, r *readOnlyUsageStatsRepo) { r.err = errors.New("database unavailable") }},
 	} {

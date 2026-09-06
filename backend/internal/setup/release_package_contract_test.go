@@ -97,7 +97,7 @@ func TestReleaseArchivesKeepRuntimeAndExcludeLocalState(t *testing.T) {
 func TestDockerBuildContextKeepsSourcesNotGeneratedState(t *testing.T) {
 	file, err := os.Open("../../../.dockerignore")
 	require.NoError(t, err)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	patterns, err := ignorefile.ReadAll(file)
 	require.NoError(t, err)
 	matcher, err := patternmatcher.New(patterns)

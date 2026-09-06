@@ -171,7 +171,7 @@ func (r *userInactivityCleanupRepository) queryCandidates(ctx context.Context, q
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []service.InactiveUserCandidate
 	for rows.Next() {
 		var candidate service.InactiveUserCandidate

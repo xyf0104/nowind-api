@@ -77,7 +77,7 @@ func (r *accountRepository) FindOpenAIWeeklyJoinEvidence(ctx context.Context, ex
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	evidence, err := findWeeklyJoinEvidenceSnapshot(ctx, tx, expected.ID, identity, currentResetAt)
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func findWeeklyJoinEvidenceSnapshot(ctx context.Context, q sqlQueryer, accountID
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var found *service.OpenAIWeeklyJoinEvidence
 	count, ambiguous := 0, false
 	for rows.Next() {

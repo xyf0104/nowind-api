@@ -213,10 +213,6 @@ func canDuplicateAccountType(accountType string) bool {
 	}
 }
 
-func clearOpenAIWeeklyEstimateBaseline(extra map[string]any) {
-	delete(extra, openAIWeeklyEstimateBaselineKey)
-}
-
 func duplicateAccountGroups(source *Account) ([]AccountGroup, []int64) {
 	if len(source.AccountGroups) > 0 {
 		groups := make([]AccountGroup, 0, len(source.AccountGroups))

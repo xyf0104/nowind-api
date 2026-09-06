@@ -268,7 +268,7 @@ func TestInactiveUserDeletion_RechecksActivityAndReminderAfterLocks(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			svc := &adminServiceImpl{entClient: client}
 			mock.ExpectBegin()
@@ -314,7 +314,7 @@ func TestInactiveUserDeletion_PreservesAtomicUserAndKeyDeletion(t *testing.T) {
 		t.Run("failure="+failAt, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			var deletionTx *dbent.Tx
 			var calls []string

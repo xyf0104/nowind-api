@@ -46,7 +46,7 @@ func readRefreshMigrationFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("cannot open private migration input")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("migration input changed while opening")
@@ -100,12 +100,12 @@ func (m *refreshMigrationManifest) options(secret []byte) (repository.LegacyRefr
 		u, err := url.Parse(node.URL)
 		if err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Hostname() == "" || u.RawQuery != "" || u.Fragment != "" {
 			closeClients()
-			return repository.LegacyRefreshTransitionOptions{}, nil, errors.New("Redis nodes require explicit fixed TCP URLs without query overrides")
+			return repository.LegacyRefreshTransitionOptions{}, nil, errors.New("redis nodes require explicit fixed TCP URLs without query overrides")
 		}
 		opts, err := redis.ParseURL(node.URL)
 		if err != nil || opts.Network != "tcp" || opts.DB < 0 {
 			closeClients()
-			return repository.LegacyRefreshTransitionOptions{}, nil, errors.New("Redis nodes require fixed redis/rediss TCP URLs")
+			return repository.LegacyRefreshTransitionOptions{}, nil, errors.New("redis nodes require fixed redis/rediss TCP URLs")
 		}
 		opts.MaxRetries, opts.ContextTimeoutEnabled = -1, true
 		opts.DialTimeout, opts.ReadTimeout, opts.WriteTimeout = 5*time.Second, 5*time.Second, 5*time.Second

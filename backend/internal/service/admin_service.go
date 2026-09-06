@@ -456,12 +456,12 @@ type BulkUpdateAccountsInput struct {
 }
 
 type BulkUpdateAccountFilters struct {
-	Platform    string
-	Type        string
-	Status      string
-	Group       string
-	Search      string
-	PrivacyMode string
+	Platform        string
+	Type            string
+	Status          string
+	Group           string
+	Search          string
+	PrivacyMode     string
 	ExecutionNodeID string
 }
 

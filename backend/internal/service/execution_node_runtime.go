@@ -61,10 +61,6 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PROXY_MAPPING_INVALID", "the existing node egress mapping is invalid; repair it before initializing this node")
 		}
 	}
-	legacyNodeID := nodeID
-	if s.cfg != nil && validExecutionNodeID(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID) {
-		legacyNodeID = strings.TrimSpace(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID)
-	}
 	// The first machine prepared in an empty installation is the source node,
 	// regardless of whether its browser-derived name happens to equal the
 	// legacy placeholder "api". Joined peers receive their default later in the
@@ -104,7 +100,7 @@ func (s *SettingService) InitializeExecutionNodeRuntime(ctx context.Context, nod
 		return nil, fmt.Errorf("persist execution-node runtime mapping: %w", err)
 	}
 
-	legacyNodeID = nodeID
+	legacyNodeID := nodeID
 	legacyProxyID := proxy.ID
 	if s.cfg != nil && s.cfg.Gateway.ExecutionNode.Enabled {
 		if validExecutionNodeID(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOpenAIWeeklyFrozenEstimateUsesJoinBaselineAverage(t *testing.T) {
@@ -281,7 +282,8 @@ func TestOpenAIWeeklyFrozenEstimateMigratesLegacyObservationWithoutLegacyEstimat
 	requireOpenAIWeeklyEstimatePending(t, current)
 	requireOpenAIWeeklyFrozenEstimateState(t, account, 19, 127.93, 19, 127.93)
 
-	raw := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
 	if got := parseExtraInt(raw["version"]); got != openAIWeeklyFrozenEstimateTwoRuleStateVersion {
 		t.Fatalf("migrated state version = %d, want %d", got, openAIWeeklyFrozenEstimateTwoRuleStateVersion)
 	}
@@ -536,7 +538,8 @@ func TestOpenAIWeeklyFrozenEstimateFullQuotaPersistsTerminalIncludingZero(t *tes
 			if state.SnapshotPercent != 100 || state.CompletedPercent != 100 || !state.HasEstimate || state.ObservedAt != at {
 				t.Fatalf("terminal observation not retained: %+v", state)
 			}
-			raw := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+			raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+			require.True(t, ok)
 			if raw["terminal"] != true {
 				t.Fatal("missing serialized terminal marker")
 			}
@@ -636,7 +639,9 @@ func TestOpenAIWeeklyFrozenEstimateV14UnknownClassificationStaysPending(t *testi
 					t.Fatal("legacy classification was invented")
 				}
 			}
-			evidence := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)["legacy_evidence"]
+			baseline, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+			require.True(t, ok)
+			evidence := baseline["legacy_evidence"]
 			if !reflect.DeepEqual(evidence, raw) {
 				t.Fatal("raw legacy history was not retained")
 			}
@@ -653,7 +658,8 @@ func TestOpenAIWeeklyFrozenEstimateV14KnownJoinRequiresNewRawInterval(t *testing
 	legacy.SnapshotPercent, legacy.SnapshotCost, legacy.PercentBucket = 25.4, 120, 25
 	legacy.CompletedPercent, legacy.CompletedCost = 25, 120
 	legacy.HasEstimate, legacy.EstimateUSD = true, 2400
-	raw := openAIWeeklyFrozenEstimateStateUpdate(legacy)[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	raw, ok := openAIWeeklyFrozenEstimateStateUpdate(legacy)[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
 	raw["version"] = 14
 	account.Extra[openAIWeeklyEstimateBaselineKey] = raw
 	for i, sample := range []struct{ percent, cost float64 }{{25.4, 120}, {26, 140}, {26.4, 160}} {
@@ -870,7 +876,9 @@ func TestOpenAIWeeklyFrozenEstimateExplicitBaselineRetainsUnknownEvidence(t *tes
 	unknown.Mode, unknown.BaselineSource = openAIWeeklyEstimateModeUnknown, "legacy_start_unclassified_v13"
 	extra := openAIWeeklyFrozenEstimateStateUpdate(unknown)
 	legacyEvidence := map[string]any{"version": 13, "percent_bucket": 25, "snapshot_cost": 120.0}
-	extra[openAIWeeklyEstimateBaselineKey].(map[string]any)["legacy_evidence"] = legacyEvidence
+	baseline, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
+	baseline["legacy_evidence"] = legacyEvidence
 	before, err := json.Marshal(extra)
 	if err != nil {
 		t.Fatal(err)
@@ -884,7 +892,8 @@ func TestOpenAIWeeklyFrozenEstimateExplicitBaselineRetainsUnknownEvidence(t *tes
 	if err != nil || string(before) != string(after) {
 		t.Fatal("building explicit initialization updates mutated existing state")
 	}
-	raw := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	raw, ok := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
 	if !reflect.DeepEqual(raw["legacy_evidence"], legacyEvidence) {
 		t.Fatal("original unclassified evidence was discarded")
 	}
@@ -900,7 +909,8 @@ func requireOpenAIWeeklyTwoRuleState(t *testing.T, account *Account) openAIWeekl
 	if !ok {
 		t.Fatalf("invalid two-rule state: %#v", account.Extra[openAIWeeklyEstimateBaselineKey])
 	}
-	raw := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
 	if parseExtraInt(raw["version"]) != openAIWeeklyFrozenEstimateTwoRuleStateVersion {
 		t.Fatal("new state did not use version 15")
 	}

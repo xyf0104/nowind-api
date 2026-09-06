@@ -428,7 +428,7 @@ func refreshTransitionMixedBoundary(ctx context.Context, source *redis.Client) e
 		opts.DB, opts.Dialer = db, nil
 		client := redis.NewClient(&opts)
 		err := func() error {
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 			size, err := client.DBSize(ctx).Result()
 			if err != nil || size > refreshTransitionMaxMixedKeys {
 				return refreshTransitionReject("mixed keyspace exceeds bounded adoption size")
@@ -648,7 +648,7 @@ func (s *PersistentRefreshTokenStore) AdoptLegacyRefreshTokens(ctx context.Conte
 	opts.OnConnect = refreshTransitionPinConnection(options.ExpectedRunID)
 	bootstrapOpts := opts
 	bootstrap := redis.NewClient(&bootstrapOpts)
-	defer bootstrap.Close()
+	defer func() { _ = bootstrap.Close() }()
 	group, manifest, err := refreshTransitionBuildGroup(options)
 	if err != nil {
 		return nil, err
@@ -662,7 +662,7 @@ func (s *PersistentRefreshTokenStore) AdoptLegacyRefreshTokens(ctx context.Conte
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	var locked bool
 	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, refreshTransitionLockID).Scan(&locked); err != nil {
 		return nil, err
@@ -752,7 +752,7 @@ func (s *PersistentRefreshTokenStore) AdoptLegacyRefreshTokens(ctx context.Conte
 	opts.Username, opts.Password = username, password
 	opts.MaxRetries, opts.ContextTimeoutEnabled = -1, true
 	fenced := redis.NewClient(&opts)
-	defer fenced.Close()
+	defer func() { _ = fenced.Close() }()
 	if _, err := fenced.Ping(ctx).Result(); err != nil {
 		if record.state != "preparing" {
 			return nil, refreshTransitionReject("persisted fence credential is unavailable")

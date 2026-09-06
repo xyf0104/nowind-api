@@ -70,7 +70,7 @@ func TestOpenAIWeeklyStateCASOptionalContractAndSQL(t *testing.T) {
 func TestOpenAIWeeklyStateCASRejectsInvalidInputBeforeSQL(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := newAccountRepositoryWithSQL(nil, db, &weeklyStateForbiddenScheduler{})
 	validPatch := map[string]any{openAIWeeklyStateEpochKey: "new-test-epoch"}
 	for _, edit := range []func(*service.Account){
@@ -146,9 +146,9 @@ func TestOpenAIWeeklyStateCASPropagatesDatabaseErrors(t *testing.T) {
 func TestOpenAIWeeklyStateCASUsesEntTransactionWithoutCommitting(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	mock.ExpectBegin()
 	tx, err := client.Tx(context.Background())
 	require.NoError(t, err)

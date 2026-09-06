@@ -286,7 +286,6 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 				Code:    UpstreamModelMetadataTooLargeCode,
 				Message: "上游模型能力信息超过安全存储限制，已保留原有能力快照。",
 			})
-			completeMetadata = nil
 		} else if casRepo, ok := s.accountRepo.(upstreamModelMetadataCASRepository); ok {
 			updated, updateErr := casRepo.UpdateUpstreamModelMetadataIfIdentityMatches(
 				ctx, account.ID, account.Platform, account.Type, account.Credentials, account.ProxyID, snapshot,

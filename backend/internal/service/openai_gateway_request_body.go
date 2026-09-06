@@ -140,7 +140,7 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte
 const OpenAIContextUnavailableCode = "context_unavailable"
 const OpenAIContextUnavailableMessage = "Encrypted conversation context is unavailable. Restore the full conversation history before retrying; the gateway will not discard compacted history."
 
-var ErrOpenAIContextUnavailable = errors.New(OpenAIContextUnavailableMessage)
+var ErrOpenAIContextUnavailable = errors.New("encrypted conversation context is unavailable")
 
 // Compaction replaces semantic history. Neither remaining messages nor a summary
 // field prove that the caller supplied a complete, portable alternative.

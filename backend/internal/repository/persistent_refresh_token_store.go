@@ -108,7 +108,7 @@ func persistentRefreshHex(value string, bytes int) bool {
 		return false
 	}
 	for _, c := range value {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -406,7 +406,7 @@ func (s *PersistentRefreshTokenStore) tokenHashes(ctx context.Context, predicate
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	hashes := make([]string, 0)
 	for rows.Next() {
 		var hash string

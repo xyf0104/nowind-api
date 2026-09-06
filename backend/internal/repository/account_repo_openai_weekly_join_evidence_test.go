@@ -70,9 +70,11 @@ func TestOpenAIWeeklyJoinEvidenceSyntheticOrigins(t *testing.T) {
 			body := weeklyJoinTestBody(w, tc.percent, tc.imported)
 			if !tc.imported {
 				// A later outer snapshot after paid usage cannot move the nested join.
-				body["extra"].(map[string]any)["codex_usage_updated_at"] = w.createdAt.Add(time.Hour).Format(time.RFC3339Nano)
-				body["extra"].(map[string]any)["codex_7d_used_percent"] = 72
-				body["extra"].(map[string]any)["later_cost"] = 123.45
+				extra, ok := body["extra"].(map[string]any)
+				require.True(t, ok)
+				extra["codex_usage_updated_at"] = w.createdAt.Add(time.Hour).Format(time.RFC3339Nano)
+				extra["codex_7d_used_percent"] = 72
+				extra["later_cost"] = 123.45
 			}
 			result := weeklyJoinCandidate(w, 123, w.now, weeklyJoinTestEncode(t, body))
 			require.NotNil(t, result)
@@ -121,7 +123,11 @@ func TestOpenAIWeeklyJoinEvidenceRejectsUnprovenCandidates(t *testing.T) {
 		{"missing identity", false, func(_, _, b map[string]any) { delete(b, "identity") }},
 		{"other identity", false, func(_, _, b map[string]any) { b["identity"] = "other" }},
 		{"redacted identity", false, func(_, _, b map[string]any) { b["identity"] = "***" }},
-		{"other credentials identity", false, func(r, _, _ map[string]any) { r["credentials"].(map[string]any)["chatgpt_account_id"] = "other" }},
+		{"other credentials identity", false, func(r, _, _ map[string]any) {
+			credentials, ok := r["credentials"].(map[string]any)
+			require.True(t, ok)
+			credentials["chatgpt_account_id"] = "other"
+		}},
 		{"other platform", false, func(r, _, _ map[string]any) { r["platform"] = "anthropic" }},
 		{"key type", false, func(r, _, _ map[string]any) { r["type"] = "apikey" }},
 		{"missing observation", false, func(_, _, b map[string]any) { delete(b, "observed_at") }},
@@ -160,7 +166,9 @@ func TestOpenAIWeeklyJoinEvidenceRejectsUnprovenCandidates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := weeklyJoinTestBody(w, 17, tc.imported)
-			tc.edit(body, body["extra"].(map[string]any), weeklyJoinTestBaseline(body))
+			extra, ok := body["extra"].(map[string]any)
+			require.True(t, ok)
+			tc.edit(body, extra, weeklyJoinTestBaseline(body))
 			require.Nil(t, weeklyJoinCandidate(w, 12, w.now, weeklyJoinTestEncode(t, body)))
 		})
 	}
@@ -229,7 +237,7 @@ func TestOpenAIWeeklyJoinEvidenceDatabaseFailures(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			db, m, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			failure := errors.New("synthetic database failure")
 			begin := m.ExpectBegin()
 			if stage == "begin" {

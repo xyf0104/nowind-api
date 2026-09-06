@@ -227,7 +227,7 @@ func TestOpenAICompactionGuardWSIngressNoReplay(t *testing.T) {
 						serverErr <- err
 						return
 					}
-					defer client.CloseNow()
+					defer func() { _ = client.CloseNow() }()
 					c, _ := gin.CreateTestContext(httptest.NewRecorder())
 					c.Request = r
 					if knownInvalid {
@@ -241,7 +241,7 @@ func TestOpenAICompactionGuardWSIngressNoReplay(t *testing.T) {
 				defer cancel()
 				client, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 				require.NoError(t, err)
-				defer client.CloseNow()
+				defer func() { _ = client.CloseNow() }()
 				_, frame, err := client.Read(ctx)
 				require.NoError(t, err)
 				require.Equal(t, OpenAIContextUnavailableCode, gjson.GetBytes(frame, "error.code").String())

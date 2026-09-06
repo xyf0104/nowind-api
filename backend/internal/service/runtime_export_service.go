@@ -276,11 +276,11 @@ func (s *RuntimeExportService) execute(record RuntimeExportRecord, sourceOrigin 
 	ctx, cancel := context.WithTimeout(context.Background(), runtimeExportTimeout)
 	snapshot, err := s.dumpDatabase(ctx)
 	if err == nil {
-		defer os.Remove(snapshot)
+		defer func() { _ = os.Remove(snapshot) }()
 		var runtimeContext string
 		runtimeContext, err = s.writeRuntimeContext()
 		if err == nil {
-			defer os.Remove(runtimeContext)
+			defer func() { _ = os.Remove(runtimeContext) }()
 			err = s.launcher(ctx, s.filePath(record), sourceOrigin, snapshot, runtimeContext)
 		}
 	}

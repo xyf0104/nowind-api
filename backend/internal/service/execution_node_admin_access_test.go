@@ -46,8 +46,8 @@ func executionNodeAdminAccessService(nodeID string, primaryHealthy bool, takeove
 
 func TestDefaultExecutionNodeWeightsPreferPrimary(t *testing.T) {
 	require.Equal(t, map[string]float64{"api": 9, "api2": 1}, defaultExecutionNodeWeights())
-	require.Equal(t, float64(9), defaultExecutionNodeWeightFor("api", "api"))
-	require.Equal(t, float64(1), defaultExecutionNodeWeightFor("api2", "api"))
+	require.Equal(t, float64(9), defaultExecutionNodeWeights()["api"])
+	require.Equal(t, float64(1), defaultExecutionNodeWeights()["api2"])
 
 	explicit, err := normalizeExecutionNodeWeights(map[string]float64{"api": 4, "api2": 2})
 	require.NoError(t, err)

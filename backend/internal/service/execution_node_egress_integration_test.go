@@ -66,7 +66,7 @@ func newExecutionNodeEgressProxy(t *testing.T, nodeID string, proxyID int64) *ex
 			_, _ = io.WriteString(w, err.Error())
 			return
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		for key, values := range response.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)
