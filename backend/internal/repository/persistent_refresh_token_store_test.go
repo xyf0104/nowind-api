@@ -16,7 +16,7 @@ import (
 func TestPersistentRefreshTokenStoreRejectsInvalidMetadataWithoutSQL(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := NewPersistentRefreshTokenStore(db)
 	now := time.Now().UTC()
 	valid := service.RefreshTokenData{
@@ -65,7 +65,7 @@ func TestPersistentRefreshTokenStoreAcknowledgesOnlyCommittedRevocation(t *testi
 		t.Run(scope, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			s := NewPersistentRefreshTokenStore(db)
 			mock.ExpectBegin()
 			mock.ExpectExec("SET LOCAL synchronous_commit = on").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -107,7 +107,7 @@ func TestPersistentRefreshTokenStoreConsumeNeverReturnsUncommittedMetadata(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			s := NewPersistentRefreshTokenStore(db)
 			now := time.Now().UTC()
 			rows := func() *sqlmock.Rows {
@@ -158,7 +158,7 @@ func TestPersistentRefreshTokenIssuanceIsNotSerialized(t *testing.T) {
 func TestPersistentRefreshTokenPrepareCommitFailureReturnsNoTicket(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL synchronous_commit = on").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT generation FROM refresh_token_revocation_state").

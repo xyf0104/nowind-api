@@ -60,5 +60,7 @@ func TestRuntimeExportContextIsPrivateAndRejectsMissingConfig(t *testing.T) {
 	require.NoError(t, err)
 	var snapshot runtimeExportContext
 	require.NoError(t, json.Unmarshal(data, &snapshot))
-	require.Equal(t, "private-signing-secret", snapshot.Config["jwt"].(map[string]any)["secret"])
+	jwt, ok := snapshot.Config["jwt"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "private-signing-secret", jwt["secret"])
 }

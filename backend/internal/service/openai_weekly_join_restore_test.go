@@ -57,13 +57,16 @@ func TestOpenAIWeeklyJoinRestoreUsesOriginalBaselineAndOriginalCAS(t *testing.T)
 	require.Equal(t, 11.0, state.BaselinePercent)
 	require.Equal(t, 0.0, state.BaselineCost)
 	require.Equal(t, "verified_history_inception", state.BaselineSource)
-	raw := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
 	require.Contains(t, raw, "join_evidence")
 	require.Contains(t, raw, "previous_sampling_baseline")
 	svc.setOpenAIWeeklyFrozenEstimate(account, progress, 855, 860, true, observed.Add(time.Second), context.Background())
 	require.Equal(t, 1, repo.reads, "verified inception must not rescan or replace itself")
 	require.InDelta(t, 853.5/34*100, *progress.WeeklyEstimateUSD, 1e-8, "freeze incomplete interval")
-	require.Contains(t, account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any), "join_evidence")
+	raw, ok = account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
+	require.Contains(t, raw, "join_evidence")
 }
 
 func TestOpenAIWeeklyJoinRestoreDoesNotPublishLostCAS(t *testing.T) {
@@ -96,7 +99,9 @@ func TestOpenAIWeeklyJoinRestoreRefusesMissingAndInvalidEvidence(t *testing.T) {
 			case "future":
 				repo.evidence.ObservedAt = time.Now().Add(time.Hour)
 			case "newer state":
-				account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)["observed_at"] = observed.Add(time.Second).Format(time.RFC3339Nano)
+				raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+				require.True(t, ok)
+				raw["observed_at"] = observed.Add(time.Second).Format(time.RFC3339Nano)
 			case "before local creation":
 				account.CreatedAt = repo.evidence.ObservedAt.Add(time.Second)
 			case "wrong kind timestamp":
@@ -121,7 +126,9 @@ func TestOpenAIWeeklyJoinRestoreNeverReplacesRuleBOrExplicitRebase(t *testing.T)
 	for _, source := range []string{"observed_zero", "weekly_window_reset", "external_only_rebase", "cost_regression", "percent_regression"} {
 		t.Run(source, func(t *testing.T) {
 			svc, repo, account, progress, observed := weeklyJoinRestoreFixture()
-			account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)["baseline_source"] = source
+			raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+			require.True(t, ok)
+			raw["baseline_source"] = source
 			_, err := svc.accountWithVerifiedOpenAIWeeklyJoin(context.Background(), account, progress, 853.5, observed)
 			require.NoError(t, err)
 			require.Zero(t, repo.reads)

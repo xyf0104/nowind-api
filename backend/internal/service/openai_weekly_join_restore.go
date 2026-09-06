@@ -75,7 +75,11 @@ func (s *AccountUsageService) accountWithVerifiedOpenAIWeeklyJoin(ctx context.Co
 	}
 	updates := openAIWeeklyFrozenEstimateUpdateWithEvidence(seed, account.Extra)
 	if evidence != nil {
-		updates[openAIWeeklyEstimateBaselineKey].(map[string]any)["join_evidence"] = map[string]any{
+		baseline, ok := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("weekly join baseline could not be constructed")
+		}
+		baseline["join_evidence"] = map[string]any{
 			"kind": string(evidence.Kind), "audit_id": evidence.AuditID,
 			"percent": evidence.Percent, "cost": evidence.Cost, "identity": evidence.Identity,
 			"observed_at": evidence.ObservedAt.UTC().Format(time.RFC3339Nano),

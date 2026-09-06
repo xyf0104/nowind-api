@@ -115,7 +115,9 @@ func TestWeeklyQuotaRuntimeFieldsCannotBeWrittenByAccountExtraForm(t *testing.T)
 func TestWeeklyPassiveFullQuotaCannotBypassObservationOrdering(t *testing.T) {
 	svc, account, stats := readOnlyUsageFixture()
 	newer := time.Now().UTC().Add(-time.Minute)
-	account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)["observed_at"] = newer.Format(time.RFC3339Nano)
+	baseline, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	require.True(t, ok)
+	baseline["observed_at"] = newer.Format(time.RFC3339Nano)
 	account.Extra["codex_7d_used_percent"] = 100.0
 	usage, err := svc.GetPassiveUsage(context.Background(), account.ID)
 	require.NoError(t, err)

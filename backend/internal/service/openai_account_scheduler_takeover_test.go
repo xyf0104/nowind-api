@@ -156,7 +156,8 @@ func TestOpenAIExecutionNodeTakeoverOwnerRecoveryRestoresPriorityAndEgress(t *te
 			require.Equal(t, int64(84), *selection.Account.ProxyID)
 			selection.ReleaseFunc()
 
-			cached := svc.settingService.executionNodeRoutingCache.Load().(*cachedExecutionNodeRoutingSettings)
+			cached, ok := svc.settingService.executionNodeRoutingCache.Load().(*cachedExecutionNodeRoutingSettings)
+			require.True(t, ok)
 			recovered := cloneExecutionNodeRoutingSettings(cached.settings)
 			recovered.Healthy["api"] = true
 			svc.settingService.executionNodeRoutingCache.Store(&cachedExecutionNodeRoutingSettings{settings: recovered, expiresAt: cached.expiresAt})
@@ -187,7 +188,8 @@ func TestOpenAIExecutionNodeTakeoverPreservesOrdinaryStickyAndScope(t *testing.T
 				}
 				acquires := []int64{}
 				svc := openAITakeoverTestService([]Account{remote, local}, schedulerTestConcurrencyCache{acquiredIDs: &acquires}, mode)
-				cache := svc.cache.(*schedulerTestGatewayCache)
+				cache, ok := svc.cache.(*schedulerTestGatewayCache)
+				require.True(t, ok)
 				cache.sessionBindings = map[string]int64{"openai:owned_sticky": remote.ID}
 				selection, err := openAITakeoverTestSelect(svc, mode, "owned_sticky")
 				require.NoError(t, err)

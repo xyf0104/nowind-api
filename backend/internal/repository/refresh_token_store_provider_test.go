@@ -32,7 +32,7 @@ func TestRefreshTokenStoreProviderAuthority(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			q := mock.ExpectQuery("SELECT backend, pg_is_in_recovery")
 			if tc.missing {
 				q.WillReturnError(errors.New("synthetic schema unavailable"))
@@ -43,7 +43,7 @@ func TestRefreshTokenStoreProviderAuthority(t *testing.T) {
 				mock.ExpectQuery("SELECT.*EXISTS").WillReturnRows(sqlmock.NewRows([]string{"ready"}).AddRow(!tc.badSchema))
 			}
 			rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1})
-			defer rdb.Close()
+			defer func() { _ = rdb.Close() }()
 			store, err := NewRefreshTokenStore(db, rdb, &config.Config{JWT: config.JWTConfig{RefreshTokenStore: tc.configured}})
 			if tc.wantError {
 				require.ErrorIs(t, err, ErrRefreshTokenAuthority)
@@ -75,7 +75,7 @@ func TestRefreshTokenStoreProviderRejectsInvalidDependencies(t *testing.T) {
 func TestRefreshTokenStoreProviderRejectsLegacyAutomaticRedisPromotion(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	for _, mode := range []string{"", "redis"} {
 		store, err := NewRefreshTokenStore(db, nil, &config.Config{
 			JWT:   config.JWTConfig{RefreshTokenStore: mode},
@@ -131,7 +131,7 @@ func TestRefreshTokenLegacyGuardFencesEveryOperation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			mock.ExpectBegin()
 			mock.ExpectQuery("SELECT backend.*FOR SHARE").WillReturnRows(sqlmock.NewRows([]string{"backend"}).AddRow("postgres"))
 			mock.ExpectRollback()
@@ -145,7 +145,7 @@ func TestRefreshTokenLegacyGuardFencesEveryOperation(t *testing.T) {
 func TestRefreshTokenLegacyGuardDoesNotReturnDataAfterAmbiguousCommit(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT backend.*FOR SHARE").WillReturnRows(sqlmock.NewRows([]string{"backend"}).AddRow("redis"))
 	mock.ExpectCommit().WillReturnError(errors.New("synthetic commit acknowledgment lost"))

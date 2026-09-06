@@ -175,7 +175,9 @@ func syntheticRedisSentinel(t *testing.T, initialMaster string, tlsConfig *tls.C
 		}
 		switch strings.ToLower(args[0]) {
 		case "get-master-addr-by-name":
-			host, port, _ := net.SplitHostPort(master.Load().(string))
+			addr, ok := master.Load().(string)
+			require.True(t, ok)
+			host, port, _ := net.SplitHostPort(addr)
 			peer.WriteLen(2)
 			peer.WriteBulk(host)
 			peer.WriteBulk(port)
@@ -186,7 +188,8 @@ func syntheticRedisSentinel(t *testing.T, initialMaster string, tlsConfig *tls.C
 		}
 	}))
 	return sentinel, func(addr string) int {
-		previous := master.Swap(addr).(string)
+		previous, ok := master.Swap(addr).(string)
+		require.True(t, ok)
 		oldHost, oldPort, _ := net.SplitHostPort(previous)
 		newHost, newPort, _ := net.SplitHostPort(addr)
 		return sentinel.Publish("+switch-master", strings.Join([]string{"cache-primary", oldHost, oldPort, newHost, newPort}, " "))

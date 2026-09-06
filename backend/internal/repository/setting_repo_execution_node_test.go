@@ -13,7 +13,7 @@ import (
 func TestMigrateExecutionNodeDefaultWeights_UsesSourceNodeAndMigratesOnce(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO settings").
@@ -40,7 +40,7 @@ func TestMigrateExecutionNodeDefaultWeights_UsesSourceNodeAndMigratesOnce(t *tes
 func TestMigrateExecutionNodeDefaultWeights_PreservesCustomPolicyAndClaimsOnce(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO settings").
@@ -64,7 +64,7 @@ func TestMigrateExecutionNodeDefaultWeights_PreservesCustomPolicyAndClaimsOnce(t
 func TestMigrateExecutionNodeDefaultWeights_ReturnsWithoutClaimWhenAlreadyDone(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO settings").
@@ -82,7 +82,7 @@ func TestMigrateExecutionNodeDefaultWeights_ReturnsWithoutClaimWhenAlreadyDone(t
 func TestMigrateExecutionNodeDefaultWeights_DoesNotConsumeMarkerBeforePeerExists(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO settings").

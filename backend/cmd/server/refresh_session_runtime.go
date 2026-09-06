@@ -357,7 +357,7 @@ func writeRefreshRuntimeEnvironment(path string, data []byte) error {
 		return errors.New("cannot create private runtime output")
 	}
 	defer func() { _ = os.Remove(f.Name()) }()
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err = f.Write(data); err == nil {
 		err = f.Sync()
 	}
@@ -374,7 +374,7 @@ func writeRefreshRuntimeEnvironment(path string, data []byte) error {
 	if err != nil {
 		return errors.New("cannot sync runtime output directory")
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	if err = dir.Sync(); err != nil {
 		return errors.New("cannot sync runtime output directory")
 	}

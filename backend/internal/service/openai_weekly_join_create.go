@@ -52,7 +52,11 @@ func (s *adminServiceImpl) captureOpenAIWeeklyJoinForCreate(ctx context.Context,
 		return
 	}
 	updates := openAIWeeklyFrozenEstimateStateUpdate(state)
-	updates[openAIWeeklyEstimateBaselineKey].(map[string]any)["join_evidence"] = map[string]any{
+	baseline, ok := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	if !ok {
+		return
+	}
+	baseline["join_evidence"] = map[string]any{
 		"kind": "pre_create_quota_read", "identity": identity, "percent": observation.percent, "cost": 0.0,
 		"observed_at": observation.observedAt.Format(time.RFC3339Nano), "reset_at": observation.resetAt.Format(time.RFC3339Nano),
 	}

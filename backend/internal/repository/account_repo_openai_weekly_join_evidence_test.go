@@ -53,7 +53,15 @@ func weeklyJoinTestEncode(t *testing.T, body map[string]any) string {
 }
 
 func weeklyJoinTestBaseline(body map[string]any) map[string]any {
-	return body["extra"].(map[string]any)["codex_7d_estimate_baseline"].(map[string]any)
+	extra, ok := body["extra"].(map[string]any)
+	if !ok {
+		panic("weekly join test extra must be a map")
+	}
+	baseline, ok := extra["codex_7d_estimate_baseline"].(map[string]any)
+	if !ok {
+		panic("weekly join test baseline must be a map")
+	}
+	return baseline
 }
 
 func TestOpenAIWeeklyJoinEvidenceSyntheticOrigins(t *testing.T) {

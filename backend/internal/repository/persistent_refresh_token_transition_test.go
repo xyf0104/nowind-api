@@ -61,7 +61,7 @@ func TestPersistentRefreshTransitionExclusivePrincipalHasOnlyRecoveryPassword(t 
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			client := redis.NewClient(&redis.Options{Addr: "unused.invalid:6379"})
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 			client.AddHook(&refreshTransitionEmptyScanHook{aclLines: []string{fixture.principal, fixture.old}})
 			hash, err := refreshTransitionVerifyACL(context.Background(), client, "exclusive", passwordHash, "")
 			if fixture.valid {
@@ -77,7 +77,7 @@ func TestPersistentRefreshTransitionExclusivePrincipalHasOnlyRecoveryPassword(t 
 
 func TestPersistentRefreshTransitionEmptyMatchPageBudget(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: "unused.invalid:6379"})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	hook := &refreshTransitionEmptyScanHook{}
 	client.AddHook(hook)
 	entries, err := refreshTransitionSnapshot(context.Background(), client)

@@ -279,7 +279,9 @@ func TestOpenAISchedulerSelectionReachesTheSelectedAccountEgress(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		require.NoError(t, resp.Body.Close())
-		client.Transport.(*http.Transport).CloseIdleConnections()
+		transport, ok := client.Transport.(*http.Transport)
+		require.True(t, ok)
+		transport.CloseIdleConnections()
 
 		mu.Lock()
 		observation := observations[len(observations)-1]
@@ -338,7 +340,9 @@ func TestExecutionNodeStickySelectionKeepsTheSameEgress(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		require.Equal(t, nodeID, strings.TrimSpace(string(body)))
-		client.Transport.(*http.Transport).CloseIdleConnections()
+		transport, ok := client.Transport.(*http.Transport)
+		require.True(t, ok)
+		transport.CloseIdleConnections()
 		t.Logf("sticky attempt=%d selected_account=%d owner_node=%s actual_egress=%s", attempt+1, selected.ID, nodeID, strings.TrimSpace(string(body)))
 	}
 }
@@ -370,7 +374,9 @@ func TestExecutionNodeFallbackUsesTheNextCandidateOwnEgress(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, client := range clients {
-			client.Transport.(*http.Transport).CloseIdleConnections()
+			transport, ok := client.Transport.(*http.Transport)
+			require.True(t, ok)
+			transport.CloseIdleConnections()
 		}
 	})
 

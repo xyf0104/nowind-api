@@ -71,9 +71,14 @@ func TestBoundCodexSnapshotGatewayCapturesImmutableIdentityBeforeGoroutine(t *te
 	account.Credentials["access_token"] = "synthetic-new"
 	account.Credentials["_token_version"] = int64(9007199254740994)
 	account.Extra[OpenAIWeeklyStateRevisionKey] = 1
-	values := account.Credentials["nested"].(map[string]any)["values"].([]any)
+	nested, ok := account.Credentials["nested"].(map[string]any)
+	require.True(t, ok)
+	values, ok := nested["values"].([]any)
+	require.True(t, ok)
 	values[0] = "new"
-	values[1].(map[string]any)["key"] = "new"
+	nestedValue, ok := values[1].(map[string]any)
+	require.True(t, ok)
+	nestedValue["key"] = "new"
 	proxyID = 10
 	account.ParentAccountID = &proxyID
 	account.QuotaDimension = QuotaDimensionSpark
@@ -95,7 +100,9 @@ func TestBoundCodexSnapshotGatewayCapturesImmutableIdentityBeforeGoroutine(t *te
 	require.Equal(t, json.Number("9007199254740993"), captured.Credentials["_token_version"])
 	require.Equal(t, map[string]any{OpenAIWeeklyStateRevisionKey: json.Number("9007199254740991")}, captured.Extra)
 	require.NotContains(t, patch, OpenAIWeeklyStateRevisionKey)
-	require.Equal(t, []any{"old", map[string]any{"key": "old"}}, captured.Credentials["nested"].(map[string]any)["values"])
+	capturedNested, ok := captured.Credentials["nested"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, []any{"old", map[string]any{"key": "old"}}, capturedNested["values"])
 	require.Equal(t, 13.0, patch["codex_7d_used_percent"])
 }
 

@@ -59,7 +59,7 @@ func TestRefreshRuntimePreflightRejectsExistingOutput(t *testing.T) {
 	manifest.Runtime = &refreshRuntimeManifest{AppPasswordFile: secretPath, EnvironmentFile: output}
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectQuery("SELECT transition_id::text FROM refresh_token_legacy_transition").WillReturnRows(sqlmock.NewRows([]string{"transition_id"}))
 	_, err = prepareRefreshRuntime(context.Background(), db, &manifest, make([]byte, 32))
 	require.ErrorContains(t, err, "refusing to replace")
@@ -135,7 +135,7 @@ func TestRefreshRuntimeBackupPreflightRejectsInvalidInputs(t *testing.T) {
 			}
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			plan, err := prepareRefreshRuntime(context.Background(), db, &manifest, recovery)
 			require.Error(t, err)
 			require.Nil(t, plan)
@@ -175,7 +175,7 @@ func TestRefreshRuntimeBackupOutputPreflightAndRetry(t *testing.T) {
 			}
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			rows := sqlmock.NewRows([]string{"transition_id"})
 			if name != "no-witness" && name != "absent" {
 				rows.AddRow(id)
@@ -233,7 +233,7 @@ func TestRefreshRuntimeBackupOptionalManifest(t *testing.T) {
 	require.NotContains(t, string(data), "backup_")
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectQuery("SELECT transition_id::text FROM refresh_token_legacy_transition").WillReturnRows(sqlmock.NewRows([]string{"transition_id"}))
 	plan, err := prepareRefreshRuntime(context.Background(), db, &manifest, recovery)
 	require.NoError(t, err)

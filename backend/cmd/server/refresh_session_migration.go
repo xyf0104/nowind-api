@@ -142,7 +142,7 @@ func migrateRefreshSessions(ctx context.Context, path string, output io.Writer) 
 	if err != nil {
 		return errors.New("cannot open migration database; connection details withheld")
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(2)
 	runtime, err := prepareRefreshRuntime(ctx, db, manifest, secret)

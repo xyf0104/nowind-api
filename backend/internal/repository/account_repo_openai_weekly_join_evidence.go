@@ -271,13 +271,21 @@ func weeklyJoinNumber(value any) (float64, bool) {
 
 func weeklyJoinNumbersEqual(a, b any) bool {
 	// Called only after both values pass bounded finite number validation.
-	xf, _ := a.(json.Number).Float64()
-	yf, _ := b.(json.Number).Float64()
+	xn, okX := a.(json.Number)
+	yn, okY := b.(json.Number)
+	if !okX || !okY {
+		return false
+	}
+	xf, errX := xn.Float64()
+	yf, errY := yn.Float64()
+	if errX != nil || errY != nil {
+		return false
+	}
 	if xf == 0 || yf == 0 {
 		return xf == yf
 	}
-	x, okX := new(big.Rat).SetString(a.(json.Number).String())
-	y, okY := new(big.Rat).SetString(b.(json.Number).String())
+	x, okX := new(big.Rat).SetString(xn.String())
+	y, okY := new(big.Rat).SetString(yn.String())
 	return okX && okY && x.Cmp(y) == 0
 }
 
