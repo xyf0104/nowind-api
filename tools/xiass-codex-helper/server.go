@@ -29,7 +29,6 @@ type helperServer struct {
 	restoreConfig              func(string) (RestoreResult, error)
 	repairHistory              func() (HistoryRepairResult, error)
 	repairCompatibilityHistory func() (HistoryRepairResult, error)
-	syncHistoryModel           func() (HistoryRepairResult, error)
 	restoreHistory             func(string) error
 	listHistoryBackups         func() ([]HistoryBackupInfo, error)
 	deleteConfigBackup         func(string) error
@@ -65,7 +64,6 @@ type statusResponse struct {
 	Codex                      CodexInstallation `json:"codex"`
 	ConnectURL                 string            `json:"connect_url"`
 	SiteURL                    string            `json:"site_url"`
-	BackupCount                int               `json:"backup_count"`
 	ModelContextWindow         int64             `json:"model_context_window"`
 	ModelAutoCompactTokenLimit int64             `json:"model_auto_compact_token_limit"`
 	ContextSettingsWarning     string            `json:"context_settings_warning,omitempty"`
@@ -108,30 +106,21 @@ func newHelperServer(manager *ConfigManager, site string, state string) (*helper
 	if err != nil {
 		return nil, err
 	}
-	repairer := NewHistoryRepairer(filepath.Dir(manager.ConfigPath))
 	return &helperServer{
-		manager:                    manager,
-		applyConfig:                manager.Apply,
-		restoreConfig:              manager.Restore,
-		repairHistory:              repairer.RepairCurrentProviderModel,
-		repairCompatibilityHistory: repairer.RepairCurrentProviderModelCompatibility,
-		syncHistoryModel:           repairer.SyncCurrentModel,
-		restoreHistory:             repairer.RestoreBackup,
-		listHistoryBackups:         repairer.ListBackups,
-		deleteConfigBackup:         manager.DeleteBackup,
-		deleteHistoryBackup:        repairer.DeleteBackup,
-		listModels:                 discoverCompatibleModelCatalog,
-		state:                      state,
-		siteURL:                    parsedSite,
-		index:                      index,
-		callback:                   callback,
-		shutdown:                   make(chan struct{}),
-		detect:                     detectCodexInstallation,
-		selectApp:                  selectCodexInstallation,
-		selectAppPath:              selectCodexInstallationPath,
-		prepare:                    prepareCodexOperation,
-		stop:                       stopCodex,
-		start:                      startCodex,
+		manager:       manager,
+		applyConfig:   manager.ApplyWithoutBackup,
+		listModels:    discoverCompatibleModelCatalog,
+		state:         state,
+		siteURL:       parsedSite,
+		index:         index,
+		callback:      callback,
+		shutdown:      make(chan struct{}),
+		detect:        detectCodexInstallation,
+		selectApp:     selectCodexInstallation,
+		selectAppPath: selectCodexInstallationPath,
+		prepare:       prepareCodexOperation,
+		stop:          stopCodex,
+		start:         startCodex,
 	}, nil
 }
 
@@ -140,23 +129,21 @@ func (s *helperServer) routes() http.Handler {
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /callback", s.handleCallback)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
-	mux.HandleFunc("GET /api/backups", s.handleBackups)
-	mux.HandleFunc("GET /api/history-backups", s.handleHistoryBackups)
-	mux.HandleFunc("POST /api/delete-backup", s.handleDeleteBackup)
 	mux.HandleFunc("POST /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/site", s.handleSite)
 	mux.HandleFunc("POST /api/select-app", s.handleSelectApp)
 	mux.HandleFunc("POST /api/apply", s.handleApply)
 	mux.HandleFunc("POST /api/apply-manual", s.handleManualApply)
-	mux.HandleFunc("POST /api/restore", s.handleRestore)
-	mux.HandleFunc("POST /api/repair-history", s.handleRepairHistory)
-	mux.HandleFunc("POST /api/restore-history", s.handleRestoreHistory)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
 	mux.HandleFunc("POST /api/browser-closed", s.handleBrowserClosed)
 	return s.localOnly(s.securityHeaders(mux))
 }
 
-func (s *helperServer) handleIndex(w http.ResponseWriter, _ *http.Request) {
+func (s *helperServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	siteURL := defaultXIASSAPIURL
 	if configured := s.currentSiteURL(); configured != nil {
@@ -174,7 +161,6 @@ func (s *helperServer) handleCallback(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *helperServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	backups, _ := s.manager.ListBackups()
 	connectURL, siteURL := s.connectionDetails(r.Host)
 	contextSettings := defaultContextSettings()
 	contextWarning := ""
@@ -196,7 +182,6 @@ func (s *helperServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Codex:                      s.codexInstallation(),
 		ConnectURL:                 connectURL,
 		SiteURL:                    siteURL,
-		BackupCount:                len(backups),
 		ModelContextWindow:         contextSettings.ModelContextWindow,
 		ModelAutoCompactTokenLimit: contextSettings.ModelAutoCompactTokenLimit,
 		ContextSettingsWarning:     contextWarning,
@@ -285,75 +270,6 @@ func (s *helperServer) codexInstallation() CodexInstallation {
 	}
 	s.codexMu.RUnlock()
 	return s.detect()
-}
-
-func (s *helperServer) handleBackups(w http.ResponseWriter, _ *http.Request) {
-	backups, err := s.manager.ListBackups()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": backups})
-}
-
-func (s *helperServer) handleHistoryBackups(w http.ResponseWriter, r *http.Request) {
-	if !s.validState(r) {
-		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
-		return
-	}
-	backups, err := s.listHistoryBackups()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if backups == nil {
-		backups = []HistoryBackupInfo{}
-	}
-	writeJSON(w, http.StatusOK, historyBackupsResponse{Items: backups})
-}
-
-func (s *helperServer) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
-	if !s.validState(r) {
-		writeError(w, http.StatusForbidden, errors.New("invalid local helper session"))
-		return
-	}
-	var request struct {
-		Kind     string `json:"kind"`
-		BackupID string `json:"backup_id"`
-	}
-	if err := decodeJSONBody(r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if strings.TrimSpace(request.BackupID) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("select a backup first"))
-		return
-	}
-	if !s.beginOperation(w) {
-		return
-	}
-	defer s.operationMu.Unlock()
-
-	var (
-		message string
-		err     error
-	)
-	switch strings.ToLower(strings.TrimSpace(request.Kind)) {
-	case "config":
-		err = s.deleteConfigBackup(request.BackupID)
-		message = "已删除所选配置备份；Codex 未重启。"
-	case "history":
-		err = s.deleteHistoryBackup(request.BackupID)
-		message = "已删除所选历史会话备份；Codex 未重启。"
-	default:
-		writeError(w, http.StatusBadRequest, errors.New("invalid backup kind"))
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, operationResponse{OK: true, Message: message, BackupID: request.BackupID, ConfigVerified: true})
 }
 
 func (s *helperServer) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -451,8 +367,8 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 		input.ProviderName = "Custom API"
 	} else {
 		// Website-assisted XIASS setup always takes ownership of the active
-		// provider. Existing foreign provider definitions are preserved only as
-		// inactive configuration and can be recovered from the local backup.
+		// provider. Existing unrelated settings and inactive provider definitions
+		// remain in the configuration.
 		input.ProviderName = providerName
 		input.ForceCanonicalProvider = true
 	}
@@ -476,7 +392,7 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 		}
 	}
 	// Picker IDs are not a metadata source. Reuse helper-side discovery for the
-	// same connection, or fetch before stopping Codex. A failed fetch falls back
+	// same connection. A failed fetch falls back
 	// to native metadata without manufacturing known-model instructions.
 	if catalog, discoveryErr := s.loadModelCatalog(input.BaseURL, input.APIKey); discoveryErr == nil {
 		input.ModelCatalogDescriptors = catalog.Descriptors
@@ -497,89 +413,38 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 	defer releaseLifecycle()
 
 	if err := s.prepare(); err != nil {
-		writeError(w, http.StatusConflict, fmt.Errorf("无法安全退出会改写会话索引的第三方管理工具：%w", err))
+		writeError(w, http.StatusConflict, fmt.Errorf("无法安全退出会改写配置的第三方管理工具：%w", err))
 		return
 	}
 	installation := s.codexInstallation()
 	if err := s.stop(installation); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Errorf("Codex could not be stopped safely; no configuration was changed: %w", err))
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("无法安全关闭 Codex，配置未修改：%w", err))
 		return
 	}
-	previousHistoryProvider := historyProviderForConfig(s.manager.ConfigPath)
 	result, err := s.applyConfig(input)
 	if err != nil {
 		if configRollbackFailed(err) {
 			writeJSON(w, http.StatusInternalServerError, operationResponse{
 				OK:             false,
-				Message:        fmt.Sprintf("配置写入失败，自动回滚也未能确认成功：%v。Codex 保持关闭，避免使用不确定的配置启动。", err),
+				Message:        fmt.Sprintf("配置写入失败，内存回滚也未能确认成功：%v。Codex 保持关闭，请先检查 config.toml 后再重新打开。", err),
 				ConfigVerified: false,
-			})
-			return
-		}
-		startErr := s.startWithRetry(installation)
-		writeError(w, http.StatusInternalServerError, operationFailure("configuration was not changed", err, startErr))
-		return
-	}
-	history, err := s.repairHistoryForConfigChange(previousHistoryProvider)
-	if err != nil {
-		historyRollbackUnsafe := historyRollbackFailed(err)
-		_, rollbackErr := s.restoreConfig(result.BackupID)
-		if rollbackErr != nil {
-			writeJSON(w, http.StatusInternalServerError, operationResponse{
-				OK:             false,
-				Message:        fmt.Sprintf("History repair failed: %v. Configuration rollback also failed: %v. Codex was left closed to protect the existing conversations.", err, rollbackErr),
-				BackupID:       result.BackupID,
-				ConfigVerified: false,
-			})
-			return
-		}
-		if historyRollbackUnsafe {
-			writeJSON(w, http.StatusInternalServerError, operationResponse{
-				OK:             false,
-				Message:        "历史会话修复和自动回滚均失败。原配置已恢复，但 Codex 保持关闭，避免在会话索引不一致时启动。恢复备份仍完整保留。",
-				BackupID:       result.BackupID,
-				ConfigVerified: true,
 			})
 			return
 		}
 		startErr := s.startWithRetry(installation)
 		writeJSON(w, http.StatusInternalServerError, operationResponse{
 			OK:             false,
-			Message:        operationFailure("History repair failed, so the original configuration and conversations were restored", err, startErr).Error(),
-			BackupID:       result.BackupID,
+			Message:        operationFailure("配置未写入，原配置保持不变", err, startErr).Error(),
 			Restarted:      startErr == nil,
 			ConfigVerified: true,
 		})
 		return
 	}
 	if err := s.startWithRetry(installation); err != nil {
-		if stopErr := s.stopBeforeRollback(installation); stopErr != nil {
-			writeJSON(w, http.StatusInternalServerError, operationResponse{
-				OK:             false,
-				Message:        fmt.Sprintf("新配置启动检测失败：%v；无法再次确认 Codex 已退出：%v。为避免在线覆盖数据库，未执行回滚。", err, stopErr),
-				BackupID:       result.BackupID,
-				ConfigVerified: true,
-				History:        &history,
-			})
-			return
-		}
-		historyRollbackErr := s.restoreHistory(history.BackupID)
-		_, configRollbackErr := s.restoreConfig(result.BackupID)
-		if historyRollbackErr != nil || configRollbackErr != nil {
-			writeJSON(w, http.StatusInternalServerError, operationResponse{
-				OK:             false,
-				Message:        fmt.Sprintf("新配置启动失败：%v；安全回滚未完整完成（历史：%v，配置：%v）。Codex 保持关闭。", err, historyRollbackErr, configRollbackErr),
-				BackupID:       result.BackupID,
-				ConfigVerified: configRollbackErr == nil,
-			})
-			return
-		}
-		recoveryStartErr := s.startWithRetry(installation)
 		writeJSON(w, http.StatusInternalServerError, operationResponse{
 			OK:             false,
-			Message:        operationFailure("新配置无法启动，已恢复原配置和原历史会话", err, recoveryStartErr).Error(),
-			BackupID:       result.BackupID,
-			Restarted:      recoveryStartErr == nil,
+			Message:        fmt.Sprintf("配置已写入并校验，但 Codex 自动启动失败：%v。请手动打开 Codex。", err),
+			Restarted:      false,
 			ConfigVerified: true,
 		})
 		return
@@ -594,11 +459,9 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, operationResponse{
 		OK:             true,
-		Message:        configurationName + " 配置已写入（上下文 " + formatTokenCount(input.ModelContextWindow) + "，自动压缩 " + formatTokenCount(input.ModelAutoCompactTokenLimit) + "）；" + catalogNotice + historySummary(history) + " Codex 已重新启动。",
-		BackupID:       result.BackupID,
+		Message:        configurationName + " 配置已写入并校验（上下文 " + formatTokenCount(input.ModelContextWindow) + "，自动压缩 " + formatTokenCount(input.ModelAutoCompactTokenLimit) + "）；" + catalogNotice + "没有扫描、备份或改写任何会话、索引和数据库。Codex 已自动重新启动。",
 		Restarted:      true,
 		ConfigVerified: true,
-		History:        &history,
 	})
 	s.clearPendingContext()
 }
@@ -1114,14 +977,20 @@ func historyProviderForConfig(configPath string) string {
 func (s *helperServer) repairHistoryForConfigChange(previousProvider string) (HistoryRepairResult, error) {
 	targetProvider := historyProviderForConfig(s.manager.ConfigPath)
 	if previousProvider != "" && targetProvider != "" && previousProvider == targetProvider {
-		return s.syncHistoryModel()
+		targetModel, _ := readCurrentModel(s.manager.ConfigPath)
+		return HistoryRepairResult{
+			TargetProvider: targetProvider,
+			TargetModel:    targetModel,
+			Skipped:        true,
+			SkipReason:     "provider_unchanged",
+		}, nil
 	}
 	return s.repairHistory()
 }
 
 func historySummary(result HistoryRepairResult) string {
 	if result.Skipped {
-		return "模型 provider 与默认模型均未变化，已跳过历史迁移；会话和索引保持原样。"
+		return "当前 provider 未变化，已跳过历史迁移；默认模型用于新会话，已有会话和索引保持原样。"
 	}
 	workspaceSummary := "项目映射校验通过；"
 	if result.WorkspaceState != nil && result.WorkspaceState.Updated {

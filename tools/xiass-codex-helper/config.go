@@ -130,6 +130,16 @@ func NewConfigManager(codexHome string) *ConfigManager {
 }
 
 func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
+	return m.apply(input, true)
+}
+
+// ApplyWithoutBackup is the one-shot helper path. It keeps the original bytes
+// in memory for atomic rollback, but never creates a persistent backup record.
+func (m *ConfigManager) ApplyWithoutBackup(input ApplyConfig) (ApplyResult, error) {
+	return m.apply(input, false)
+}
+
+func (m *ConfigManager) apply(input ApplyConfig, persistBackup bool) (ApplyResult, error) {
 	var result ApplyResult
 	err := m.withLock(func() error {
 		normalized, err := normalizeApplyConfig(input)
@@ -171,16 +181,19 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 			}
 		}
 
-		reason := "apply"
-		if normalized.ForceCanonicalProvider {
-			reason = "force_apply"
-			if !originalValid {
-				reason = "force_apply_invalid_config"
+		var manifest BackupManifest
+		if persistBackup {
+			reason := "apply"
+			if normalized.ForceCanonicalProvider {
+				reason = "force_apply"
+				if !originalValid {
+					reason = "force_apply_invalid_config"
+				}
 			}
-		}
-		manifest, err := m.createBackup(original, existed, mode, reason)
-		if err != nil {
-			return fmt.Errorf("create backup: %w", err)
+			manifest, err = m.createBackup(original, existed, mode, reason)
+			if err != nil {
+				return fmt.Errorf("create backup: %w", err)
+			}
 		}
 
 		managedProviderID := managedProviderIDForConfig(original)
@@ -260,15 +273,21 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 			}
 		}
 
-		manifest.AppliedSHA256 = sha256Hex(written)
-		if err := m.writeManifest(manifest); err != nil {
-			return rollbackConfigError(
-				fmt.Errorf("record verified backup metadata: %w", err),
-				m.ConfigPath, original, existed, mode,
-			)
+		configSHA := sha256Hex(written)
+		if persistBackup {
+			manifest.AppliedSHA256 = configSHA
+			if err := m.writeManifest(manifest); err != nil {
+				return rollbackConfigError(
+					fmt.Errorf("record verified backup metadata: %w", err),
+					m.ConfigPath, original, existed, mode,
+				)
+			}
 		}
 
-		result = ApplyResult{BackupID: manifest.ID, ConfigSHA: manifest.AppliedSHA256, CatalogSHA: catalogSHA, ProviderID: managedProviderID}
+		result = ApplyResult{ConfigSHA: configSHA, CatalogSHA: catalogSHA, ProviderID: managedProviderID}
+		if persistBackup {
+			result.BackupID = manifest.ID
+		}
 		return nil
 	})
 	return result, err

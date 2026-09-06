@@ -109,7 +109,7 @@ jobs:
           VERSION=$(tr -d '\r\n' < tools/xiass-codex-helper/VERSION)
           TAG="codex-helper-latest"
           TITLE="XIASS Codex 配置助手 v${VERSION}"
-          NOTES="独立发布的 XIASS Codex 配置助手。支持 macOS 与 Windows 的 Codex App 识别、XIASS 密钥连接、手动兼容 API 的默认会话模型选择，以及 235K、372K、512K、1M/900K 和自定义上下文档位。助手会在本机生成不含密钥和 URL 的模型目录，并通过 model_catalog_json 供 Codex 启动时加载；审查模型保持 Codex 官方默认行为。默认模型变化时会通过带一致性快照与自动回滚的轻量路径同步已有普通会话，审查会话和历史正文保持不变；切换 provider、旧版配置升级或手动修复仍会完整校验历史兼容性。固定下载地址保持不变，不影响 XIASS API 的版本检测和 Docker 镜像。"
+          NOTES="独立发布的 XIASS Codex 配置助手。支持 macOS 与 Windows 的 Codex App 识别、XIASS 密钥连接、手动兼容 API 的默认会话模型选择，以及 235K、372K、512K、1M/900K 和自定义上下文档位。配置时只关闭 Codex、原子写入并回读校验 config.toml 与必要模型目录，然后自动启动 Codex；不扫描、不备份、不迁移、不改写现有会话、索引或 SQLite/WAL，也不生成持久配置备份和操作记录。审查模型保持 Codex 官方默认行为。固定下载地址保持不变，不影响 XIASS API 的版本检测和 Docker 镜像。"
           git tag --force "$TAG" "$GITHUB_SHA"
           git push --force origin "refs/tags/$TAG"
           if gh release view "$TAG" >/dev/null 2>&1; then

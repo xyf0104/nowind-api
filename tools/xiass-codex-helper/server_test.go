@@ -25,57 +25,6 @@ func newTestHelperServer(manager *ConfigManager, site, state string) (*helperSer
 	return helper, err
 }
 
-func TestHelperServerHistoryBackupsAlwaysReturnsJSONArray(t *testing.T) {
-	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.listHistoryBackups = func() ([]HistoryBackupInfo, error) { return nil, nil }
-
-	request := httptest.NewRequest(http.MethodGet, "/api/history-backups", nil)
-	request.Host = "127.0.0.1:43123"
-	request.Header.Set("X-XIASS-Helper-State", helper.state)
-	response := httptest.NewRecorder()
-	helper.routes().ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("history backups status = %d, body = %s", response.Code, response.Body.String())
-	}
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if string(payload["items"]) != "[]" {
-		t.Fatalf("history backups items = %s, want []", payload["items"])
-	}
-}
-
-func TestHelperServerDeletesConfigurationBackupWithoutRestartingCodex(t *testing.T) {
-	manager := NewConfigManager(t.TempDir())
-	backup, err := manager.Apply(ApplyConfig{BaseURL: "https://gateway.example.com", APIKey: "sk-test-1234567890"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper, err := newTestHelperServer(manager, defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stops, starts atomic.Int32
-	helper.stop = func(CodexInstallation) error { stops.Add(1); return nil }
-	helper.start = func(CodexInstallation) error { starts.Add(1); return nil }
-
-	body, err := json.Marshal(map[string]string{"kind": "config", "backup_id": backup.BackupID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	postHelperJSON(t, helper.routes(), "/api/delete-backup", helper.state, body, http.StatusOK)
-	if _, err := os.Stat(filepath.Join(manager.BackupRoot, backup.BackupID)); !os.IsNotExist(err) {
-		t.Fatalf("deleted backup remains on disk: %v", err)
-	}
-	if stops.Load() != 0 || starts.Load() != 0 {
-		t.Fatalf("backup deletion unexpectedly restarted Codex: stop=%d start=%d", stops.Load(), starts.Load())
-	}
-}
-
 func TestHelperServerListsCompatibleModelsFromLocalHelperOnly(t *testing.T) {
 	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
@@ -221,7 +170,7 @@ func TestHelperServerBrowserCloseRequiresLocalStateAndRequestsShutdown(t *testin
 	}
 }
 
-func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
+func TestHelperServerApplyWritesWithoutBackupAndRestarts(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
 	if err := os.WriteFile(manager.ConfigPath, []byte(testOriginalConfig), 0o600); err != nil {
 		t.Fatal(err)
@@ -257,9 +206,8 @@ func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
 	if ok, _ := apply["ok"].(bool); !ok {
 		t.Fatalf("apply response = %+v", apply)
 	}
-	backupID, _ := apply["backup_id"].(string)
-	if backupID == "" {
-		t.Fatal("apply response has no backup ID")
+	if _, exists := apply["backup_id"]; exists {
+		t.Fatalf("one-shot apply returned a persistent backup: %+v", apply)
 	}
 	if stopCount.Load() != 1 || startCount.Load() != 1 {
 		t.Fatalf("lifecycle counts after apply = stop %d, start %d", stopCount.Load(), startCount.Load())
@@ -272,21 +220,12 @@ func TestHelperServerApplyAndRestoreFlow(t *testing.T) {
 	if !strings.Contains(string(written), `model_provider = "codex_local_access"`) || !strings.Contains(string(written), `[model_providers.codex_local_access]`) {
 		t.Fatal("apply endpoint did not force the canonical XIASS provider")
 	}
-
-	restoreBody, _ := json.Marshal(map[string]string{"backup_id": backupID})
-	restore := postHelperJSON(t, handler, "/api/restore", helper.state, restoreBody, http.StatusOK)
-	if ok, _ := restore["ok"].(bool); !ok {
-		t.Fatalf("restore response = %+v", restore)
-	}
-	if stopCount.Load() != 2 || startCount.Load() != 2 {
-		t.Fatalf("lifecycle counts after restore = stop %d, start %d", stopCount.Load(), startCount.Load())
-	}
-	restored, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
+	entries, err := os.ReadDir(manager.BackupRoot)
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	if string(restored) != testOriginalConfig {
-		t.Fatal("HTTP restore flow did not restore original config exactly")
+	if len(entries) != 0 {
+		t.Fatalf("one-shot apply created persistent backups: %+v", entries)
 	}
 }
 
@@ -303,27 +242,21 @@ func TestHelperServerUsesLightweightModelCheckWhenProviderDoesNotChange(t *testi
 	helper.stop = func(CodexInstallation) error { return nil }
 	helper.start = func(CodexInstallation) error { return nil }
 	var repairs atomic.Int32
-	var modelSyncs atomic.Int32
 	helper.repairHistory = func() (HistoryRepairResult, error) {
 		repairs.Add(1)
 		return HistoryRepairResult{}, nil
 	}
-	helper.syncHistoryModel = func() (HistoryRepairResult, error) {
-		modelSyncs.Add(1)
-		return HistoryRepairResult{TargetProvider: providerID, TargetModel: defaultModel}, nil
-	}
 
 	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`), http.StatusOK)
-	if repairs.Load() != 0 || modelSyncs.Load() != 1 {
-		t.Fatalf("same-provider configuration ran full repair %d times and model check %d times", repairs.Load(), modelSyncs.Load())
+	if repairs.Load() != 0 {
+		t.Fatalf("same-provider configuration ran full repair %d times", repairs.Load())
 	}
-	history, _ := response["history"].(map[string]any)
-	if history["target_model"] != defaultModel || history["scanned_session_files"] != float64(0) {
-		t.Fatalf("same-provider history response did not report the lightweight path: %+v", response)
+	if _, exists := response["history"]; exists {
+		t.Fatalf("same-provider apply returned history work: %+v", response)
 	}
 }
 
-func TestHelperServerSynchronizesExistingThreadsWhenOnlyModelChanges(t *testing.T) {
+func TestHelperServerKeepsExistingThreadsWhenOnlyDefaultModelChanges(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfigWithModel(t, home, providerID, "gpt-5.6-sol")
 	helper, err := newTestHelperServer(NewConfigManager(home), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
@@ -335,23 +268,18 @@ func TestHelperServerSynchronizesExistingThreadsWhenOnlyModelChanges(t *testing.
 	}
 	helper.stop = func(CodexInstallation) error { return nil }
 	helper.start = func(CodexInstallation) error { return nil }
-	var repairs, modelSyncs atomic.Int32
+	var repairs atomic.Int32
 	helper.repairHistory = func() (HistoryRepairResult, error) {
 		repairs.Add(1)
 		return HistoryRepairResult{}, nil
 	}
-	helper.syncHistoryModel = func() (HistoryRepairResult, error) {
-		modelSyncs.Add(1)
-		return HistoryRepairResult{TargetProvider: providerID, TargetModel: "gpt-6-astra", UpdatedModelRows: 3}, nil
-	}
 
 	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex","model":"gpt-6-astra"}`), http.StatusOK)
-	if repairs.Load() != 0 || modelSyncs.Load() != 1 {
-		t.Fatalf("same-provider model change ran full repair %d times and model sync %d times", repairs.Load(), modelSyncs.Load())
+	if repairs.Load() != 0 {
+		t.Fatalf("same-provider model change ran full repair %d times", repairs.Load())
 	}
-	history, _ := response["history"].(map[string]any)
-	if history["target_model"] != "gpt-6-astra" || history["updated_model_rows"] != float64(3) {
-		t.Fatalf("model sync response = %+v", response)
+	if _, exists := response["history"]; exists {
+		t.Fatalf("model-only apply returned history work: %+v", response)
 	}
 }
 
@@ -452,9 +380,16 @@ func TestHelperServerApplyContinuesWhenAutomaticModelDiscoveryFails(t *testing.T
 	}
 }
 
-func TestHelperServerRunsHistoryRepairWhenProviderChanges(t *testing.T) {
+func TestHelperServerDoesNotRepairHistoryWhenProviderChanges(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, legacyProviderID)
+	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", legacyProviderID, "thread-a")
+	beforeSession, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(home, "state_5.sqlite")
+	createHistoryDatabase(t, databasePath, map[string]string{"thread-a": legacyProviderID})
 	helper, err := newTestHelperServer(NewConfigManager(home), "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
 		t.Fatal(err)
@@ -471,9 +406,18 @@ func TestHelperServerRunsHistoryRepairWhenProviderChanges(t *testing.T) {
 	}
 
 	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`), http.StatusOK)
-	if repairs.Load() != 1 {
-		t.Fatalf("provider change repaired history %d times, want 1", repairs.Load())
+	if repairs.Load() != 0 {
+		t.Fatalf("provider change repaired history %d times, want 0", repairs.Load())
 	}
+	afterSession, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeSession, afterSession) {
+		t.Fatal("provider change rewrote an existing session")
+	}
+	assertHistoryRolloutProvider(t, session, legacyProviderID)
+	assertHistoryDatabase(t, databasePath, 1, legacyProviderID)
 }
 
 func TestHelperServerRejectsMissingStateAndForeignBaseURL(t *testing.T) {
@@ -827,11 +771,13 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	if !strings.Contains(body, `id="codex-app-path"`) || !strings.Contains(body, `id="use-app-path-button"`) {
 		t.Fatal("helper index does not expose a pasteable Codex App path")
 	}
-	if !strings.Contains(body, `id="repair-history-button"`) || !strings.Contains(body, `id="history-backup-select"`) || !strings.Contains(body, `id="delete-history-backup-button"`) {
-		t.Fatal("helper index does not expose history compatibility repair and recovery controls")
+	for _, removed := range []string{"repair-history-button", "history-backup-select", "delete-history-backup-button", "backup-select", "delete-backup-button"} {
+		if strings.Contains(body, `id="`+removed+`"`) {
+			t.Fatalf("config-only helper still exposes %s", removed)
+		}
 	}
-	if !strings.Contains(body, `id="delete-backup-button"`) || !strings.Contains(body, `id="load-manual-models-button"`) || strings.Contains(body, `id="manual-review-model"`) {
-		t.Fatal("helper index does not expose backup cleanup and multi-model manual configuration controls")
+	if !strings.Contains(body, `id="load-manual-models-button"`) || strings.Contains(body, `id="manual-review-model"`) {
+		t.Fatal("helper index does not expose multi-model manual configuration controls")
 	}
 	if !strings.Contains(string(helper.callback), `id="model-chooser"`) || !strings.Contains(string(helper.callback), `gpt-6-astra`) {
 		t.Fatal("helper callback does not expose the legacy direct-key model chooser")
@@ -847,180 +793,37 @@ func TestHelperIndexRendersUsableSessionState(t *testing.T) {
 	}
 }
 
-func TestHelperManualHistoryRepairStopsRepairsAndStarts(t *testing.T) {
-	home := t.TempDir()
-	writeHistoryConfig(t, home, "codex_local_access")
-	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "xiass", "thread-a")
-	appendHistoryRecords(t, session, map[string]any{"type": "response_item", "payload": map[string]any{
-		"type": "reasoning", "encrypted_content": "opaque", "summary": []any{},
-	}})
-	before, err := os.ReadFile(session)
+func TestHelperDoesNotExposeBackupOrHistoryMutationRoutes(t *testing.T) {
+	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	createHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), map[string]string{"thread-a": "xiass"})
-	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	var stopped, started atomic.Int32
-	helper.stop = func(CodexInstallation) error { stopped.Add(1); return nil }
-	helper.start = func(CodexInstallation) error { started.Add(1); return nil }
-
-	response := postHelperJSON(t, helper.routes(), "/api/repair-history", helper.state, []byte(`{}`), http.StatusOK)
-	if ok, _ := response["ok"].(bool); !ok {
-		t.Fatalf("repair response = %+v", response)
-	}
-	if stopped.Load() != 1 || started.Load() != 1 {
-		t.Fatalf("lifecycle counts = stop %d, start %d", stopped.Load(), started.Load())
-	}
-	history, _ := response["history"].(map[string]any)
-	backupID, _ := history["backup_id"].(string)
-	if backupID == "" {
-		t.Fatalf("repair did not return a restorable history backup: %+v", response)
-	}
-	if repaired, err := os.ReadFile(session); err != nil || bytes.Contains(repaired, []byte("encrypted_content")) {
-		t.Fatalf("incompatible continuation was not removed: %v", err)
-	}
-	assertHistoryRolloutProvider(t, session, "codex_local_access")
-	assertHistoryDatabase(t, filepath.Join(home, "state_5.sqlite"), 1, "codex_local_access")
-
-	restoreBody, _ := json.Marshal(map[string]string{"backup_id": backupID})
-	restore := postHelperJSON(t, helper.routes(), "/api/restore-history", helper.state, restoreBody, http.StatusOK)
-	if ok, _ := restore["ok"].(bool); !ok {
-		t.Fatalf("history restore response = %+v", restore)
-	}
-	if stopped.Load() != 2 || started.Load() != 2 {
-		t.Fatalf("lifecycle counts after restore = stop %d, start %d", stopped.Load(), started.Load())
-	}
-	restored, err := os.ReadFile(session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(restored, before) {
-		t.Fatal("HTTP history restore did not restore the original conversation records")
-	}
-}
-
-func TestHelperApplyRollsBackConfigWhenHistoryValidationFails(t *testing.T) {
-	home := t.TempDir()
-	manager := NewConfigManager(home)
-	originalConfig := strings.Replace(testOriginalConfig, `model_provider = "official"`, `model_provider = "openai"`, 1)
-	if err := os.WriteFile(manager.ConfigPath, []byte(originalConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, "sqlite"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "sqlite", "state_5.sqlite"), []byte("corrupt"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	var stopped, started atomic.Int32
-	helper.stop = func(CodexInstallation) error { stopped.Add(1); return nil }
-	helper.start = func(CodexInstallation) error { started.Add(1); return nil }
-
-	body := []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`)
-	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusInternalServerError)
-	if ok, _ := response["ok"].(bool); ok {
-		t.Fatalf("apply unexpectedly succeeded: %+v", response)
-	}
-	if stopped.Load() != 1 || started.Load() != 1 {
-		t.Fatalf("lifecycle counts = stop %d, start %d", stopped.Load(), started.Load())
-	}
-	restored, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(restored) != originalConfig {
-		t.Fatal("configuration was not rolled back after history validation failed")
-	}
-}
-
-func TestHelperRestoreMissingOriginalConfigAlignsConversationsWithOfficialProvider(t *testing.T) {
-	home := t.TempDir()
-	manager := NewConfigManager(home)
-	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "codex_local_access", "thread-a")
-	databasePath := filepath.Join(home, "state_5.sqlite")
-	createHistoryDatabase(t, databasePath, map[string]string{"thread-a": "codex_local_access"})
-	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation { return CodexInstallation{Found: true, AppPath: "/test/Codex.app"} }
-	helper.stop = func(CodexInstallation) error { return nil }
-	helper.start = func(CodexInstallation) error { return nil }
 	handler := helper.routes()
-
-	apply := postHelperJSON(t, handler, "/api/apply", helper.state, []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`), http.StatusOK)
-	backupID, _ := apply["backup_id"].(string)
-	if backupID == "" {
-		t.Fatal("apply did not return a backup ID")
+	for _, target := range []string{"/api/backups", "/api/history-backups"} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Host = "127.0.0.1:43123"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want 404", target, response.Code)
+		}
 	}
-	restoreBody, _ := json.Marshal(map[string]string{"backup_id": backupID})
-	postHelperJSON(t, handler, "/api/restore", helper.state, restoreBody, http.StatusOK)
-	if _, err := os.Stat(manager.ConfigPath); !os.IsNotExist(err) {
-		t.Fatalf("config.toml still exists after restoring a missing original: %v", err)
+	for _, target := range []string{"/api/delete-backup", "/api/restore", "/api/repair-history", "/api/restore-history"} {
+		request := httptest.NewRequest(http.MethodPost, target, bytes.NewReader([]byte(`{}`)))
+		request.Host = "127.0.0.1:43123"
+		request.Header.Set("X-XIASS-Helper-State", helper.state)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s status = %d, want 405", target, response.Code)
+		}
 	}
-	assertHistoryRolloutProvider(t, session, "openai")
-	assertHistoryDatabase(t, databasePath, 1, "openai")
-}
-
-func TestHelperRestoreLegacyXIASSBackupUpgradesConfigAndHistoryForward(t *testing.T) {
-	home := t.TempDir()
-	manager := NewConfigManager(home)
-	legacyConfig := `model_provider = "xiass"
-
-[model_providers.xiass]
-name = "XIASS API"
-base_url = "https://gateway.example.com"
-wire_api = "responses"
-requires_openai_auth = false
-experimental_bearer_token = "sk-test-1234567890"
-`
-	if err := os.WriteFile(manager.ConfigPath, []byte(legacyConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "xiass", "thread-a")
-	databasePath := filepath.Join(home, "state_5.sqlite")
-	createHistoryDatabase(t, databasePath, map[string]string{"thread-a": "xiass"})
-	apply, err := manager.Apply(ApplyConfig{BaseURL: "https://gateway.example.com", APIKey: "sk-new-1234567890"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation { return CodexInstallation{Found: true, AppPath: "/test/Codex.app"} }
-	helper.stop = func(CodexInstallation) error { return nil }
-	helper.start = func(CodexInstallation) error { return nil }
-	body, _ := json.Marshal(map[string]string{"backup_id": apply.BackupID})
-	postHelperJSON(t, helper.routes(), "/api/restore", helper.state, body, http.StatusOK)
-	config, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(config), `model_provider = "xiass"`) || !strings.Contains(string(config), `model_provider = "codex_local_access"`) {
-		t.Fatal("restored legacy configuration was not upgraded forward")
-	}
-	assertHistoryRolloutProvider(t, session, "codex_local_access")
-	assertHistoryDatabase(t, databasePath, 1, "codex_local_access")
 }
 
 func TestHelperRejectsConcurrentLifecycleOperationBeforeStoppingCodex(t *testing.T) {
 	home := t.TempDir()
 	writeHistoryConfig(t, home, "codex_local_access")
-	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	helper, err := newTestHelperServer(NewConfigManager(home), "https://helper.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1036,7 +839,7 @@ func TestHelperRejectsConcurrentLifecycleOperationBeforeStoppingCodex(t *testing
 	}
 	defer release()
 
-	postHelperJSON(t, helper.routes(), "/api/repair-history", helper.state, []byte(`{}`), http.StatusConflict)
+	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, []byte(`{"base_url":"https://helper.example.com","api_key":"sk-test-1234567890"}`), http.StatusConflict)
 	if stopped.Load() != 0 {
 		t.Fatal("Codex was stopped even though another helper held the lifecycle lock")
 	}
@@ -1167,35 +970,6 @@ func TestHelperRetriesCodexLaunchAfterTransientFailure(t *testing.T) {
 	}
 }
 
-func TestHelperDoesNotStartCodexAfterHistoryRollbackFailure(t *testing.T) {
-	home := t.TempDir()
-	writeHistoryConfig(t, home, "codex_local_access")
-	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	helper.stop = func(CodexInstallation) error { return nil }
-	helper.repairCompatibilityHistory = func() (HistoryRepairResult, error) {
-		return HistoryRepairResult{}, &HistoryRepairApplyError{
-			Cause:       errors.New("forced repair failure"),
-			RollbackErr: errors.New("forced rollback failure"),
-		}
-	}
-	var started atomic.Int32
-	helper.start = func(CodexInstallation) error { started.Add(1); return nil }
-	response := postHelperJSON(t, helper.routes(), "/api/repair-history", helper.state, []byte(`{}`), http.StatusInternalServerError)
-	if started.Load() != 0 {
-		t.Fatal("Codex was started after history rollback failed")
-	}
-	message, _ := response["message"].(string)
-	if !strings.Contains(message, "保持关闭") {
-		t.Fatalf("unsafe rollback response is unclear: %q", message)
-	}
-}
-
 func TestHelperDoesNotStartCodexAfterApplyConfigRollbackFailure(t *testing.T) {
 	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
@@ -1229,135 +1003,26 @@ func TestHelperDoesNotStartCodexAfterApplyConfigRollbackFailure(t *testing.T) {
 	}
 }
 
-func TestHelperDoesNotStartCodexAfterRestoreConfigRollbackFailure(t *testing.T) {
-	helper, err := newTestHelperServer(NewConfigManager(t.TempDir()), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	helper.stop = func(CodexInstallation) error { return nil }
-	helper.restoreConfig = func(string) (RestoreResult, error) {
-		return RestoreResult{}, &ConfigMutationError{
-			Cause:       errors.New("forced restore failure"),
-			RollbackErr: errors.New("forced rollback failure"),
-		}
-	}
-	var started atomic.Int32
-	helper.start = func(CodexInstallation) error { started.Add(1); return nil }
-	response := postHelperJSON(t, helper.routes(), "/api/restore", helper.state, []byte(`{"backup_id":"test-backup"}`), http.StatusInternalServerError)
-	if started.Load() != 0 {
-		t.Fatal("Codex was started after restore configuration rollback failed")
-	}
-	if message, _ := response["message"].(string); !strings.Contains(message, "保持关闭") {
-		t.Fatalf("unsafe restore rollback response is unclear: %q", message)
-	}
-}
-
-func TestLocalHTTPServerAllowsLongLifecycleOperations(t *testing.T) {
+func TestLocalHTTPServerBoundsConfigurationLifecycle(t *testing.T) {
 	server := newLocalHTTPServer(http.NotFoundHandler())
-	if server.WriteTimeout < 2*time.Minute {
-		t.Fatalf("WriteTimeout = %v, want at least 2 minutes", server.WriteTimeout)
+	if server.WriteTimeout != 90*time.Second {
+		t.Fatalf("WriteTimeout = %v, want 90 seconds", server.WriteTimeout)
 	}
 }
 
-func TestHelperApplyRestoresOriginalStateWhenNewStateCannotStart(t *testing.T) {
+func TestHelperApplyLaunchFailureDoesNotTouchSessionData(t *testing.T) {
 	home := t.TempDir()
 	manager := NewConfigManager(home)
 	if err := os.WriteFile(manager.ConfigPath, []byte(testOriginalConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
+	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "official", "thread-a")
+	beforeSession, err := os.ReadFile(session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	helper.stop = func(CodexInstallation) error { return nil }
-	var starts atomic.Int32
-	helper.start = func(CodexInstallation) error {
-		if starts.Add(1) <= 2 {
-			return errors.New("new state cannot start")
-		}
-		return nil
-	}
-	body := []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-test-1234567890","key_name":"Codex"}`)
-	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusInternalServerError)
-	if restarted, _ := response["restarted"].(bool); !restarted {
-		t.Fatalf("original safe state was not restarted: %+v", response)
-	}
-	config, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(config) != testOriginalConfig {
-		t.Fatal("original config was not restored after two launch failures")
-	}
-}
-
-func TestHelperRestoreReturnsToPreRestoreStateWhenSelectedStateCannotStart(t *testing.T) {
-	home := t.TempDir()
-	manager := NewConfigManager(home)
-	if err := os.WriteFile(manager.ConfigPath, []byte(testOriginalConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	apply, err := manager.Apply(ApplyConfig{BaseURL: "https://gateway.example.com", APIKey: "sk-current-1234567890"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	preRestore, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	helper.stop = func(CodexInstallation) error { return nil }
-	var starts atomic.Int32
-	helper.start = func(CodexInstallation) error {
-		if starts.Add(1) <= 2 {
-			return errors.New("selected restore state cannot start")
-		}
-		return nil
-	}
-	body, _ := json.Marshal(map[string]string{"backup_id": apply.BackupID})
-	response := postHelperJSON(t, helper.routes(), "/api/restore", helper.state, body, http.StatusInternalServerError)
-	if restarted, _ := response["restarted"].(bool); !restarted {
-		t.Fatalf("pre-restore safe state was not restarted: %+v", response)
-	}
-	config, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(config, preRestore) {
-		t.Fatal("pre-restore config was not restored after two launch failures")
-	}
-}
-
-func TestHelperApplyLaunchFailureRestoresLegacyHistorySnapshot(t *testing.T) {
-	home := t.TempDir()
-	manager := NewConfigManager(home)
-	legacyConfig := `model_provider = "xiass"
-
-[model_providers.xiass]
-name = "XIASS API"
-base_url = "https://gateway.example.com"
-wire_api = "responses"
-requires_openai_auth = false
-experimental_bearer_token = "sk-old-1234567890"
-`
-	if err := os.WriteFile(manager.ConfigPath, []byte(legacyConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "xiass", "thread-a")
 	databasePath := filepath.Join(home, "state_5.sqlite")
-	createHistoryDatabase(t, databasePath, map[string]string{"thread-a": "xiass"})
+	createHistoryDatabase(t, databasePath, map[string]string{"thread-a": "official"})
 	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
 		t.Fatal(err)
@@ -1366,74 +1031,25 @@ experimental_bearer_token = "sk-old-1234567890"
 		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
 	}
 	helper.stop = func(CodexInstallation) error { return nil }
-	var starts atomic.Int32
-	helper.start = func(CodexInstallation) error {
-		if starts.Add(1) <= 2 {
-			return errors.New("new state cannot start")
-		}
-		return nil
-	}
+	helper.start = func(CodexInstallation) error { return errors.New("new state cannot start") }
 	body := []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-new-1234567890","key_name":"Codex"}`)
 	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusInternalServerError)
 	config, err := os.ReadFile(manager.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(config) != legacyConfig {
-		t.Fatal("legacy config was not restored after launch failure")
-	}
-	assertHistoryRolloutProvider(t, session, "xiass")
-	assertHistoryDatabase(t, databasePath, 1, "xiass")
-}
-
-func TestHelperNeverRollsBackWhileCodexExitCannotBeConfirmed(t *testing.T) {
-	home := t.TempDir()
-	manager := NewConfigManager(home)
-	legacyConfig := `model_provider = "xiass"
-
-[model_providers.xiass]
-name = "XIASS API"
-base_url = "https://gateway.example.com"
-wire_api = "responses"
-requires_openai_auth = false
-experimental_bearer_token = "sk-old-1234567890"
-`
-	if err := os.WriteFile(manager.ConfigPath, []byte(legacyConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	session := writeHistoryRollout(t, home, "sessions/rollout-a.jsonl", "xiass", "thread-a")
-	databasePath := filepath.Join(home, "state_5.sqlite")
-	createHistoryDatabase(t, databasePath, map[string]string{"thread-a": "xiass"})
-	helper, err := newTestHelperServer(manager, "https://gateway.example.com", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	helper.detect = func() CodexInstallation {
-		return CodexInstallation{Found: true, Running: true, AppPath: "/test/Codex.app"}
-	}
-	var stops atomic.Int32
-	helper.stop = func(CodexInstallation) error {
-		if stops.Add(1) == 1 {
-			return nil
-		}
-		return errors.New("cannot confirm Codex exited")
-	}
-	helper.start = func(CodexInstallation) error { return errors.New("launch detection failed") }
-	body := []byte(`{"base_url":"https://gateway.example.com","api_key":"sk-new-1234567890","key_name":"Codex"}`)
-	response := postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusInternalServerError)
-	message, _ := response["message"].(string)
-	if !strings.Contains(message, "未执行回滚") {
-		t.Fatalf("unsafe rollback refusal is unclear: %q", message)
-	}
-	config, err := os.ReadFile(manager.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if !strings.Contains(string(config), `model_provider = "codex_local_access"`) {
-		t.Fatal("new aligned config was unexpectedly rolled back while Codex might be running")
+		t.Fatal("verified config disappeared after launch failure")
 	}
-	assertHistoryRolloutProvider(t, session, "codex_local_access")
-	assertHistoryDatabase(t, databasePath, 1, "codex_local_access")
+	afterSession, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeSession, afterSession) {
+		t.Fatal("launch failure changed session data")
+	}
+	assertHistoryRolloutProvider(t, session, "official")
+	assertHistoryDatabase(t, databasePath, 1, "official")
 }
 
 func getJSON(t *testing.T, handler http.Handler, target string) map[string]any {
