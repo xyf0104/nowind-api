@@ -32,18 +32,18 @@ func TestStripOpenAIInvalidEncryptedContentRawPreservesFreshItems(t *testing.T) 
 	payload := []byte(`{"model":"gpt-5","input":[
 		{"type":"reasoning","id":"rs_1","encrypted_content":"stale-cipher","summary":[]},
 		{"type":"reasoning","id":"rs_2","encrypted_content":"fresh-cipher"},
-		{"type":"compaction","encrypted_content":"stale-cipher"},
+		{"type":"compaction","encrypted_content":"fresh-cipher"},
 		{"type":"input_text","text":"hello"}
 	]}`)
 
 	stripped, count, err := stripOpenAIInvalidEncryptedContentRaw(payload, invalid)
 	require.NoError(t, err)
-	require.Equal(t, 2, count)
+	require.Equal(t, 1, count)
 
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(stripped, &decoded))
 	input := decoded["input"].([]any)
-	require.Len(t, input, 3, "matching compaction should be removed entirely")
+	require.Len(t, input, 4, "compaction must remain intact")
 	first := input[0].(map[string]any)
 	require.Equal(t, "rs_1", first["id"])
 	require.NotContains(t, first, "encrypted_content")

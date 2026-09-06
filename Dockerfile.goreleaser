@@ -49,7 +49,7 @@ COPY --chown=xiass:xiass backend/resources /app/resources
 RUN ln -s /app/xiass-api /app/nowind-api && ln -s /app/xiass-api /app/sub2api
 
 # Create data directory
-RUN mkdir -p /app/data && chown -R xiass:xiass /app
+RUN mkdir -p /app/data && chown xiass:xiass /app/data
 
 # Copy entrypoint script (fixes volume permissions then drops to UID/GID 1000)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh

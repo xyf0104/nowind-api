@@ -14,6 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testOpenAIWSOwnership() openAIWSOwnership {
+	return openAIWSOwnership{openAIRequestOwnership{"pool-test-client", "pool-test-conversation"}, "pool-test-upstream"}
+}
+
+func testOpenAIWSAcquireCompatibility() openAIWSHandshakeCompatibilityKey {
+	return normalizeOpenAIWSAcquireCompatibility(openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(), WSURL: "wss://example.com/v1/responses"})
+}
+
 func TestOpenAIWSConnPool_CleanupStaleAndTrimIdle(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
@@ -150,7 +158,7 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsync(t *testing.T) {
 	account := &Account{ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	ap := pool.getOrCreateAccountPool(accountID)
 	ap.mu.Lock()
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	}
@@ -188,7 +196,7 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsyncCooldown(t *testing.T) {
 	account := &Account{ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	ap := pool.getOrCreateAccountPool(accountID)
 	ap.mu.Lock()
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	}
@@ -245,7 +253,7 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsyncFailureSuppress(t *testing.T) {
 	account := &Account{ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	ap := pool.getOrCreateAccountPool(accountID)
 	ap.mu.Lock()
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	}
@@ -290,12 +298,13 @@ func TestOpenAIWSConnPool_AcquireQueueWaitMetrics(t *testing.T) {
 	accountID := int64(99)
 	account := &Account{ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	conn := newOpenAIWSConn("busy", accountID, &openAIWSFakeConn{}, nil)
+	conn.handshakeCompatibility = testOpenAIWSAcquireCompatibility()
 	require.True(t, conn.tryAcquire()) // 占用连接，触发后续排队
 
 	ap := pool.ensureAccountPoolLocked(accountID)
 	ap.mu.Lock()
 	ap.conns[conn.id] = conn
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	}
@@ -306,7 +315,7 @@ func TestOpenAIWSConnPool_AcquireQueueWaitMetrics(t *testing.T) {
 		conn.release()
 	}()
 
-	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	})
@@ -333,7 +342,7 @@ func TestOpenAIWSConnPool_DialSuccessWakesTopologyWaiterAndCanceledWaiterDoesNot
 	dialer := newOpenAIWSFirstDialBlockingCaptureDialer()
 	pool.setClientDialerForTest(dialer)
 	account := &Account{ID: 991, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-	req := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	req := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(), Account: account, WSURL: "wss://example.com/v1/responses"}
 
 	type result struct {
 		lease *openAIWSConnLease
@@ -414,7 +423,7 @@ func TestOpenAIWSConnPool_PrewarmHintChangeDoesNotInvalidateHealthyDial(t *testi
 	newHeaders.Set(openAICodexRoutingHintHeader, "model=gpt-5.6-codex;tier=priority")
 	ap := pool.getOrCreateAccountPool(account.ID)
 	ap.mu.Lock()
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: oldHeaders,
@@ -428,7 +437,7 @@ func TestOpenAIWSConnPool_PrewarmHintChangeDoesNotInvalidateHealthyDial(t *testi
 	// prewarm dial is in flight. Routing hints are advisory, so this alone must
 	// not discard an otherwise compatible connection.
 	ap.mu.Lock()
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: newHeaders,
@@ -460,7 +469,7 @@ func TestOpenAIWSConnPool_ClearAccountWakesIncompatibleTopologyWaiter(t *testing
 	dialer := &openAIWSCountingDialer{}
 	pool.setClientDialerForTest(dialer)
 	account := &Account{ID: 993, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-	baseReq := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	baseReq := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(), Account: account, WSURL: "wss://example.com/v1/responses"}
 	betaAReq := baseReq
 	betaAReq.Headers = http.Header{"X-Codex-Beta-Features": {"feature_a"}}
 	betaBReq := baseReq
@@ -504,7 +513,7 @@ func TestOpenAIWSConnPool_ClearAccountDoesNotReviveInFlightDialGeneration(t *tes
 	dialer := newOpenAIWSFirstDialBlockingCaptureDialer()
 	pool.setClientDialerForTest(dialer)
 	account := &Account{ID: 994, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-	req := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	req := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(), Account: account, WSURL: "wss://example.com/v1/responses"}
 
 	type result struct {
 		lease *openAIWSConnLease
@@ -547,7 +556,7 @@ func TestOpenAIWSConnPool_ForceNewConnSkipsReuse(t *testing.T) {
 
 	account := &Account{ID: 123, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 
-	lease1, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	lease1, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	})
@@ -555,7 +564,7 @@ func TestOpenAIWSConnPool_ForceNewConnSkipsReuse(t *testing.T) {
 	require.NotNil(t, lease1)
 	lease1.Release()
 
-	lease2, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	lease2, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:      account,
 		WSURL:        "wss://example.com/v1/responses",
 		ForceNewConn: true,
@@ -578,7 +587,7 @@ func TestOpenAIWSConnPool_AcquireReusesOnlyMatchingBetaFeatures(t *testing.T) {
 	pool.setClientDialerForTest(dialer)
 
 	account := &Account{ID: 128, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	baseReq := openAIWSAcquireRequest{
+	baseReq := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	}
@@ -605,7 +614,7 @@ func TestOpenAIWSConnPool_AcquireReusesOnlyMatchingBetaFeatures(t *testing.T) {
 	require.Equal(t, betaConnID, reorderedLease.ConnID())
 	reorderedLease.Release()
 
-	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:            account,
 		WSURL:              baseReq.WSURL,
 		Headers:            betaReq.Headers,
@@ -625,9 +634,10 @@ func TestOpenAIWSConnPool_AcquireReusesOnlyMatchingBetaFeatures(t *testing.T) {
 
 func activeCodexFingerprintPoolAccountForTest(id int64) *Account {
 	return &Account{
-		ID:       id,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
+		ID:          id,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "pool-test-principal"},
 		Extra: map[string]any{
 			codexFingerprintModeExtraKey: "session",
 			codexFingerprintSeedExtraKey: "11111111-1111-4111-8111-111111111111",
@@ -661,7 +671,7 @@ func TestOpenAIWSConnPool_AcquireReusesSameStableIdentityWithDifferentTurnMetada
 	headers.Set("Authorization", "Bearer token-a")
 	headers.Set("x-codex-turn-metadata", `{"turn_id":"turn-a"}`)
 
-	first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: headers,
@@ -674,7 +684,7 @@ func TestOpenAIWSConnPool_AcquireReusesSameStableIdentityWithDifferentTurnMetada
 	nextHeaders.Set("Authorization", "Bearer token-b")
 	nextHeaders.Set("x-codex-turn-metadata", `{"turn_id":"turn-b"}`)
 	nextHeaders.Set(openAICodexRoutingHintHeader, "model=gpt-5.6-codex;tier=priority")
-	second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: nextHeaders,
@@ -710,7 +720,7 @@ func TestOpenAIWSConnPool_AcquireDoesNotReuseDifferentStableIdentity(t *testing.
 			pool.setClientDialerForTest(dialer)
 			account := activeCodexFingerprintPoolAccountForTest(133)
 
-			first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+			first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 				Account: account,
 				WSURL:   "wss://example.com/v1/responses",
 				Headers: stableOpenAIWSIdentityHeadersForTest(),
@@ -721,7 +731,7 @@ func TestOpenAIWSConnPool_AcquireDoesNotReuseDifferentStableIdentity(t *testing.
 
 			nextHeaders := stableOpenAIWSIdentityHeadersForTest()
 			nextHeaders.Set(tt.header, tt.value)
-			second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+			second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 				Account: account,
 				WSURL:   "wss://example.com/v1/responses",
 				Headers: nextHeaders,
@@ -748,7 +758,7 @@ func TestOpenAIWSConnPool_AcquireRoutingHintRemainsSoftAffinity(t *testing.T) {
 
 	firstHeaders := stableOpenAIWSIdentityHeadersForTest()
 	firstHeaders.Set(openAICodexRoutingHintHeader, "model=gpt-5.6-codex")
-	first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: firstHeaders,
@@ -759,7 +769,7 @@ func TestOpenAIWSConnPool_AcquireRoutingHintRemainsSoftAffinity(t *testing.T) {
 
 	secondHeaders := stableOpenAIWSIdentityHeadersForTest()
 	secondHeaders.Set(openAICodexRoutingHintHeader, "model=gpt-5.6-codex;tier=priority")
-	second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: secondHeaders,
@@ -784,7 +794,7 @@ func TestOpenAIWSConnPool_DeviceModeKeysOnlyInstallationIdentity(t *testing.T) {
 	account.Extra[codexFingerprintModeExtraKey] = "device"
 
 	firstHeaders := stableOpenAIWSIdentityHeadersForTest()
-	first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	first, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: firstHeaders,
@@ -799,7 +809,7 @@ func TestOpenAIWSConnPool_DeviceModeKeysOnlyInstallationIdentity(t *testing.T) {
 	sessionChanged.Set("thread-id", "thread-b")
 	sessionChanged.Set("x-client-request-id", "client-request-b")
 	sessionChanged.Set("x-codex-window-id", "window-b")
-	second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	second, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: sessionChanged,
@@ -811,7 +821,7 @@ func TestOpenAIWSConnPool_DeviceModeKeysOnlyInstallationIdentity(t *testing.T) {
 
 	installationChanged := sessionChanged.Clone()
 	installationChanged.Set("x-codex-installation-id", "install-b")
-	third, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	third, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: installationChanged,
@@ -834,7 +844,7 @@ func TestOpenAIWSConnPool_AcquireReplacesIdleConnWithDifferentBetaFeatures(t *te
 	pool.setClientDialerForTest(dialer)
 
 	account := &Account{ID: 129, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	plainLease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	plainLease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	})
@@ -842,7 +852,7 @@ func TestOpenAIWSConnPool_AcquireReplacesIdleConnWithDifferentBetaFeatures(t *te
 	plainConnID := plainLease.ConnID()
 	plainLease.Release()
 
-	betaLease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	betaLease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 		Headers: http.Header{"X-Codex-Beta-Features": {"remote_compaction_v2"}},
@@ -865,7 +875,7 @@ func TestOpenAIWSConnPool_AcquireWaitsForBusyIncompatibleConnection(t *testing.T
 	dialer := &openAIWSCountingDialer{}
 	pool.setClientDialerForTest(dialer)
 	account := &Account{ID: 130, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	baseReq := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	baseReq := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(), Account: account, WSURL: "wss://example.com/v1/responses"}
 
 	plainLease, err := pool.Acquire(context.Background(), baseReq)
 	require.NoError(t, err)
@@ -909,7 +919,7 @@ func TestOpenAIWSConnPool_AcquireReplacesIncompatibleIdleWhenMatchingBusy(t *tes
 	dialer := &openAIWSCountingDialer{}
 	pool.setClientDialerForTest(dialer)
 	account := &Account{ID: 131, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	baseReq := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	baseReq := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(), Account: account, WSURL: "wss://example.com/v1/responses"}
 
 	plainLease, err := pool.Acquire(context.Background(), baseReq)
 	require.NoError(t, err)
@@ -946,14 +956,14 @@ func TestOpenAIWSConnPool_AcquireForcePreferredConnUnavailable(t *testing.T) {
 	ap.conns[otherConn.id] = otherConn
 	ap.mu.Unlock()
 
-	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:            account,
 		WSURL:              "wss://example.com/v1/responses",
 		ForcePreferredConn: true,
 	})
 	require.ErrorIs(t, err, errOpenAIWSPreferredConnUnavailable)
 
-	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:            account,
 		WSURL:              "wss://example.com/v1/responses",
 		PreferredConnID:    "missing_conn",
@@ -973,7 +983,9 @@ func TestOpenAIWSConnPool_AcquireForcePreferredConnQueuesOnPreferredOnly(t *test
 	account := &Account{ID: 125, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	ap := pool.getOrCreateAccountPool(account.ID)
 	preferredConn := newOpenAIWSConn("preferred_conn", account.ID, &openAIWSFakeConn{}, nil)
+	preferredConn.handshakeCompatibility = testOpenAIWSAcquireCompatibility()
 	otherConn := newOpenAIWSConn("other_conn_idle", account.ID, &openAIWSFakeConn{}, nil)
+	otherConn.handshakeCompatibility = testOpenAIWSAcquireCompatibility()
 	require.True(t, preferredConn.tryAcquire(), "先占用 preferred 连接，触发排队获取")
 	ap.mu.Lock()
 	ap.conns[preferredConn.id] = preferredConn
@@ -988,7 +1000,7 @@ func TestOpenAIWSConnPool_AcquireForcePreferredConnQueuesOnPreferredOnly(t *test
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	lease, err := pool.Acquire(ctx, openAIWSAcquireRequest{
+	lease, err := pool.Acquire(ctx, openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:            account,
 		WSURL:              "wss://example.com/v1/responses",
 		PreferredConnID:    preferredConn.id,
@@ -1014,14 +1026,16 @@ func TestOpenAIWSConnPool_AcquireForcePreferredConnDirectAndQueueFull(t *testing
 	account := &Account{ID: 127, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	ap := pool.getOrCreateAccountPool(account.ID)
 	preferredConn := newOpenAIWSConn("preferred_conn_direct", account.ID, &openAIWSFakeConn{}, nil)
+	preferredConn.handshakeCompatibility = testOpenAIWSAcquireCompatibility()
 	otherConn := newOpenAIWSConn("other_conn_direct", account.ID, &openAIWSFakeConn{}, nil)
+	otherConn.handshakeCompatibility = testOpenAIWSAcquireCompatibility()
 	ap.mu.Lock()
 	ap.conns[preferredConn.id] = preferredConn
 	ap.conns[otherConn.id] = otherConn
 	ap.lastCleanupAt = time.Now()
 	ap.mu.Unlock()
 
-	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:            account,
 		WSURL:              "wss://example.com/v1/responses",
 		PreferredConnID:    preferredConn.id,
@@ -1033,7 +1047,7 @@ func TestOpenAIWSConnPool_AcquireForcePreferredConnDirectAndQueueFull(t *testing
 
 	require.True(t, preferredConn.tryAcquire())
 	preferredConn.waiters.Store(1)
-	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account:            account,
 		WSURL:              "wss://example.com/v1/responses",
 		PreferredConnID:    preferredConn.id,
@@ -1188,7 +1202,7 @@ func TestOpenAIWSConnPool_AcquireRejectsWhenEffectiveMaxConnsIsZero(t *testing.T
 	pool := newOpenAIWSConnPool(cfg)
 
 	account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 0}
-	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	})
@@ -1421,7 +1435,7 @@ func TestOpenAIWSConnPool_RunBackgroundCleanupSweep_SkipsInvalidAndUsesAccountCa
 	stale.createdAtNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
 	stale.lastUsedNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
 	ap.conns[stale.id] = stale
-	ap.lastAcquire = &openAIWSAcquireRequest{
+	ap.lastAcquire = &openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: &Account{
 			ID:          accountID,
 			Platform:    PlatformOpenAI,
@@ -1980,7 +1994,7 @@ func TestOpenAIWSConnPool_TargetConnCountAndPrewarmBranches(t *testing.T) {
 	require.GreaterOrEqual(t, target, len(ap.conns)+1)
 
 	// prewarm: account pool 缺失时，拨号后的连接应被关闭并提前返回
-	req := openAIWSAcquireRequest{
+	req := openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: &Account{ID: 999, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 		WSURL:   "wss://example.com/v1/responses",
 	}
@@ -2003,11 +2017,11 @@ func TestOpenAIWSConnPool_TargetConnCountAndPrewarmBranches(t *testing.T) {
 
 func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 	var nilPool *openAIWSConnPool
-	_, err := nilPool.Acquire(context.Background(), openAIWSAcquireRequest{})
+	_, err := nilPool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership()})
 	require.Error(t, err)
 
 	pool := newOpenAIWSConnPool(&config.Config{})
-	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: &Account{ID: 1},
 		WSURL:   "   ",
 	})
@@ -2025,7 +2039,7 @@ func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 	ap.conns["nil"] = nil
 	ap.lastCleanupAt = time.Now()
 	ap.mu.Unlock()
-	_, err = fullPool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err = fullPool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	})
@@ -2035,13 +2049,14 @@ func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 	account2 := &Account{ID: 2002, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	ap2 := fullPool.getOrCreateAccountPool(account2.ID)
 	conn := newOpenAIWSConn("queue_full", account2.ID, &openAIWSFakeConn{}, nil)
+	conn.handshakeCompatibility = testOpenAIWSAcquireCompatibility()
 	require.True(t, conn.tryAcquire())
 	conn.waiters.Store(1)
 	ap2.mu.Lock()
 	ap2.conns[conn.id] = conn
 	ap2.lastCleanupAt = time.Now()
 	ap2.mu.Unlock()
-	_, err = fullPool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err = fullPool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account2,
 		WSURL:   "wss://example.com/v1/responses",
 	})
@@ -2367,7 +2382,7 @@ func TestOpenAIWSConnPool_DialConnNilConnection(t *testing.T) {
 	pool.setClientDialerForTest(&openAIWSNilConnDialer{})
 	account := &Account{ID: 91, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 
-	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{Owner: testOpenAIWSOwnership(),
 		Account: account,
 		WSURL:   "wss://example.com/v1/responses",
 	})

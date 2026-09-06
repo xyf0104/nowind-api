@@ -63,28 +63,29 @@ type ExecutionNodeRuntimeConfig struct {
 }
 
 type ExecutionNodeJoinConfig struct {
-	SourceURL       string `json:"source_url"`
-	TargetURL       string `json:"target_url"`
-	SourceNodeID    string `json:"source_node_id"`
-	TargetNodeID    string `json:"target_node_id"`
-	TunnelProof     string `json:"tunnel_proof"`
-	TargetProxyID   int64  `json:"target_proxy_id"`
-	LegacyNodeID    string `json:"legacy_node_id"`
-	LegacyProxyID   int64  `json:"legacy_proxy_id"`
-	DatabaseHost    string `json:"database_host"`
-	DatabasePort    int    `json:"database_port"`
-	DatabaseUser    string `json:"database_user"`
-	DatabasePass    string `json:"database_pass"`
-	DatabaseName    string `json:"database_name"`
-	DatabaseSSLMode string `json:"database_sslmode"`
-	RedisHost       string `json:"redis_host"`
-	RedisPort       int    `json:"redis_port"`
-	RedisUsername   string `json:"redis_username"`
-	RedisPassword   string `json:"redis_password"`
-	RedisDB         int    `json:"redis_db"`
-	RedisEnableTLS  bool   `json:"redis_enable_tls"`
-	JWTSecret       string `json:"jwt_secret"`
-	TOTPKey         string `json:"totp_key"`
+	SourceURL            string `json:"source_url"`
+	TargetURL            string `json:"target_url"`
+	SourceNodeID         string `json:"source_node_id"`
+	TargetNodeID         string `json:"target_node_id"`
+	TunnelProof          string `json:"tunnel_proof"`
+	TargetProxyID        int64  `json:"target_proxy_id"`
+	LegacyNodeID         string `json:"legacy_node_id"`
+	LegacyProxyID        int64  `json:"legacy_proxy_id"`
+	DatabaseHost         string `json:"database_host"`
+	DatabasePort         int    `json:"database_port"`
+	DatabaseUser         string `json:"database_user"`
+	DatabasePass         string `json:"database_pass"`
+	DatabaseName         string `json:"database_name"`
+	DatabaseSSLMode      string `json:"database_sslmode"`
+	RedisHost            string `json:"redis_host"`
+	RedisPort            int    `json:"redis_port"`
+	RedisUsername        string `json:"redis_username"`
+	RedisPassword        string `json:"redis_password"`
+	RedisDB              int    `json:"redis_db"`
+	RedisEnableTLS       bool   `json:"redis_enable_tls"`
+	JWTSecret            string `json:"jwt_secret"`
+	JWTRefreshTokenStore string `json:"jwt_refresh_token_store"`
+	TOTPKey              string `json:"totp_key"`
 }
 
 // ExecutionNodePairingRepository adds the two operations that need database
@@ -145,6 +146,7 @@ type ExecutionNodePairingHandshakeRequest struct {
 	SourceURL           string `json:"source_url,omitempty"`
 	Version             string `json:"version,omitempty"`
 	ProtocolVersion     int    `json:"protocol_version"`
+	JoinBundleVersion   int    `json:"join_bundle_version,omitempty"`
 	DatabaseFingerprint string `json:"database_fingerprint"`
 	RedisFingerprint    string `json:"redis_fingerprint"`
 	AuthFingerprint     string `json:"auth_fingerprint"`
@@ -165,32 +167,34 @@ type ExecutionNodePairingHandshakeResponse struct {
 }
 
 type executionNodeJoinBundle struct {
-	Version         int    `json:"version"`
-	SourceURL       string `json:"source_url,omitempty"`
-	TargetURL       string `json:"target_url,omitempty"`
-	SourceNodeID    string `json:"source_node_id"`
-	TargetNodeID    string `json:"target_node_id"`
-	TunnelProof     string `json:"tunnel_proof"`
-	TargetProxyID   int64  `json:"target_proxy_id,omitempty"`
-	LegacyNodeID    string `json:"legacy_node_id,omitempty"`
-	LegacyProxyID   int64  `json:"legacy_proxy_id,omitempty"`
-	DatabaseHost    string `json:"database_host"`
-	DatabasePort    int    `json:"database_port"`
-	DatabaseUser    string `json:"database_user"`
-	DatabasePass    string `json:"database_pass"`
-	DatabaseName    string `json:"database_name"`
-	DatabaseSSLMode string `json:"database_sslmode"`
-	RedisHost       string `json:"redis_host"`
-	RedisPort       int    `json:"redis_port"`
-	RedisUsername   string `json:"redis_username"`
-	RedisPassword   string `json:"redis_password"`
-	RedisDB         int    `json:"redis_db"`
-	RedisEnableTLS  bool   `json:"redis_enable_tls"`
-	JWTSecret       string `json:"jwt_secret"`
-	TOTPKey         string `json:"totp_key"`
+	Version              int    `json:"version"`
+	SourceURL            string `json:"source_url,omitempty"`
+	TargetURL            string `json:"target_url,omitempty"`
+	SourceNodeID         string `json:"source_node_id"`
+	TargetNodeID         string `json:"target_node_id"`
+	TunnelProof          string `json:"tunnel_proof"`
+	TargetProxyID        int64  `json:"target_proxy_id,omitempty"`
+	LegacyNodeID         string `json:"legacy_node_id,omitempty"`
+	LegacyProxyID        int64  `json:"legacy_proxy_id,omitempty"`
+	DatabaseHost         string `json:"database_host"`
+	DatabasePort         int    `json:"database_port"`
+	DatabaseUser         string `json:"database_user"`
+	DatabasePass         string `json:"database_pass"`
+	DatabaseName         string `json:"database_name"`
+	DatabaseSSLMode      string `json:"database_sslmode"`
+	RedisHost            string `json:"redis_host"`
+	RedisPort            int    `json:"redis_port"`
+	RedisUsername        string `json:"redis_username"`
+	RedisPassword        string `json:"redis_password"`
+	RedisDB              int    `json:"redis_db"`
+	RedisEnableTLS       bool   `json:"redis_enable_tls"`
+	JWTSecret            string `json:"jwt_secret"`
+	JWTRefreshTokenStore string `json:"jwt_refresh_token_store,omitempty"`
+	TOTPKey              string `json:"totp_key"`
 }
 
 const executionNodeJoinBundleVersion = 1
+const executionNodePersistentJoinBundleVersion = 2
 
 type executionNodePairingEnvelope struct {
 	Code    int             `json:"code"`
@@ -289,10 +293,26 @@ func decryptExecutionNodeJoinBundle(token, targetNodeID, encoded string) (execut
 	if err := json.Unmarshal(plaintext, &bundle); err != nil {
 		return executionNodeJoinBundle{}, errors.New("join bundle payload is invalid")
 	}
-	if bundle.Version != executionNodeJoinBundleVersion || bundle.TargetNodeID != targetNodeID || !validExecutionNodeID(bundle.SourceNodeID) || len(bundle.TunnelProof) != 64 {
+	if (bundle.Version != executionNodeJoinBundleVersion && bundle.Version != executionNodePersistentJoinBundleVersion) || bundle.TargetNodeID != targetNodeID || !validExecutionNodeID(bundle.SourceNodeID) || len(bundle.TunnelProof) != 64 {
 		return executionNodeJoinBundle{}, errors.New("join bundle fields are invalid")
 	}
+	store, err := executionNodeJoinRefreshStore(bundle.JWTRefreshTokenStore)
+	if err != nil || (bundle.Version == executionNodeJoinBundleVersion && store != "redis") ||
+		(bundle.Version == executionNodePersistentJoinBundleVersion && store != "postgres") {
+		return executionNodeJoinBundle{}, errors.New("join bundle refresh-session storage is invalid")
+	}
+	bundle.JWTRefreshTokenStore = store
 	return bundle, nil
+}
+
+func executionNodeJoinRefreshStore(value string) (string, error) {
+	if value == "" {
+		return "redis", nil
+	}
+	if value != "redis" && value != "postgres" {
+		return "", errors.New("source refresh-session storage is invalid")
+	}
+	return value, nil
 }
 
 func (s *SettingService) authoritativeJoinAvailable() bool {
@@ -305,6 +325,14 @@ func (s *SettingService) authoritativeJoinAvailable() bool {
 func (s *SettingService) createExecutionNodeJoinBundle(ctx context.Context, targetNodeID, targetURL, sourceURL string) (executionNodeJoinBundle, string, error) {
 	if !s.authoritativeJoinAvailable() {
 		return executionNodeJoinBundle{}, "", errors.New("source node does not have a complete runtime configuration")
+	}
+	store, err := executionNodeJoinRefreshStore(s.cfg.JWT.RefreshTokenStore)
+	if err != nil {
+		return executionNodeJoinBundle{}, "", err
+	}
+	bundleVersion := executionNodeJoinBundleVersion
+	if store == "postgres" {
+		bundleVersion = executionNodePersistentJoinBundleVersion
 	}
 	tunnelProof := configuredExecutionNodeTunnelToken()
 	if tunnelProof == "" && s.cfg != nil {
@@ -334,12 +362,12 @@ func (s *SettingService) createExecutionNodeJoinBundle(ctx context.Context, targ
 		legacyProxyID = s.cfg.Gateway.ExecutionNode.DefaultProxyID
 	}
 	bundle := executionNodeJoinBundle{
-		Version: executionNodeJoinBundleVersion, SourceURL: strings.TrimRight(strings.TrimSpace(sourceURL), "/"), TargetURL: strings.TrimRight(strings.TrimSpace(targetURL), "/"), SourceNodeID: s.localExecutionNodeID(), TargetNodeID: targetNodeID, TunnelProof: tunnelProof,
+		Version: bundleVersion, SourceURL: strings.TrimRight(strings.TrimSpace(sourceURL), "/"), TargetURL: strings.TrimRight(strings.TrimSpace(targetURL), "/"), SourceNodeID: s.localExecutionNodeID(), TargetNodeID: targetNodeID, TunnelProof: tunnelProof,
 		TargetProxyID: targetProxyID, LegacyNodeID: legacyNodeID, LegacyProxyID: legacyProxyID,
 		DatabaseHost: s.cfg.Database.Host, DatabasePort: s.cfg.Database.Port, DatabaseUser: s.cfg.Database.User, DatabasePass: s.cfg.Database.Password,
 		DatabaseName: s.cfg.Database.DBName, DatabaseSSLMode: s.cfg.Database.SSLMode,
 		RedisHost: s.cfg.Redis.Host, RedisPort: s.cfg.Redis.Port, RedisUsername: s.cfg.Redis.Username, RedisPassword: s.cfg.Redis.Password, RedisDB: s.cfg.Redis.DB, RedisEnableTLS: s.cfg.Redis.EnableTLS,
-		JWTSecret: s.cfg.JWT.Secret, TOTPKey: s.cfg.Totp.EncryptionKey,
+		JWTSecret: s.cfg.JWT.Secret, JWTRefreshTokenStore: store, TOTPKey: s.cfg.Totp.EncryptionKey,
 	}
 	return bundle, tunnelProof, nil
 }
@@ -400,11 +428,11 @@ func (s *SettingService) executionNodePairingRoutingSettings(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
+	// Pairing establishes routing, not takeover permission. Never overwrite a
+	// concurrent or existing admin choice; the independent toggle owns it.
 	return map[string]string{
-		SettingKeyExecutionNodeWeights:                       string(weightsJSON),
-		SettingKeyExecutionNodeProxyIDs:                      string(proxyJSON),
-		executionNodeEmergencyEgressSettingKey(localNodeID):  fmt.Sprintf("%t", s.cfg.Gateway.ExecutionNode.EmergencyLocalEgress),
-		executionNodeEmergencyEgressSettingKey(targetNodeID): "true",
+		SettingKeyExecutionNodeWeights:  string(weightsJSON),
+		SettingKeyExecutionNodeProxyIDs: string(proxyJSON),
 	}, nil
 }
 
@@ -651,6 +679,7 @@ func (s *SettingService) PairExecutionNodeWithTarget(ctx context.Context, peerUR
 		SourceURL:           strings.TrimRight(peer.String(), "/"),
 		Version:             handshake.Version,
 		ProtocolVersion:     handshake.ProtocolVersion,
+		JoinBundleVersion:   executionNodePersistentJoinBundleVersion,
 		DatabaseFingerprint: handshake.DatabaseFingerprint,
 		RedisFingerprint:    handshake.RedisFingerprint,
 		AuthFingerprint:     handshake.AuthFingerprint,
@@ -715,7 +744,7 @@ func (s *SettingService) PairExecutionNodeWithTarget(ctx context.Context, peerUR
 			TargetProxyID: bundle.TargetProxyID, LegacyNodeID: bundle.LegacyNodeID, LegacyProxyID: bundle.LegacyProxyID,
 			DatabaseHost: bundle.DatabaseHost, DatabasePort: bundle.DatabasePort, DatabaseUser: bundle.DatabaseUser, DatabasePass: bundle.DatabasePass, DatabaseName: bundle.DatabaseName, DatabaseSSLMode: bundle.DatabaseSSLMode,
 			RedisHost: bundle.RedisHost, RedisPort: bundle.RedisPort, RedisUsername: bundle.RedisUsername, RedisPassword: bundle.RedisPassword, RedisDB: bundle.RedisDB, RedisEnableTLS: bundle.RedisEnableTLS,
-			JWTSecret: bundle.JWTSecret, TOTPKey: bundle.TOTPKey,
+			JWTSecret: bundle.JWTSecret, JWTRefreshTokenStore: bundle.JWTRefreshTokenStore, TOTPKey: bundle.TOTPKey,
 		}); err != nil {
 			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_APPLY_FAILED", "the target host rejected the source-authoritative join: "+err.Error())
 		}
@@ -777,6 +806,15 @@ func (s *SettingService) AcceptExecutionNodePairingHandshake(ctx context.Context
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_STATE_UNAVAILABLE", "the invited instance shared-state identity is unavailable")
 	}
 	authoritative := s.authoritativeJoinAvailable()
+	if authoritative {
+		store, storeErr := executionNodeJoinRefreshStore(s.cfg.JWT.RefreshTokenStore)
+		if storeErr != nil {
+			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_BUNDLE_UNAVAILABLE", storeErr.Error())
+		}
+		if store == "postgres" && request.JoinBundleVersion < executionNodePersistentJoinBundleVersion {
+			return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_VERSION_MISMATCH", "upgrade the target before joining a source with PostgreSQL refresh sessions")
+		}
+	}
 	if authoritative && strings.TrimSpace(request.PeerURL) == "" {
 		return nil, infraerrors.BadRequest("EXECUTION_NODE_PAIRING_TARGET_URL_REQUIRED", "the target must provide its public HTTPS URL for fixed-egress routing")
 	}

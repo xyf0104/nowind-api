@@ -6,7 +6,7 @@
           <h1 class="text-xl font-semibold text-gray-900 dark:text-white">{{ t('admin.executionNodes.title') }}</h1>
           <p class="mt-1 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">{{ t('admin.executionNodes.description') }}</p>
         </div>
-        <button type="button" class="btn btn-secondary" :disabled="loading || saving || pairingSaving" :title="t('admin.executionNodes.refresh')" @click="refreshAll">
+        <button type="button" class="btn btn-secondary" :disabled="loading || saving || pairingSaving || runtimeSaving || takeoverSaving" :title="t('admin.executionNodes.refresh')" data-testid="execution-node-refresh" @click="refreshAll()">
           <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
           <span>{{ t('admin.executionNodes.refresh') }}</span>
         </button>
@@ -299,7 +299,14 @@ const draftEnabled = ref(false)
 const draftDirty = ref(false)
 const lastSyncedAt = ref<number | null>(null)
 let nodeSequence = 0
+const healthyPollDelay = 10_000
+const errorPollDelay = 3_000
 let statusPollTimer: number | null = null
+let refreshInFlight: Promise<void> | null = null
+let refreshSilent = false
+let refreshFailed = false
+let refreshRevision = 0
+let disposed = false
 
 interface NodeDraft { key: number; nodeID: string; weight: number; proxyID: number }
 const draftNodes = ref<NodeDraft[]>([])
@@ -370,68 +377,147 @@ function syncDraft(next: ExecutionNodeAdminStatus): void {
 
 async function initializeRuntime(): Promise<void> {
   runtimeSaving.value = true
+  invalidateStatusRefresh()
   try {
     await adminAPI.executionNodes.initializeRuntime(localNodeID.value)
     appStore.showSuccess(t('admin.executionNodes.initializeAccepted'))
-    await load()
+    await refreshAfterMutation()
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.initializeFailed')))
   } finally {
     runtimeSaving.value = false
-  }
-}
-
-async function load(silent = false): Promise<void> {
-  if (loading.value) return
-  loading.value = true
-  try {
-    const nextStatus = await adminAPI.executionNodes.getStatus()
-    status.value = nextStatus
-    lastSyncedAt.value = Date.now()
-    if (!silent || !draftDirty.value) syncDraft(nextStatus)
-  } catch (error) {
-    if (!silent) appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.reloadFailed')))
-  } finally {
-    loading.value = false
+    scheduleStatusPoll()
   }
 }
 
 async function updateOfflineTakeover(enabled: boolean): Promise<void> {
   takeoverSaving.value = true
+  invalidateStatusRefresh()
   try {
     await adminAPI.executionNodes.updateOfflineTakeover(enabled)
     appStore.showSuccess(enabled ? t('admin.executionNodes.offlineTakeoverEnabled') : t('admin.executionNodes.offlineTakeoverDisabled'))
-    await load()
+    await refreshAfterMutation()
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.offlineTakeoverFailed')))
   } finally {
     takeoverSaving.value = false
+    scheduleStatusPoll()
   }
 }
 
-async function loadPairing(): Promise<void> {
-  try {
-    pairingStatus.value = await adminAPI.executionNodes.getPairingStatus()
-  } catch (error) {
-    pairingStatus.value = null
-    appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingLoadFailed')))
+function statusPollDelay(): number {
+  const current = status.value
+  const pairing = pairingStatus.value
+  if (refreshFailed || !current || !pairing || !current.database_reachable) return errorPollDelay
+
+  // A single-node installation or an unpaired setup is not a failed pair.
+  // Once routing or pairing is active, all of its health signals matter.
+  const pairingExpected = current.balancing_enabled || pairing.paired
+  if ((current.issues ?? []).some((issue) => (
+    (issue.severity === 'error' || issue.severity === 'warning') &&
+    !(issue.code === 'PAIRING_NOT_READY' && !pairingExpected)
+  ))) return errorPollDelay
+  if (current.runtime.enabled && !current.heartbeat_store_reachable) return errorPollDelay
+  if (pairing.state_error) return errorPollDelay
+  if (pairingExpected && (!current.runtime.enabled || !pairing.paired || !pairing.production_ready ||
+    !pairing.protocol_compatible || !pairing.database_shared || !pairing.redis_shared || !pairing.auth_compatible)) return errorPollDelay
+  if (current.runtime.enabled && (current.nodes ?? []).some((node) => (
+    (node.is_local || (pairingExpected && node.weight > 0)) && (!node.online || !node.proxy_valid)
+  ))) return errorPollDelay
+  return healthyPollDelay
+}
+
+function clearStatusPoll(): void {
+  if (statusPollTimer !== null) window.clearTimeout(statusPollTimer)
+  statusPollTimer = null
+}
+
+function scheduleStatusPoll(): void {
+  clearStatusPoll()
+  if (disposed || document.visibilityState !== 'visible' || refreshInFlight ||
+    saving.value || pairingSaving.value || runtimeSaving.value || takeoverSaving.value) return
+  statusPollTimer = window.setTimeout(() => {
+    statusPollTimer = null
+    void refreshAll(true)
+  }, statusPollDelay())
+}
+
+function invalidateStatusRefresh(): void {
+  refreshRevision += 1
+  clearStatusPoll()
+}
+
+async function refreshAfterMutation(): Promise<void> {
+  // A pre-mutation read must finish (and be discarded) before the fresh read.
+  await refreshInFlight
+  await refreshAll()
+}
+
+function refreshAll(silent = false): Promise<void> {
+  if (disposed || document.visibilityState !== 'visible') return Promise.resolve()
+  clearStatusPoll()
+  if (refreshInFlight) {
+    refreshSilent &&= silent
+    return refreshInFlight
+  }
+  loading.value = true
+  refreshSilent = silent
+  const revision = refreshRevision
+  refreshInFlight = Promise.allSettled([
+    adminAPI.executionNodes.getStatus(),
+    adminAPI.executionNodes.getPairingStatus()
+  ]).then(([statusResult, pairingResult]) => {
+    if (disposed || revision !== refreshRevision) return
+    refreshFailed = statusResult.status === 'rejected' || pairingResult.status === 'rejected'
+    if (statusResult.status === 'fulfilled') {
+      status.value = statusResult.value
+      lastSyncedAt.value = Date.now()
+      if (!refreshSilent || !draftDirty.value) syncDraft(statusResult.value)
+    } else if (!refreshSilent) {
+      appStore.showError(extractI18nErrorMessage(statusResult.reason, t, 'admin.executionNodes.issues', t('admin.executionNodes.reloadFailed')))
+    }
+    if (pairingResult.status === 'fulfilled') {
+      pairingStatus.value = pairingResult.value
+    } else if (!refreshSilent) {
+      appStore.showError(extractI18nErrorMessage(pairingResult.reason, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingLoadFailed')))
+    }
+  }).finally(() => {
+    refreshInFlight = null
+    if (disposed) return
+    loading.value = false
+    scheduleStatusPoll()
+  })
+  return refreshInFlight
+}
+
+function handleVisibilityChange(): void {
+  clearStatusPoll()
+  if (document.visibilityState !== 'visible') {
+    invalidateStatusRefresh()
+  } else if (!saving.value && !pairingSaving.value && !runtimeSaving.value && !takeoverSaving.value) {
+    void resumeStatusRefresh()
   }
 }
 
-async function refreshAll(): Promise<void> {
-  await Promise.all([load(), loadPairing()])
+async function resumeStatusRefresh(): Promise<void> {
+  await refreshInFlight
+  if (saving.value || pairingSaving.value || runtimeSaving.value || takeoverSaving.value) return
+  // Several visibility events during one read still coalesce into one refresh.
+  await refreshAll(true)
 }
 
 async function generateInvite(): Promise<void> {
   pairingSaving.value = true
+  invalidateStatusRefresh()
   try {
     pairingInvite.value = await adminAPI.executionNodes.generatePairingInvite()
     appStore.showSuccess(t('admin.executionNodes.inviteGenerated'))
-    await loadPairing()
+    await refreshAfterMutation()
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingFailed')))
   } finally {
     pairingSaving.value = false
+    scheduleStatusPoll()
   }
 }
 
@@ -447,6 +533,7 @@ async function copyInvite(): Promise<void> {
 
 async function pairNode(): Promise<void> {
   pairingSaving.value = true
+  invalidateStatusRefresh()
   try {
     pairingStatus.value = await adminAPI.executionNodes.pairExecutionNode(pairingPeerURL.value, pairingToken.value, pairingTargetID.value, pairingTargetURL.value)
     pairingToken.value = ''
@@ -456,11 +543,12 @@ async function pairNode(): Promise<void> {
       return
     }
     appStore.showSuccess(t('admin.executionNodes.pairSuccess'))
-    await load()
+    await refreshAfterMutation()
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingFailed')))
   } finally {
     pairingSaving.value = false
+    scheduleStatusPoll()
   }
 }
 
@@ -484,14 +572,16 @@ async function waitForJoinedServer(): Promise<void> {
 async function unpairNode(): Promise<void> {
   showUnpairConfirm.value = false
   pairingSaving.value = true
+  invalidateStatusRefresh()
   try {
     await adminAPI.executionNodes.unpairExecutionNode()
-    pairingStatus.value = await adminAPI.executionNodes.getPairingStatus()
+    await refreshAfterMutation()
     appStore.showSuccess(t('admin.executionNodes.unpairSuccess'))
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.pairingFailed')))
   } finally {
     pairingSaving.value = false
+    scheduleStatusPoll()
   }
 }
 
@@ -531,14 +621,16 @@ async function save(): Promise<void> {
     if (node.proxyID > 0) proxyIDs[nodeID] = Math.floor(node.proxyID)
   }
   saving.value = true
+  invalidateStatusRefresh()
   try {
     await adminAPI.settings.updateSettings({ execution_node_balancing_enabled: draftEnabled.value, execution_node_weights: weights, execution_node_proxy_ids: proxyIDs })
     appStore.showSuccess(t('admin.executionNodes.saveSuccess'))
-    await load()
+    await refreshAfterMutation()
   } catch (error) {
     appStore.showError(extractI18nErrorMessage(error, t, 'admin.executionNodes.issues', t('admin.executionNodes.saveFailed')))
   } finally {
     saving.value = false
+    scheduleStatusPoll()
   }
 }
 
@@ -547,15 +639,13 @@ function formatSyncTime(value: number): string {
 }
 
 onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   void refreshAll()
-  statusPollTimer = window.setInterval(() => {
-    if (document.visibilityState === 'visible' && !saving.value && !pairingSaving.value && !runtimeSaving.value) {
-      void load(true)
-    }
-  }, 5000)
 })
 
 onUnmounted(() => {
-  if (statusPollTimer !== null) window.clearInterval(statusPollTimer)
+  disposed = true
+  invalidateStatusRefresh()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>

@@ -132,6 +132,19 @@ type OpenAICodexSnapshotRepository interface {
 	UpdateOpenAICodexSnapshot(ctx context.Context, id int64, updates map[string]any) (bool, error)
 }
 
+// OpenAICodexBoundSnapshotRepository orders raw quota observations and binds
+// them to the exact credentials, platform, type and proxy used by the request.
+// Gateway/probe callers must not fall back to the legacy ID-only writer.
+type OpenAICodexBoundSnapshotRepository interface {
+	UpdateOpenAICodexSnapshotIfIdentityMatches(ctx context.Context, expected *Account, updates map[string]any) (bool, error)
+}
+
+// OpenAIQuotaBoundSnapshotRepository binds /wham observations to both the
+// display row and the credential row (the parent for Spark shadows).
+type OpenAIQuotaBoundSnapshotRepository interface {
+	UpdateOpenAIQuotaSnapshotIfIdentityMatches(ctx context.Context, target, credential *Account, observedAt time.Time, updates map[string]any) (bool, error)
+}
+
 type AccountIDFilteredLister interface {
 	ListWithFiltersByIDs(ctx context.Context, params pagination.PaginationParams, accountIDs []int64, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error)
 }

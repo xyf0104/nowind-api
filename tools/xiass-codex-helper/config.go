@@ -54,6 +54,8 @@ type ApplyConfig struct {
 	ModelContextWindow         int64    `json:"model_context_window,omitempty"`
 	ModelAutoCompactTokenLimit int64    `json:"model_auto_compact_token_limit,omitempty"`
 	ModelCatalogPath           string   `json:"-"`
+	// Descriptors come only from helper-side discovery, never callback JSON.
+	ModelCatalogDescriptors map[string]json.RawMessage `json:"-"`
 	// ForceCanonicalProvider is only set by the trusted local XIASS helper
 	// endpoint. It is deliberately not accepted from JSON payloads.
 	ForceCanonicalProvider bool `json:"-"`
@@ -134,15 +136,26 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 		if err != nil {
 			return err
 		}
-		catalogData, err := buildModelCatalogJSON(normalized.BaseURL, normalized.Model, normalized.ModelCatalogModels)
+		nativeModels := readNativeModelDescriptors(filepath.Join(filepath.Dir(m.ConfigPath), "models_cache.json"))
+		catalogData, err := buildModelCatalogJSON(normalized.BaseURL, normalized.Model, normalized.ModelCatalogModels, normalized.ModelCatalogDescriptors, nativeModels)
 		if err != nil {
 			return fmt.Errorf("prepare local model catalog: %w", err)
 		}
-		if bytes.Contains(catalogData, []byte(normalized.APIKey)) {
-			return errors.New("generated model catalog unexpectedly contains the API key")
+		if len(catalogData) > 0 {
+			var catalog any
+			if err := json.Unmarshal(catalogData, &catalog); err != nil {
+				return errors.New("generated model catalog is invalid")
+			}
+			if containsCatalogSensitiveData(catalog, normalized.APIKey) {
+				return errors.New("generated model catalog unexpectedly contains sensitive connection data")
+			}
 		}
-		catalogSHA := sha256Hex(catalogData)
-		normalized.ModelCatalogPath = filepath.Join(m.ModelCatalogRoot, "model-catalog-"+catalogSHA[:16]+".json")
+		catalogSHA := ""
+		normalized.ModelCatalogPath = ""
+		if len(catalogData) > 0 {
+			catalogSHA = sha256Hex(catalogData)
+			normalized.ModelCatalogPath = filepath.Join(m.ModelCatalogRoot, "model-catalog-"+catalogSHA[:16]+".json")
+		}
 
 		original, existed, mode, err := readConfigFile(m.ConfigPath)
 		if err != nil {
@@ -188,8 +201,10 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 		if err := verifyManagedConfig(updated, normalized, managedProviderID); err != nil {
 			return fmt.Errorf("generated config verification failed: %w", err)
 		}
-		if err := validateModelCatalog(catalogData); err != nil {
-			return fmt.Errorf("generated model catalog verification failed: %w", err)
+		if len(catalogData) > 0 {
+			if err := validateModelCatalog(catalogData); err != nil {
+				return fmt.Errorf("generated model catalog verification failed: %w", err)
+			}
 		}
 
 		if err := os.MkdirAll(filepath.Dir(m.ConfigPath), 0o700); err != nil {
@@ -198,16 +213,18 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 		if err := ensureConfigUnchanged(m.ConfigPath, original, existed); err != nil {
 			return err
 		}
-		existingCatalog, catalogExisted, _, err := readManagedFile(normalized.ModelCatalogPath)
-		if err != nil {
-			return err
-		}
-		if catalogExisted && !bytes.Equal(existingCatalog, catalogData) {
-			return errors.New("model catalog checksum collision; no changes were made")
-		}
-		if !catalogExisted {
-			if err := writeFileAtomic(normalized.ModelCatalogPath, catalogData, 0o600); err != nil {
-				return fmt.Errorf("write model catalog: %w", err)
+		if len(catalogData) > 0 {
+			existingCatalog, catalogExisted, _, err := readManagedFile(normalized.ModelCatalogPath)
+			if err != nil {
+				return err
+			}
+			if catalogExisted && !bytes.Equal(existingCatalog, catalogData) {
+				return errors.New("model catalog checksum collision; no changes were made")
+			}
+			if !catalogExisted {
+				if err := writeFileAtomic(normalized.ModelCatalogPath, catalogData, 0o600); err != nil {
+					return fmt.Errorf("write model catalog: %w", err)
+				}
 			}
 		}
 		if err := writeFileAtomic(m.ConfigPath, updated, secureMode(mode)); err != nil {
@@ -227,18 +244,20 @@ func (m *ConfigManager) Apply(input ApplyConfig) (ApplyResult, error) {
 				m.ConfigPath, original, existed, mode,
 			)
 		}
-		writtenCatalog, err := os.ReadFile(normalized.ModelCatalogPath)
-		if err != nil {
-			return rollbackConfigError(
-				fmt.Errorf("read back model catalog: %w", err),
-				m.ConfigPath, original, existed, mode,
-			)
-		}
-		if !bytes.Equal(writtenCatalog, catalogData) {
-			return rollbackConfigError(
-				errors.New("model catalog read-back verification failed"),
-				m.ConfigPath, original, existed, mode,
-			)
+		if len(catalogData) > 0 {
+			writtenCatalog, err := os.ReadFile(normalized.ModelCatalogPath)
+			if err != nil {
+				return rollbackConfigError(
+					fmt.Errorf("read back model catalog: %w", err),
+					m.ConfigPath, original, existed, mode,
+				)
+			}
+			if !bytes.Equal(writtenCatalog, catalogData) {
+				return rollbackConfigError(
+					errors.New("model catalog read-back verification failed"),
+					m.ConfigPath, original, existed, mode,
+				)
+			}
 		}
 
 		manifest.AppliedSHA256 = sha256Hex(written)
@@ -821,6 +840,8 @@ func verifyManagedConfig(data []byte, expected ApplyConfig, managedProviderID st
 		if got, _ := root["model_catalog_json"].(string); filepath.Clean(got) != filepath.Clean(expected.ModelCatalogPath) {
 			return errors.New("model_catalog_json mismatch")
 		}
+	} else if _, exists := root["model_catalog_json"]; exists {
+		return errors.New("model_catalog_json must be omitted when native metadata is unavailable")
 	}
 	if !numberEquals(root["model_context_window"], expected.ModelContextWindow) || !numberEquals(root["model_auto_compact_token_limit"], expected.ModelAutoCompactTokenLimit) {
 		return errors.New("context window settings mismatch")

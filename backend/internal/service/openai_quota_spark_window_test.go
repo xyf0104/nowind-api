@@ -60,6 +60,16 @@ func (r *stubQuotaAccountRepo) UpdateExtra(_ context.Context, id int64, updates 
 	return nil
 }
 
+func (r *stubQuotaAccountRepo) UpdateOpenAIQuotaSnapshotIfIdentityMatches(ctx context.Context, target, credential *Account, _ time.Time, updates map[string]any) (bool, error) {
+	if r.extraUpdateErr != nil {
+		return false, r.extraUpdateErr
+	}
+	if !quotaTestIdentityMatches(r.accounts[target.ID], target) || !quotaTestIdentityMatches(r.accounts[credential.ID], credential) {
+		return false, nil
+	}
+	return true, r.UpdateExtra(ctx, target.ID, updates)
+}
+
 // stubQuotaTokenCache 实现 OpenAITokenCache，返回预设静态 token。
 type stubQuotaTokenCache struct {
 	tokens map[string]string
@@ -508,6 +518,7 @@ func TestQueryUsageIncludesResetCreditExpirations_EndToEnd(t *testing.T) {
 		Status:   StatusActive,
 		Credentials: map[string]any{
 			"chatgpt_account_id": "org-parent123",
+			"access_token":       "fake-token",
 		},
 	}
 	repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: account}}
@@ -550,7 +561,8 @@ func TestQueryUsageIncludesResetCreditExpirations_EndToEnd(t *testing.T) {
 	}, usage.RateLimitResetCredits.Credits)
 	require.NoError(t, svc.CacheResetCreditsSnapshot(ctx, 100, usage.RateLimitResetCredits))
 	require.Equal(t, &OpenAIRateLimitResetCredits{
-		AvailableCount: 2,
+		AvailableCount:  2,
+		requestIdentity: usage.requestIdentity,
 		Credits: []OpenAIRateLimitResetCreditDetail{
 			{ExpiresAt: "2026-07-03T04:05:06Z"},
 			{ExpiresAt: "2026-07-04T04:05:06Z"},
@@ -571,6 +583,7 @@ func TestQueryUsageResetCreditDetails401NonFatal(t *testing.T) {
 		Status:   StatusActive,
 		Credentials: map[string]any{
 			"chatgpt_account_id": "org-parent123",
+			"access_token":       "fake-token",
 		},
 	}
 	repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: account}}
@@ -616,9 +629,10 @@ func TestCacheResetCreditsSnapshot(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("zero count allows an empty expiration list", func(t *testing.T) {
-		repo := &stubQuotaAccountRepo{}
+		identity := quotaTestRequestIdentity()
+		repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: identity.target}}
 		svc := &OpenAIQuotaService{accountRepo: repo}
-		credits := &OpenAIRateLimitResetCredits{AvailableCount: 0}
+		credits := &OpenAIRateLimitResetCredits{AvailableCount: 0, requestIdentity: identity}
 
 		require.NoError(t, svc.CacheResetCreditsSnapshot(ctx, 100, credits))
 		require.Equal(t, credits, repo.extraUpdates[100][openaiQuotaResetCreditsKey])
@@ -660,8 +674,9 @@ func TestCacheResetCreditsSnapshot(t *testing.T) {
 		svc := &OpenAIQuotaService{accountRepo: repo}
 
 		err := svc.CacheResetCreditsSnapshot(ctx, 100, &OpenAIRateLimitResetCredits{
-			AvailableCount: 1,
-			Credits:        []OpenAIRateLimitResetCreditDetail{{ExpiresAt: "2026-07-03T04:05:06Z"}},
+			AvailableCount:  1,
+			Credits:         []OpenAIRateLimitResetCreditDetail{{ExpiresAt: "2026-07-03T04:05:06Z"}},
+			requestIdentity: quotaTestRequestIdentity(),
 		})
 
 		require.ErrorContains(t, err, "database unavailable")
@@ -670,10 +685,12 @@ func TestCacheResetCreditsSnapshot(t *testing.T) {
 
 func TestCachePostResetSnapshotPersistsWindowsWithoutReplacingXIASSWeeklyEstimateState(t *testing.T) {
 	ctx := context.Background()
-	repo := &stubQuotaAccountRepo{}
+	identity := quotaTestRequestIdentity()
+	repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{100: identity.target}}
 	svc := &OpenAIQuotaService{accountRepo: repo}
 	usage := &OpenAIQuotaUsage{
-		RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 0},
+		requestIdentity:       identity,
+		RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 0, requestIdentity: identity},
 		RateLimit: &OpenAIRateLimit{
 			PrimaryWindow: &OpenAIRateLimitWindow{
 				UsedPercent:        12,
@@ -730,7 +747,7 @@ func TestQueryUsageShadowResolve_EndToEnd(t *testing.T) {
 	}
 	parent := &Account{
 		ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
-		Credentials: map[string]any{"chatgpt_account_id": "org-e2e-parent"},
+		Credentials: map[string]any{"chatgpt_account_id": "org-e2e-parent", "access_token": "fake-token-e2e"},
 	}
 	repo := &stubQuotaAccountRepo{accounts: map[int64]*Account{200: shadow, 100: parent}}
 

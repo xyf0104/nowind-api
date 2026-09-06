@@ -11,8 +11,17 @@ import (
 // legacyExecutionNodeID is the compatibility owner for accounts created before
 // XIASS started persisting an explicit execution-node marker.
 func (s *adminServiceImpl) legacyExecutionNodeID() string {
-	if s != nil && s.settingService != nil && s.settingService.cfg != nil {
-		if value := strings.TrimSpace(s.settingService.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID); value != "" {
+	if s != nil {
+		return s.settingService.LegacyExecutionNodeID()
+	}
+	return "api"
+}
+
+// LegacyExecutionNodeID is shared by account and usage readers. Never infer
+// historical ownership from the host handling the request or a browser label.
+func (s *SettingService) LegacyExecutionNodeID() string {
+	if s != nil && s.cfg != nil {
+		if value := strings.TrimSpace(s.cfg.Gateway.ExecutionNode.LegacyUnassignedNodeID); value != "" {
 			return value
 		}
 	}
@@ -54,7 +63,7 @@ func findAccountByID(accounts []*Account, accountID int64) (*Account, bool) {
 }
 
 func (s *adminServiceImpl) ensureAccountManagementAccess(ctx context.Context, account *Account) error {
-	if account == nil || s == nil || s.settingService == nil || s.settingService.cfg == nil || s.settingService.settingRepo == nil {
+	if account == nil || s == nil || s.settingService == nil || s.settingService.cfg == nil {
 		return nil
 	}
 	cfg := s.settingService.cfg.Gateway.ExecutionNode
@@ -78,7 +87,11 @@ func (s *adminServiceImpl) ensureAccountManagementAccess(ctx context.Context, ac
 	if err != nil {
 		return infraerrors.ServiceUnavailable("ACCOUNT_REMOTE_NODE_STATUS_UNAVAILABLE", "the shared node heartbeat is unavailable; remote accounts remain read-only").WithCause(err)
 	}
-	if health[ownerNodeID] {
+	ownerHealthy, known := health[ownerNodeID]
+	if !known {
+		return infraerrors.ServiceUnavailable("ACCOUNT_REMOTE_NODE_STATUS_UNAVAILABLE", "the remote node heartbeat is unknown; remote accounts remain read-only")
+	}
+	if ownerHealthy {
 		return infraerrors.Newf(http.StatusForbidden, "ACCOUNT_REMOTE_NODE_READ_ONLY", "%s accounts are managed by node %s and are read-only here", account.Name, ownerNodeID)
 	}
 
@@ -88,7 +101,11 @@ func (s *adminServiceImpl) ensureAccountManagementAccess(ctx context.Context, ac
 	if !settings.Available {
 		return infraerrors.ServiceUnavailable("ACCOUNT_REMOTE_NODE_STATUS_UNAVAILABLE", "the shared node policy is unavailable; remote accounts remain read-only")
 	}
-	if !settings.EmergencyLocalEgress {
+	takeover, err := s.settingService.executionNodeTakeoverPermission(ctx)
+	if err != nil {
+		return infraerrors.ServiceUnavailable("ACCOUNT_REMOTE_NODE_STATUS_UNAVAILABLE", "the shared takeover permission is unavailable; remote accounts remain read-only")
+	}
+	if !takeover {
 		return infraerrors.Newf(http.StatusForbidden, "ACCOUNT_REMOTE_NODE_TAKEOVER_DISABLED", "%s is offline; enable emergency takeover on this server before managing its accounts", ownerNodeID)
 	}
 	return nil

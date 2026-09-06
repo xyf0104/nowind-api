@@ -26,16 +26,18 @@ func newTurnStateTestContext(t *testing.T, apiKeyID int64, sessionID string) (*g
 	return c, recorder
 }
 
-func TestOpenAICodexTurnStateSeed(t *testing.T) {
+func TestOpenAICodexTurnStateOwnershipSnapshot(t *testing.T) {
 	c, _ := newTurnStateTestContext(t, 7, "sess-1")
-	require.Equal(t, "7\x00sess-1", openAICodexTurnStateSeed(c))
+	owner := captureOpenAIRequestOwnership(c, nil)
+	require.NotEmpty(t, owner.client)
+	require.NotEmpty(t, owner.conversation)
 
 	c.Request.Header.Set("session-id", "sess-hyphen")
-	require.Equal(t, "7\x00sess-hyphen", openAICodexTurnStateSeed(c))
+	require.Equal(t, owner, captureOpenAIRequestOwnership(c, nil))
 
 	cNoSession, _ := newTurnStateTestContext(t, 7, "")
-	require.Empty(t, openAICodexTurnStateSeed(cNoSession))
-	require.Empty(t, openAICodexTurnStateSeed(nil))
+	require.NotEqual(t, owner, captureOpenAIRequestOwnership(cNoSession, nil))
+	require.NotEqual(t, captureOpenAIRequestOwnership(nil, nil), captureOpenAIRequestOwnership(nil, nil))
 }
 
 func TestRelayOpenAICodexTurnStateRecordsCommittedAccount(t *testing.T) {
@@ -47,12 +49,11 @@ func TestRelayOpenAICodexTurnStateRecordsCommittedAccount(t *testing.T) {
 	svc.relayOpenAICodexTurnState(c, &Account{ID: 42}, upstream)
 
 	require.Equal(t, "blob-A", c.Writer.Header().Get(openAIWSTurnStateHeader))
-	raw, ok := svc.openaiCodexTurnStateOrigins.Load("7\x00sess-relay")
+	raw, ok := svc.openaiCodexTurnStateOrigins.Load(openAIOwnershipDigest("turn-state-v1", "blob-A"))
 	require.True(t, ok)
-	origin, ok := raw.(openAICodexTurnStateOrigin)
+	origin, ok := raw.(*openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, int64(42), origin.accountID)
-	require.True(t, origin.expiresAt.After(time.Now()))
+	require.True(t, origin.owners[openAIWSOwnershipForRequest(c, &Account{ID: 42})].After(time.Now()))
 
 	svc.relayOpenAICodexTurnState(c, &Account{ID: 43}, http.Header{})
 	require.Empty(t, c.Writer.Header().Get(openAIWSTurnStateHeader))
@@ -67,15 +68,15 @@ func TestStageOpenAICodexTurnStateRecordsOnlyAfterCommit(t *testing.T) {
 
 	stageOpenAICodexTurnState(&staged, upstream)
 	require.Equal(t, "blob-B", staged.Get(openAIWSTurnStateHeader))
-	_, noted := svc.openaiCodexTurnStateOrigins.Load("9\x00sess-staged")
+	_, noted := svc.openaiCodexTurnStateOrigins.Load(openAIOwnershipDigest("turn-state-v1", "blob-B"))
 	require.False(t, noted)
 
 	svc.noteStagedOpenAICodexTurnStateCommitted(c, &Account{ID: 44}, staged)
-	raw, ok := svc.openaiCodexTurnStateOrigins.Load("9\x00sess-staged")
+	raw, ok := svc.openaiCodexTurnStateOrigins.Load(openAIOwnershipDigest("turn-state-v1", "blob-B"))
 	require.True(t, ok)
-	origin, ok := raw.(openAICodexTurnStateOrigin)
+	origin, ok := raw.(*openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, int64(44), origin.accountID)
+	require.Contains(t, origin.owners, openAIWSOwnershipForRequest(c, &Account{ID: 44}))
 }
 
 func TestGuardOpenAICodexTurnStateEchoProtectsAccountProvenance(t *testing.T) {
@@ -95,9 +96,8 @@ func TestGuardOpenAICodexTurnStateEchoProtectsAccountProvenance(t *testing.T) {
 	svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, foreign)
 	require.Empty(t, foreign.Get(openAIWSTurnStateHeader))
 
-	svc.openaiCodexTurnStateOrigins.Store("7\x00sess-guard", openAICodexTurnStateOrigin{
-		accountID: 42,
-		expiresAt: time.Now().Add(-time.Minute),
+	svc.openaiCodexTurnStateOrigins.Store(openAIOwnershipDigest("turn-state-v1", "blob-A"), &openAICodexTurnStateOrigin{
+		owners: map[openAIWSOwnership]time.Time{openAIWSOwnershipForRequest(c, &Account{ID: 42}): time.Now().Add(-time.Minute)},
 	})
 	expired := http.Header{}
 	expired.Set(openAIWSTurnStateHeader, "blob-A")

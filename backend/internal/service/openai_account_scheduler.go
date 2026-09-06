@@ -1587,11 +1587,13 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 	}
 
-	// Priority is an administrator-defined hard routing order. Health, load,
+	// Priority is an administrator-defined hard routing order. During explicit
+	// offline-owner takeover, healthy-owner tiers are exhausted first. Health, load,
 	// subscription preference and sticky weights are evaluated only inside one
 	// tier; lower tiers are attempted only after no account in a higher tier can
 	// acquire a slot for this request.
-	priorityTiers := partitionOpenAIAccountsByPriority(filtered)
+	priorityTiers := partitionOpenAIAccountsByPriority(filtered, executionNodePolicy)
+	hasTakeoverCandidates := executionNodePolicy.nodeRequiresTakeover(executionNodePolicy.nodeID(priorityTiers[len(priorityTiers)-1][0]))
 	var firstWaitable []openAIAccountLoadSelectionAttempt
 	var firstWaitableBudget *openAISelectionProbeBudget
 	compactBlocked := false
@@ -1610,7 +1612,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 		tierWaitable := make([]openAIAccountLoadSelectionAttempt, 0, len(pools))
 		for _, pool := range pools {
-			attempt := s.trySelectByLoadBalancePool(ctx, req, pool, loadMap, budget)
+			exhaustPool := hasTakeoverCandidates && !executionNodePolicy.nodeRequiresTakeover(executionNodePolicy.nodeID(pool[0]))
+			attempt := s.trySelectByLoadBalancePool(ctx, req, pool, loadMap, budget, exhaustPool)
 			compactBlocked = compactBlocked || attempt.compactBlocked || attempt.noCompactCandidates
 			if attempt.err != nil && !attempt.noCompactCandidates {
 				return nil, attempt.candidateCount, attempt.topK, attempt.loadSkew, attempt.err
@@ -1639,9 +1642,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("priority_tiers_exhausted"))
 }
 
-func partitionOpenAIAccountsByPriority(accounts []*Account) [][]*Account {
+func partitionOpenAIAccountsByPriority(accounts []*Account, policy executionNodeRoutingPolicy) [][]*Account {
 	sorted := append([]*Account(nil), accounts...)
 	sort.SliceStable(sorted, func(i, j int) bool {
+		iTakeover := policy.nodeRequiresTakeover(policy.nodeID(sorted[i]))
+		jTakeover := policy.nodeRequiresTakeover(policy.nodeID(sorted[j]))
+		if iTakeover != jTakeover {
+			return !iTakeover
+		}
 		return openAIAccountSchedulingPriority(sorted[i]) < openAIAccountSchedulingPriority(sorted[j])
 	})
 	tiers := make([][]*Account, 0)
@@ -1649,7 +1657,8 @@ func partitionOpenAIAccountsByPriority(accounts []*Account) [][]*Account {
 		if account == nil {
 			continue
 		}
-		if len(tiers) == 0 || openAIAccountSchedulingPriority(tiers[len(tiers)-1][0]) != openAIAccountSchedulingPriority(account) {
+		if len(tiers) == 0 || openAIAccountSchedulingPriority(tiers[len(tiers)-1][0]) != openAIAccountSchedulingPriority(account) ||
+			policy.nodeRequiresTakeover(policy.nodeID(tiers[len(tiers)-1][0])) != policy.nodeRequiresTakeover(policy.nodeID(account)) {
 			tiers = append(tiers, []*Account{account})
 			continue
 		}
@@ -1677,11 +1686,25 @@ func (s *defaultOpenAIAccountScheduler) trySelectByLoadBalancePool(
 	filtered []*Account,
 	loadMap map[int64]*AccountLoadInfo,
 	budget *openAISelectionProbeBudget,
+	exhaustPool bool,
 ) openAIAccountLoadSelectionAttempt {
-	plan := s.buildOpenAIAccountLoadPlan(ctx, req, filtered, loadMap)
-	if openAICostOverflowExpanded(req, plan) {
-		budget.enableLimit()
+	buildPlan := func(loads map[int64]*AccountLoadInfo) openAIAccountLoadPlan {
+		plan := s.buildOpenAIAccountLoadPlan(ctx, req, filtered, loads)
+		if exhaustPool {
+			// Top-K and cached full counters cannot prove that every surviving
+			// owner's slot is busy. Keep ranked Top-K first, then probe overflow
+			// with the actual slot gate before admitting takeover candidates.
+			plan.includeOverflowFallback = true
+			plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+			for i := range plan.selectionOrder {
+				plan.selectionOrder[i].loadKnown = false
+			}
+		} else if openAICostOverflowExpanded(req, plan) {
+			budget.enableLimit()
+		}
+		return plan
 	}
+	plan := buildPlan(loadMap)
 	attempt := openAIAccountLoadSelectionAttempt{
 		selectionOrder: plan.selectionOrder,
 		candidateCount: plan.candidateCount,
@@ -1717,10 +1740,7 @@ func (s *defaultOpenAIAccountScheduler) trySelectByLoadBalancePool(
 	if s.service.concurrencyService != nil && !budget.acquireExhausted() {
 		loadReq := buildOpenAIAccountLoadRequest(filtered)
 		if freshLoadMap, loadErr := s.service.concurrencyService.GetAccountsLoadBatchFresh(ctx, loadReq); loadErr == nil {
-			freshPlan := s.buildOpenAIAccountLoadPlan(ctx, req, filtered, freshLoadMap)
-			if openAICostOverflowExpanded(req, freshPlan) {
-				budget.enableLimit()
-			}
+			freshPlan := buildPlan(freshLoadMap)
 			if len(freshPlan.selectionOrder) > 0 {
 				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrderWithBudget(ctx, req, freshPlan.selectionOrder, budget)
 				if freshAcquireErr != nil {

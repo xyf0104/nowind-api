@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -136,8 +137,91 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte
 	return normalized
 }
 
+const OpenAIContextUnavailableCode = "context_unavailable"
+const OpenAIContextUnavailableMessage = "Encrypted conversation context is unavailable. Restore the full conversation history before retrying; the gateway will not discard compacted history."
+
+var ErrOpenAIContextUnavailable = errors.New(OpenAIContextUnavailableMessage)
+
+// Compaction replaces semantic history. Neither remaining messages nor a summary
+// field prove that the caller supplied a complete, portable alternative.
+func hasOpenAIEncryptedCompaction(reqBody map[string]any) bool {
+	check := func(item any) bool {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return false
+		}
+		kind, _ := m["type"].(string)
+		_, encrypted := m["encrypted_content"]
+		return encrypted && (strings.TrimSpace(kind) == "compaction" || strings.TrimSpace(kind) == "compaction_summary")
+	}
+	switch input := reqBody["input"].(type) {
+	case []any:
+		for _, item := range input {
+			if check(item) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, item := range input {
+			if check(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		return check(input)
+	}
+	return false
+}
+
+func isOpenAIEncryptedCompactionRaw(item gjson.Result) bool {
+	kind := strings.TrimSpace(item.Get("type").String())
+	return (kind == "compaction" || kind == "compaction_summary") && item.Get("encrypted_content").Exists()
+}
+
+func hasOpenAIEncryptedCompactionRaw(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	if input.IsObject() {
+		return isOpenAIEncryptedCompactionRaw(input)
+	}
+	found := false
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			found = isOpenAIEncryptedCompactionRaw(item)
+			return !found
+		})
+	}
+	return found
+}
+
+func openAIContextUnavailableFrame() []byte {
+	frame, _ := json.Marshal(gin.H{"type": "error", "error": gin.H{
+		"type": "invalid_request_error", "code": OpenAIContextUnavailableCode,
+		"message": OpenAIContextUnavailableMessage, "param": "input",
+	}})
+	return frame
+}
+
+func isOpenAIInvalidEncryptedContentEvent(body []byte) bool {
+	return extractUpstreamErrorCode(body) == openAIWSFallbackReasonInvalidEncryptedContent ||
+		gjson.GetBytes(body, "response.error.code").String() == openAIWSFallbackReasonInvalidEncryptedContent
+}
+
+// WriteOpenAIContextUnavailableResponse reports a terminal, non-failover error.
+func WriteOpenAIContextUnavailableResponse(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	setOpsUpstreamError(c, http.StatusBadRequest, OpenAIContextUnavailableMessage, "")
+	if c.Writer.Written() {
+		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", openAIContextUnavailableFrame())
+		c.Writer.Flush()
+		return
+	}
+	c.Data(http.StatusBadRequest, "application/json", openAIContextUnavailableFrame())
+}
+
 func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
-	if len(reqBody) == 0 {
+	if len(reqBody) == 0 || hasOpenAIEncryptedCompaction(reqBody) {
 		return false
 	}
 
@@ -225,9 +309,7 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
 	case "compaction", "compaction_summary":
-		if _, encrypted := inputItem["encrypted_content"]; encrypted {
-			return nil, true, false
-		}
+		// Defense in depth for lineage/replay callers: never erase semantic history.
 		return item, false, true
 	case "reasoning":
 	default:
@@ -268,8 +350,12 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 // the reasoning item's id and summary, this drops the entire item.
 //
 // The input slice is treated as immutable and is never mutated; a distinct slice
-// is returned only when changed is true.
+// is returned only when changed is true. Encrypted compaction cannot be dropped
+// without a proven full history, so those requests return a terminal error.
 func SanitizeOpenAICrossModeFailoverReasoning(body []byte) (sanitized []byte, changed bool, err error) {
+	if hasOpenAIEncryptedCompactionRaw(body) {
+		return body, false, ErrOpenAIContextUnavailable
+	}
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -292,13 +378,12 @@ func SanitizeOpenAICrossModeFailoverReasoning(body []byte) (sanitized []byte, ch
 	return out, true, nil
 }
 
-// dropOpenAIEncryptedReasoningInputItems removes encrypted continuation input
-// items in full — reasoning, compaction, and compaction_summary — including their
-// coupled id and summary shape, and reports whether anything changed. Contrast
+// dropOpenAIEncryptedReasoningInputItems removes encrypted reasoning items with
+// their coupled id and summary, but refuses requests carrying compaction. Contrast
 // with trimOpenAIEncryptedReasoningItems, which only strips fields while keeping
 // the reasoning item skeleton.
 func dropOpenAIEncryptedReasoningInputItems(reqBody map[string]any) bool {
-	if len(reqBody) == 0 {
+	if len(reqBody) == 0 || hasOpenAIEncryptedCompaction(reqBody) {
 		return false
 	}
 	inputValue, has := reqBody["input"]
@@ -753,7 +838,7 @@ func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel
 	return body
 }
 
-func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any, requestedModel string) (value string, present bool) {
+func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any) (value string, present bool) {
 	if reqBody == nil {
 		return "", false
 	}
@@ -761,13 +846,19 @@ func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any, requestedModel 
 	// Primary: reasoning.effort
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok {
-			return normalizeOpenAIReasoningEffortForModel(effort, requestedModel), true
+			return normalizeOpenAIWireReasoningEffortForUsage(effort), true
+		} else if reasoning["effort"] != nil {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Omitted reasoning effort usage metadata: reason=non_string")
+			return "", true
 		}
 	}
 
 	// Fallback: some clients may use a flat field.
 	if effort, ok := reqBody["reasoning_effort"].(string); ok {
-		return normalizeOpenAIReasoningEffortForModel(effort, requestedModel), true
+		return normalizeOpenAIWireReasoningEffortForUsage(effort), true
+	} else if reqBody["reasoning_effort"] != nil {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Omitted reasoning effort usage metadata: reason=non_string")
+		return "", true
 	}
 
 	return "", false
@@ -1014,7 +1105,7 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 // normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
 // 1) 删除 ChatGPT internal API 不支持的顶层 Responses 参数
 // 2) store=false 3) 非 compact 保持 stream=true；compact 强制 stream=false
-// 4) HTTP 透传不支持 previous_response_id，客户端已随 input 带完整对话历史时移除该续接锚点。
+// Continuation anchors and encrypted history remain intact; input may be delta-only.
 func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
@@ -1033,30 +1124,6 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		}
 		normalized = next
 		changed = true
-	}
-
-	// ChatGPT internal HTTP Responses endpoint rejects continuation IDs. Older Codex
-	// clients still send previous_response_id together with the full input history,
-	// so retaining it turns an otherwise valid follow-up into an immediate 400.
-	// Once that anchor is removed, its encrypted continuation items are no longer
-	// verifiable by the upstream; drop those coupled items while retaining the
-	// remaining conversation history.
-	if previousResponseID := gjson.GetBytes(normalized, "previous_response_id"); previousResponseID.Exists() {
-		next, err := sjson.DeleteBytes(normalized, "previous_response_id")
-		if err != nil {
-			return body, false, fmt.Errorf("normalize passthrough body delete previous_response_id: %w", err)
-		}
-		normalized = next
-		changed = true
-
-		next, removedEncryptedReasoning, err := SanitizeOpenAICrossModeFailoverReasoning(normalized)
-		if err != nil {
-			return body, false, fmt.Errorf("normalize passthrough body drop encrypted reasoning: %w", err)
-		}
-		if removedEncryptedReasoning {
-			normalized = next
-		}
-
 	}
 
 	// Some Codex history replays include a response output ID as a message ID
@@ -1139,6 +1206,31 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	return normalized, changed, nil
 }
 
+// Only an empty anchor can be removed without guessing whether input contains
+// the full history. Real response IDs must remain account-pinned, even on 400.
+func normalizeOpenAIOAuthEmptyPreviousResponseIDRetryBody(account *Account, statusCode int, body, responseBody []byte) ([]byte, bool, error) {
+	if account == nil || !account.IsOpenAIOAuth() || statusCode != http.StatusBadRequest {
+		return body, false, nil
+	}
+	previous := gjson.GetBytes(body, "previous_response_id")
+	if !previous.Exists() || (previous.Type != gjson.Null && (previous.Type != gjson.String || previous.String() != "")) {
+		return body, false, nil
+	}
+	if gjson.GetBytes(responseBody, "error.param").String() != "previous_response_id" {
+		return body, false, nil
+	}
+	switch gjson.GetBytes(responseBody, "error.code").String() {
+	case "unknown_parameter", "unsupported_parameter":
+	default:
+		return body, false, nil
+	}
+	next, err := sjson.DeleteBytes(body, "previous_response_id")
+	if err != nil {
+		return body, false, fmt.Errorf("remove rejected empty previous_response_id: %w", err)
+	}
+	return next, true, nil
+}
+
 func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byte) string {
 	if !isOpenAICodexModel(reqModel) {
 		return ""
@@ -1161,21 +1253,53 @@ func isOpenAICodexModel(model string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
 }
 
-// extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,
-// billingModel, originalModel）：显式 effort 的模型归一化（max 保留判定）用第一个
-// 非空候选；body 未携带 effort 时的模型后缀推导依次尝试每个候选——OAuth 的
-// normalizeCodexModel 会剥掉 upstreamModel 的 effort 后缀，只有原始模型名还留着。
-func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string) *string {
-	reasoningEffort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
-	if reasoningEffort == "" {
-		reasoningEffort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
+// Migration 046 limits usage_logs.reasoning_effort to VARCHAR(20). Never
+// truncate unrecognized client input into a different effort or log its value.
+func normalizeOpenAIWireReasoningEffortForUsage(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
 	}
-	if reasoningEffort != "" {
-		normalized := normalizeOpenAIReasoningEffortForModel(reasoningEffort, firstNonEmpty(modelCandidates...))
-		if normalized == "" {
+	if len(value) > 20 {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Omitted reasoning effort usage metadata: reason=too_long length=%d", len(value))
+		return ""
+	}
+	alias := strings.ToLower(value)
+	switch alias {
+	case "none", "minimal", "low", "medium", "high", "max", "ultra":
+		return alias
+	case "xhigh", "x-high", "x_high", "x high", "extrahigh", "extra-high", "extra_high", "extra high":
+		return "xhigh"
+	}
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		letter := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+		if !letter && (i == 0 || ((ch < '0' || ch > '9') && ch != '_' && ch != '-')) {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Omitted reasoning effort usage metadata: reason=invalid_identifier length=%d", len(value))
+			return ""
+		}
+	}
+	return value
+}
+
+// Explicit effort is usage metadata for the forwarded body, not a protocol
+// conversion. Preserve unknown values and never label a wire max as xhigh.
+// Model suffix inference remains a fallback only when effort is omitted.
+func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string) *string {
+	for _, path := range []string{"reasoning.effort", "reasoning_effort"} {
+		field := gjson.GetBytes(body, path)
+		if field.Exists() && field.Type != gjson.String && field.Type != gjson.Null {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Omitted reasoning effort usage metadata: reason=non_string")
 			return nil
 		}
-		return &normalized
+		if field.Type == gjson.String {
+			if raw := strings.TrimSpace(field.String()); raw != "" {
+				if effort := normalizeOpenAIWireReasoningEffortForUsage(raw); effort != "" {
+					return &effort
+				}
+				return nil
+			}
+		}
 	}
 
 	value := deriveOpenAIReasoningEffortFromModelCandidates(modelCandidates)
@@ -1789,7 +1913,7 @@ func getOpenAIRequestBodyMap(_ *gin.Context, body []byte) (map[string]any, error
 
 // extractOpenAIReasoningEffort 的模型候选语义同 extractOpenAIReasoningEffortFromBody。
 func extractOpenAIReasoningEffort(reqBody map[string]any, modelCandidates ...string) *string {
-	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody, firstNonEmpty(modelCandidates...)); present {
+	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody); present {
 		if value == "" {
 			return nil
 		}

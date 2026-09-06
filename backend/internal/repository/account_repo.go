@@ -844,6 +844,10 @@ func (r *accountRepository) updateLockedAccount(
 	if err != nil {
 		return nil, err
 	}
+	extra, err = lockAndMergeOpenAIQuotaExtra(ctx, client, account, extra)
+	if err != nil {
+		return nil, err
+	}
 	account.Extra = extra
 
 	schedulable := account.Schedulable

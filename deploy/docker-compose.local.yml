@@ -157,6 +157,7 @@ services:
       # Generate a secure secret: openssl rand -hex 32
       - JWT_SECRET=${JWT_SECRET:-}
       - JWT_EXPIRE_HOUR=${JWT_EXPIRE_HOUR:-168}
+      - JWT_REFRESH_TOKEN_STORE=${JWT_REFRESH_TOKEN_STORE:-redis}
 
       # Optional source-authoritative multi-node join tunnel.
       - XIASS_CLUSTER_STATE_SOURCE_URL=${XIASS_CLUSTER_STATE_SOURCE_URL:-}

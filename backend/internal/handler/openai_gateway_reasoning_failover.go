@@ -28,14 +28,14 @@ func (h *OpenAIGatewayHandler) deriveOpenAIForwardAttemptBody(
 	canonicalBody []byte,
 	account *service.Account,
 	state *openAIPassthroughFailoverState,
-) []byte {
+) ([]byte, error) {
 	currentPassthrough := account.IsOpenAIPassthroughEnabled()
 	if currentPassthrough {
 		state.passthroughSeen = true
-		return canonicalBody
+		return canonicalBody, nil
 	}
 	if !state.passthroughSeen {
-		return canonicalBody
+		return canonicalBody, nil
 	}
 
 	sanitized, changed, err := service.SanitizeOpenAICrossModeFailoverReasoning(canonicalBody)
@@ -46,10 +46,10 @@ func (h *OpenAIGatewayHandler) deriveOpenAIForwardAttemptBody(
 				zap.Error(err),
 			)
 		}
-		return canonicalBody
+		return nil, err
 	}
 	if !changed {
-		return canonicalBody
+		return canonicalBody, nil
 	}
 	if reqLog != nil {
 		reqLog.Info("openai.failover_cross_mode_reasoning_stripped",
@@ -58,5 +58,5 @@ func (h *OpenAIGatewayHandler) deriveOpenAIForwardAttemptBody(
 			zap.Bool("passthrough_seen", true),
 		)
 	}
-	return sanitized
+	return sanitized, nil
 }

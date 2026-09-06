@@ -64,6 +64,59 @@ beforeEach(() => {
   vi.mocked(resetOpenAIQuota).mockReset()
 })
 
+describe('OpenAIQuotaResetCell read-only ownership', () => {
+  const accountWithCredits = () => makeAccount({
+    extra: {
+      codex_reset_credit_snapshot: {
+        available_count: 2,
+        credits: [{ expires_at: FUTURE_EXPIRY_EARLY }, { expires_at: FUTURE_EXPIRY_LATE }]
+      }
+    }
+  })
+
+  it('shows persisted credits but never queries or resets a remote account', async () => {
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account: accountWithCredits(), readOnly: true } })
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.count2')
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.expiresAt:')
+    for (const button of wrapper.findAll('button').slice(0, 2)) {
+      expect(button.attributes('disabled')).toBeDefined()
+      await button.trigger('click')
+    }
+    await wrapper.get('[data-testid="reset-credit-expiry-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="reset-credit-expiry-details"]').exists()).toBe(true)
+    expect(refreshOpenAIQuota).not.toHaveBeenCalled()
+    expect(resetOpenAIQuota).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('closes an open confirmation if the account becomes read-only', async () => {
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account: accountWithCredits() } })
+    await resetButton(wrapper).trigger('click')
+    const dialog = wrapper.findComponent(ConfirmDialog)
+    expect(dialog.props('show')).toBe(true)
+    await wrapper.setProps({ readOnly: true })
+    expect(dialog.props('show')).toBe(false)
+    dialog.vm.$emit('confirm')
+    await flushPromises()
+    expect(resetOpenAIQuota).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('ignores a late quota response after ownership changes', async () => {
+    let resolveQuery!: (value: unknown) => void
+    vi.mocked(refreshOpenAIQuota).mockImplementationOnce(() => new Promise(resolve => { resolveQuery = resolve }))
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account: accountWithCredits() } })
+    await wrapper.findAll('button')[0].trigger('click')
+    await wrapper.setProps({ readOnly: true })
+    resolveQuery({ rate_limit_reset_credits: { available_count: 99 }, cache_persisted: true })
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.count2')
+    expect(wrapper.text()).not.toContain('count99')
+    expect(wrapper.emitted('account-updated')).toBeUndefined()
+    wrapper.unmount()
+  })
+})
+
 describe('OpenAIQuotaResetCell — 外审 F6:影子禁用重置', () => {
   it('影子账号(parent_account_id 非空)的 reset 按钮被禁用且提示在母账号重置', () => {
     const account = makeAccount({ parent_account_id: 100 })

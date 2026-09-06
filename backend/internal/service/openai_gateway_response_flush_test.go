@@ -368,6 +368,40 @@ func TestOpenAIResponseFlush_KeepaliveDoesNotSplitOpenEvent(t *testing.T) {
 	require.Equal(t, completeEvent+terminal, flushes[1])
 }
 
+func TestOpenAIResponseFlush_DueKeepaliveRunsAtPreambleBoundary(t *testing.T) {
+	partial := strings.Repeat(": waiting\n", 16) +
+		"data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n"
+	terminal := "data: [DONE]\n\n"
+	allowBoundary, boundaryWaiting := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(allowBoundary) }) }
+	t.Cleanup(release)
+	reader := &stagedOpenAISSEReadCloser{
+		segments: [][]byte{[]byte(partial), []byte("\n" + terminal)},
+		gates:    []<-chan struct{}{nil, allowBoundary},
+		waiting:  []chan struct{}{nil, boundaryWaiting},
+	}
+	recorder := newOpenAIResponseFlushRecorder()
+	resultCh, errCh := runOpenAIResponseFlushTestAsync(recorder, reader, config.GatewayConfig{StreamKeepaliveInterval: 1})
+	waitOpenAIResponseFlushSignal(t, boundaryWaiting)
+	timer := time.NewTimer(1250 * time.Millisecond)
+	select {
+	case <-recorder.flushEvents:
+		timer.Stop()
+		t.Fatal("keepalive must not split the open preamble event")
+	case <-timer.C:
+	}
+	// Complete the event and terminate before another keepalive interval. The
+	// skipped timer must be serviced at the boundary, not postponed to its next tick.
+	release()
+	require.NoError(t, <-errCh)
+	require.NotNil(t, <-resultCh)
+	body, flushes := recorder.snapshot()
+	require.GreaterOrEqual(t, len(flushes), 2)
+	require.Equal(t, ":\n\n", flushes[0], "preamble must remain attempt-local before semantic output")
+	require.Equal(t, ":\n\n"+partial+"\n"+terminal, body)
+}
+
 func TestOpenAIResponseFlush_FailedAndErrorEventsFlushAtBoundaries(t *testing.T) {
 	t.Run("failed at EOF", func(t *testing.T) {
 		body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n\n" +

@@ -20,12 +20,13 @@ import (
 )
 
 type CRSSyncService struct {
-	accountRepo        AccountRepository
-	proxyRepo          ProxyRepository
-	oauthService       *OAuthService
-	openaiOAuthService *OpenAIOAuthService
-	geminiOAuthService *GeminiOAuthService
-	cfg                *config.Config
+	accountRepo              AccountRepository
+	proxyRepo                ProxyRepository
+	oauthService             *OAuthService
+	openaiOAuthService       *OpenAIOAuthService
+	geminiOAuthService       *GeminiOAuthService
+	cfg                      *config.Config
+	weeklyJoinCaptureFactory PrivacyClientFactory
 }
 
 func NewCRSSyncService(
@@ -265,6 +266,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 	if err != nil {
 		return nil, err
 	}
+	ctx = WithOpenAIWeeklyJoinCaptureBudget(ctx, openAIWeeklyJoinCaptureTimeout)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -650,6 +652,8 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		if existing != nil {
 			existingExtra = existing.Extra
 		}
+		previousWeeklyPrincipal := openAIWeeklyJoinPrincipalOf(existing)
+		extra = stripOpenAIQuotaRuntimeExtra(extra)
 		extra, err = mergeCRSOpenAILongContextBillingExtra(existingExtra, extra)
 		if err != nil {
 			item.Action = "failed"
@@ -689,6 +693,9 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      status,
 				Schedulable: src.Schedulable,
 			}
+			if src.Proxy == nil || account.ProxyID != nil {
+				s.openAIWeeklyJoinCaptureService().captureOpenAIWeeklyJoinForCreate(ctx, account)
+			}
 			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
@@ -719,12 +726,19 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Status = status
 		existing.Schedulable = src.Schedulable
 
+		principalReplaced := previousWeeklyPrincipal.replacedBy(existing)
+		if principalReplaced {
+			existing.Extra = stripOpenAIQuotaRuntimeExtra(existing.Extra)
+		}
 		if err := s.accountRepo.Update(ctx, existing); err != nil {
 			item.Action = "failed"
 			item.Error = "update failed: " + err.Error()
 			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
+		}
+		if principalReplaced && (src.Proxy == nil || existing.ProxyID != nil) {
+			s.openAIWeeklyJoinCaptureService().captureOpenAIWeeklyJoinAfterPrincipalReplace(ctx, existing)
 		}
 
 		// 🔄 Refresh OAuth token after update

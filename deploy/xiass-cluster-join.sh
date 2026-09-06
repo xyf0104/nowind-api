@@ -19,6 +19,8 @@ JOIN_BACKUP_DIR=""
 COMPOSE=()
 COMPOSE_FILE=""
 COMPOSE_BUILD_FILE=""
+COMPOSE_FILES=()
+COMPOSE_PROJECT_NAME=""
 OLD_ENV_FILE=""
 APPLIED=false
 
@@ -64,18 +66,20 @@ resolve_compose() {
     local label_files project_dir label_file
     project_dir=$(docker inspect --type container --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' xiass-api 2>/dev/null || true)
     label_files=$(docker inspect --type container --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' xiass-api 2>/dev/null || true)
+    COMPOSE_PROJECT_NAME=$(docker inspect --type container --format '{{ index .Config.Labels "com.docker.compose.project" }}' xiass-api 2>/dev/null || true)
+    [ "$COMPOSE_PROJECT_NAME" != '<no value>' ] || COMPOSE_PROJECT_NAME=""
+    [ "$project_dir" != '<no value>' ] || project_dir=""
+    project_dir="${project_dir:-$DEPLOY_DIR}"
     IFS=',' read -r -a label_file_list <<< "$label_files"
     for label_file in "${label_file_list[@]}"; do
-        [ -n "$label_file" ] || continue
-        if [ "${label_file#/}" = "$label_file" ] && [ -n "$project_dir" ]; then
+        [ -n "$label_file" ] && [ "$label_file" != '<no value>' ] || continue
+        if [ "${label_file#/}" = "$label_file" ]; then
             label_file="$project_dir/$label_file"
         fi
-        if [ -f "$label_file" ]; then
-            COMPOSE_FILE="$label_file"
-            break
-        fi
+        [ -f "$label_file" ] && [ -r "$label_file" ] || die "当前容器的 Compose 文件不可读：${label_file}；未修改配置。"
+        COMPOSE_FILES+=("$label_file")
     done
-    if [ -z "$COMPOSE_FILE" ]; then
+    if [ "${#COMPOSE_FILES[@]}" -eq 0 ]; then
         if [ -f "$DEPLOY_DIR/docker-compose.local.yml" ] && [ -d "$DEPLOY_DIR/postgres_data" ]; then
             COMPOSE_FILE="$DEPLOY_DIR/docker-compose.local.yml"
         elif [ -f "$DEPLOY_DIR/docker-compose.yml" ]; then
@@ -83,15 +87,19 @@ resolve_compose() {
         else
             die "未找到当前 XIASS Compose 文件"
         fi
+        COMPOSE_FILES=("$COMPOSE_FILE")
+        if [ "$(read_env_value XIASS_BUILD_MODE)" = "source" ] && [ -f "$DEPLOY_DIR/docker-compose.build.yml" ]; then
+            COMPOSE_BUILD_FILE="$DEPLOY_DIR/docker-compose.build.yml"
+            COMPOSE_FILES+=("$COMPOSE_BUILD_FILE")
+        fi
     fi
-    if [ "$(read_env_value XIASS_BUILD_MODE)" = "source" ] && [ -f "$DEPLOY_DIR/docker-compose.build.yml" ]; then
-        COMPOSE_BUILD_FILE="$DEPLOY_DIR/docker-compose.build.yml"
-    fi
+    COMPOSE_FILE="${COMPOSE_FILES[0]}"
 }
 
 compose() {
-    local args=(-f "$COMPOSE_FILE")
-    if [ -n "$COMPOSE_BUILD_FILE" ]; then args+=(-f "$COMPOSE_BUILD_FILE"); fi
+    local args=() compose_file
+    for compose_file in "${COMPOSE_FILES[@]}"; do args+=(-f "$compose_file"); done
+    if [ -n "$COMPOSE_PROJECT_NAME" ]; then args+=(--project-name "$COMPOSE_PROJECT_NAME"); fi
     "${COMPOSE[@]}" "${args[@]}" --project-directory "$DEPLOY_DIR" "$@"
 }
 
@@ -160,6 +168,14 @@ main() {
     [ "$(json_value tunnel_proof)" = "$JOIN_TUNNEL_PROOF" ] || die "加入证明不匹配"
 
     resolve_compose
+    local emergency_egress refresh_token_store
+    emergency_egress=$(read_env_value GATEWAY_EXECUTION_NODE_EMERGENCY_LOCAL_EGRESS)
+    case "$emergency_egress" in
+        ''|true|false) ;;
+        *) die "现有应急本地出口配置必须为 true 或 false；未修改配置。" ;;
+    esac
+    refresh_token_store=$(jq -er 'if has("jwt_refresh_token_store") then .jwt_refresh_token_store else "redis" end | select(. == "redis" or . == "postgres")' /tmp/xiass-cluster-join-bundle.json) \
+        || die "来源刷新令牌存储策略必须为 redis 或 postgres；未修改配置。"
     mkdir -p "$BACKUP_ROOT"
     JOIN_BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-$JOIN_TARGET_NODE_ID"
     mkdir -p "$JOIN_BACKUP_DIR"
@@ -180,7 +196,9 @@ main() {
     set_env_value GATEWAY_EXECUTION_NODE_ENABLED true
     set_env_value GATEWAY_EXECUTION_NODE_ID "$JOIN_TARGET_NODE_ID"
     set_env_value GATEWAY_EXECUTION_NODE_DEFAULT_PROXY_ID "$target_proxy_id"
-    set_env_value GATEWAY_EXECUTION_NODE_EMERGENCY_LOCAL_EGRESS true
+    if [ -z "$emergency_egress" ]; then
+        set_env_value GATEWAY_EXECUTION_NODE_EMERGENCY_LOCAL_EGRESS false
+    fi
     set_env_value GATEWAY_EXECUTION_NODE_CONTROL_PLANE false
     set_env_value GATEWAY_EXECUTION_NODE_LEGACY_UNASSIGNED_NODE_ID "$legacy_node_id"
     set_env_value GATEWAY_EXECUTION_NODE_LEGACY_UNASSIGNED_PROXY_ID "$legacy_proxy_id"
@@ -207,6 +225,7 @@ main() {
     set_env_value REDIS_DB "$(json_value redis_db)"
     set_env_value REDIS_ENABLE_TLS "$(json_value redis_enable_tls)"
     set_env_value JWT_SECRET "$(json_value jwt_secret)"
+    set_env_value JWT_REFRESH_TOKEN_STORE "$refresh_token_store"
     set_env_value TOTP_ENCRYPTION_KEY "$(json_value totp_key)"
     source_url=$(json_value source_url)
     [ -n "$source_url" ] || source_url="$JOIN_SOURCE_URL"

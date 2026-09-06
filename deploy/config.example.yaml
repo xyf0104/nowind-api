@@ -880,6 +880,22 @@ redis:
   # 是否启用 TLS/SSL 连接
   enable_tls: false
 
+  # Optional master discovery; configure BOTH fields or leave both empty.
+  # Example: ["sentinel-1.example.net:26379", "sentinel-2.example.net:26379"]
+  sentinel_addrs: []
+  # Requires migrated jwt.refresh_token_store: postgres before activation.
+  # Example: "cache-primary"
+  sentinel_master_name: ""
+  # App-to-Sentinel credentials, independent of Redis username/password above.
+  # Leave both credentials empty when discovery is disabled.
+  sentinel_username: ""
+  sentinel_password: ""
+  # enable_tls applies to Sentinel AND Redis; every advertised hostname/IP must
+  # be reachable and match a trusted certificate. DNS-only certificates require
+  # Sentinel resolve-hostnames/announce-hostnames. Verification is never skipped.
+  # Discovery is not write fencing or zero-loss promotion. This configuration
+  # does not provision Sentinel or change any server-side promotion policy.
+
 # =============================================================================
 # Ops Monitoring (Optional)
 # 运维监控 (可选)
@@ -905,6 +921,9 @@ jwt:
   # Token expiration time in hours (max 168)
   # 令牌过期时间（小时，最大 168）
   expire_hour: 168
+  # Keep redis for existing installations. postgres requires a completed
+  # session migration and matching authority record; it never falls back.
+  refresh_token_store: redis
   # Access Token 过期时间（分钟）
   # 优先级说明：
   # - >0: 按分钟生效（优先于 expire_hour）

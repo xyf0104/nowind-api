@@ -17,7 +17,7 @@
       <button
         type="button"
         class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
-        :disabled="loading || resetting"
+        :disabled="readOnly || loading || resetting"
         :title="countButtonTitle"
         @click="handleQuery()"
       >
@@ -138,7 +138,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Account } from '@/types'
 import {
@@ -151,6 +151,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const props = defineProps<{
   account: Account
+  readOnly?: boolean
   spreadActions?: boolean
 }>()
 
@@ -172,6 +173,8 @@ const resetMessage = ref<string | null>(null)
 const resetWarning = ref<string | null>(null)
 const showResetConfirm = ref(false)
 const showResetCreditDetails = ref(false)
+let requestGeneration = 0
+onBeforeUnmount(() => { requestGeneration++ })
 
 // Rehydrate the card from the persisted snapshot. Credits that already expired
 // are dropped and the count is clamped to what remains: the snapshot has no
@@ -234,7 +237,7 @@ const resetCreditExpirations = computed(() =>
 )
 const primaryResetCreditExpiry = computed(() => resetCreditExpirations.value[0] ?? '')
 const hiddenResetCreditCount = computed(() => Math.max(resetCreditExpirations.value.length - 1, 0))
-const canReset = computed(() => availableResetCount.value > 0 && !isShadow.value)
+const canReset = computed(() => !props.readOnly && availableResetCount.value > 0 && !isShadow.value)
 
 const resetCreditDetailsTitle = computed(() =>
   resetCreditExpirations.value
@@ -322,7 +325,8 @@ const toggleResetCreditDetails = () => {
 }
 
 const handleQuery = async () => {
-  if (loading.value) return
+  if (props.readOnly || loading.value || resetting.value) return
+  const generation = ++requestGeneration
   loading.value = true
   error.value = null
   resetMessage.value = null
@@ -330,6 +334,7 @@ const handleQuery = async () => {
   showResetCreditDetails.value = false
   try {
     const result = await refreshOpenAIQuota(props.account.id)
+    if (generation !== requestGeneration || props.readOnly) return
     // The upstream read succeeded even when the snapshot write was rejected, so
     // the live count is always adopted. Only the persisted view is left alone,
     // which keeps the displayed expirations consistent with what is stored.
@@ -340,14 +345,14 @@ const handleQuery = async () => {
       resetWarning.value = t('admin.accounts.openaiQuotaReset.refreshCachePersistFailed')
     }
   } catch (e) {
-    error.value = extractErrorMessage(e)
+    if (generation === requestGeneration) error.value = extractErrorMessage(e)
   } finally {
-    loading.value = false
+    if (generation === requestGeneration) loading.value = false
   }
 }
 
 const openResetConfirm = () => {
-  if (resetting.value || loading.value) return
+  if (props.readOnly || resetting.value || loading.value) return
   if (!canReset.value) {
     error.value = t('admin.accounts.openaiQuotaReset.noCreditsAvailable')
     return
@@ -357,17 +362,19 @@ const openResetConfirm = () => {
 
 const confirmReset = async () => {
   showResetConfirm.value = false
-  if (resetting.value) return
+  if (props.readOnly || resetting.value || loading.value) return
   if (!canReset.value) {
     error.value = t('admin.accounts.openaiQuotaReset.noCreditsAvailable')
     return
   }
   resetting.value = true
+  const generation = ++requestGeneration
   error.value = null
   resetMessage.value = null
   resetWarning.value = null
   try {
     const result: OpenAIQuotaResetResult = await resetOpenAIQuota(props.account.id)
+    if (generation !== requestGeneration || props.readOnly) return
     showResetCreditDetails.value = false
     if (result.cache_refreshed && result.quota) {
       data.value = result.quota
@@ -392,15 +399,16 @@ const confirmReset = async () => {
       })
     }
   } catch (e) {
-    error.value = extractErrorMessage(e)
+    if (generation === requestGeneration) error.value = extractErrorMessage(e)
   } finally {
-    resetting.value = false
+    if (generation === requestGeneration) resetting.value = false
   }
 }
 
 watch(
-  () => props.account.id,
+  [() => props.account.id, () => props.readOnly, () => props.account.extra?.codex_reset_credit_snapshot],
   () => {
+    requestGeneration++
     // Account row may be reused across paginated lists; reset local state.
     cachedData.value = readCachedResetCredits(props.account)
     data.value = cachedData.value
@@ -411,7 +419,8 @@ watch(
     resetting.value = false
     showResetConfirm.value = false
     showResetCreditDetails.value = false
-  }
+  },
+  { flush: 'sync' }
 )
 
 watch(

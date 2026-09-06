@@ -208,7 +208,7 @@ func (r *openAI429SnapshotRepo) UpdateExtra(_ context.Context, _ int64, updates 
 	return nil
 }
 
-func (r *openAI429SnapshotRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+func (r *openAI429SnapshotRepo) UpdateOpenAICodexSnapshotIfIdentityMatches(_ context.Context, _ *Account, updates map[string]any) (bool, error) {
 	r.updatedExtra = updates
 	return true, nil
 }

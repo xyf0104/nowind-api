@@ -980,17 +980,20 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 		if len(eligible) == 0 {
 			continue
 		}
-		// Preserve the batch subsystem's established priority direction, then apply
-		// node weights only inside that highest tier.
+		// Only confirmed emergency takeover ranks below healthy owners; retain
+		// the batch subsystem's descending priority and provider order otherwise.
 		highestPriority := eligible[0].Priority
+		takeoverTier := policy.nodeRequiresTakeover(policy.nodeID(eligible[0]))
 		for _, account := range eligible[1:] {
-			if account.Priority > highestPriority {
+			takeover := policy.nodeRequiresTakeover(policy.nodeID(account))
+			if (takeoverTier && !takeover) || (takeover == takeoverTier && account.Priority > highestPriority) {
 				highestPriority = account.Priority
+				takeoverTier = takeover
 			}
 		}
 		priorityCandidates := make([]*Account, 0, len(eligible))
 		for _, account := range eligible {
-			if account.Priority == highestPriority {
+			if account.Priority == highestPriority && policy.nodeRequiresTakeover(policy.nodeID(account)) == takeoverTier {
 				priorityCandidates = append(priorityCandidates, account)
 			}
 		}

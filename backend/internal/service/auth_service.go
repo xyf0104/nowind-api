@@ -1634,6 +1634,19 @@ type TokenPairWithUser struct {
 	UserRole string
 }
 
+// RequiresRefreshTokenIssuanceAdmission reports whether credential issuance must
+// be admitted by the configured store. Callers must not bypass it with a JWT-only fallback.
+func (s *AuthService) RequiresRefreshTokenIssuanceAdmission() bool {
+	if s == nil {
+		return false
+	}
+	if policy, ok := s.refreshTokenCache.(RefreshTokenIssuancePolicy); ok && policy.RequiresRefreshTokenIssuanceAdmission() {
+		return true
+	}
+	_, required := s.refreshTokenCache.(RefreshTokenIssuancePreparer)
+	return required
+}
+
 // GenerateTokenPair 生成Access Token和Refresh Token对
 // familyID: 可选的Token家族ID，用于Token轮转时保持家族关系
 func (s *AuthService) GenerateTokenPair(ctx context.Context, user *User, familyID string) (*TokenPair, error) {
@@ -1650,6 +1663,17 @@ func (s *AuthService) generateTokenPair(ctx context.Context, user *User, familyI
 	}
 	if !familyExpiresAt.After(time.Now()) {
 		return nil, ErrRefreshTokenExpired
+	}
+	var issuance *RefreshTokenIssuance
+	if preparer, ok := s.refreshTokenCache.(RefreshTokenIssuancePreparer); ok {
+		var err error
+		issuance, err = preparer.PrepareRefreshTokenIssuance(ctx, user.ID)
+		if err != nil {
+			return nil, fmt.Errorf("prepare refresh token issuance: %w", err)
+		}
+		if issuance == nil || issuance.UserID != user.ID {
+			return nil, errors.New("invalid refresh token issuance admission")
+		}
 	}
 
 	// 提前确定家族ID：作为 access token 的会话ID（sid），保证同一会话的
@@ -1669,7 +1693,7 @@ func (s *AuthService) generateTokenPair(ctx context.Context, user *User, familyI
 	}
 
 	// 生成Refresh Token
-	refreshToken, err := s.generateRefreshToken(ctx, user, familyID, familyExpiresAt)
+	refreshToken, err := s.generateRefreshToken(ctx, user, familyID, familyExpiresAt, issuance)
 	if err != nil {
 		return nil, fmt.Errorf("generate refresh token: %w", err)
 	}
@@ -1682,7 +1706,7 @@ func (s *AuthService) generateTokenPair(ctx context.Context, user *User, familyI
 }
 
 // generateRefreshToken 生成并存储Refresh Token
-func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, familyID string, familyExpiresAt time.Time) (string, error) {
+func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, familyID string, familyExpiresAt time.Time, issuance *RefreshTokenIssuance) (string, error) {
 	// 生成随机Token
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -1712,6 +1736,7 @@ func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, fami
 	}
 
 	data := &RefreshTokenData{
+		Issuance:        issuance,
 		UserID:          user.ID,
 		TokenVersion:    resolvedTokenVersion(user),
 		FamilyID:        familyID,
@@ -1728,12 +1753,18 @@ func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, fami
 
 	// 添加到用户Token集合
 	if err := s.refreshTokenCache.AddToUserTokenSet(ctx, user.ID, tokenHash, ttl); err != nil {
+		if s.RequiresRefreshTokenIssuanceAdmission() {
+			return "", fmt.Errorf("verify refresh token user membership: %w", err)
+		}
 		logger.LegacyPrintf("service.auth", "[Auth] Failed to add token to user set: %v", err)
 		// 不影响主流程
 	}
 
 	// 添加到家族Token集合
 	if err := s.refreshTokenCache.AddToFamilyTokenSet(ctx, familyID, tokenHash, ttl); err != nil {
+		if s.RequiresRefreshTokenIssuanceAdmission() {
+			return "", fmt.Errorf("verify refresh token family membership: %w", err)
+		}
 		logger.LegacyPrintf("service.auth", "[Auth] Failed to add token to family set: %v", err)
 		// 不影响主流程
 	}
@@ -1891,7 +1922,7 @@ func (s *AuthService) RevokeAllUserSessions(ctx context.Context, userID int64) e
 	return s.refreshTokenCache.DeleteUserRefreshTokens(ctx, userID)
 }
 
-// RevokeAllUserTokens invalidates both stateless access tokens and refresh sessions.
+// RevokeAllUserTokens revokes refresh sessions without changing the access-token version.
 //
 // 注意：users 表没有 token_version 列（resolvedTokenVersion 由 email+password_hash
 // 指纹推导），因此对 user.TokenVersion 自增只影响内存副本。之前紧跟其后的整行
@@ -1904,7 +1935,7 @@ func (s *AuthService) RevokeAllUserTokens(ctx context.Context, userID int64) err
 	}
 
 	if err := s.RevokeAllUserSessions(ctx, userID); err != nil {
-		logger.LegacyPrintf("service.auth", "[Auth] Failed to revoke refresh sessions after token invalidation for user %d: %v", userID, err)
+		return fmt.Errorf("revoke refresh sessions: %w", err)
 	}
 	return nil
 }

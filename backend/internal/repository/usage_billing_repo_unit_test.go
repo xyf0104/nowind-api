@@ -8,10 +8,44 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
+
+func TestUsageBillingApply_RecoveryClassificationIsScopedToBegin(t *testing.T) {
+	for _, tc := range []struct {
+		name, code         string
+		atBegin, wantRetry bool
+	}{
+		{"recovery rejects begin", "0A000", true, true},
+		{"unsupported query", "0A000", false, false},
+		{"invalid credentials", "28P01", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			failure := &pq.Error{Code: pq.ErrorCode(tc.code)}
+			if tc.atBegin {
+				mock.ExpectBegin().WillReturnError(failure)
+			} else {
+				mock.ExpectBegin()
+				mock.ExpectQuery("INSERT INTO usage_billing_dedup").WillReturnError(failure)
+				mock.ExpectRollback()
+			}
+			_, err = (&usageBillingRepository{db: db}).Apply(context.Background(), &service.UsageBillingCommand{RequestID: "fixed"})
+			require.ErrorIs(t, err, failure)
+			if tc.wantRetry {
+				require.ErrorIs(t, err, service.ErrUsageBillingPrimaryUnavailable)
+			} else {
+				require.NotErrorIs(t, err, service.ErrUsageBillingPrimaryUnavailable)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
 
 const (
 	conditionalBalanceDeductSQL = `(?s)UPDATE users\s+SET balance = balance - \$1,\s+updated_at = NOW\(\)\s+WHERE id = \$2 AND deleted_at IS NULL AND balance >= \$1\s+RETURNING balance`

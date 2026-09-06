@@ -90,7 +90,7 @@
           <button
             type="button"
             class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
-            :disabled="activeQueryLoading"
+            :disabled="readOnly || activeQueryLoading"
             @click="loadActiveUsage"
           >
             <svg
@@ -116,7 +116,7 @@
       <div v-else class="space-y-1">
         <div class="text-xs text-gray-400">-</div>
         <!-- Always allow on-demand upstream quota probe, even before passive headers exist. -->
-        <GrokQuotaProbeCell :account="account" />
+        <GrokQuotaProbeCell v-if="!readOnly" :account="account" />
       </div>
     </template>
 
@@ -160,6 +160,7 @@
               -->
               <OpenAIQuotaResetCell
                 :account="account"
+                :read-only="readOnly"
                 :spread-actions="true"
                 @account-updated="handleQuotaResetAccountUpdated"
               >
@@ -167,7 +168,7 @@
                   <button
                     type="button"
                     class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                    :disabled="activeQueryLoading"
+                    :disabled="readOnly || activeQueryLoading"
                     @click="loadActiveUsage"
                   >
                     <svg
@@ -209,6 +210,7 @@
           <OpenAIQuotaResetCell
             v-else
             :account="account"
+            :read-only="readOnly"
             :spread-actions="true"
             @account-updated="handleQuotaResetAccountUpdated"
           >
@@ -216,7 +218,7 @@
               <button
                 type="button"
                 class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                :disabled="activeQueryLoading"
+                :disabled="readOnly || activeQueryLoading"
                 @click="loadActiveUsage"
               >
                 <svg
@@ -256,6 +258,7 @@
         <!-- Always allow on-demand upstream quota query, even before local data exists. -->
         <OpenAIQuotaResetCell
           :account="account"
+          :read-only="readOnly"
           class="mt-1"
           @account-updated="handleQuotaResetAccountUpdated"
         />
@@ -503,7 +506,7 @@
         <div v-if="grokQuotaStatusLine" class="text-[10px] text-gray-500 dark:text-gray-400">
           {{ grokQuotaStatusLine }}
         </div>
-        <GrokQuotaProbeCell :account="account" @probed="handleGrokProbed" />
+        <GrokQuotaProbeCell v-if="!readOnly" :account="account" @probed="handleGrokProbed" />
       </div>
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
@@ -518,14 +521,14 @@
     >
       <div class="space-y-1">
         <div
-          v-if="!cnQuotaCellVisible && !cnBalanceCellVisible"
+          v-if="readOnly || (!cnQuotaCellVisible && !cnBalanceCellVisible)"
           class="text-xs text-gray-400"
           :title="t('admin.accounts.cnProviders.noBalanceEndpoint')"
         >
           -
         </div>
-        <CNProviderQuotaCell :account="account" />
-        <CNProviderBalanceCell :account="account" />
+        <CNProviderQuotaCell v-if="!readOnly" :account="account" />
+        <CNProviderBalanceCell v-if="!readOnly" :account="account" />
       </div>
     </template>
 
@@ -756,11 +759,13 @@ const USAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 const props = withDefaults(
   defineProps<{
     account: Account
+    readOnly?: boolean
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
   }>(),
   {
+    readOnly: false,
     todayStats: null,
     todayStatsLoading: false,
     manualRefreshToken: 0
@@ -826,6 +831,7 @@ const cnBalanceCellVisible = computed(() =>
 )
 
 const shouldFetchUsage = computed(() => {
+  if (props.readOnly && !['anthropic', 'openai'].includes(props.account.platform)) return false
   if (props.account.platform === 'anthropic') {
     return props.account.type === 'oauth' || props.account.type === 'setup-token'
   }
@@ -900,11 +906,15 @@ const openAIWeeklyEstimateText = computed(() => {
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
-const usageCacheVersionKey = computed(() => (
+const usageCacheVersionKey = computed(() => JSON.stringify([
+  props.account.id,
+  props.account.platform,
+  props.account.type,
+  props.readOnly,
   props.account.platform === 'openai' && props.account.type === 'oauth'
     ? openAIUsageRefreshKey.value
     : ''
-))
+]))
 
 const shouldAutoLoadUsageOnMount = computed(() => {
   return shouldFetchUsage.value
@@ -1448,7 +1458,13 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   if (!shouldFetchUsage.value) return
 
   const requestGeneration = ++usageRequestGeneration
+  activeQueryLoading.value = false
   const requestedVersionKey = usageCacheVersionKey.value
+  const requestedAccount = props.account
+  const source = props.readOnly ? 'passive' : options?.source
+  const force = props.readOnly ? undefined : options?.force
+  const isCurrentRequest = () => !unmounted.value && requestGeneration === usageRequestGeneration &&
+    requestedVersionKey === usageCacheVersionKey.value
 
   // Check cache
   if (!options?.bypassCache) {
@@ -1464,25 +1480,28 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   error.value = null
 
   try {
-    const fetchFn = () => options?.source || options?.force
-      ? adminAPI.accounts.getUsage(props.account.id, options.source, options.force)
-      : adminAPI.accounts.getUsage(props.account.id)
-    const result = await enqueueUsageRequest(props.account, fetchFn)
-    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
+    const fetchFn = () => {
+      if (!isCurrentRequest()) throw new Error('Usage request superseded')
+      return source || force
+        ? adminAPI.accounts.getUsage(requestedAccount.id, source, force)
+        : adminAPI.accounts.getUsage(requestedAccount.id)
+    }
+    const result = await enqueueUsageRequest(requestedAccount, fetchFn)
+    if (isCurrentRequest()) {
       usageInfo.value = result
-      _usageCache.set(props.account.id, {
+      _usageCache.set(requestedAccount.id, {
         data: result,
         ts: Date.now(),
         versionKey: requestedVersionKey
       })
     }
   } catch (e: any) {
-    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
+    if (isCurrentRequest()) {
       error.value = t('common.error')
       console.error('Failed to load usage:', e)
     }
   } finally {
-    if (!unmounted.value && requestGeneration === usageRequestGeneration) loading.value = false
+    if (isCurrentRequest()) loading.value = false
   }
 }
 
@@ -1537,29 +1556,35 @@ const attachVisibilityObserver = () => {
 }
 
 const loadActiveUsage = async () => {
+  if (props.readOnly) return
   const requestGeneration = ++usageRequestGeneration
+  loading.value = false
   const requestedVersionKey = usageCacheVersionKey.value
+  const requestedAccountID = props.account.id
+  const isCurrentRequest = () => !unmounted.value && requestGeneration === usageRequestGeneration &&
+    requestedVersionKey === usageCacheVersionKey.value
   activeQueryLoading.value = true
   try {
-    const result = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
-    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
+    const result = await adminAPI.accounts.getUsage(requestedAccountID, 'active', true)
+    if (isCurrentRequest()) {
       usageInfo.value = result
-      _usageCache.set(props.account.id, {
+      _usageCache.set(requestedAccountID, {
         data: result,
         ts: Date.now(),
         versionKey: requestedVersionKey
       })
     }
   } catch (e: any) {
-    if (!unmounted.value && requestGeneration === usageRequestGeneration) {
+    if (isCurrentRequest()) {
       console.error('Failed to load active usage:', e)
     }
   } finally {
-    if (!unmounted.value) activeQueryLoading.value = false
+    if (isCurrentRequest()) activeQueryLoading.value = false
   }
 }
 
 const handleGrokProbed = (result: GrokQuotaProbeResult) => {
+  if (props.readOnly) return
   const current = usageInfo.value
   if (!current) return
   const snapshot = result.snapshot
@@ -1679,6 +1704,7 @@ const quotaTotalBar = computed((): QuotaBarInfo | null => {
 })
 
 const handleQuotaResetAccountUpdated = (account: Account) => {
+  if (props.readOnly || account.id !== props.account.id) return
   emit('account-updated', account)
 }
 
@@ -1812,12 +1838,15 @@ onMounted(() => {
   requestAutoLoad(source)
 })
 
-watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
-  if (!prevKey || nextKey === prevKey) return
-  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
-
+watch(usageCacheVersionKey, () => {
+  usageRequestGeneration++
+  usageInfo.value = null
+  error.value = null
+  loading.value = false
+  activeQueryLoading.value = false
+  pendingAutoLoad.value = false
   _usageCache.delete(props.account.id)
-  requestAutoLoad()
+  requestAutoLoad(isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined)
 })
 
 watch(

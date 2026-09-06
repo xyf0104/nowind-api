@@ -78,6 +78,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	promptCacheKey string,
 	routing ...string,
 ) (http.Header, openAIWSSessionHeaderResolution, error) {
+	captureOpenAIRequestOwnership(c, nil)
 	headers := make(http.Header)
 	if account == nil || !account.IsOpenAIAgentIdentity() {
 		headers.Set("authorization", "Bearer "+token)
@@ -176,6 +177,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		routingServiceTier = routing[1]
 	}
 	setOpenAICodexRoutingHint(headers, account, routingModel, routingServiceTier)
+	s.guardOpenAICodexTurnStateEcho(c, account, headers)
 	logOpenAIRoutingDiagnostics(
 		ctx,
 		account,

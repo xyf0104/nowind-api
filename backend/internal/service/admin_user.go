@@ -451,20 +451,12 @@ func (s *adminServiceImpl) DeleteInactiveUserIfStillInactive(ctx context.Context
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		role       string
-		status     string
-		deletedAt  sql.NullTime
-		lastActive time.Time
+		role      string
+		status    string
+		deletedAt sql.NullTime
 	)
 	rows, err := tx.Client().QueryContext(ctx, `
-		SELECT u.role, u.status, u.deleted_at,
-		       GREATEST(
-		           u.created_at,
-		           COALESCE(u.last_login_at, '-infinity'::timestamptz),
-		           COALESCE(u.last_active_at, '-infinity'::timestamptz),
-		           COALESCE((SELECT MAX(ak.last_used_at) FROM api_keys ak WHERE ak.user_id = u.id), '-infinity'::timestamptz),
-		           COALESCE((SELECT MAX(ul.created_at) FROM usage_logs ul WHERE ul.user_id = u.id), '-infinity'::timestamptz)
-		       ) AS last_activity_at
+		SELECT u.role, u.status, u.deleted_at
 		FROM users u
 		WHERE u.id = $1
 		FOR UPDATE`, id)
@@ -479,14 +471,14 @@ func (s *adminServiceImpl) DeleteInactiveUserIfStillInactive(ctx context.Context
 		}
 		return false, ErrUserNotFound
 	}
-	if err := rows.Scan(&role, &status, &deletedAt, &lastActive); err != nil {
+	if err := rows.Scan(&role, &status, &deletedAt); err != nil {
 		_ = rows.Close()
 		return false, err
 	}
 	if err := rows.Close(); err != nil {
 		return false, err
 	}
-	if deletedAt.Valid || role == RoleAdmin || status != StatusActive || !lastActive.Before(cutoff) {
+	if deletedAt.Valid || role == RoleAdmin || status != StatusActive {
 		return false, nil
 	}
 
@@ -499,9 +491,9 @@ func (s *adminServiceImpl) DeleteInactiveUserIfStillInactive(ctx context.Context
 	}
 	keys := make([]keyRef, 0)
 	rows, err = tx.Client().QueryContext(ctx, `
-		SELECT id, key
+		SELECT id, key, deleted_at
 		FROM api_keys
-		WHERE user_id = $1 AND deleted_at IS NULL
+		WHERE user_id = $1
 		ORDER BY id
 		FOR UPDATE`, id)
 	if err != nil {
@@ -509,11 +501,14 @@ func (s *adminServiceImpl) DeleteInactiveUserIfStillInactive(ctx context.Context
 	}
 	for rows.Next() {
 		var key keyRef
-		if err := rows.Scan(&key.id, &key.key); err != nil {
+		var keyDeletedAt sql.NullTime
+		if err := rows.Scan(&key.id, &key.key, &keyDeletedAt); err != nil {
 			_ = rows.Close()
 			return false, err
 		}
-		keys = append(keys, key)
+		if !keyDeletedAt.Valid {
+			keys = append(keys, key)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -521,6 +516,46 @@ func (s *adminServiceImpl) DeleteInactiveUserIfStillInactive(ctx context.Context
 	}
 	if err := rows.Close(); err != nil {
 		return false, err
+	}
+
+	// Use a fresh READ COMMITTED snapshot after acquiring the user and key
+	// locks. Activity subqueries evaluated before a lock wait can be stale.
+	// Also lock the cleanup cycle so cancellation/replacement cannot authorize
+	// deletion from an old due-list entry, even after a prolonged worker outage.
+	rows, err = tx.Client().QueryContext(ctx, `
+		SELECT GREATEST(
+		           u.created_at,
+		           COALESCE(u.last_login_at, '-infinity'::timestamptz),
+		           COALESCE(u.last_active_at, '-infinity'::timestamptz),
+		           COALESCE((SELECT MAX(ak.last_used_at) FROM api_keys ak WHERE ak.user_id = u.id), '-infinity'::timestamptz),
+		           COALESCE((SELECT MAX(ul.created_at) FROM usage_logs ul WHERE ul.user_id = u.id), '-infinity'::timestamptz)
+		       ), c.activity_at
+		FROM users u
+		JOIN user_inactivity_cleanups c ON c.user_id = u.id
+		WHERE u.id = $1
+		  AND c.reminder_status = 'sent'
+		  AND c.reminder_sent_at IS NOT NULL
+		  AND c.reminder_sent_at <= CURRENT_TIMESTAMP - INTERVAL '72 hours'
+		  AND c.delete_after <= CURRENT_TIMESTAMP
+		FOR UPDATE OF c`, id)
+	if err != nil {
+		return false, err
+	}
+	if !rows.Next() {
+		rowErr := rows.Err()
+		_ = rows.Close()
+		return false, rowErr
+	}
+	var lastActive, warnedActivity time.Time
+	if err := rows.Scan(&lastActive, &warnedActivity); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if !lastActive.Before(cutoff) || lastActive.After(warnedActivity) {
+		return false, nil
 	}
 
 	if s.apiKeyRepo != nil {

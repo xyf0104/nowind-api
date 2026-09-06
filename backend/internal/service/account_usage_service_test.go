@@ -24,7 +24,7 @@ func (r *accountUsageCodexProbeRepo) UpdateExtra(_ context.Context, _ int64, upd
 	return nil
 }
 
-func (r *accountUsageCodexProbeRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+func (r *accountUsageCodexProbeRepo) UpdateOpenAICodexSnapshotIfIdentityMatches(_ context.Context, _ *Account, updates map[string]any) (bool, error) {
 	if r.updateExtraCh != nil {
 		copied := make(map[string]any, len(updates))
 		for k, v := range updates {
@@ -160,7 +160,7 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *
 		rateLimitCh:   make(chan time.Time, 1),
 	}
 	svc := &AccountUsageService{accountRepo: repo}
-	applied, err := svc.persistOpenAICodexProbeSnapshot(321, map[string]any{
+	applied, err := svc.persistOpenAICodexProbeSnapshot(&Account{ID: 321, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, map[string]any{
 		"codex_usage_updated_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"codex_7d_used_percent":  100.0,
 		"codex_7d_reset_at":      time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339),

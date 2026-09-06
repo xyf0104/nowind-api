@@ -1,6 +1,7 @@
 package service
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/google/uuid"
 )
@@ -79,24 +81,27 @@ type RuntimeExportManager interface {
 	Delete(context.Context, string) error
 }
 
-type runtimeExportLauncher func(context.Context, string, string) error
+type runtimeExportLauncher func(context.Context, string, string, string, string) error
 
 // RuntimeExportService creates a portable logical snapshot without stopping
 // the application. The short-lived updater container performs host-level
-// Docker reads; the API process only persists and serves the completed archive.
+// Docker reads; the API uses its effective database connection to supply the
+// logical snapshot, never a possibly stale local container selected by name.
 type RuntimeExportService struct {
 	directory string
 	launcher  runtimeExportLauncher
+	dumper    DBDumper
+	cfg       *config.Config
 	now       func() time.Time
 
 	mu sync.Mutex
 }
 
-func NewRuntimeExportService() *RuntimeExportService {
-	return newRuntimeExportService(defaultRuntimeExportDirectory, launchDockerRuntimeExport, time.Now)
+func NewRuntimeExportService(dumper DBDumper, cfg *config.Config) *RuntimeExportService {
+	return newRuntimeExportService(defaultRuntimeExportDirectory, dumper, cfg, launchDockerRuntimeExport, time.Now)
 }
 
-func newRuntimeExportService(directory string, launcher runtimeExportLauncher, now func() time.Time) *RuntimeExportService {
+func newRuntimeExportService(directory string, dumper DBDumper, cfg *config.Config, launcher runtimeExportLauncher, now func() time.Time) *RuntimeExportService {
 	if strings.TrimSpace(directory) == "" {
 		directory = defaultRuntimeExportDirectory
 	}
@@ -106,6 +111,8 @@ func newRuntimeExportService(directory string, launcher runtimeExportLauncher, n
 	return &RuntimeExportService{
 		directory: filepath.Clean(directory),
 		launcher:  launcher,
+		dumper:    dumper,
+		cfg:       cfg,
 		now:       now,
 	}
 }
@@ -115,7 +122,7 @@ func newRuntimeExportService(directory string, launcher runtimeExportLauncher, n
 // open. The resulting package is retained locally until an administrator
 // downloads or deletes it.
 func (s *RuntimeExportService) Start(ctx context.Context, sourceOrigin string) (*RuntimeExportRecord, error) {
-	if s == nil || s.launcher == nil {
+	if s == nil || s.launcher == nil || s.dumper == nil || s.cfg == nil {
 		return nil, ErrRuntimeExportUnsupported
 	}
 	if err := s.ensureDirectory(); err != nil {
@@ -267,13 +274,22 @@ func (s *RuntimeExportService) execute(record RuntimeExportRecord, sourceOrigin 
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), runtimeExportTimeout)
-	err := s.launcher(ctx, s.filePath(record), sourceOrigin)
+	snapshot, err := s.dumpDatabase(ctx)
+	if err == nil {
+		defer os.Remove(snapshot)
+		var runtimeContext string
+		runtimeContext, err = s.writeRuntimeContext()
+		if err == nil {
+			defer os.Remove(runtimeContext)
+			err = s.launcher(ctx, s.filePath(record), sourceOrigin, snapshot, runtimeContext)
+		}
+	}
 	cancel()
 	if err != nil {
 		s.updateRecord(record.ID, func(current *RuntimeExportRecord) {
 			current.Status = "failed"
 			current.FinishedAt = s.now().UTC().Format(time.RFC3339)
-			current.ErrorMessage = "导出未完成，请检查服务器 Docker 状态后重试"
+			current.ErrorMessage = "导出未完成，请检查当前数据库连接和服务器 Docker 状态后重试"
 		})
 		return
 	}
@@ -303,6 +319,41 @@ func (s *RuntimeExportService) execute(record RuntimeExportRecord, sourceOrigin 
 		current.FinishedAt = s.now().UTC().Format(time.RFC3339)
 		current.ErrorMessage = ""
 	})
+}
+
+func (s *RuntimeExportService) dumpDatabase(ctx context.Context) (path string, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	file, err := os.CreateTemp(s.directory, ".postgres-*.sql.gz")
+	if err != nil {
+		return "", err
+	}
+	path = file.Name()
+	defer func() {
+		err = errors.Join(err, file.Close())
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}()
+	stream, err := s.dumper.Dump(ctx)
+	if err != nil {
+		return path, err
+	}
+	compressed := gzip.NewWriter(file)
+	size, copyErr := io.Copy(compressed, stream)
+	if copyErr != nil {
+		cancel()
+	}
+	// pg_dump can emit partial stdout and fail afterwards. Close waits for its
+	// exit status; neither a nonempty file nor a valid gzip proves completion.
+	err = errors.Join(copyErr, stream.Close(), compressed.Close())
+	if err == nil && size == 0 {
+		err = errors.New("database export returned an empty snapshot")
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	return path, err
 }
 
 func (s *RuntimeExportService) updateRecord(id string, update func(*RuntimeExportRecord)) {
@@ -473,11 +524,11 @@ func normalizeRuntimeExportSourceOrigin(value string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-func launchDockerRuntimeExport(ctx context.Context, outputPath, sourceOrigin string) error {
-	return launchDockerRuntimeExportWithClient(ctx, newDockerUpdateClient(), outputPath, sourceOrigin)
+func launchDockerRuntimeExport(ctx context.Context, outputPath, sourceOrigin, snapshot, runtimeContext string) error {
+	return launchDockerRuntimeExportWithClient(ctx, newDockerUpdateClient(), outputPath, sourceOrigin, snapshot, runtimeContext)
 }
 
-func launchDockerRuntimeExportWithClient(ctx context.Context, client *dockerUpdateClient, outputPath, sourceOrigin string) error {
+func launchDockerRuntimeExportWithClient(ctx context.Context, client *dockerUpdateClient, outputPath, sourceOrigin, snapshot, runtimeContext string) error {
 	if client == nil || strings.TrimSpace(outputPath) == "" {
 		return ErrRuntimeExportUnsupported
 	}
@@ -487,6 +538,12 @@ func launchDockerRuntimeExportWithClient(ctx context.Context, client *dockerUpda
 	fileName := filepath.Base(outputPath)
 	if fileName != runtimeExportFileName(strings.TrimSuffix(fileName, ".tar.gz")) || !validRuntimeExportID(strings.TrimSuffix(fileName, ".tar.gz")) {
 		return fmt.Errorf("invalid migration export path")
+	}
+	if !filepath.IsAbs(snapshot) || filepath.Dir(snapshot) != filepath.Dir(outputPath) || !strings.HasPrefix(filepath.Base(snapshot), ".postgres-") {
+		return fmt.Errorf("invalid database snapshot path")
+	}
+	if !filepath.IsAbs(runtimeContext) || filepath.Dir(runtimeContext) != filepath.Dir(outputPath) || !strings.HasPrefix(filepath.Base(runtimeContext), ".runtime-context-") {
+		return fmt.Errorf("invalid runtime context path")
 	}
 
 	appContainerName, appContainer, err := client.findAppContainer(ctx)
@@ -515,6 +572,10 @@ func launchDockerRuntimeExportWithClient(ctx context.Context, client *dockerUpda
 			"runtime-export",
 			"--output",
 			"/tmp/" + fileName,
+			"--postgres-from-container",
+			appContainerName + ":" + snapshot,
+			"--runtime-context-from-container",
+			appContainerName + ":" + runtimeContext,
 			"--publish-to-container",
 			appContainerName + ":/app/data/runtime-exports/" + fileName,
 		},

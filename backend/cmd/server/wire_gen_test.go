@@ -21,6 +21,11 @@ func TestProvideServiceBuildInfo(t *testing.T) {
 }
 
 func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
+	cleanup := newTestApplicationCleanup(nil)
+	require.NotPanics(t, cleanup)
+}
+
+func newTestApplicationCleanup(inactiveUserCleanup *service.InactiveUserCleanupService) func() {
 	cfg := &config.Config{}
 
 	oauthSvc := service.NewOAuthService(nil, nil)
@@ -50,7 +55,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
-	cleanup := provideCleanup(
+	return provideCleanup(
 		nil, // entClient
 		nil, // redis
 		&service.OpsMetricsCollector{},
@@ -72,6 +77,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		proxyExpirySvc,
 		subscriptionExpirySvc,
 		&service.UsageCleanupService{},
+		inactiveUserCleanup,
 		idempotencyCleanupSvc,
 		&service.BatchImageCleanupService{},
 		nil, // pixlabSMS
@@ -97,8 +103,4 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // auditLog
 		nil, // promptAudit
 	)
-
-	require.NotPanics(t, func() {
-		cleanup()
-	})
 }

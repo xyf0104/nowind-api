@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -132,6 +133,9 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 
 		retryBody, changed, trimErr := trimGrokInvalidEncryptedContentRetryBody(patchedBody)
 		if trimErr != nil {
+			if errors.Is(trimErr, ErrOpenAIContextUnavailable) {
+				WriteOpenAIContextUnavailableResponse(c)
+			}
 			return nil, fmt.Errorf("prepare Grok invalid encrypted_content retry: %w", trimErr)
 		}
 		if !changed {
@@ -363,6 +367,9 @@ func stripAnthropicThinkingSignatures(body []byte) ([]byte, bool) {
 }
 
 func trimGrokInvalidEncryptedContentRetryBody(body []byte) ([]byte, bool, error) {
+	if hasOpenAIEncryptedCompactionRaw(body) {
+		return body, false, ErrOpenAIContextUnavailable
+	}
 	input := gjson.GetBytes(body, "input")
 	items := input.Array()
 	if input.IsObject() {

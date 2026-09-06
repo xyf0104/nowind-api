@@ -2680,12 +2680,24 @@ func (h *AccountHandler) GetUsage(c *gin.Context) {
 		return
 	}
 
-	source := c.DefaultQuery("source", "active")
+	source, explicitSource := c.GetQuery("source")
 	force := c.Query("force") == "true"
-	if source != "passive" {
+	if source != "passive" || force {
 		if err := h.ensureAccountManagementAccess(c.Request.Context(), accountID); err != nil {
-			response.ErrorFrom(c, err)
-			return
+			switch infraerrors.Reason(err) {
+			case "ACCOUNT_REMOTE_NODE_READ_ONLY", "ACCOUNT_REMOTE_NODE_TAKEOVER_DISABLED",
+				"ACCOUNT_REMOTE_NODE_STATUS_UNAVAILABLE", "ACCOUNT_NODE_ACCESS_UNAVAILABLE":
+				// Older clients omit source. An unavailable management path must
+				// never turn a display request into an upstream probe or write.
+				if !explicitSource && !force {
+					source = "passive"
+					break
+				}
+				fallthrough
+			default:
+				response.ErrorFrom(c, err)
+				return
+			}
 		}
 	}
 

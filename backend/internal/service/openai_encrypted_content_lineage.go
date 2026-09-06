@@ -127,6 +127,42 @@ func stripOpenAIInvalidEncryptedContentItems(reqBody map[string]any, invalid map
 	}
 }
 
+func openAIItemHasInvalidEncryptedCompaction(item gjson.Result, invalid map[string]struct{}) bool {
+	if !isOpenAIEncryptedCompactionRaw(item) {
+		return false
+	}
+	encrypted := item.Get("encrypted_content")
+	if encrypted.Type != gjson.String || encrypted.String() == "" {
+		return false
+	}
+	_, hit := invalid[openAIEncryptedContentDigest(encrypted.String())]
+	return hit
+}
+
+func openAIRawPayloadHasInvalidEncryptedCompaction(payload []byte, invalid map[string]struct{}) bool {
+	input := gjson.GetBytes(payload, "input")
+	if input.IsObject() {
+		return openAIItemHasInvalidEncryptedCompaction(input, invalid)
+	}
+	found := false
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			found = openAIItemHasInvalidEncryptedCompaction(item, invalid)
+			return !found
+		})
+	}
+	return found
+}
+
+func openAIReplayHasInvalidEncryptedCompaction(items []json.RawMessage, invalid map[string]struct{}) bool {
+	for _, item := range items {
+		if openAIItemHasInvalidEncryptedCompaction(gjson.ParseBytes(item), invalid) {
+			return true
+		}
+	}
+	return false
+}
+
 func openAIRawPayloadHasInvalidEncryptedContent(payload []byte, invalid map[string]struct{}) bool {
 	if len(payload) == 0 || len(invalid) == 0 {
 		return false
@@ -160,7 +196,7 @@ func openAIRawPayloadHasInvalidEncryptedContent(payload []byte, invalid map[stri
 // A changed replay item gets a new immutable body. Unchanged item bodies remain
 // shared with the existing replay history.
 func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, invalid map[string]struct{}) ([]json.RawMessage, int) {
-	if len(items) == 0 || len(invalid) == 0 {
+	if len(items) == 0 || len(invalid) == 0 || openAIReplayHasInvalidEncryptedCompaction(items, invalid) {
 		return items, 0
 	}
 	hit := false
@@ -218,6 +254,9 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 }
 
 func stripOpenAIInvalidEncryptedContentRaw(payload []byte, invalid map[string]struct{}) ([]byte, int, error) {
+	if openAIRawPayloadHasInvalidEncryptedCompaction(payload, invalid) {
+		return payload, 0, ErrOpenAIContextUnavailable
+	}
 	if !openAIRawPayloadHasInvalidEncryptedContent(payload, invalid) {
 		return payload, 0, nil
 	}

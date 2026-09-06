@@ -106,8 +106,8 @@ func TestTrimOpenAIEncryptedReasoningItems_Compaction(t *testing.T) {
 		encrypted bool
 		changed   bool
 	}{
-		{name: "compaction", itemType: "compaction", encrypted: true, changed: true},
-		{name: "compaction summary", itemType: "compaction_summary", encrypted: true, changed: true},
+		{name: "compaction", itemType: "compaction", encrypted: true, changed: false},
+		{name: "compaction summary", itemType: "compaction_summary", encrypted: true, changed: false},
 		{name: "unencrypted compaction", itemType: "compaction", encrypted: false, changed: false},
 	}
 
@@ -158,7 +158,7 @@ func TestSanitizeOpenAICrossModeFailoverReasoning_DropsWholeEncryptedItem(t *tes
 	require.Equal(t, int64(2), gjson.GetBytes(sanitized, "input.#").Int())
 }
 
-func TestSanitizeOpenAICrossModeFailoverReasoning_DropsEncryptedCompactionItems(t *testing.T) {
+func TestSanitizeOpenAICrossModeFailoverReasoning_RejectsEncryptedCompactionLoss(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":[` +
 		`{"type":"compaction","id":"cmp_stale","encrypted_content":"ENC"},` +
 		`{"type":"compaction_summary","id":"cmp_summary_stale","encrypted_content":"ENC"},` +
@@ -166,13 +166,9 @@ func TestSanitizeOpenAICrossModeFailoverReasoning_DropsEncryptedCompactionItems(
 		`]}`)
 
 	sanitized, changed, err := SanitizeOpenAICrossModeFailoverReasoning(body)
-	require.NoError(t, err)
-	require.True(t, changed)
-	require.Equal(t, int64(1), gjson.GetBytes(sanitized, "input.#").Int())
-	require.Equal(t, "message", gjson.GetBytes(sanitized, "input.0.type").String())
-	require.Equal(t, "continue normally", gjson.GetBytes(sanitized, "input.0.content").String())
-	require.NotContains(t, string(sanitized), "compaction")
-	require.NotContains(t, string(sanitized), "encrypted_content")
+	require.ErrorIs(t, err, ErrOpenAIContextUnavailable)
+	require.False(t, changed)
+	require.Equal(t, body, sanitized)
 }
 
 func TestSanitizeOpenAICrossModeFailoverReasoning_NoEncryptedIsNoop(t *testing.T) {

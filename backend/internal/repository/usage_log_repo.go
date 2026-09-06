@@ -179,8 +179,7 @@ func appendExecutionNodeUsageLogWhereCondition(
 	conditions = append(conditions, fmt.Sprintf(`%s IN (
 		SELECT a.id
 		FROM accounts a
-		WHERE a.deleted_at IS NULL
-		  AND COALESCE(NULLIF(BTRIM(a.extra ->> 'xiass_execution_node_id'), ''), $%d) = $%d
+		WHERE COALESCE(NULLIF(BTRIM(a.extra ->> 'xiass_execution_node_id'), ''), $%d) = $%d
 	)`, accountColumn, legacyPos, nodePos))
 	args = append(args, legacyNodeID, executionNodeID)
 	return conditions, args

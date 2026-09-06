@@ -14,6 +14,7 @@ import (
 
 var ErrUsageBillingRequestIDRequired = errors.New("usage billing request_id is required")
 var ErrUsageBillingRequestConflict = errors.New("usage billing request fingerprint conflict")
+var ErrUsageBillingPrimaryUnavailable = errors.New("usage billing writable primary is not ready")
 
 // UsageBillingCommand describes one billable request that must be applied at most once.
 type UsageBillingCommand struct {

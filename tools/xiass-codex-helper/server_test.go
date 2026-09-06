@@ -18,8 +18,8 @@ func newTestHelperServer(manager *ConfigManager, site, state string) (*helperSer
 	helper, err := newHelperServer(manager, site, state)
 	if err == nil {
 		helper.prepare = func() error { return nil }
-		helper.listModels = func(string, string) ([]string, error) {
-			return nil, errors.New("model discovery unavailable in this test")
+		helper.listModels = func(string, string) (discoveredModelCatalog, error) {
+			return discoveredModelCatalog{}, errors.New("model discovery unavailable in this test")
 		}
 	}
 	return helper, err
@@ -81,11 +81,11 @@ func TestHelperServerListsCompatibleModelsFromLocalHelperOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper.listModels = func(baseURL, apiKey string) ([]string, error) {
+	helper.listModels = func(baseURL, apiKey string) (discoveredModelCatalog, error) {
 		if baseURL != "http://127.0.0.1:54843/v1" || apiKey != "local-key" {
 			t.Fatalf("model discovery input = %q / %q", baseURL, apiKey)
 		}
-		return []string{"gpt-5.6-luna", "gpt-5.6-sol"}, nil
+		return discoveredModelCatalog{IDs: []string{"gpt-5.6-luna", "gpt-5.6-sol"}}, nil
 	}
 	body := []byte(`{"base_url":"127.0.0.1:54843","api_key":"local-key"}`)
 	response := postHelperJSON(t, helper.routes(), "/api/models", helper.state, body, http.StatusOK)
@@ -102,11 +102,11 @@ func TestHelperServerAddsGPT6ToConfiguredXIASSModelCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	xiassBaseURL := strings.TrimSuffix(defaultXIASSAPIURL, "/")
-	helper.listModels = func(baseURL, apiKey string) ([]string, error) {
+	helper.listModels = func(baseURL, apiKey string) (discoveredModelCatalog, error) {
 		if baseURL != xiassBaseURL+"/v1" || apiKey != "xiass-key" {
 			t.Fatalf("model discovery input = %q / %q", baseURL, apiKey)
 		}
-		return []string{"gpt-5.6-sol", "gpt-reserve"}, nil
+		return discoveredModelCatalog{IDs: []string{"gpt-5.6-sol", "gpt-reserve"}}, nil
 	}
 	body := []byte(`{"base_url":"` + xiassBaseURL + `","api_key":"xiass-key"}`)
 	response := postHelperJSON(t, helper.routes(), "/api/models", helper.state, body, http.StatusOK)
@@ -121,8 +121,8 @@ func TestHelperServerDoesNotAddGPT6ToAnotherConfiguredSite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper.listModels = func(string, string) ([]string, error) {
-		return []string{"gpt-5.6-sol"}, nil
+	helper.listModels = func(string, string) (discoveredModelCatalog, error) {
+		return discoveredModelCatalog{IDs: []string{"gpt-5.6-sol"}}, nil
 	}
 	body := []byte(`{"base_url":"https://relay.example.com","api_key":"relay-key"}`)
 	response := postHelperJSON(t, helper.routes(), "/api/models", helper.state, body, http.StatusOK)
@@ -368,12 +368,12 @@ func TestHelperServerApplyDiscoversCompleteModelCatalogWhenMissing(t *testing.T)
 	helper.start = func(CodexInstallation) error { return nil }
 	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
 	var discoveries atomic.Int32
-	helper.listModels = func(baseURL, apiKey string) ([]string, error) {
+	helper.listModels = func(baseURL, apiKey string) (discoveredModelCatalog, error) {
 		discoveries.Add(1)
 		if baseURL != defaultXIASSAPIURL+"/v1" || apiKey != "xiass-key" {
 			t.Fatalf("model discovery input = %q / %q", baseURL, apiKey)
 		}
-		return []string{"gpt-5.6-luna", "gpt-5.6-sol"}, nil
+		return discoveredModelCatalog{IDs: []string{"gpt-5.6-luna", "gpt-5.6-sol"}}, nil
 	}
 	var applied ApplyConfig
 	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
@@ -392,7 +392,7 @@ func TestHelperServerApplyDiscoversCompleteModelCatalogWhenMissing(t *testing.T)
 	}
 }
 
-func TestHelperServerApplyKeepsSuppliedModelCatalogWithoutRediscovery(t *testing.T) {
+func TestHelperServerApplyKeepsSuppliedIDsAndDiscoversMetadata(t *testing.T) {
 	home := t.TempDir()
 	helper, err := newTestHelperServer(NewConfigManager(home), defaultXIASSAPIURL, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO1")
 	if err != nil {
@@ -404,9 +404,10 @@ func TestHelperServerApplyKeepsSuppliedModelCatalogWithoutRediscovery(t *testing
 	helper.stop = func(CodexInstallation) error { return nil }
 	helper.start = func(CodexInstallation) error { return nil }
 	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
-	helper.listModels = func(string, string) ([]string, error) {
-		t.Fatal("supplied model catalog triggered an unnecessary rediscovery")
-		return nil, nil
+	var discoveries int
+	helper.listModels = func(string, string) (discoveredModelCatalog, error) {
+		discoveries++
+		return discoveredModelCatalog{IDs: []string{"gpt-6-astra"}, Descriptors: syntheticNativeDescriptors(t)}, nil
 	}
 	var applied ApplyConfig
 	helper.applyConfig = func(input ApplyConfig) (ApplyResult, error) {
@@ -418,6 +419,9 @@ func TestHelperServerApplyKeepsSuppliedModelCatalogWithoutRediscovery(t *testing
 	postHelperJSON(t, helper.routes(), "/api/apply", helper.state, body, http.StatusOK)
 	if got := strings.Join(applied.ModelCatalogModels, ","); got != "gpt-6-astra,gpt-5.6-sol" {
 		t.Fatalf("supplied model catalog changed unexpectedly: %q", got)
+	}
+	if discoveries != 1 || len(applied.ModelCatalogDescriptors["gpt-6-astra"]) == 0 {
+		t.Fatal("picker IDs bypassed metadata discovery")
 	}
 }
 
@@ -433,8 +437,8 @@ func TestHelperServerApplyContinuesWhenAutomaticModelDiscoveryFails(t *testing.T
 	helper.stop = func(CodexInstallation) error { return nil }
 	helper.start = func(CodexInstallation) error { return nil }
 	helper.repairHistory = func() (HistoryRepairResult, error) { return HistoryRepairResult{}, nil }
-	helper.listModels = func(string, string) ([]string, error) {
-		return nil, errors.New("temporary model endpoint failure")
+	helper.listModels = func(string, string) (discoveredModelCatalog, error) {
+		return discoveredModelCatalog{}, errors.New("temporary model endpoint failure")
 	}
 
 	body := []byte(`{"base_url":"` + defaultXIASSAPIURL + `","api_key":"xiass-key","model":"gpt-6-astra"}`)
@@ -443,7 +447,7 @@ func TestHelperServerApplyContinuesWhenAutomaticModelDiscoveryFails(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(config), `model = "gpt-6-astra"`) || !strings.Contains(string(config), "model_catalog_json") {
+	if !strings.Contains(string(config), `model = "gpt-6-astra"`) || strings.Contains(string(config), "model_catalog_json") {
 		t.Fatalf("fallback configuration is incomplete:\n%s", config)
 	}
 }

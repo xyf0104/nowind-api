@@ -682,13 +682,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 跨 passthrough 边界的 failover：从 Kiro 等透传账号切到 Bedrock 等非透传账号前，
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
-		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
+			attemptBody, err := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
+			if err != nil {
+				return nil, err
+			}
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
 		cyberBlockKeyHTTP := ""
@@ -754,6 +757,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					).Error("openai.record_usage_failed", zap.Error(err))
 				}
 			})
+		}
+		if errors.Is(err, service.ErrOpenAIContextUnavailable) {
+			submitResponsesUsage(result)
+			if !c.Writer.Written() || service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
+				service.WriteOpenAIContextUnavailableResponse(c)
+			}
+			return
 		}
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
@@ -871,7 +881,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if result != nil {
 			// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
-				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
+				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduleModel, openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
 		} else {
@@ -2364,7 +2374,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				)
 				// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 				if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
-					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
+					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account, result.ResponseHeaders)
 				}
 				scheduleModel := openAIWSTurnScheduleModel(account, turnMappingSnapshot, turnRequestedModel)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduleModel, openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
@@ -2420,6 +2430,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
 
 		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+			if errors.Is(err, service.ErrOpenAIContextUnavailable) {
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "context_unavailable: restore full conversation history")
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				retryPayload, retryCurrentTurn := service.OpenAIWSCurrentTurnRetryPayload(err)

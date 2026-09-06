@@ -34,7 +34,11 @@ type helperServer struct {
 	listHistoryBackups         func() ([]HistoryBackupInfo, error)
 	deleteConfigBackup         func(string) error
 	deleteHistoryBackup        func(string) error
-	listModels                 func(string, string) ([]string, error)
+	listModels                 func(string, string) (discoveredModelCatalog, error)
+	modelCatalogMu             sync.Mutex
+	modelCatalogKey            string
+	modelCatalogFetchedAt      time.Time
+	modelCatalogCache          discoveredModelCatalog
 	state                      string
 	operationMu                sync.Mutex
 	siteMu                     sync.RWMutex
@@ -116,7 +120,7 @@ func newHelperServer(manager *ConfigManager, site string, state string) (*helper
 		listHistoryBackups:         repairer.ListBackups,
 		deleteConfigBackup:         manager.DeleteBackup,
 		deleteHistoryBackup:        repairer.DeleteBackup,
-		listModels:                 discoverCompatibleModels,
+		listModels:                 discoverCompatibleModelCatalog,
 		state:                      state,
 		siteURL:                    parsedSite,
 		index:                      index,
@@ -373,12 +377,12 @@ func (s *helperServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	models, err := s.listModels(normalized.BaseURL, normalized.APIKey)
+	catalog, err := s.loadModelCatalog(normalized.BaseURL, normalized.APIKey)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	models = s.augmentConfiguredXIASSModels(normalized.BaseURL, models)
+	models := s.augmentConfiguredXIASSModels(normalized.BaseURL, catalog.IDs)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
 }
 
@@ -471,14 +475,13 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if len(input.ModelCatalogModels) == 0 {
-		// Older website callbacks and manual setup do not always preload the
-		// model list. Discover it before stopping Codex so the generated startup
-		// catalog still exposes every model available to this API key. Discovery
-		// is best-effort: a temporary model endpoint failure must not block an
-		// otherwise valid configuration change.
-		if models, discoveryErr := s.listModels(input.BaseURL, input.APIKey); discoveryErr == nil {
-			input.ModelCatalogModels = s.augmentConfiguredXIASSModels(input.BaseURL, models)
+	// Picker IDs are not a metadata source. Reuse helper-side discovery for the
+	// same connection, or fetch before stopping Codex. A failed fetch falls back
+	// to native metadata without manufacturing known-model instructions.
+	if catalog, discoveryErr := s.loadModelCatalog(input.BaseURL, input.APIKey); discoveryErr == nil {
+		input.ModelCatalogDescriptors = catalog.Descriptors
+		if len(input.ModelCatalogModels) == 0 {
+			input.ModelCatalogModels = s.augmentConfiguredXIASSModels(input.BaseURL, catalog.IDs)
 		}
 	}
 
@@ -585,9 +588,13 @@ func (s *helperServer) handleApplyRequest(w http.ResponseWriter, r *http.Request
 	if manual {
 		configurationName = "自定义 API"
 	}
+	catalogNotice := ""
+	if result.CatalogSHA == "" {
+		catalogNotice = "已知模型的完整元数据暂不可用，未覆盖 Codex 原生模型目录；自定义模型列表可能暂不可见。"
+	}
 	writeJSON(w, http.StatusOK, operationResponse{
 		OK:             true,
-		Message:        configurationName + " 配置已写入（上下文 " + formatTokenCount(input.ModelContextWindow) + "，自动压缩 " + formatTokenCount(input.ModelAutoCompactTokenLimit) + "）；" + historySummary(history) + " Codex 已重新启动。",
+		Message:        configurationName + " 配置已写入（上下文 " + formatTokenCount(input.ModelContextWindow) + "，自动压缩 " + formatTokenCount(input.ModelAutoCompactTokenLimit) + "）；" + catalogNotice + historySummary(history) + " Codex 已重新启动。",
 		BackupID:       result.BackupID,
 		Restarted:      true,
 		ConfigVerified: true,
@@ -607,10 +614,32 @@ func parseSiteURL(value string) (*url.URL, error) {
 	return parsed, nil
 }
 
+// Keep one bounded, short-lived catalog in memory. Templates never cross the
+// browser picker/callback boundary and cannot leak across URLs or API keys.
+func (s *helperServer) loadModelCatalog(baseURL, apiKey string) (discoveredModelCatalog, error) {
+	s.modelCatalogMu.Lock()
+	defer s.modelCatalogMu.Unlock()
+	key := sha256Hex([]byte(baseURL + "\x00" + apiKey))
+	if key == s.modelCatalogKey && time.Since(s.modelCatalogFetchedAt) < 5*time.Minute {
+		return s.modelCatalogCache, nil
+	}
+	catalog, err := s.listModels(baseURL, apiKey)
+	if err != nil {
+		return discoveredModelCatalog{}, err
+	}
+	s.modelCatalogKey, s.modelCatalogFetchedAt, s.modelCatalogCache = key, time.Now(), catalog
+	return catalog, nil
+}
+
 func discoverCompatibleModels(baseURL, apiKey string) ([]string, error) {
+	catalog, err := discoverCompatibleModelCatalog(baseURL, apiKey)
+	return catalog.IDs, err
+}
+
+func discoverCompatibleModelCatalog(baseURL, apiKey string) (discoveredModelCatalog, error) {
 	endpoint, err := url.Parse(baseURL)
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return nil, errors.New("invalid compatible API base URL")
+		return discoveredModelCatalog{}, errors.New("invalid compatible API base URL")
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/models"
 	query := endpoint.Query()
@@ -623,7 +652,7 @@ func discoverCompatibleModels(baseURL, apiKey string) ([]string, error) {
 
 	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, err
+		return discoveredModelCatalog{}, err
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+apiKey)
@@ -635,60 +664,17 @@ func discoverCompatibleModels(baseURL, apiKey string) ([]string, error) {
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("request compatible API models: %w", err)
+		return discoveredModelCatalog{}, errors.New("request compatible API models failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("compatible API model list returned HTTP %d", response.StatusCode)
+		return discoveredModelCatalog{}, fmt.Errorf("compatible API model list returned HTTP %d", response.StatusCode)
 	}
-
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-		Models []struct {
-			ID   string `json:"id"`
-			Slug string `json:"slug"`
-		} `json:"models"`
+	body, err := io.ReadAll(io.LimitReader(response.Body, modelCatalogMaxBytes+1))
+	if err != nil || len(body) > modelCatalogMaxBytes {
+		return discoveredModelCatalog{}, errors.New("compatible API catalog exceeds the size limit or could not be read")
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode compatible API model list: %w", err)
-	}
-	modelSet := make(map[string]struct{}, len(payload.Data)+len(payload.Models))
-	addModel := func(raw string) error {
-		model := strings.TrimSpace(raw)
-		if model == "" || len(model) > 200 || strings.ContainsAny(model, "\r\n\x00") {
-			return nil
-		}
-		modelSet[model] = struct{}{}
-		if len(modelSet) > 256 {
-			return errors.New("compatible API returned too many models")
-		}
-		return nil
-	}
-	for _, item := range payload.Data {
-		if err := addModel(item.ID); err != nil {
-			return nil, err
-		}
-	}
-	for _, item := range payload.Models {
-		model := item.Slug
-		if strings.TrimSpace(model) == "" {
-			model = item.ID
-		}
-		if err := addModel(model); err != nil {
-			return nil, err
-		}
-	}
-	if len(modelSet) == 0 {
-		return nil, errors.New("compatible API did not return any usable model IDs")
-	}
-	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-	return models, nil
+	return parseDiscoveredModelCatalog(body)
 }
 
 func (s *helperServer) currentSiteURL() *url.URL {

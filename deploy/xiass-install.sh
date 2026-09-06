@@ -232,7 +232,7 @@ check_system() {
 
 install_base_dependencies() {
     local missing=() cmd
-    for cmd in curl git openssl tar gzip awk sed ss; do
+    for cmd in curl git openssl tar gzip awk sed ss jq; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
     [ "${#missing[@]}" -eq 0 ] && return
@@ -240,18 +240,18 @@ install_base_dependencies() {
     log "缺少基础依赖：${missing[*]}，正在安装..."
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update -y
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git openssl tar gzip iproute2 procps
+        DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git openssl tar gzip iproute2 procps jq
     elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y ca-certificates curl git openssl tar gzip iproute procps-ng
+        dnf install -y ca-certificates curl git openssl tar gzip iproute procps-ng jq
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y ca-certificates curl git openssl tar gzip iproute procps-ng
+        yum install -y ca-certificates curl git openssl tar gzip iproute procps-ng jq
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache ca-certificates curl git openssl tar gzip iproute2 procps bash
+        apk add --no-cache ca-certificates curl git openssl tar gzip iproute2 procps bash jq
     else
-        die "无法识别系统包管理器。请手动安装：curl git openssl tar gzip iproute2。"
+        die "无法识别系统包管理器。请手动安装：curl git openssl tar gzip iproute2 jq。"
     fi
 
-    for cmd in curl git openssl tar gzip awk sed ss; do
+    for cmd in curl git openssl tar gzip awk sed ss jq; do
         command -v "$cmd" >/dev/null 2>&1 || die "依赖安装后仍找不到命令：$cmd"
     done
     ok "基础依赖已就绪"

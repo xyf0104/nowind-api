@@ -12,6 +12,9 @@ PREVIOUS_INSTALL=""
 PREVIOUS_COMPOSE_FILE=""
 DEPLOY_DIR=""
 COMPOSE=()
+RESTORE_CONFIG=""
+RESTORE_REDIS_USER=""
+RESTORE_REDIS_PASSWORD=""
 ORIGINAL_ARGS=("$@")
 
 log() { printf '[XIASS] %s\n' "$*"; }
@@ -78,25 +81,25 @@ install_packages() {
     elif command -v apk >/dev/null 2>&1; then
         manager="apk"
     else
-        die "unsupported package manager; install Docker, Docker Compose, curl, wget, tar, gzip, and jq manually"
+        die "unsupported package manager; install Docker, Docker Compose, curl, wget, tar, gzip, jq, and coreutils manually"
     fi
 
     case "$manager" in
         apt)
             apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl wget tar gzip jq docker.io docker-compose-plugin || \
-                DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl wget tar gzip jq docker.io docker-compose
+            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl wget tar gzip jq coreutils docker.io docker-compose-plugin || \
+                DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl wget tar gzip jq coreutils docker.io docker-compose
             ;;
         dnf)
-            dnf install -y ca-certificates curl wget tar gzip jq docker docker-compose-plugin || \
-                dnf install -y ca-certificates curl wget tar gzip jq docker docker-compose
+            dnf install -y ca-certificates curl wget tar gzip jq coreutils docker docker-compose-plugin || \
+                dnf install -y ca-certificates curl wget tar gzip jq coreutils docker docker-compose
             ;;
         yum)
-            yum install -y ca-certificates curl wget tar gzip jq docker docker-compose-plugin || \
-                yum install -y ca-certificates curl wget tar gzip jq docker docker-compose
+            yum install -y ca-certificates curl wget tar gzip jq coreutils docker docker-compose-plugin || \
+                yum install -y ca-certificates curl wget tar gzip jq coreutils docker docker-compose
             ;;
         apk)
-            apk add --no-cache ca-certificates curl wget tar gzip jq docker docker-cli-compose
+            apk add --no-cache ca-certificates curl wget tar gzip jq coreutils docker docker-cli-compose
             ;;
     esac
 }
@@ -149,10 +152,21 @@ verify_package() {
     [ -f "$PACKAGE_DIR/payload/.env" ] || die "missing deployment .env"
     [ -f "$PACKAGE_DIR/deploy/docker-compose.local.yml" ] || die "missing canonical docker-compose.local.yml"
     (cd "$PACKAGE_DIR" && sha256sum -c checksums.sha256)
+    case "$(manifest_value format_version)" in
+        1) ;;
+        2)
+            [ -s "$PACKAGE_DIR/payload/runtime-context.json" ] || die "missing effective runtime configuration"
+            [ -s "$PACKAGE_DIR/payload/redis.acl" ] || die "missing Redis ACL configuration"
+            jq -e '.version == 2 and (.config | type == "object") and (.environment | type == "object")' "$PACKAGE_DIR/payload/runtime-context.json" >/dev/null || die "invalid runtime configuration"
+            ;;
+        *) die "unsupported migration package format" ;;
+    esac
 }
 
 compose() {
-    "${COMPOSE[@]}" -f "$DEPLOY_DIR/docker-compose.local.yml" --project-directory "$DEPLOY_DIR" "$@"
+    local overrides=()
+    [ -z "$RESTORE_CONFIG" ] || overrides=(-f "$RESTORE_CONFIG")
+    "${COMPOSE[@]}" -f "$DEPLOY_DIR/docker-compose.local.yml" "${overrides[@]}" --project-directory "$DEPLOY_DIR" "$@"
 }
 
 compose_at() {
@@ -197,13 +211,9 @@ replace_domain_in_payload() {
 }
 
 wait_for_postgres() {
-    local user db attempt
-    user=$(read_env_value POSTGRES_USER)
-    user="${user:-sub2api}"
-    db=$(read_env_value POSTGRES_DB)
-    db="${db:-sub2api}"
+    local attempt
     for attempt in $(seq 1 90); do
-        if compose exec -T postgres pg_isready -U "$user" -d "$db" >/dev/null 2>&1; then
+        if compose exec -T postgres sh -c 'exec pg_isready -U "${POSTGRES_USER:-sub2api}" -d "${POSTGRES_DB:-sub2api}"' >/dev/null 2>&1; then
             return 0
         fi
         sleep 2
@@ -212,16 +222,142 @@ wait_for_postgres() {
 }
 
 wait_for_health() {
-    local port attempt
-    port=$(read_env_value SERVER_PORT)
-    port="${port:-8080}"
+    local endpoint host port attempt
+    endpoint=$(compose port xiass-api 8080) || return 1
+    endpoint="${endpoint%%$'\n'*}"
+    host="${endpoint%:*}"
+    port="${endpoint##*:}"
+    case "$host" in
+        0.0.0.0) host=127.0.0.1 ;;
+        '::'|'[::]') host='[::1]' ;;
+    esac
+    [ -n "$host" ] && [[ "$port" =~ ^[0-9]+$ ]] || return 1
     for attempt in $(seq 1 120); do
-        if curl -fsS --max-time 3 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+        if curl -fsS --max-time 3 "http://${host}:${port}/readyz" >/dev/null 2>&1; then
             return 0
         fi
         sleep 2
     done
     return 1
+}
+
+prepare_restored_runtime() {
+    [ "$(manifest_value format_version)" = "2" ] || return 0
+    local source="$PACKAGE_DIR/payload/runtime-context.json" password app_image redis_image
+    password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    app_image=$(manifest_value app_image)
+    redis_image=$(manifest_value redis_image)
+    [ -n "$app_image" ] && [ -n "$redis_image" ] || die "missing source image identity"
+    if [ "$(jq -r '.config.gateway.execution_node.enabled' "$source")" = "true" ]; then
+        warn "此压缩包恢复为独立实例；业务数据与账号归属记录保留，恢复后需重新配对其他节点，不会自动连接旧集群。"
+    fi
+    XIASS_RESTORE_PG_PASSWORD="$password" jq '
+        .config | .database.host="postgres" | .database.port=5432 | .database.sslmode="disable"
+        | .database.password=env.XIASS_RESTORE_PG_PASSWORD
+        | .redis.host="redis" | .redis.port=6379 | .redis.enable_tls=false
+        | .redis.sentinel_addrs=[] | .redis.sentinel_master_name="" | .redis.sentinel_username="" | .redis.sentinel_password=""
+        | .server.host="0.0.0.0" | .server.port=8080
+        | .gateway.execution_node.enabled=false
+        | .gateway.forced_codex_instructions_template_file=""
+    ' "$source" > "$DEPLOY_DIR/data/xiass-restored-config.json"
+    # Config values come from the effective snapshot. Empty optional env values
+    # leave that snapshot authoritative, while later .env edits/pairing still work.
+    jq '[.config | (paths(scalars), paths(type=="array")) | map(tostring|ascii_upcase) | join("_")]
+        + [.environment | keys[]] | unique
+        | map(. as $key | select(test("^[A-Z_][A-Z0-9_]*$") and
+          (["HOSTNAME","HOME","PATH","PWD","SHLVL","USER","LOGNAME","SHELL","_"] | index($key) | not)))' \
+        "$source" > "$DEPLOY_DIR/.restore-bindings.json"
+    jq --slurpfile effective "$DEPLOY_DIR/data/xiass-restored-config.json" --slurpfile keys "$DEPLOY_DIR/.restore-bindings.json" --arg install "$INSTALL_DIR" '
+        . as $source | $effective[0] as $cfg | (.config|keys|map(ascii_upcase)) as $prefixes
+        | reduce $keys[0][] as $key ({};
+            .[$key] = (if any($prefixes[]; . as $p | $key==$p or ($key|startswith($p+"_"))) or ($key|startswith("XIASS_CLUSTER_"))
+                       then "" else ($source.environment[$key] // "") end))
+        | del(.SERVER_PORT)
+        | . + {CONFIG_FILE:"/app/data/xiass-restored-config.json", DATA_DIR:"/app/data",
+            POSTGRES_USER:$cfg.database.user, POSTGRES_PASSWORD:$cfg.database.password, POSTGRES_DB:$cfg.database.dbname,
+            DATABASE_HOST:"postgres", DATABASE_PORT:"5432", DATABASE_SSLMODE:"disable",
+            DATABASE_USER:$cfg.database.user, DATABASE_PASSWORD:$cfg.database.password, DATABASE_DBNAME:$cfg.database.dbname,
+            REDIS_HOST:"redis", REDIS_PORT:"6379", REDIS_USERNAME:$cfg.redis.username, REDIS_PASSWORD:$cfg.redis.password,
+            REDIS_DB:($cfg.redis.db|tostring), REDIS_ENABLE_TLS:"false", JWT_SECRET:$cfg.jwt.secret,
+            JWT_REFRESH_TOKEN_STORE:$cfg.jwt.refresh_token_store, TOTP_ENCRYPTION_KEY:$cfg.totp.encryption_key,
+            GATEWAY_EXECUTION_NODE_ENABLED:"false", XIASS_CLUSTER_STATE_SOURCE_URL:"", XIASS_CLUSTER_TUNNEL_TOKEN:"",
+            XIASS_CLUSTER_NODE_URLS_JSON:"{}", XIASS_REDIS_BACKUP_CREDENTIALS_FILE:($install+"/deploy/ha/secrets/redis-backup.json")}
+    ' "$source" > "$DEPLOY_DIR/.restore-environment.json"
+    local name value escaped
+    while IFS= read -r -d '' name && IFS= read -r -d '' value; do
+        escaped=${value//\\/\\\\}
+        escaped=${escaped//\'/\\\'}
+        printf "%s='%s'\n" "$name" "$escaped" >> "$DEPLOY_DIR/.env"
+    done < <(jq -j 'to_entries[] | .key,"\u0000",(.value|tostring),"\u0000"' "$DEPLOY_DIR/.restore-environment.json")
+    RESTORE_CONFIG="$DEPLOY_DIR/docker-compose.restore.json"
+    jq --slurpfile effective "$DEPLOY_DIR/data/xiass-restored-config.json" --slurpfile keys "$DEPLOY_DIR/.restore-bindings.json" --slurpfile managed "$DEPLOY_DIR/.restore-environment.json" \
+        --arg image "$app_image" --arg redis_image "$redis_image" --arg install "$INSTALL_DIR" '
+        $effective[0] as $cfg
+        | (reduce (($keys[0] + ($managed[0]|keys))|unique)[] as $key ({}; .[$key]="${"+$key+"-}")) as $environment
+        | {services:{
+            "xiass-api": {image:$image, environment:($environment + {SERVER_HOST:"0.0.0.0", SERVER_PORT:"8080"})},
+            postgres: {environment:{POSTGRES_USER:$cfg.database.user, POSTGRES_PASSWORD:$cfg.database.password, POSTGRES_DB:$cfg.database.dbname}},
+            redis: {image:$redis_image, command:["redis-server","/data/redis.conf"],
+                environment:{REDIS_USERNAME:($cfg.redis.username // ""),REDISCLI_AUTH:$cfg.redis.password},
+                healthcheck:{test:["CMD-SHELL","redis-cli --user \"${REDIS_USERNAME:-default}\" ping"]}}
+        }} | .services.postgres.environment |= with_entries(.value |= gsub("\\$";"$$"))
+           | .services.redis.environment |= with_entries(.value |= gsub("\\$";"$$"))
+           | .services.redis.healthcheck.test[1] |= gsub("\\$";"$$")
+    ' "$source" > "$RESTORE_CONFIG"
+    rm -f "$DEPLOY_DIR/.restore-environment.json" "$DEPLOY_DIR/.restore-bindings.json"
+    chmod 600 "$RESTORE_CONFIG" "$DEPLOY_DIR/data/xiass-restored-config.json"
+    if [ -f "$PACKAGE_DIR/payload/redis-backup.json" ]; then
+        mkdir -p "$DEPLOY_DIR/ha/secrets"
+        chmod 700 "$DEPLOY_DIR/ha/secrets"
+        cp "$PACKAGE_DIR/payload/redis-backup.json" "$DEPLOY_DIR/ha/secrets/redis-backup.json"
+        chmod 600 "$DEPLOY_DIR/ha/secrets/redis-backup.json"
+    fi
+    cp "$PACKAGE_DIR/payload/redis.rdb" "$DEPLOY_DIR/redis_data/dump.rdb"
+    cp "$PACKAGE_DIR/payload/redis.acl" "$DEPLOY_DIR/redis_data/users.acl"
+    RESTORE_REDIS_USER="xiass-restore-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+    RESTORE_REDIS_PASSWORD=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    printf '\nuser %s on >%s ~* &* +@all\n' "$RESTORE_REDIS_USER" "$RESTORE_REDIS_PASSWORD" >> "$DEPLOY_DIR/redis_data/users.acl"
+    printf '%s\n' 'dir /data' 'aclfile /data/users.acl' 'dbfilename dump.rdb' 'save 60 1' 'appendonly no' 'appendfsync everysec' > "$DEPLOY_DIR/redis_data/redis.conf"
+    chmod 600 "$DEPLOY_DIR/redis_data/users.acl" "$DEPLOY_DIR/redis_data/redis.conf"
+    docker run --rm --user 0 --entrypoint sh -v "$DEPLOY_DIR/redis_data:/data" "$redis_image" -c 'chown -R redis:redis /data'
+}
+
+finish_redis_restore() {
+    local attempt persistence auth_reply auth_status=0
+    for attempt in $(seq 1 90); do
+        if compose exec -T -e REDISCLI_AUTH="$RESTORE_REDIS_PASSWORD" redis redis-cli -e --user "$RESTORE_REDIS_USER" PING >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    compose exec -T redis redis-check-rdb /data/dump.rdb >/dev/null
+    compose exec -T -e REDISCLI_AUTH="$RESTORE_REDIS_PASSWORD" redis redis-cli -e --user "$RESTORE_REDIS_USER" CONFIG SET appendonly yes >/dev/null
+    for attempt in $(seq 1 120); do
+        persistence=$(compose exec -T -e REDISCLI_AUTH="$RESTORE_REDIS_PASSWORD" redis redis-cli -e --user "$RESTORE_REDIS_USER" --raw INFO persistence | tr -d '\r')
+        if printf '%s\n' "$persistence" | grep -qx 'aof_rewrite_in_progress:0' && printf '%s\n' "$persistence" | grep -qx 'aof_last_bgrewrite_status:ok'; then break; fi
+        sleep 1
+    done
+    printf '%s\n' "$persistence" | grep -qx 'aof_enabled:1' || die "Redis AOF did not become active"
+    printf '%s\n' "$persistence" | grep -qx 'aof_rewrite_in_progress:0' || die "Redis AOF rewrite did not finish"
+    printf '%s\n' "$persistence" | grep -qx 'aof_last_bgrewrite_status:ok' || die "Redis AOF rewrite failed"
+    # This generated file owns only persistence settings. CONFIG REWRITE also
+    # copies image-injected modules, which would load twice on the next boot.
+    sed -i 's/^appendonly no$/appendonly yes/' "$DEPLOY_DIR/redis_data/redis.conf"
+    chown --reference="$DEPLOY_DIR/redis_data/users.acl" "$DEPLOY_DIR/redis_data/redis.conf"
+    # Restore the exact original ACL, removing the temporary local installer.
+    cp "$PACKAGE_DIR/payload/redis.acl" "$DEPLOY_DIR/redis_data/users.acl"
+    chmod 600 "$DEPLOY_DIR/redis_data/users.acl"
+    compose exec -T -e REDISCLI_AUTH="$RESTORE_REDIS_PASSWORD" redis redis-cli -e --user "$RESTORE_REDIS_USER" ACL LOAD >/dev/null
+    compose restart redis
+    for attempt in $(seq 1 90); do
+        if compose exec -T redis sh -c 'exec redis-cli -e --user "${REDIS_USERNAME:-default}" PING' >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    compose exec -T redis sh -c 'exec redis-cli -e --user "${REDIS_USERNAME:-default}" PING' >/dev/null
+    # PING can succeed as the default nopass user even after automatic AUTH fails.
+    auth_reply=$(printf '%s' "$RESTORE_REDIS_PASSWORD" | compose exec -T redis sh -c \
+        'unset REDISCLI_AUTH; exec redis-cli -e --raw -x AUTH "$1"' sh "$RESTORE_REDIS_USER" 2>&1) || auth_status=$?
+    [ "$auth_status" -eq 1 ] && [[ "$auth_reply" == WRONGPASS\ * ]] || \
+        die "temporary Redis installer identity removal could not be verified"
+    RESTORE_REDIS_PASSWORD=""
 }
 
 rollback() {
@@ -241,8 +377,8 @@ rollback() {
     exit "$status"
 }
 
-verify_package
 ensure_runtime
+verify_package
 
 SOURCE_DOMAIN=$(manifest_value source_origin)
 SOURCE_DOMAIN="${SOURCE_DOMAIN#http://}"
@@ -290,6 +426,7 @@ if [ -d "$PACKAGE_DIR/payload/team-child-automation-data" ]; then
     mkdir -p "$DEPLOY_DIR/team_child_automation_data"
     cp -a "$PACKAGE_DIR/payload/team-child-automation-data/." "$DEPLOY_DIR/team_child_automation_data/"
 fi
+prepare_restored_runtime
 
 log "pulling XIASS images and starting PostgreSQL/Redis"
 compose pull postgres redis xiass-api watchtower
@@ -310,10 +447,14 @@ gzip -dc "$PACKAGE_DIR/payload/postgres.sql.gz" | compose exec -T postgres sh -c
 '
 
 log "restoring Redis snapshot"
-compose stop redis
-rm -rf "$DEPLOY_DIR/redis_data/appendonlydir" "$DEPLOY_DIR/redis_data/dump.rdb"
-cp "$PACKAGE_DIR/payload/redis.rdb" "$DEPLOY_DIR/redis_data/dump.rdb"
-compose up -d redis
+if [ -n "$RESTORE_CONFIG" ]; then
+    finish_redis_restore
+else
+    compose stop redis
+    rm -rf "$DEPLOY_DIR/redis_data/appendonlydir" "$DEPLOY_DIR/redis_data/dump.rdb"
+    cp "$PACKAGE_DIR/payload/redis.rdb" "$DEPLOY_DIR/redis_data/dump.rdb"
+    compose up -d redis
+fi
 
 log "starting XIASS API"
 compose up -d xiass-api watchtower

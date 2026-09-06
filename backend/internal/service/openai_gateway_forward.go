@@ -19,6 +19,7 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	captureOpenAIRequestOwnership(c, body)
 	beginUpstreamResponseModelObservation(c)
 	filteredBody, filterErr := filterOpenAIResponsesNoneReasoningEffortForAccount(account, body)
 	if filterErr != nil {
@@ -222,11 +223,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped /responses image_generation tool for Codex client by account policy")
 			}
 		}
-		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
-		mappedModel := account.GetMappedModel(reqModel)
-		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, mappedModel)
-		// 国产模型默认 effort 补充：也要用 mappedModel 判定是否是 passback-required 上游。
-		reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
 		return s.forwardOpenAIPassthrough(
 			ctx,
 			c,
@@ -235,7 +231,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			canonicalImageIntentBody,
 			reqModel,
 			attemptImageIntentInvalidated,
-			reasoningEffort,
 			reqStream,
 			startTime,
 		)
@@ -325,7 +320,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
-	if instructionsEmpty && !compatMessagesBridge && !nativeDeepSeekResponses {
+	if instructionsEmpty && account.Type == AccountTypeOAuth && !responsesLite && !compatMessagesBridge && !nativeDeepSeekResponses {
 		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
 	}
 
@@ -453,7 +448,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			ensureCodexOAuthInstructionsField(decoded)
 			markDecodedModified()
 		} else {
-			codexResult = applyCodexOAuthTransform(decoded, isCodexCLI, isCompactRequest)
+			// Lite carries the client's model instructions in developer input.
+			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{
+				IsCodexCLI: isCodexCLI, IsCompact: isCompactRequest, SkipDefaultInstructions: responsesLite,
+				// Native continuation references upstream-issued call IDs. Rewriting
+				// only the result breaks a previous_response_id tool chain.
+				PreserveToolCallIDs: isCodexCLI || strings.TrimSpace(firstNonEmptyString(decoded["previous_response_id"])) != "",
+			})
 		}
 		if codexResult.Modified {
 			markDecodedModified()
@@ -539,7 +540,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 		}
 	}
-	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 && gjson.GetBytes(body, "previous_response_id").Exists() {
+	// OpenAI Responses continuations may contain only a tool result. Removing
+	// the response reference discards the upstream context needed to use it.
+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 &&
+		!account.IsOpenAI() && !hasOpenAIEncryptedCompactionRaw(body) && gjson.GetBytes(body, "previous_response_id").Exists() {
 		markPatchDelete("previous_response_id")
 	}
 	if openAIRequestBodyMayContainEmptyBase64InputImage(body) {
@@ -611,6 +615,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		lineageSessionHash = s.openAIWSLineageSessionHashFromContext(c, lineageEntryBody)
 		invalidDigests := stateStore.GetSessionInvalidEncryptedContentDigests(lineageGroupID, account.ID, lineageSessionHash)
 		if len(invalidDigests) > 0 {
+			if openAIRawPayloadHasInvalidEncryptedCompaction(body, invalidDigests) {
+				WriteOpenAIContextUnavailableResponse(c)
+				return nil, ErrOpenAIContextUnavailable
+			}
 			strippedBody, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
 				body, invalidDigests, "invalid_encrypted_lineage_strip", account.ID, 0,
 			)
@@ -780,6 +788,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			// previous_response_not_found 说明续链锚点不可用：
 			// 对非 function_call_output 场景，允许一次“去掉 previous_response_id 后重放”。
+			if (reason == "invalid_encrypted_content" || reason == "previous_response_not_found") && hasOpenAIEncryptedCompaction(wsReqBody) {
+				WriteOpenAIContextUnavailableResponse(c)
+				return nil, ErrOpenAIContextUnavailable
+			}
 			if reason == "previous_response_not_found" && recoverPrevResponseNotFound(attempt) {
 				continue
 			}
@@ -875,7 +887,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return wsResult, nil
 		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
-		return nil, wsErr
+		if wsResult != nil {
+			wsResult.BillingModel = billingModel
+			if wsResult.ImageCount > 0 {
+				wsResult.ImageSize = imageSizeTier
+				wsResult.ImageInputSize = imageInputSize
+				wsResult.BillingModel = imageBillingModel
+			}
+		}
+		return wsResult, wsErr
 	}
 
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
@@ -970,6 +990,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
+				if hasOpenAIEncryptedCompactionRaw(body) {
+					WriteOpenAIContextUnavailableResponse(c)
+					return nil, ErrOpenAIContextUnavailable
+				}
 				decoded, decodeErr := ensureReqBody()
 				if decodeErr != nil {
 					return nil, decodeErr
@@ -1098,7 +1122,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 		if account.Type == AccountTypeOAuth && !account.IsShadow() {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+				s.updateCodexUsageSnapshot(ctx, account, snapshot)
 			}
 		}
 

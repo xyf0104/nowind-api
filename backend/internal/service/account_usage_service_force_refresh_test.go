@@ -31,7 +31,7 @@ type orderedCodexSnapshotRaceRepo struct {
 	blockedFinished chan struct{}
 }
 
-func (r *orderedCodexSnapshotRaceRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+func (r *orderedCodexSnapshotRaceRepo) UpdateOpenAICodexSnapshotIfIdentityMatches(_ context.Context, _ *Account, updates map[string]any) (bool, error) {
 	updatedAtText, ok := updates["codex_usage_updated_at"].(string)
 	if !ok {
 		return false, fmt.Errorf("codex_usage_updated_at has type %T, want string", updates["codex_usage_updated_at"])
@@ -71,6 +71,14 @@ func (r *forceRefreshAccountUsageRepo) UpdateExtra(_ context.Context, _ int64, u
 		r.account.Extra[key] = value
 	}
 	return nil
+}
+
+func (r *forceRefreshAccountUsageRepo) CompareAndSwapOpenAIWeeklyState(_ context.Context, expected *Account, updates map[string]any) (bool, error) {
+	if expected == nil || r.account == nil || expected.ID != r.account.ID {
+		return false, nil
+	}
+	mergeAccountExtra(r.account, updates)
+	return true, nil
 }
 
 type forceRefreshWindowStatsRepo struct {
@@ -189,6 +197,7 @@ func TestAccountUsageService_OpenAIForceRefreshReturnsMatchingQuotaAndCostSnapsh
 		Status:   StatusActive,
 		Credentials: map[string]any{
 			"chatgpt_account_id": "org-force-refresh-parent",
+			"access_token":       "fake-access-token",
 		},
 	}
 	repo := &sparkShadowUsageTestRepo{accounts: map[int64]*Account{
@@ -242,26 +251,17 @@ func TestAccountUsageService_OpenAIForceRefreshReturnsMatchingQuotaAndCostSnapsh
 	if usage == nil || usage.SevenDay == nil || usage.SevenDay.WindowStats == nil {
 		t.Fatalf("forced OpenAI refresh returned incomplete usage: %#v", usage)
 	}
-	if usage.SevenDay.Utilization != 13 {
-		t.Fatalf("forced refresh utilization = %v, want 13", usage.SevenDay.Utilization)
-	}
-	if usage.SevenDay.WindowStats.Cost != 413.92 {
-		t.Fatalf("forced refresh account cost = %v, want 413.92", usage.SevenDay.WindowStats.Cost)
+	if usage.SevenDay.Utilization != 13 || usage.SevenDay.WindowStats.Cost != 413.92 {
+		t.Fatalf("forced refresh quota/cost mismatch: %#v", usage.SevenDay)
 	}
 	if usage.SevenDay.WeeklyEstimateUSD != nil {
 		t.Fatalf("first forced refresh weekly estimate = %v, want a join baseline", *usage.SevenDay.WeeklyEstimateUSD)
 	}
-	if windowRepo.rangeCalls != 1 {
-		t.Fatalf("point-in-time range stats queried %d times, want 1", windowRepo.rangeCalls)
-	}
-	if !windowRepo.rangeStart.Before(windowRepo.rangeEnd) {
-		t.Fatalf("invalid point-in-time range: %v -> %v", windowRepo.rangeStart, windowRepo.rangeEnd)
+	if windowRepo.rangeCalls != 1 || windowRepo.calls != 2 || !windowRepo.rangeStart.Before(windowRepo.rangeEnd) {
+		t.Fatalf("invalid point-in-time sampling: range=%d windows=%d", windowRepo.rangeCalls, windowRepo.calls)
 	}
 	if snapshotAt, parseErr := time.Parse(time.RFC3339Nano, fmt.Sprint(shadow.Extra["codex_usage_updated_at"])); parseErr != nil || !windowRepo.rangeEnd.Equal(snapshotAt) {
 		t.Fatalf("range end = %v, want quota snapshot %v (parse error: %v)", windowRepo.rangeEnd, snapshotAt, parseErr)
-	}
-	if windowRepo.calls != 2 {
-		t.Fatalf("window stats queried %d times, want 2 for 5h and 7d", windowRepo.calls)
 	}
 }
 
@@ -375,14 +375,15 @@ func TestOpenAICodexSnapshot_ManualRefreshSupersedesDelayedGatewayWrite(t *testi
 	gateway := &OpenAIGatewayService{accountRepo: repo}
 	usageService := &AccountUsageService{accountRepo: repo}
 
-	gateway.updateCodexUsageSnapshot(context.Background(), 42, &OpenAICodexUsageSnapshot{
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	gateway.updateCodexUsageSnapshot(context.Background(), account, &OpenAICodexUsageSnapshot{
 		PrimaryUsedPercent:   ptrFloat64WS(12),
 		PrimaryWindowMinutes: ptrIntWS(10080),
 		UpdatedAt:            oldAt.Format(time.RFC3339Nano),
 	})
 	<-repo.blockedStarted
 
-	applied, err := usageService.persistOpenAICodexProbeSnapshot(42, map[string]any{
+	applied, err := usageService.persistOpenAICodexProbeSnapshot(account, map[string]any{
 		"codex_usage_updated_at": newAt.Format(time.RFC3339Nano),
 		"codex_7d_used_percent":  13.0,
 	})
@@ -425,6 +426,7 @@ func TestAccountUsageService_OpenAIForceRefreshRejectsPartialQuotaSnapshot(t *te
 		Status:   StatusActive,
 		Credentials: map[string]any{
 			"chatgpt_account_id": "org-partial-refresh-parent",
+			"access_token":       "fake-access-token",
 		},
 	}
 	repo := &sparkShadowUsageTestRepo{accounts: map[int64]*Account{
@@ -512,6 +514,7 @@ func TestAccountUsageService_OpenAINewerForceRefreshSupersedesOlderPersistence(t
 		Status:   StatusActive,
 		Credentials: map[string]any{
 			"chatgpt_account_id": "org-concurrent-refresh-parent",
+			"access_token":       "fake-access-token",
 		},
 	}
 	updates := make(chan map[string]any, 2)

@@ -48,7 +48,7 @@ func (r *openAIWSRateLimitSignalRepo) UpdateExtra(_ context.Context, _ int64, up
 	return nil
 }
 
-func (r *openAIWSRateLimitSignalRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+func (r *openAIWSRateLimitSignalRepo) UpdateOpenAICodexSnapshotIfIdentityMatches(_ context.Context, _ *Account, updates map[string]any) (bool, error) {
 	copied := make(map[string]any, len(updates))
 	for k, v := range updates {
 		copied[k] = v
@@ -75,7 +75,7 @@ func (r *openAICodexSnapshotAsyncRepo) UpdateExtra(_ context.Context, _ int64, u
 	return nil
 }
 
-func (r *openAICodexSnapshotAsyncRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+func (r *openAICodexSnapshotAsyncRepo) UpdateOpenAICodexSnapshotIfIdentityMatches(_ context.Context, _ *Account, updates map[string]any) (bool, error) {
 	if r.updateExtraCh != nil {
 		copied := make(map[string]any, len(updates))
 		for k, v := range updates {
@@ -428,7 +428,7 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ExhaustedSnapshotDoesNotS
 		SecondaryResetAfterSeconds: ptrIntWS(1200),
 		SecondaryWindowMinutes:     ptrIntWS(300),
 	}
-	svc.updateCodexUsageSnapshot(context.Background(), 601, snapshot)
+	svc.updateCodexUsageSnapshot(context.Background(), &Account{ID: 601, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, snapshot)
 
 	select {
 	case updates := <-repo.updateExtraCh:
@@ -458,7 +458,7 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_NonExhaustedSnapshotDoesN
 		SecondaryResetAfterSeconds: ptrIntWS(1200),
 		SecondaryWindowMinutes:     ptrIntWS(300),
 	}
-	svc.updateCodexUsageSnapshot(context.Background(), 602, snapshot)
+	svc.updateCodexUsageSnapshot(context.Background(), &Account{ID: 602, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, snapshot)
 
 	select {
 	case <-repo.updateExtraCh:
@@ -490,8 +490,9 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *t
 		SecondaryWindowMinutes:     ptrIntWS(300),
 	}
 
-	svc.updateCodexUsageSnapshot(context.Background(), 777, snapshot)
-	svc.updateCodexUsageSnapshot(context.Background(), 777, snapshot)
+	account := &Account{ID: 777, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
 
 	select {
 	case <-repo.updateExtraCh:

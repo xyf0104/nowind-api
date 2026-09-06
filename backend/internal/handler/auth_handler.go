@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -110,7 +111,7 @@ func ensureLoginUserActive(user *service.User) error {
 }
 
 // respondWithTokenPair 生成 Token 对并返回认证响应
-// 如果 Token 对生成失败，回退到只返回 Access Token（向后兼容）
+// Access-only fallback is retained only for stores without issuance admission.
 func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
 	respondWithTokenPair(c, h.authService, user)
 }
@@ -123,7 +124,12 @@ func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user
 
 	tokenPair, err := authService.GenerateTokenPair(c.Request.Context(), user, "")
 	if err != nil {
-		slog.Error("failed to generate token pair", "error", err, "user_id", user.ID)
+		requiresAdmission := authService.RequiresRefreshTokenIssuanceAdmission()
+		slog.Error("failed to generate token pair", "user_id", user.ID, "issuance_admission_required", requiresAdmission)
+		if requiresAdmission {
+			response.ErrorFrom(c, service.ErrServiceUnavailable)
+			return
+		}
 		// 回退到只返回Access Token
 		token, tokenErr := authService.GenerateToken(c.Request.Context(), user)
 		if tokenErr != nil {
@@ -743,15 +749,22 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	// 允许空请求体（向后兼容）
 	_ = c.ShouldBindJSON(&req)
 
-	// 如果提供了Refresh Token，撤销它
+	// If revocation fails, clear local OAuth state but do not acknowledge success.
+	var revokeErr error
 	if req.RefreshToken != "" {
-		if err := h.authService.RevokeRefreshToken(c.Request.Context(), req.RefreshToken); err != nil {
-			slog.Debug("failed to revoke refresh token", "error", err)
-			// 不影响登出流程
-		}
+		revokeErr = h.authService.RevokeRefreshToken(c.Request.Context(), req.RefreshToken)
 	}
 	h.consumePendingOAuthSessionOnLogout(c)
 	clearOAuthLogoutCookies(c)
+	if revokeErr != nil {
+		slog.Error("failed to revoke refresh token")
+		if errors.Is(revokeErr, service.ErrRefreshTokenInvalid) {
+			response.ErrorFrom(c, service.ErrRefreshTokenInvalid)
+		} else {
+			response.ErrorFrom(c, service.ErrServiceUnavailable)
+		}
+		return
+	}
 
 	response.Success(c, LogoutResponse{
 		Message: "Logged out successfully",
@@ -773,7 +786,7 @@ func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
 	}
 
 	if err := h.authService.RevokeAllUserTokens(c.Request.Context(), subject.UserID); err != nil {
-		slog.Error("failed to revoke all sessions", "user_id", subject.UserID, "error", err)
+		slog.Error("failed to revoke all sessions", "user_id", subject.UserID)
 		response.InternalError(c, "Failed to revoke sessions")
 		return
 	}

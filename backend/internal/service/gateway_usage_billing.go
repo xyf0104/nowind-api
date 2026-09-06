@@ -2,7 +2,11 @@ package service
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -301,15 +305,31 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 		return true, nil
 	}
 
-	billingCtx, cancel := detachedBillingContext(ctx)
+	billingCtx, cancel := detachedUsageBillingRecoveryContext(ctx, deps.cfg)
 	defer cancel()
 
-	result, err := repo.Apply(billingCtx, cmd)
+	result, attempts, err := retryUsageBilling(billingCtx, repo, cmd)
 	if err != nil {
 		return false, err
 	}
 
 	if result == nil || !result.Applied {
+		// A lost COMMIT acknowledgment may recover as an already-applied key.
+		// Reload authoritative caches instead of applying monetary deltas again.
+		if attempts > 1 {
+			if cache := deps.billingCacheService; cache != nil && p.User != nil {
+				_ = cache.InvalidateUserBalance(billingCtx, p.User.ID)
+				if p.APIKey != nil {
+					_ = cache.InvalidateAPIKeyRateLimit(billingCtx, p.APIKey.ID)
+					if p.APIKey.GroupID != nil {
+						_ = cache.InvalidateSubscription(billingCtx, p.User.ID, *p.APIKey.GroupID)
+					}
+				}
+			}
+			if invalidator, ok := p.APIKeyService.(apiKeyAuthCacheInvalidator); ok && p.APIKey != nil && p.APIKey.Key != "" {
+				invalidator.InvalidateAuthCacheByKey(billingCtx, p.APIKey.Key)
+			}
+		}
 		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
 		return false, nil
 	}
@@ -322,6 +342,46 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 
 	finalizePostUsageBilling(billingCtx, p, deps, result)
 	return true, nil
+}
+
+func retryUsageBilling(ctx context.Context, repo UsageBillingRepository, cmd *UsageBillingCommand) (*UsageBillingApplyResult, int, error) {
+	if repo == nil || cmd == nil || strings.TrimSpace(cmd.RequestID) == "" {
+		return nil, 0, ErrUsageBillingRequestIDRequired
+	}
+	delay := 100 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, attempt - 1, err
+		}
+		result, err := repo.Apply(ctx, cmd)
+		if err == nil || !transientUsageBillingError(err) {
+			return result, attempt, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, attempt, ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < time.Second {
+			delay = min(delay*2, time.Second)
+		}
+	}
+}
+
+func transientUsageBillingError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, ErrUsageBillingPrimaryUnavailable) {
+		return true
+	}
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) {
+		code := state.SQLState()
+		return strings.HasPrefix(code, "08") || code == "57P01" || code == "57P02" || code == "57P03" || code == "40001" || code == "40P01" || code == "53300" || code == "25006"
+	}
+	var network *net.OpError
+	return errors.Is(err, driver.ErrBadConn) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &network)
 }
 
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
@@ -479,6 +539,19 @@ func detachedBillingContext(ctx context.Context) (context.Context, context.Cance
 		base = context.WithoutCancel(ctx)
 	}
 	return context.WithTimeout(base, postUsageBillingTimeout)
+}
+
+func detachedUsageBillingRecoveryContext(ctx context.Context, cfg *config.Config) (context.Context, context.CancelFunc) {
+	// Reuse the explicitly configured task budget for paired-node recovery.
+	// Ordinary installs retain the existing 15-second deadline.
+	if cfg == nil || !cfg.Gateway.ExecutionNode.Enabled || cfg.Gateway.UsageRecord.TaskTimeoutSeconds <= int(postUsageBillingTimeout/time.Second) {
+		return detachedBillingContext(ctx)
+	}
+	base := context.Background()
+	if ctx != nil {
+		base = context.WithoutCancel(ctx)
+	}
+	return context.WithTimeout(base, time.Duration(min(cfg.Gateway.UsageRecord.TaskTimeoutSeconds, 120))*time.Second)
 }
 
 func detachStreamUpstreamContext(ctx context.Context, stream bool) (context.Context, context.CancelFunc) {

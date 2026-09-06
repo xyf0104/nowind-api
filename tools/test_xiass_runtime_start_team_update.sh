@@ -49,10 +49,41 @@ start_browser_stack
 
 grep -Fqx 'pull team-child-automation' "$CALLS" || fail 'fast update must pull the Team automation image'
 grep -Fqx 'sleep 0' "$CALLS" || fail 'fast update must not delay an already healthy browser stack'
-grep -Fqx 'up -d --no-build team-child-browser' "$CALLS" || fail 'fast update must keep the Team browser available without recreating it'
+grep -Fqx 'up -d --no-deps --no-build --pull never --no-recreate team-child-browser' "$CALLS" || fail 'fast update must preserve the browser and never start its dependencies'
 grep -Fqx 'up -d --no-deps --no-build --force-recreate team-child-automation' "$CALLS" || fail 'fast update must recreate the Team automation sidecar'
 if grep -Fqx 'pull team-child-browser team-child-automation' "$CALLS"; then
     fail 'fast update must not pull or restart Chromium'
 fi
 
 printf 'xiass runtime Team sidecar update test passed.\n'
+
+(
+    RUNTIME_COMPOSE_FILES=("/fixture/base.yml" "/fixture/node.yml" "/fixture/proxy.yml")
+    COMPOSE_FILE="${RUNTIME_COMPOSE_FILES[0]}"
+    DEPLOY_DIR=/fixture
+    COMPOSE=(capture_compose)
+    capture_compose() { printf '%s\n' "$*" >> "$CALLS"; }
+    compose config --quiet
+    grep -Fqx -- '-f /fixture/base.yml -f /fixture/node.yml -f /fixture/proxy.yml --project-directory /fixture config --quiet' "$CALLS" \
+        || fail 'runtime must retain all node and proxy Compose overlays'
+    RUNTIME_PROJECT_NAME=paired-primary
+    compose config --quiet
+    grep -Fqx -- '-f /fixture/base.yml -f /fixture/node.yml -f /fixture/proxy.yml --project-directory /fixture --project-name paired-primary config --quiet' "$CALLS" \
+        || fail 'runtime must retain the running Compose project and named-volume identity'
+)
+
+(
+    service_exists() { return 0; }
+    compose() { printf '%s\n' "$*" >> "$CALLS"; }
+    wait_for_core_health() { return 0; }
+    XIASS_RUNTIME_CORE_READY=true
+    start_core
+    grep -Fqx 'up -d --no-build --pull never postgres redis watchtower xiass-api' "$CALLS" \
+        || fail 'prepared update must not pull while the old stack is stopped'
+    XIASS_RUNTIME_CORE_READY=false
+    start_core
+    grep -Fqx 'up -d --no-build postgres redis watchtower xiass-api' "$CALLS" \
+        || fail 'fresh installation must still allow missing dependency images'
+)
+
+printf 'xiass runtime overlay and prepared-image tests passed.\n'

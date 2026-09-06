@@ -67,6 +67,9 @@ type openAIWSAcquireRequest struct {
 	Account *Account
 	WSURL   string
 	Headers http.Header
+	Owner   openAIWSOwnership
+	// Set only after an owner-scoped response-ID lookup selects PreferredConnID.
+	Continuation bool
 	// HeadersFactory is evaluated inside dialConn. It exists so credentials
 	// whose authorization is per-dial (Agent Identity) are never cached in
 	// lastAcquire or delayed prewarm state.
@@ -80,6 +83,8 @@ type openAIWSAcquireRequest struct {
 }
 
 type openAIWSHandshakeCompatibilityKey struct {
+	owner               openAIWSOwnership
+	dialTarget          string
 	betaFeatures        string
 	codexInstallationID string
 	sessionIDHyphen     string
@@ -864,7 +869,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 
 retryAcquire:
 	accountID := req.Account.ID
-	compatibility := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	compatibility := normalizeOpenAIWSAcquireCompatibility(req)
 	routingAffinity := normalizeOpenAIWSRoutingAffinity(req.Headers)
 	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
 	if effectiveMaxConns <= 0 {
@@ -893,7 +898,7 @@ retryAcquire:
 				return nil, errOpenAIWSPreferredConnUnavailable
 			}
 			preferredConn, ok := ap.conns[preferredConnID]
-			if !ok || !preferredConn.matchesHandshakeCompatibility(compatibility) {
+			if !ok || !preferredConn.matchesAcquireCompatibility(compatibility, req.Continuation) {
 				p.recordConnPickDuration(time.Since(pickStartedAt))
 				ap.mu.Unlock()
 				closeOpenAIWSConns(evicted)
@@ -976,7 +981,7 @@ retryAcquire:
 		}
 
 		if preferredConnID != "" {
-			if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility) && conn.tryAcquire() {
+			if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesAcquireCompatibility(compatibility, req.Continuation) && conn.tryAcquire() {
 				connPick := time.Since(pickStartedAt)
 				p.recordConnPickDuration(connPick)
 				ap.mu.Unlock()
@@ -1821,7 +1826,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
-	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	pooledConn.handshakeCompatibility = normalizeOpenAIWSAcquireCompatibility(req)
 	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(req.Headers)
 	return pooledConn, nil
 }
@@ -1986,6 +1991,9 @@ func (p *openAIWSConnPool) dialTimeout() time.Duration {
 
 func cloneOpenAIWSAcquireRequest(req openAIWSAcquireRequest) openAIWSAcquireRequest {
 	copied := req
+	if copied.Owner.client == "" || copied.Owner.conversation == "" {
+		copied.Owner = openAIWSOwnership{captureOpenAIRequestOwnership(nil, nil), openAIAccountOwnership(req.Account)}
+	}
 	copied.Headers = cloneHeader(req.Headers)
 	copied.WSURL = stringsTrim(req.WSURL)
 	copied.ProxyURL = stringsTrim(req.ProxyURL)
@@ -2002,9 +2010,35 @@ func cloneOpenAIWSAcquireRequestPtr(req *openAIWSAcquireRequest) *openAIWSAcquir
 }
 
 func sameOpenAIWSPrewarmTarget(a, b openAIWSAcquireRequest) bool {
-	return stringsTrim(a.WSURL) == stringsTrim(b.WSURL) &&
+	return a.Owner.client != "" && a.Owner.conversation != "" &&
+		stringsTrim(a.WSURL) == stringsTrim(b.WSURL) &&
 		stringsTrim(a.ProxyURL) == stringsTrim(b.ProxyURL) &&
-		normalizeOpenAIWSHandshakeCompatibility(a.Account, a.Headers) == normalizeOpenAIWSHandshakeCompatibility(b.Account, b.Headers)
+		normalizeOpenAIWSAcquireCompatibility(a) == normalizeOpenAIWSAcquireCompatibility(b)
+}
+
+func normalizeOpenAIWSAcquireCompatibility(req openAIWSAcquireRequest) openAIWSHandshakeCompatibilityKey {
+	key := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	key.owner = req.Owner
+	target := []string{stringsTrim(req.WSURL), stringsTrim(req.ProxyURL),
+		strings.TrimSpace(req.Headers.Get("chatgpt-account-id")), strings.TrimSpace(req.Headers.Get("openai-organization"))}
+	knownOAuthPrincipal := req.Account != nil && req.Account.Type == AccountTypeOAuth &&
+		(req.Account.GetCredential("chatgpt_account_id") != "" || req.Account.GetCredential("chatgpt_user_id") != "" || target[2] != "")
+	if !knownOAuthPrincipal {
+		target = append(target, req.Headers.Get("authorization"))
+	}
+	key.dialTarget = openAIOwnershipDigest(target...)
+	return key
+}
+
+func (c *openAIWSConn) matchesAcquireCompatibility(wanted openAIWSHandshakeCompatibilityKey, continuation bool) bool {
+	if c == nil {
+		return false
+	}
+	actual := c.handshakeCompatibility
+	if continuation && actual.owner.client != "" && actual.owner.client == wanted.owner.client && actual.owner.upstream == wanted.owner.upstream {
+		actual.owner.conversation = wanted.owner.conversation
+	}
+	return actual == wanted
 }
 
 func normalizeOpenAIWSBetaFeatures(headers http.Header) string {

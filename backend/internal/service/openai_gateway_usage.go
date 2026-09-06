@@ -4,7 +4,9 @@ package service
 // Codex 用量快照。仅做代码搬迁，无任何行为变更。
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -857,13 +859,11 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 	return updates
 }
 
-// updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
-// updateCodexUsageSnapshot 把 /responses 的 x-codex-* 全局头快照写入账号 codex_* Extra。
-// ⚠️ 调用方必须排除 spark 影子账号(account.IsShadow()):影子的 codex_* 仅由 QueryUsage
-// (/wham/usage bengalfox 道)更新,不能被全局头口径污染(外审第7轮 P1)。本函数仅持 accountID,
-// 无法在此自检影子,故守卫前置到各调用点。
-func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
-	if snapshot == nil {
+// updateCodexUsageSnapshot persists global response headers, never Spark quota.
+// Freeze the request account before dispatch so a later mutation cannot relabel
+// an old observation with new credentials or a new proxy.
+func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, account *Account, snapshot *OpenAICodexUsageSnapshot) {
+	if snapshot == nil || account == nil || account.ID <= 0 || account.IsShadow() {
 		return
 	}
 	if s == nil || s.accountRepo == nil {
@@ -875,24 +875,68 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	if len(updates) == 0 {
 		return
 	}
-	if !s.getCodexSnapshotThrottle().Allow(accountID, now) {
+	expected, err := cloneOpenAICodexSnapshotIdentity(account)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "capture Codex snapshot identity failed: account_id=%d err=%v", account.ID, err)
+		return
+	}
+	if !s.getCodexSnapshotThrottle().Allow(expected.ID, now) {
 		return
 	}
 
 	go func() {
 		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := persistOrderedOpenAICodexSnapshot(updateCtx, s.accountRepo, accountID, updates); err != nil {
-			logger.LegacyPrintf("service.openai_gateway", "persist ordered Codex snapshot failed: account_id=%d err=%v", accountID, err)
+		if _, err := persistOrderedOpenAICodexSnapshot(updateCtx, s.accountRepo, expected, updates); err != nil {
+			logger.LegacyPrintf("service.openai_gateway", "persist ordered Codex snapshot failed: account_id=%d err=%v", expected.ID, err)
 		}
 	}()
 }
 
-func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {
-	if accountID <= 0 || headers == nil {
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, account *Account, headers http.Header) {
+	if account == nil || account.ID <= 0 || account.IsShadow() || headers == nil {
 		return
 	}
 	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+		s.updateCodexUsageSnapshot(ctx, account, snapshot)
 	}
+}
+
+func cloneOpenAICodexSnapshotIdentity(account *Account) (*Account, error) {
+	payload, err := json.Marshal(account.Credentials)
+	if err != nil {
+		return nil, errors.New("codex snapshot credentials are not JSON-encodable")
+	}
+	expected := &Account{
+		ID: account.ID, Platform: account.Platform, Type: account.Type,
+		QuotaDimension: account.QuotaDimension,
+	}
+	// Preserve integer/token-version precision as well as nested map ownership.
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&expected.Credentials); err != nil {
+		return nil, errors.New("codex snapshot credentials could not be copied")
+	}
+	// Carry the request's immutable DB fence through async/parent-resolved RAW
+	// writes. It is concurrency metadata, not part of the principal identity.
+	if revision, present := account.Extra[OpenAIWeeklyStateRevisionKey]; present {
+		fence, err := json.Marshal(map[string]any{OpenAIWeeklyStateRevisionKey: revision})
+		if err != nil {
+			return nil, errors.New("codex snapshot revision is not JSON-encodable")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(fence))
+		decoder.UseNumber()
+		if err := decoder.Decode(&expected.Extra); err != nil {
+			return nil, errors.New("codex snapshot revision could not be copied")
+		}
+	}
+	if account.ProxyID != nil {
+		proxyID := *account.ProxyID
+		expected.ProxyID = &proxyID
+	}
+	if account.ParentAccountID != nil {
+		parentID := *account.ParentAccountID
+		expected.ParentAccountID = &parentID
+	}
+	return expected, nil
 }

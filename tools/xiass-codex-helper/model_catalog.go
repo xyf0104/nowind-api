@@ -1,17 +1,28 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
+	"runtime"
 	"sort"
 	"strings"
 )
 
 const (
-	modelCatalogMaxModels = 256
+	modelCatalogMaxModels   = 256
+	modelCatalogMaxBytes    = 8 << 20
+	modelDescriptorMaxBytes = 1 << 20
 )
+
+type discoveredModelCatalog struct {
+	IDs         []string
+	Descriptors map[string]json.RawMessage
+}
 
 type modelCatalogFile struct {
 	Models []modelCatalogModel `json:"models"`
@@ -102,10 +113,10 @@ var catalogAvailablePlans = []string{
 	"go", "plus", "pro", "prolite", "team",
 }
 
-// buildModelCatalogJSON creates the startup catalog from model IDs only. The
-// generated file deliberately has no credentials, provider URLs, or account
-// data, so it is safe to keep beside the user's Codex config.
-func buildModelCatalogJSON(baseURL, selectedModel string, discovered []string) ([]byte, error) {
+// Sources are ordered by authority: provider metadata, then a trusted local
+// native cache. A nil catalog leaves native model resolution to Codex instead
+// of replacing a known model's instructions with a generic ID-only entry.
+func buildModelCatalogJSON(baseURL, selectedModel string, discovered []string, sources ...map[string]json.RawMessage) ([]byte, error) {
 	ids, err := normalizeModelIDs(discovered)
 	if err != nil {
 		return nil, err
@@ -133,6 +144,9 @@ func buildModelCatalogJSON(baseURL, selectedModel string, discovered []string) (
 	if len(ids) == 0 {
 		return nil, errors.New("no usable models were provided for the local catalog")
 	}
+	if len(ids) > modelCatalogMaxModels {
+		return nil, errors.New("too many models for the local catalog")
+	}
 
 	order := make(map[string]int, len(catalogModelOrder))
 	for index, id := range catalogModelOrder {
@@ -150,9 +164,65 @@ func buildModelCatalogJSON(baseURL, selectedModel string, discovered []string) (
 		return ids[i] < ids[j]
 	})
 
-	catalog := modelCatalogFile{Models: make([]modelCatalogModel, 0, len(ids))}
+	catalog := struct {
+		Models []json.RawMessage `json:"models"`
+	}{Models: make([]json.RawMessage, 0, len(ids))}
 	for _, id := range ids {
-		catalog.Models = append(catalog.Models, newCatalogModel(id))
+		var fields map[string]json.RawMessage
+		for _, source := range sources {
+			raw := source[id]
+			if len(raw) == 0 {
+				continue
+			}
+			if err := validateModelDescriptor(raw, false); err != nil {
+				return nil, err
+			}
+			var candidate map[string]json.RawMessage
+			_ = json.Unmarshal(raw, &candidate)
+			var slug string
+			_ = json.Unmarshal(candidate["slug"], &slug)
+			if slug != id {
+				return nil, errors.New("model descriptor identity mismatch")
+			}
+			if fields == nil {
+				fields = make(map[string]json.RawMessage)
+			}
+			for key, value := range candidate {
+				if _, exists := fields[key]; !exists {
+					fields[key] = value
+				}
+			}
+			merged, _ := json.Marshal(fields)
+			if validateModelDescriptor(merged, true) == nil {
+				break
+			}
+		}
+		raw, _ := json.Marshal(fields)
+		if validateModelDescriptor(raw, true) != nil {
+			if isKnownNativeModel(id) {
+				return nil, nil
+			}
+			fallback := newCatalogModel(id)
+			fallback.Description = "Fallback metadata for an ID-only compatible API model."
+			encoded, _ := json.Marshal(fallback)
+			var defaults map[string]json.RawMessage
+			_ = json.Unmarshal(encoded, &defaults)
+			for key, value := range fields {
+				defaults[key] = value
+			}
+			fields = defaults
+		}
+		// The selected provider's roster, not first-party API eligibility (for
+		// example OAuth-only Spark), controls availability in custom API mode.
+		fields["supported_in_api"] = json.RawMessage("true")
+		// These models need full Responses for custom-provider web tools. Keep
+		// this transport adaptation independent of their native instructions.
+		switch id {
+		case "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+			fields["use_responses_lite"] = json.RawMessage("false")
+		}
+		raw, _ = json.Marshal(fields)
+		catalog.Models = append(catalog.Models, raw)
 	}
 	data, err := json.MarshalIndent(catalog, "", "  ")
 	if err != nil {
@@ -203,7 +273,12 @@ func validateModelID(model string) error {
 }
 
 func validateModelCatalog(data []byte) error {
-	var catalog modelCatalogFile
+	if len(data) > modelCatalogMaxBytes {
+		return errors.New("model catalog is too large")
+	}
+	var catalog struct {
+		Models []json.RawMessage `json:"models"`
+	}
 	if err := json.Unmarshal(data, &catalog); err != nil {
 		return fmt.Errorf("validate local model catalog: %w", err)
 	}
@@ -211,25 +286,237 @@ func validateModelCatalog(data []byte) error {
 		return errors.New("local model catalog has no usable models")
 	}
 	seen := make(map[string]struct{}, len(catalog.Models))
-	for _, model := range catalog.Models {
-		if err := validateModelID(model.Slug); err != nil {
+	for _, raw := range catalog.Models {
+		if err := validateModelDescriptor(raw, true); err != nil {
 			return err
 		}
-		if strings.TrimSpace(model.DisplayName) == "" || strings.TrimSpace(model.Description) == "" {
-			return errors.New("local model catalog contains incomplete model metadata")
-		}
-		if strings.TrimSpace(model.BaseInstructions) == "" {
-			return fmt.Errorf("local model catalog model %q has no instructions", model.Slug)
-		}
-		if model.ContextWindow <= 0 || model.MaxContextWindow < model.ContextWindow {
-			return errors.New("local model catalog contains invalid context metadata")
-		}
+		var model modelCatalogModel
+		_ = json.Unmarshal(raw, &model)
 		if _, exists := seen[model.Slug]; exists {
 			return errors.New("local model catalog contains duplicate model IDs")
 		}
 		seen[model.Slug] = struct{}{}
 	}
 	return nil
+}
+
+func isKnownNativeModel(id string) bool {
+	for _, known := range catalogModelOrder {
+		if id == known {
+			return true
+		}
+	}
+	return false
+}
+
+func validateModelDescriptor(raw []byte, complete bool) error {
+	if len(raw) > modelDescriptorMaxBytes {
+		return errors.New("model descriptor is too large")
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return errors.New("invalid model descriptor")
+	}
+	var model modelCatalogModel
+	if json.Unmarshal(raw, &model) != nil {
+		return errors.New("invalid model descriptor field type")
+	}
+	if err := validateModelID(model.Slug); err != nil {
+		return err
+	}
+	if model.ContextWindow < 0 || model.MaxContextWindow < 0 || model.EffectiveContextWindowPercent < 0 || model.EffectiveContextWindowPercent > 100 {
+		return errors.New("invalid model context metadata")
+	}
+	for _, field := range []string{"multi_agent_version", "multi_agent_reasoning_effort", "comp_hash"} {
+		if value, ok := fields[field]; ok {
+			var text string
+			if json.Unmarshal(value, &text) != nil {
+				return errors.New("invalid model capability field type")
+			}
+		}
+	}
+	var tree any
+	_ = json.Unmarshal(raw, &tree)
+	if containsCatalogSensitiveData(tree, "") {
+		return errors.New("model descriptor contains connection or account data")
+	}
+	var messages struct {
+		InstructionsTemplate string `json:"instructions_template"`
+	}
+	if value, ok := fields["model_messages"]; ok && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		value = bytes.TrimSpace(value)
+		if json.Unmarshal(value, &messages) != nil || len(value) == 0 || value[0] != '{' {
+			return errors.New("invalid model messages")
+		}
+	}
+	if complete {
+		if strings.TrimSpace(model.DisplayName) == "" || strings.TrimSpace(model.Description) == "" {
+			return errors.New("incomplete model metadata")
+		}
+		if strings.TrimSpace(model.BaseInstructions) == "" && strings.TrimSpace(messages.InstructionsTemplate) == "" {
+			return errors.New("model descriptor has no instructions")
+		}
+		if model.ContextWindow <= 0 || model.MaxContextWindow < model.ContextWindow {
+			return errors.New("invalid model context metadata")
+		}
+		if len(model.SupportedReasoningLevels) == 0 {
+			return errors.New("model has no reasoning capabilities")
+		}
+		found := false
+		seen := make(map[string]bool)
+		for _, level := range model.SupportedReasoningLevels {
+			if strings.TrimSpace(level.Effort) == "" || seen[level.Effort] {
+				return errors.New("invalid model reasoning levels")
+			}
+			seen[level.Effort] = true
+			if level.Effort == model.DefaultReasoningLevel {
+				found = true
+			}
+		}
+		if !found {
+			return errors.New("model reasoning default is unsupported")
+		}
+	}
+	return nil
+}
+
+func containsCatalogSensitiveData(value any, secret string) bool {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if secret != "" && strings.Contains(key, secret) {
+				return true
+			}
+			switch strings.ToLower(key) {
+			case "api_key", "access_token", "refresh_token", "id_token", "authorization", "auth", "credentials", "password", "base_url", "provider_url", "http_headers", "account_id", "user_id", "email", "experimental_bearer_token":
+				return true
+			}
+			if containsCatalogSensitiveData(child, secret) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if containsCatalogSensitiveData(child, secret) {
+				return true
+			}
+		}
+	case string:
+		return secret != "" && strings.Contains(value, secret)
+	}
+	return false
+}
+
+// Only the fixed cache in the selected Codex home is eligible, never a path
+// supplied by the browser. Ignore unsafe, malformed, or ID-only cache entries.
+func readNativeModelDescriptors(path string) map[string]json.RawMessage {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > modelCatalogMaxBytes {
+		return nil
+	}
+	// Windows reports synthesized mode bits, not the file's ACL.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(file, modelCatalogMaxBytes+1))
+	if err != nil || len(data) > modelCatalogMaxBytes {
+		return nil
+	}
+	var cache struct {
+		ClientVersion string            `json:"client_version"`
+		Models        []json.RawMessage `json:"models"`
+	}
+	if json.Unmarshal(data, &cache) != nil || cache.ClientVersion == "" || len(cache.Models) > modelCatalogMaxModels {
+		return nil
+	}
+	models := make(map[string]json.RawMessage)
+	for _, raw := range cache.Models {
+		if validateModelDescriptor(raw, true) != nil {
+			continue
+		}
+		var model struct {
+			Slug     string `json:"slug"`
+			Messages struct {
+				Template string `json:"instructions_template"`
+			} `json:"model_messages"`
+		}
+		if json.Unmarshal(raw, &model) != nil || strings.TrimSpace(model.Messages.Template) == "" || model.Messages.Template == newCatalogModel(model.Slug).BaseInstructions {
+			continue
+		}
+		if _, duplicate := models[model.Slug]; duplicate {
+			return nil
+		}
+		models[model.Slug] = raw
+	}
+	return models
+}
+
+func parseDiscoveredModelCatalog(body []byte) (discoveredModelCatalog, error) {
+	result := discoveredModelCatalog{Descriptors: make(map[string]json.RawMessage)}
+	if len(body) > modelCatalogMaxBytes {
+		return result, errors.New("compatible API catalog is too large")
+	}
+	var envelope struct {
+		Models []json.RawMessage `json:"models"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return result, errors.New("invalid compatible API model catalog")
+	}
+	for _, raw := range envelope.Models {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil || fields == nil {
+			return result, errors.New("invalid compatible API model entry")
+		}
+		var slug string
+		_ = json.Unmarshal(fields["slug"], &slug)
+		if strings.TrimSpace(slug) == "" {
+			_ = json.Unmarshal(fields["id"], &slug)
+		}
+		slug = strings.TrimSpace(slug)
+		if slug == "" {
+			continue
+		}
+		fields["slug"], _ = json.Marshal(slug)
+		descriptor, _ := json.Marshal(fields)
+		if err := validateModelDescriptor(descriptor, false); err != nil {
+			return result, err
+		}
+		if previous, duplicate := result.Descriptors[slug]; duplicate && !bytes.Equal(previous, descriptor) {
+			return result, errors.New("conflicting model descriptors")
+		}
+		result.Descriptors[slug] = descriptor
+		result.IDs = appendUniqueModelID(result.IDs, slug)
+		if len(result.IDs) > modelCatalogMaxModels {
+			return result, errors.New("compatible API returned too many models")
+		}
+	}
+	for _, entry := range envelope.Data {
+		id := strings.TrimSpace(entry.ID)
+		if validateModelID(id) != nil {
+			continue
+		}
+		result.IDs = appendUniqueModelID(result.IDs, id)
+		if len(result.IDs) > modelCatalogMaxModels {
+			return result, errors.New("compatible API returned too many models")
+		}
+	}
+	if len(result.IDs) == 0 {
+		return result, errors.New("compatible API did not return any usable model IDs")
+	}
+	sort.Strings(result.IDs)
+	return result, nil
 }
 
 func isCanonicalXIASSBaseURL(baseURL string) bool {

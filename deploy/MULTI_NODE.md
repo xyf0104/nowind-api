@@ -122,6 +122,27 @@ gateway:
 
 ## 安全启用顺序
 
+### 既有网页登录会话迁移
+
+Redis 自动切换之前，必须先完成现有网页登录会话向 PostgreSQL 的受控迁移；只改 `JWT_REFRESH_TOKEN_STORE` 不会导入旧会话。普通网页配对、启动及更新均不会执行以下命令。
+
+程序提供离线运维入口：
+
+```sh
+/app/xiass-api -migrate-refresh-sessions /private/manifest.json -offline-maintenance
+```
+
+`-offline-maintenance` 是操作者对全部参与应用已排空并停止的确认，不是自动维护或仲裁证明。这个入口不是容灾安装器：它不配置数据库升主、防双主、Sentinel 或公网 DNS，也不宣称迁移时零中断。
+
+- 清单必须是 0400/0600 的普通文件，版本字段 `version` 为 1。必须明确给出 `database_url`、`recovery_secret_file`、原始 Redis 主节点的 `primary`、`primary_replication_id`、`primary_address` 与全部 `replicas`。每个 Redis 节点包含固定 `redis/rediss` URL、事先检查的 `run_id`、完整 `acl_users` 和 `modules`；副本另填其通告的 `replica_address`。不得从已提升的落后副本或不可信快照生成这份清单。
+- 先正常升级安装所需迁移表，再安排离线操作；命令自身不自动执行数据库 migration、创建管理员或启动隧道。恢复密钥文件存放 32 随机字节的十六进制值，权限同上。失败或返回结果不明时保留原清单和恢复密钥，不能重新生成一套后强行重试。
+- 不指定 `runtime` 时只执行会话迁移，所有旧 Redis 用户均保持禁用，不能因此直接恢复应用。`runtime` 可给出独立的 `app_password_file`、有副本时的 `replica_password_file`，以及新的绝对路径 `environment_file`；两份密码同样是私密的 32 随机字节十六进制文件，不得与恢复密钥或彼此相同。
+- `runtime` 在完成 PostgreSQL 迁移后，为普通应用配置限定缓存/限流/调度权限，为复制配置独立权限，并逐节点保存 ACL；存在副本时，主节点与全部副本须事先具有可写的持久 `redis.conf`，命令会在两种角色上保存新复制凭据，以便原主恢复后可以作为副本接回。独立 Redis 不增加这个要求。为保留 Team 邮箱恢复，应用允许 SCAN 枚举键名，但不能读取或修改旧 refresh-token 的三个命名空间，也不能执行 ACL/CONFIG/FLUSHDB/复制管理命令。
+- 非默认键布局须明确填写 `runtime` 内的 `dashboard_prefix`、`queue_ready_key`、`queue_delayed_key`、`queue_active_key`、`inflight_prefix`、`lock_prefix`、`alert_lock_key`。与旧会话命名空间冲突或无法表达为 Redis ACL 的布局会在迁移前拒绝，不能改用无限制权限兜底。
+- 输出文件只包含 `JWT_REFRESH_TOKEN_STORE=postgres` 及新的应用 `REDIS_USERNAME`/`REDIS_PASSWORD`，采用 0600 原子创建；已存在且内容不同的文件、安装 `.env` 均不会被覆盖。它不包含操作员或复制密码。部署方须显式接入此配置并验证实际登录/刷新/退出及其他 Redis 功能后再恢复流量；备份和故障控制器的独立权限也必须另行验收。
+
+原会话的身份、绑定值与绝对到期时间保持原样，已撤销会话不从副本补回。普通应用不得使用迁移操作员凭据。已经完成迁移的数据库不能回退到只认识 Redis 会话的旧二进制。
+
 1. 备份共享数据库、Redis、`.env` 和应用数据。
 2. 在隔离端口启动每个新实例，分别检查 `/health` 和 `/readyz`，不要接入客户流量。公网入口的健康检查必须使用 `/readyz`。
 3. 从每个实例分别测试其本地私网 SOCKS 和对端私网 SOCKS，确认公网出口 IP 符合账号归属。

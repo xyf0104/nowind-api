@@ -160,7 +160,7 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 	require.True(t, received.StreamExists, "WS 请求应携带 stream 字段")
 	require.False(t, received.Stream, "应保持客户端 stream=false 的原始语义")
 
-	store := svc.getOpenAIWSStateStore()
+	store := svc.ownedOpenAIWSStateStore(c, account)
 	mappedAccountID, getErr := store.GetResponseAccount(context.Background(), groupID, "resp_new_1")
 	require.NoError(t, getErr)
 	require.Equal(t, account.ID, mappedAccountID)
@@ -612,7 +612,7 @@ func TestOpenAIWSPayloadString_OnlyAcceptsStringValues(t *testing.T) {
 	require.Equal(t, "resp_1", openAIWSPayloadString(payload, "previous_response_id"))
 }
 
-func TestOpenAIGatewayService_Forward_WSv2_PoolReuseNotOneToOne(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2_SameOwnerPoolReuse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var upgradeCount atomic.Int64
@@ -707,7 +707,8 @@ func TestOpenAIGatewayService_Forward_WSv2_PoolReuseNotOneToOne(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 		c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
 		groupID := int64(2001)
-		c.Set("api_key", &APIKey{GroupID: &groupID})
+		c.Set("api_key", &APIKey{ID: 101, GroupID: &groupID})
+		c.Request.Header.Set("session_id", "same-owner-reuse")
 
 		body := []byte(`{"model":"gpt-5.1","stream":false,"previous_response_id":"resp_prev_reuse","input":[{"type":"input_text","text":"hello"}]}`)
 		result, err := svc.Forward(context.Background(), c, account, body)
@@ -1327,13 +1328,14 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnStateAndMetadataReplayOnReconnect
 	c1, _ := gin.CreateTestContext(rec1)
 	c1.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c1.Request.Header.Set("session_id", "session_turn_state")
+	c1.Set("api_key", &APIKey{ID: 101})
 	c1.Request.Header.Set("x-codex-turn-metadata", "turn_meta_1")
 	result1, err := svc.Forward(context.Background(), c1, account, reqBody)
 	require.NoError(t, err)
 	require.NotNil(t, result1)
 
 	sessionHash := svc.GenerateSessionHash(c1, reqBody)
-	store := svc.getOpenAIWSStateStore()
+	store := svc.ownedOpenAIWSStateStore(c1, account)
 	turnState, ok := store.GetSessionTurnState(0, sessionHash)
 	require.True(t, ok)
 	require.Equal(t, "turn_state_first", turnState)
@@ -1347,6 +1349,7 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnStateAndMetadataReplayOnReconnect
 	c2, _ := gin.CreateTestContext(rec2)
 	c2.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c2.Request.Header.Set("session_id", "session_turn_state")
+	c2.Set("api_key", &APIKey{ID: 101})
 	c2.Request.Header.Set("x-codex-turn-metadata", "turn_meta_2")
 	result2, err := svc.Forward(context.Background(), c2, account, reqBody)
 	require.NoError(t, err)
@@ -1533,6 +1536,7 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnMetadataInPayloadOnConnReuse(t *t
 	c1, _ := gin.CreateTestContext(rec1)
 	c1.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c1.Request.Header.Set("session_id", "session-metadata-reuse")
+	c1.Set("api_key", &APIKey{ID: 101})
 	c1.Request.Header.Set("x-codex-turn-metadata", "turn_meta_payload_1")
 	result1, err := svc.Forward(context.Background(), c1, account, body)
 	require.NoError(t, err)
@@ -1547,6 +1551,7 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnMetadataInPayloadOnConnReuse(t *t
 	c2, _ := gin.CreateTestContext(rec2)
 	c2.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c2.Request.Header.Set("session_id", "session-metadata-reuse")
+	c2.Set("api_key", &APIKey{ID: 101})
 	c2.Request.Header.Set("x-codex-turn-metadata", "turn_meta_payload_2")
 	result2, err := svc.Forward(context.Background(), c2, account, body)
 	require.NoError(t, err)
@@ -1645,6 +1650,7 @@ func TestOpenAIGatewayService_Forward_WSv2StoreFalseSessionConnIsolation(t *test
 	c1, _ := gin.CreateTestContext(rec1)
 	c1.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c1.Request.Header.Set("session_id", "session_store_false_a")
+	c1.Set("api_key", &APIKey{ID: 101})
 	result1, err := svc.Forward(context.Background(), c1, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result1)
@@ -1654,6 +1660,7 @@ func TestOpenAIGatewayService_Forward_WSv2StoreFalseSessionConnIsolation(t *test
 	c2, _ := gin.CreateTestContext(rec2)
 	c2.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c2.Request.Header.Set("session_id", "session_store_false_a")
+	c2.Set("api_key", &APIKey{ID: 101})
 	result2, err := svc.Forward(context.Background(), c2, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result2)
@@ -1663,13 +1670,14 @@ func TestOpenAIGatewayService_Forward_WSv2StoreFalseSessionConnIsolation(t *test
 	c3, _ := gin.CreateTestContext(rec3)
 	c3.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c3.Request.Header.Set("session_id", "session_store_false_b")
+	c3.Set("api_key", &APIKey{ID: 101})
 	result3, err := svc.Forward(context.Background(), c3, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result3)
 	require.Equal(t, int64(2), upgradeCount.Load(), "不同 session(store=false) 应隔离连接，避免续链状态互相覆盖")
 }
 
-func TestOpenAIGatewayService_Forward_WSv2StoreFalseDisableForceNewConnAllowsReuse(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2StoreFalseDisableForceNewConnPreservesOwnershipIsolation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var upgradeCount atomic.Int64
@@ -1752,6 +1760,7 @@ func TestOpenAIGatewayService_Forward_WSv2StoreFalseDisableForceNewConnAllowsReu
 	c1, _ := gin.CreateTestContext(rec1)
 	c1.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c1.Request.Header.Set("session_id", "session_store_false_reuse_a")
+	c1.Set("api_key", &APIKey{ID: 101})
 	result1, err := svc.Forward(context.Background(), c1, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result1)
@@ -1761,10 +1770,11 @@ func TestOpenAIGatewayService_Forward_WSv2StoreFalseDisableForceNewConnAllowsReu
 	c2, _ := gin.CreateTestContext(rec2)
 	c2.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c2.Request.Header.Set("session_id", "session_store_false_reuse_b")
+	c2.Set("api_key", &APIKey{ID: 101})
 	result2, err := svc.Forward(context.Background(), c2, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result2)
-	require.Equal(t, int64(1), upgradeCount.Load(), "关闭强制新连后，不同 session(store=false) 可复用连接")
+	require.Equal(t, int64(2), upgradeCount.Load(), "disabling force-new policy must not bypass conversation ownership")
 }
 
 func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T) {

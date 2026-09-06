@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -519,6 +520,104 @@ func TestNotificationEmailSendRespectsLegacyDeliveryKey(t *testing.T) {
 type notificationEmailMemorySettingRepo struct {
 	mu     sync.RWMutex
 	values map[string]string
+}
+
+func TestNotificationEmailReceiptConfirmsSMTPAndPreservesOriginalSendTime(t *testing.T) {
+	ctx := context.Background()
+	repo := newNotificationEmailMemorySettingRepo()
+	smtpServer := startNotificationEmailTestSMTPServer(t)
+	require.NoError(t, repo.SetMultiple(ctx, smtpServer.settings()))
+	svc := NewNotificationEmailService(repo, NewEmailService(repo, nil))
+	input := NotificationEmailSendInput{
+		Event: NotificationEmailEventUserInactivityWarning, RecipientEmail: "idle@example.com",
+		SourceType: "user_inactivity_cleanup", SourceID: "8:123", ReminderKey: "30d",
+	}
+	before := time.Now().UTC()
+	sentAt, err := svc.SendWithReceipt(ctx, input)
+	require.NoError(t, err)
+	require.False(t, sentAt.Before(before))
+	require.False(t, sentAt.After(time.Now().UTC()))
+	require.Equal(t, int64(1), smtpServer.messageCount())
+	key := notificationEmailDeliveryKey(input.Event, input.SourceType, input.SourceID, input.RecipientEmail, input.ReminderKey)
+	stored, err := repo.GetValue(ctx, key)
+	require.NoError(t, err)
+	require.Equal(t, sentAt.Format(time.RFC3339Nano), stored)
+
+	// Recovery must not require SMTP to still be configured or emit a duplicate.
+	svc.emailService = nil
+	recoveredAt, err := svc.SendWithReceipt(ctx, input)
+	require.NoError(t, err)
+	require.Equal(t, sentAt, recoveredAt)
+	require.Equal(t, int64(1), smtpServer.messageCount())
+}
+
+func TestNotificationEmailReceiptDoesNotConfirmSkippedOrUnconfiguredSend(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		recipient    string
+		marker       string
+		unsubscribed bool
+		wantError    bool
+	}{
+		{name: "empty recipient"},
+		{name: "missing SMTP", recipient: "idle@example.com", wantError: true},
+		{name: "empty dedupe marker", recipient: "idle@example.com", marker: " "},
+		{name: "nonreceipt dedupe marker", recipient: "idle@example.com", marker: "sent"},
+		{name: "in-flight marker", recipient: "idle@example.com", marker: "sending"},
+		{name: "disabled marker", recipient: "idle@example.com", marker: "disabled"},
+		{name: "unsubscribed", recipient: "idle@example.com", unsubscribed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			repo := newNotificationEmailMemorySettingRepo()
+			svc := NewNotificationEmailService(repo, NewEmailService(repo, nil))
+			input := NotificationEmailSendInput{
+				Event: NotificationEmailEventUserInactivityWarning, RecipientEmail: tc.recipient,
+				SourceType: "user_inactivity_cleanup", SourceID: "8:123", ReminderKey: "30d",
+			}
+			if tc.unsubscribed {
+				input.Event = NotificationEmailEventBalanceLow
+				require.NoError(t, repo.Set(ctx, notificationEmailPreferenceKey(input.Event, tc.recipient), "unsubscribed"))
+			}
+			if tc.marker != "" {
+				key := notificationEmailDeliveryKey(input.Event, input.SourceType, input.SourceID, tc.recipient, input.ReminderKey)
+				require.NoError(t, repo.Set(ctx, key, tc.marker))
+			}
+			sentAt, err := svc.SendWithReceipt(ctx, input)
+			if tc.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.True(t, sentAt.IsZero())
+		})
+	}
+}
+
+type notificationEmailReceiptFailRepo struct {
+	*notificationEmailMemorySettingRepo
+}
+
+func (r *notificationEmailReceiptFailRepo) Set(ctx context.Context, key, value string) error {
+	if strings.HasPrefix(key, notificationEmailDeliveryKeyPrefix) {
+		return errors.New("receipt store unavailable")
+	}
+	return r.notificationEmailMemorySettingRepo.Set(ctx, key, value)
+}
+
+func TestNotificationEmailReceiptSurvivesReceiptStoreFailure(t *testing.T) {
+	ctx := context.Background()
+	repo := &notificationEmailReceiptFailRepo{newNotificationEmailMemorySettingRepo()}
+	smtpServer := startNotificationEmailTestSMTPServer(t)
+	require.NoError(t, repo.SetMultiple(ctx, smtpServer.settings()))
+	svc := NewNotificationEmailService(repo, NewEmailService(repo, nil))
+	sentAt, err := svc.SendWithReceipt(ctx, NotificationEmailSendInput{
+		Event: NotificationEmailEventUserInactivityWarning, RecipientEmail: "idle@example.com",
+		SourceType: "user_inactivity_cleanup", SourceID: "8:123", ReminderKey: "30d",
+	})
+	require.ErrorContains(t, err, "receipt store unavailable")
+	require.False(t, sentAt.IsZero())
+	require.Equal(t, int64(1), smtpServer.messageCount())
 }
 
 func newNotificationEmailMemorySettingRepo() *notificationEmailMemorySettingRepo {

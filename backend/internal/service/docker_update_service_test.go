@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -288,6 +289,7 @@ func TestLaunchHostClusterJoinStartsIsolatedController(t *testing.T) {
 		SourceURL: "https://api.example.com", SourceNodeID: "api", TargetNodeID: "api2", TunnelProof: strings.Repeat("b", 64),
 		DatabaseHost: "postgres", DatabasePort: 5432, DatabaseUser: "xiass", DatabasePass: "db-secret", DatabaseName: "xiass", DatabaseSSLMode: "disable",
 		RedisHost: "redis", RedisPort: 6379, RedisPassword: "redis-secret", JWTSecret: "jwt-secret", TOTPKey: strings.Repeat("4", 64),
+		JWTRefreshTokenStore: "postgres",
 	}
 	client := newDockerUpdateClientWithSocket(socketPath)
 	require.NoError(t, (&DockerUpdateService{}).launchHostClusterJoin(context.Background(), join, client))
@@ -297,6 +299,18 @@ func TestLaunchHostClusterJoinStartsIsolatedController(t *testing.T) {
 	require.Contains(t, payload.Env, "JOIN_SOURCE_URL=https://api.example.com")
 	require.Contains(t, payload.Env, "JOIN_TARGET_NODE_ID=api2")
 	require.NotContains(t, strings.Join(payload.Env, "\n"), "db-secret")
+	var bundle string
+	for _, entry := range payload.Env {
+		if strings.HasPrefix(entry, "JOIN_BUNDLE_B64=") {
+			bundle = strings.TrimPrefix(entry, "JOIN_BUNDLE_B64=")
+		}
+	}
+	require.NotEmpty(t, bundle)
+	decoded, err := base64.StdEncoding.DecodeString(bundle)
+	require.NoError(t, err)
+	var received ExecutionNodeJoinConfig
+	require.NoError(t, json.Unmarshal(decoded, &received))
+	require.Equal(t, "postgres", received.JWTRefreshTokenStore)
 }
 
 func TestLaunchHostClusterRuntimeStartsIsolatedControllerWithScopedRuntimeConfig(t *testing.T) {

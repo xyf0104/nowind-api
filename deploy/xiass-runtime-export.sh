@@ -18,17 +18,22 @@ PUBLISH_TEMP_PATH=""
 PUBLISH_COMPLETED=false
 SOURCE_ORIGIN="${XIASS_SOURCE_ORIGIN:-}"
 APP_CONTAINER=""
-POSTGRES_CONTAINER=""
+POSTGRES_FROM_CONTAINER=""
+RUNTIME_CONTEXT_FROM_CONTAINER=""
 REDIS_CONTAINER=""
 TEAM_BROWSER_CONTAINER=""
 TEAM_AUTOMATION_CONTAINER=""
 WORK_DIR=""
+REDIS_SNAPSHOT_CLIENT=""
 
 log() { printf '[XIASS] %s\n' "$*"; }
 die() { printf '[XIASS] 错误：%s\n' "$*" >&2; exit 1; }
 
 cleanup() {
     local status=$?
+    if [ -n "$REDIS_SNAPSHOT_CLIENT" ]; then
+        docker rm -fv "$REDIS_SNAPSHOT_CLIENT" >/dev/null 2>&1 || true
+    fi
     if [ -n "$PUBLISH_CONTAINER" ] && [ -n "$PUBLISH_TEMP_PATH" ] && [ "$PUBLISH_COMPLETED" != "true" ] && command -v docker >/dev/null 2>&1; then
         docker exec "$PUBLISH_CONTAINER" rm -f "$PUBLISH_TEMP_PATH" >/dev/null 2>&1 || true
     fi
@@ -38,7 +43,7 @@ cleanup() {
 
 usage() {
     cat <<'EOF'
-Usage: xiass-runtime-export.sh --output /tmp/xiass-migration.tar.gz
+Usage: xiass-runtime-export.sh --output /tmp/xiass-migration.tar.gz --postgres-from-container container:/app/data/runtime-exports/.postgres-xxx.sql.gz
 EOF
 }
 
@@ -52,6 +57,16 @@ while [ "$#" -gt 0 ]; do
         --publish-to-container)
             [ "$#" -ge 2 ] || die "--publish-to-container requires a target"
             PUBLISH_TO_CONTAINER="$2"
+            shift 2
+            ;;
+        --postgres-from-container)
+            [ "$#" -ge 2 ] || die "--postgres-from-container requires a target"
+            POSTGRES_FROM_CONTAINER="$2"
+            shift 2
+            ;;
+        --runtime-context-from-container)
+            [ "$#" -ge 2 ] || die "--runtime-context-from-container requires a target"
+            RUNTIME_CONTEXT_FROM_CONTAINER="$2"
             shift 2
             ;;
         --help|-h)
@@ -112,9 +127,32 @@ find_container() {
     return 1
 }
 
-APP_CONTAINER=$(find_container xiass-api nowind-api sub2api) || die "XIASS application container is not running"
-POSTGRES_CONTAINER=$(find_container xiass-api-postgres nowind-api-postgres sub2api-postgres) || die "PostgreSQL container is not running"
-REDIS_CONTAINER=$(find_container xiass-api-redis nowind-api-redis sub2api-redis) || die "Redis container is not running"
+APP_CONTAINER="${PUBLISH_CONTAINER:-}"
+if [ -z "$APP_CONTAINER" ]; then
+    APP_CONTAINER=$(find_container xiass-api nowind-api sub2api) || die "XIASS application container is not running"
+fi
+container_is_running "$APP_CONTAINER" || die "XIASS application container is not running"
+snapshot_container="${POSTGRES_FROM_CONTAINER%%:*}"
+snapshot_path="${POSTGRES_FROM_CONTAINER#*:}"
+case "$snapshot_path" in
+    /app/data/runtime-exports/.postgres-*.sql.gz) ;;
+    *) die "missing current application database snapshot; refusing to export a local fallback database" ;;
+esac
+case "${snapshot_path#/app/data/runtime-exports/}" in
+    */*) die "invalid database snapshot path" ;;
+esac
+[ "$(docker inspect --format '{{.Id}}' "$snapshot_container")" = "$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")" ] || die "database snapshot does not belong to the current application"
+context_container="${RUNTIME_CONTEXT_FROM_CONTAINER%%:*}"
+context_path="${RUNTIME_CONTEXT_FROM_CONTAINER#*:}"
+case "$context_path" in
+    /app/data/runtime-exports/.runtime-context-*.json) ;;
+    *) die "missing effective application configuration" ;;
+esac
+case "${context_path#/app/data/runtime-exports/}" in
+    */*) die "invalid runtime context path" ;;
+esac
+[ "$(docker inspect --format '{{.Id}}' "$context_container")" = "$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")" ] || die "runtime context does not belong to the current application"
+REDIS_CONTAINER=$(find_container xiass-api-redis nowind-api-redis sub2api-redis || true)
 TEAM_BROWSER_CONTAINER=$(find_container xiass-api-team-child-browser nowind-api-team-child-browser sub2api-team-child-browser || true)
 TEAM_AUTOMATION_CONTAINER=$(find_container xiass-api-team-child-automation nowind-api-team-child-automation sub2api-team-child-automation || true)
 
@@ -142,20 +180,128 @@ fi
 WORK_DIR=$(mktemp -d)
 trap cleanup EXIT INT TERM
 mkdir -p "$WORK_DIR/payload/app-data" "$WORK_DIR/deploy"
+docker cp "$RUNTIME_CONTEXT_FROM_CONTAINER" "$WORK_DIR/payload/runtime-context.json"
+jq -e '.version == 2 and (.config | type == "object") and (.environment | type == "object")' "$WORK_DIR/payload/runtime-context.json" >/dev/null || die "invalid effective runtime context"
 
-log "exporting PostgreSQL logical snapshot"
-docker exec "$POSTGRES_CONTAINER" sh -c '
-    export PGPASSWORD="${POSTGRES_PASSWORD:-}"
-    exec pg_dump -h 127.0.0.1 -U "${POSTGRES_USER:-sub2api}" -d "${POSTGRES_DB:-sub2api}" \
-        --no-owner --no-acl --clean --if-exists
-' > "$WORK_DIR/payload/postgres.sql"
-gzip -9 -n "$WORK_DIR/payload/postgres.sql"
+log "copying the current application's PostgreSQL logical snapshot"
+docker cp "$POSTGRES_FROM_CONTAINER" "$WORK_DIR/payload/postgres.sql.gz"
+gzip -t "$WORK_DIR/payload/postgres.sql.gz"
 
 log "exporting Redis RDB snapshot"
-redis_snapshot="/tmp/xiass-runtime-export-$$.rdb"
-docker exec "$REDIS_CONTAINER" sh -c "redis-cli --rdb '$redis_snapshot' >/dev/null"
-docker cp "$REDIS_CONTAINER:$redis_snapshot" "$WORK_DIR/payload/redis.rdb"
-docker exec "$REDIS_CONTAINER" rm -f "$redis_snapshot" >/dev/null 2>&1 || true
+runtime_context="$WORK_DIR/payload/runtime-context.json"
+redis_image="redis:8-alpine"
+if [ -n "$REDIS_CONTAINER" ]; then
+    redis_image=$(docker inspect --format '{{.Config.Image}}' "$REDIS_CONTAINER")
+fi
+# The CLI shares the application's network namespace, so a paired instance's
+# loopback tunnel is the same endpoint here, not the local Redis container.
+redis_cli() {
+    local host="$1" port="$2" username="$3" password="$4"
+    shift 4
+    local tls_args=() user_args=() auth_args=()
+    if [ "$(jq -r '.config.redis.enable_tls' "$runtime_context")" = "true" ]; then
+        tls_args=(--tls --sni "$host")
+    fi
+    [ -z "$username" ] || user_args=(--user "$username")
+    if [ -n "$password" ] || [ -n "$username" ]; then
+        auth_args=(--env REDISCLI_AUTH)
+    fi
+    REDISCLI_AUTH="$password" docker run --rm --network "container:$APP_CONTAINER" \
+        "${auth_args[@]}" --entrypoint redis-cli "$redis_image" -e --no-auth-warning \
+        -h "$host" -p "$port" "${tls_args[@]}" "${user_args[@]}" "$@"
+}
+
+read_secret() {
+    # NUL cannot be represented in an environment variable. Preserve all other
+    # bytes, including a trailing newline, without evaluating shell contents.
+    jq -e "$2 | type == \"string\" and (index(\"\\u0000\") == null)" "$1" >/dev/null || die "invalid Redis credential"
+    IFS= read -r -d '' SECRET_VALUE < <(jq -j "$2, \"\\u0000\"" "$1") || true
+}
+
+redis_host=$(jq -r '.config.redis.host' "$runtime_context")
+redis_port=$(jq -r '.config.redis.port' "$runtime_context")
+redis_username=$(jq -r '.config.redis.username // ""' "$runtime_context")
+read_secret "$runtime_context" '.config.redis.password'
+redis_password="$SECRET_VALUE"
+backup_credentials=$(jq -r '.environment.XIASS_REDIS_BACKUP_CREDENTIALS_FILE // empty' "$runtime_context")
+backup_credentials="${backup_credentials:-$INSTALL_DIR/deploy/ha/secrets/redis-backup.json}"
+if [ -e "$backup_credentials" ]; then
+    [ -f "$backup_credentials" ] && [ ! -L "$backup_credentials" ] || die "Redis backup credentials must be a regular private file"
+    case "$(stat -c '%a' "$backup_credentials")" in 400|600) ;; *) die "Redis backup credentials must have mode 0400 or 0600" ;; esac
+    case "$(realpath "$backup_credentials")" in "$(realpath "$INSTALL_DIR")"/*) ;; *) die "Redis backup credentials must remain inside the installation directory" ;; esac
+    redis_username=$(jq -er '.username | select(type == "string" and length > 0)' "$backup_credentials")
+    read_secret "$backup_credentials" '.password'
+    redis_password="$SECRET_VALUE"
+    cp "$backup_credentials" "$WORK_DIR/payload/redis-backup.json"
+fi
+
+if [ "$(jq '.config.redis.sentinel_addrs | length' "$runtime_context")" -gt 0 ]; then
+    sentinel_user=$(jq -r '.config.redis.sentinel_username // ""' "$runtime_context")
+    read_secret "$runtime_context" '.config.redis.sentinel_password'
+    sentinel_password="$SECRET_VALUE"
+    sentinel_master=$(jq -er '.config.redis.sentinel_master_name | select(length > 0)' "$runtime_context")
+    discovered=false
+    while IFS= read -r address; do
+        host="${address%:*}"; port="${address##*:}"
+        host="${host#[}"; host="${host%]}"
+        if redis_cli "$host" "$port" "$sentinel_user" "$sentinel_password" --json SENTINEL get-master-addr-by-name "$sentinel_master" > "$WORK_DIR/sentinel.json" 2> "$WORK_DIR/sentinel-error.log" && \
+            jq -e 'type == "array" and length == 2 and all(.[]; type == "string")' "$WORK_DIR/sentinel.json" >/dev/null; then
+            redis_host=$(jq -r '.[0]' "$WORK_DIR/sentinel.json")
+            redis_port=$(jq -r '.[1]' "$WORK_DIR/sentinel.json")
+            discovered=true
+            break
+        fi
+    done < <(jq -r '.config.redis.sentinel_addrs[]' "$runtime_context")
+    [ "$discovered" = "true" ] || die "cannot discover the application's current Redis primary"
+fi
+[[ "$redis_port" =~ ^[0-9]+$ ]] && [ "$redis_port" -gt 0 ] && [ "$redis_port" -le 65535 ] && [ -n "$redis_host" ] || die "invalid effective Redis endpoint"
+
+redis_info() {
+    redis_cli "$redis_host" "$redis_port" "$redis_username" "$redis_password" --raw INFO server replication | \
+        jq -eRs 'split("\r\n") | map(select(contains(":")) | split(":") | {(.[0]): (.[1:] | join(":"))}) | add'
+}
+redis_info > "$WORK_DIR/payload/redis-source.json"
+jq -e '.role == "master" and (.run_id | length == 40)' "$WORK_DIR/payload/redis-source.json" >/dev/null || die "refusing a non-primary Redis snapshot"
+redis_cli "$redis_host" "$redis_port" "$redis_username" "$redis_password" --json ACL LIST > "$WORK_DIR/redis-acl.json"
+jq -er 'select(type == "array" and length > 0 and all(.[]; type == "string")) | .[]' "$WORK_DIR/redis-acl.json" > "$WORK_DIR/payload/redis.acl"
+redis_cli "$redis_host" "$redis_port" "$redis_username" "$redis_password" --json MODULE LIST > "$WORK_DIR/payload/redis-modules.json"
+tls_args=(); user_args=(); auth_args=()
+[ "$(jq -r '.config.redis.enable_tls' "$runtime_context")" != "true" ] || tls_args=(--tls --sni "$redis_host")
+[ -z "$redis_username" ] || user_args=(--user "$redis_username")
+if [ -n "$redis_password" ] || [ -n "$redis_username" ]; then
+    auth_args=(--env REDISCLI_AUTH)
+fi
+for snapshot_attempt in 1 2; do
+    REDIS_SNAPSHOT_CLIENT=$(REDISCLI_AUTH="$redis_password" docker create --network "container:$APP_CONTAINER" \
+        --label com.xiass.role=runtime-export-client --label "com.xiass.runtime_export_source=$APP_CONTAINER" \
+        "${auth_args[@]}" --entrypoint redis-cli "$redis_image" \
+        -e --no-auth-warning -h "$redis_host" -p "$redis_port" "${tls_args[@]}" "${user_args[@]}" --rdb /tmp/xiass.rdb)
+    docker start -a "$REDIS_SNAPSHOT_CLIENT" > "$WORK_DIR/redis-rdb.log" 2>&1 || die "Redis snapshot transfer failed"
+    [ "$(docker inspect --format '{{.State.ExitCode}}' "$REDIS_SNAPSHOT_CLIENT")" = "0" ] || die "Redis snapshot export failed"
+    docker cp "$REDIS_SNAPSHOT_CLIENT:/tmp/xiass.rdb" "$WORK_DIR/payload/redis.rdb"
+    [ -s "$WORK_DIR/payload/redis.rdb" ] || die "Redis returned an empty snapshot"
+    docker rm -fv "$REDIS_SNAPSHOT_CLIENT" >/dev/null
+    REDIS_SNAPSHOT_CLIENT=""
+    redis_info > "$WORK_DIR/redis-source-after.json"
+    if jq -e --slurpfile after "$WORK_DIR/redis-source-after.json" '.role == "master" and $after[0].role == "master" and .run_id == $after[0].run_id and .master_replid == $after[0].master_replid' "$WORK_DIR/payload/redis-source.json" >/dev/null; then
+        break
+    fi
+    # A first SYNC creates Redis's backlog and changes its replication ID.
+    # Discard that snapshot; the retry must pass the unchanged identity check.
+    if [ "$snapshot_attempt" = "1" ] && jq -e --slurpfile after "$WORK_DIR/redis-source-after.json" '
+        .role == "master" and $after[0].role == "master" and .run_id == $after[0].run_id
+        and .repl_backlog_active == "0" and $after[0].repl_backlog_active == "1"
+        and $after[0].master_replid2 == "0000000000000000000000000000000000000000"
+    ' "$WORK_DIR/payload/redis-source.json" >/dev/null; then
+        log "Redis replication backlog initialized; repeating snapshot with stable identity"
+        rm -f "$WORK_DIR/payload/redis.rdb"
+        cp "$WORK_DIR/redis-source-after.json" "$WORK_DIR/payload/redis-source.json"
+    else
+        die "Redis primary changed during export; retry on the stable primary"
+    fi
+done
+redis_cli "$redis_host" "$redis_port" "$redis_username" "$redis_password" --json ACL LIST > "$WORK_DIR/redis-acl-after.json"
+[ "$(jq -c 'sort' "$WORK_DIR/redis-acl.json")" = "$(jq -c 'sort' "$WORK_DIR/redis-acl-after.json")" ] || die "Redis permissions changed during export; retry after migration completes"
 
 log "exporting XIASS application data"
 docker cp "$APP_CONTAINER:/app/data/." "$WORK_DIR/payload/app-data"
@@ -193,7 +339,8 @@ jq -n \
     --arg created_at "$CREATED_AT" \
     --arg source_origin "$SOURCE_ORIGIN" \
     --arg app_image "$APP_IMAGE" \
-    '{format_version: 1, created_at: $created_at, source_origin: $source_origin, app_image: $app_image, layout: "logical"}' \
+    --arg redis_image "$redis_image" \
+    '{format_version: 2, created_at: $created_at, source_origin: $source_origin, app_image: $app_image, redis_image: $redis_image, layout: "logical"}' \
     > "$WORK_DIR/manifest.json"
 
 cat > "$WORK_DIR/README.txt" <<'EOF'
@@ -229,7 +376,12 @@ if [ -n "$PUBLISH_TO_CONTAINER" ]; then
     # ever visible once its complete byte stream is in place.
     docker exec "$PUBLISH_CONTAINER" rm -f "$PUBLISH_TEMP_PATH" >/dev/null 2>&1 || true
     docker cp "$OUTPUT" "$PUBLISH_CONTAINER:$PUBLISH_TEMP_PATH"
-    docker exec "$PUBLISH_CONTAINER" sh -ceu 'test -s "$1"; mv -f "$1" "$2"' sh "$PUBLISH_TEMP_PATH" "$PUBLISH_PATH"
+    docker exec --user 0 "$PUBLISH_CONTAINER" sh -ceu '
+        test -s "$1"
+        chown "$(stat -c "%u:%g" "$3")" "$1"
+        chmod 600 "$1"
+        mv -f "$1" "$2"
+    ' sh "$PUBLISH_TEMP_PATH" "$PUBLISH_PATH" "$context_path"
     PUBLISH_COMPLETED=true
 fi
 

@@ -262,6 +262,7 @@ func TestApplyWritesAndReadsSelectedContextSettings(t *testing.T) {
 
 func TestApplyWritesLocalModelCatalogAndUsesOfficialReviewDefault(t *testing.T) {
 	home := t.TempDir()
+	writeSyntheticNativeCache(t, home)
 	manager := NewConfigManager(home)
 	if err := os.WriteFile(manager.ConfigPath, []byte("review_model = \"old-review\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -335,6 +336,7 @@ func TestModelCatalogKeepsBuiltInImageModelCapabilities(t *testing.T) {
 		"https://gateway.example.com/v1",
 		"gpt-5.6-sol",
 		[]string{"gpt-image-2", "gpt-5.6-sol"},
+		syntheticNativeDescriptors(t),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -366,6 +368,7 @@ func modelCatalogContains(values []string, wanted string) bool {
 
 func TestRestoreRestoresModelCatalogTogetherWithConfig(t *testing.T) {
 	manager := NewConfigManager(t.TempDir())
+	writeSyntheticNativeCache(t, filepath.Dir(manager.ConfigPath))
 	if _, err := manager.Apply(ApplyConfig{
 		BaseURL:            "https://gateway.example.com",
 		APIKey:             "sk-first-1234567890",

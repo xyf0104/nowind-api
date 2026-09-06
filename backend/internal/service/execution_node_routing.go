@@ -533,6 +533,21 @@ func (p executionNodeRoutingPolicy) nodeHealthy(nodeID string) bool {
 	return p.healthy[strings.TrimSpace(nodeID)]
 }
 
+func (p executionNodeRoutingPolicy) nodeRequiresTakeover(nodeID string) bool {
+	healthy, known := p.healthy[nodeID]
+	return p.enabled && !p.unavailable && p.emergencyLocalEgress &&
+		nodeID != p.localNodeID && known && !healthy
+}
+
+func (p executionNodeRoutingPolicy) hasOfflineTakeoverOwner() bool {
+	for nodeID, weight := range p.weights {
+		if weight > 0 && p.nodeRequiresTakeover(nodeID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p executionNodeRoutingPolicy) canTakeOver(account *Account) bool {
 	if !p.enabled || p.unavailable || !p.emergencyLocalEgress || account == nil {
 		return false
@@ -545,7 +560,7 @@ func (p executionNodeRoutingPolicy) canTakeOver(account *Account) bool {
 		return false
 	}
 	owner := p.nodeID(account)
-	if owner == p.localNodeID || p.nodeHealthy(owner) {
+	if !p.nodeRequiresTakeover(owner) {
 		return false
 	}
 	if !p.nodeHealthy(p.localNodeID) || p.localProxy == nil ||
@@ -717,6 +732,15 @@ func orderExecutionNodeCandidatesWithinPriorities[T any](items []T, accountOf fu
 	if !policy.enabled {
 		return items
 	}
+	if policy.hasOfflineTakeoverOwner() {
+		// Emergency takeover is the explicit exception to global account
+		// priority: exhaust healthy-owner tiers before any offline-owner tier.
+		items = append([]T(nil), items...)
+		sort.SliceStable(items, func(i, j int) bool {
+			return !policy.nodeRequiresTakeover(policy.nodeID(accountOf(items[i]))) &&
+				policy.nodeRequiresTakeover(policy.nodeID(accountOf(items[j])))
+		})
+	}
 	ordered := make([]T, 0, len(items))
 	for start := 0; start < len(items); {
 		end := start + 1
@@ -760,6 +784,14 @@ func weightedExecutionNodePermutation(nodes []string, policy executionNodeRoutin
 		ordered = append(ordered, remaining[selected])
 		remaining = append(remaining[:selected], remaining[selected+1:]...)
 		weights = append(weights[:selected], weights[selected+1:]...)
+	}
+	if policy.hasOfflineTakeoverOwner() {
+		// Preserve the exact normal weighted permutation (including healthy
+		// nodes' relative order), but never let a dead owner's old weight win
+		// ahead of surviving owners during explicit emergency takeover.
+		sort.SliceStable(ordered, func(i, j int) bool {
+			return !policy.nodeRequiresTakeover(ordered[i]) && policy.nodeRequiresTakeover(ordered[j])
+		})
 	}
 	return ordered
 }

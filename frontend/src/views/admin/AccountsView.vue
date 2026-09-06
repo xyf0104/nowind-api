@@ -401,6 +401,7 @@
           <template #cell-usage="{ row }">
             <AccountUsageCell
               :account="row"
+              :read-only="isAccountReadOnly(row)"
               :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
               :today-stats-loading="todayStatsLoading"
               :manual-refresh-token="usageManualRefreshToken"

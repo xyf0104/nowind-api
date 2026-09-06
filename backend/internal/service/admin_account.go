@@ -201,7 +201,7 @@ func duplicateAccountExtra(value map[string]any) (map[string]any, error) {
 	for key := range duplicateAccountDiscardedExtraKeys {
 		delete(cloned, key)
 	}
-	return cloned, nil
+	return stripOpenAIQuotaRuntimeExtra(cloned), nil
 }
 
 func canDuplicateAccountType(accountType string) bool {
@@ -387,6 +387,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if s.accountDuplicateRepo == nil {
 		return nil, errors.New("account duplicate repository is not configured")
 	}
+	s.captureOpenAIWeeklyJoinForCreate(ctx, duplicate)
 	if err := s.accountDuplicateRepo.CreateWithAccountGroups(ctx, duplicate, groups); err != nil {
 		return nil, fmt.Errorf("create duplicate account: %w", err)
 	}
@@ -519,6 +520,10 @@ func normalizeGrokMediaEligibilityUpdateExtra(account *Account, input *UpdateAcc
 }
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	// Imported runtime observations belong to the source row, not a new account.
+	if input.Platform == PlatformOpenAI && input.Type == AccountTypeOAuth {
+		accountExtra = stripOpenAIQuotaRuntimeExtra(accountExtra)
+	}
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -668,6 +673,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err != nil {
 		return nil, err
 	}
+	s.captureOpenAIWeeklyJoinForCreate(ctx, account)
 	if err := s.accountRepo.Create(ctx, account); err != nil {
 		return nil, err
 	}
@@ -734,12 +740,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
-	previousOpenAIWeeklyEstimateIdentity := ""
-	trackOpenAIWeeklyEstimateIdentity := input.ResetOpenAIWeeklyEstimate &&
-		account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
-	if trackOpenAIWeeklyEstimateIdentity {
-		previousOpenAIWeeklyEstimateIdentity = account.GetCredential("chatgpt_account_id")
-	}
+	previousOpenAIWeeklyPrincipal := openAIWeeklyJoinPrincipalOf(account)
 	// 安全/身份不变量(影子账号):通用更新路径被 edit/re-auth/refresh/batch 共用,
 	// 必须在此守住,否则仅在创建时的保证可被这些路径绕过。
 	if account.IsCredentialShadow() {
@@ -932,9 +933,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			delete(account.Extra, OllamaCloudUsageAutoRefreshExtraKey)
 			delete(account.Extra, OllamaCloudUsageSnapshotExtraKey)
 		}
-		if trackOpenAIWeeklyEstimateIdentity &&
-			previousOpenAIWeeklyEstimateIdentity != account.GetCredential("chatgpt_account_id") {
-			clearOpenAIWeeklyEstimateBaseline(account.Extra)
+		if previousOpenAIWeeklyPrincipal.replacedBy(account) {
+			account.Extra = stripOpenAIQuotaRuntimeExtra(account.Extra)
 		}
 	}
 	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
@@ -1033,6 +1033,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				return nil, err
 			}
 		}
+	}
+
+	if previousOpenAIWeeklyPrincipal.replacedBy(account) {
+		s.captureOpenAIWeeklyJoinAfterPrincipalReplace(ctx, account)
 	}
 
 	// 将 proxy 变更传播到 spark 影子账号（同步；Update 内部已触发调度快照）。
@@ -1212,6 +1216,7 @@ func (s *adminServiceImpl) ApplyAntigravityOAuthCredentials(
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	updates = stripOpenAIQuotaRuntimeExtra(updates)
 	delete(updates, AccountExecutionNodeExtraKey)
 	updates = sanitizedCodexFingerprintExtraUpdates(updates)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
@@ -1247,6 +1252,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// Login-only reauthorization keys are deliberately unavailable to bulk edit:
 	// preserve any existing encrypted binding, but never copy or overwrite it.
 	input.Credentials = stripOpenAIReauthorizationCredentials(input.Credentials)
+	input.Extra = stripOpenAIQuotaRuntimeExtra(input.Extra)
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	delete(input.Extra, AccountExecutionNodeExtraKey)
 	fingerprintModeValue, hasFingerprintModeUpdate := input.Extra[codexFingerprintModeExtraKey]

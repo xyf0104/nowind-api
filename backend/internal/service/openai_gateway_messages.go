@@ -395,6 +395,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 		retryBody, changed, trimErr := trimGrokInvalidEncryptedContentRetryBody(responsesBody)
 		if trimErr != nil {
+			if errors.Is(trimErr, ErrOpenAIContextUnavailable) {
+				WriteOpenAIContextUnavailableResponse(c)
+			}
 			return nil, fmt.Errorf("prepare Grok invalid encrypted_content retry: %w", trimErr)
 		}
 		if !changed {
@@ -501,7 +504,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 	if handleErr == nil && account.Type == AccountTypeOAuth && !account.IsShadow() && account.Platform != PlatformGrok {
 		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+			s.updateCodexUsageSnapshot(ctx, account, snapshot)
 		}
 	}
 

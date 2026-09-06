@@ -13,6 +13,8 @@ BUILD_MODE="${BUILD_MODE:-}"
 CORE_READY_DELAY_SECONDS="${XIASS_CORE_READY_DELAY_SECONDS:-${TEAM_CHILD_BROWSER_START_DELAY_SECONDS:-5}}"
 TEAM_CHILD_BROWSER_ENABLED="${TEAM_CHILD_BROWSER_ENABLED:-}"
 SKIP_CORE_START="${XIASS_RUNTIME_SKIP_CORE_START:-false}"
+RUNTIME_COMPOSE_FILES=()
+RUNTIME_PROJECT_NAME="${XIASS_RUNTIME_PROJECT_NAME:-}"
 
 log() { printf '[XIASS] %s\n' "$*"; }
 warn() { printf '[XIASS] 警告：%s\n' "$*" >&2; }
@@ -47,6 +49,14 @@ resolve_compose() {
         fi
     fi
     [ -f "$COMPOSE_FILE" ] || die "未找到 Docker Compose 配置：$COMPOSE_FILE"
+    if [ -n "${XIASS_RUNTIME_COMPOSE_FILES:-}" ]; then
+        local compose_file
+        while IFS= read -r compose_file; do
+            [ -n "$compose_file" ] || continue
+            [ -f "$compose_file" ] || die "未找到 Docker Compose 覆盖配置：$compose_file"
+            RUNTIME_COMPOSE_FILES+=("$compose_file")
+        done <<< "$XIASS_RUNTIME_COMPOSE_FILES"
+    fi
 
     if [ -z "$BUILD_MODE" ]; then
         BUILD_MODE=$(read_env_value XIASS_BUILD_MODE)
@@ -64,10 +74,20 @@ resolve_compose() {
 
 compose() {
     local args=(-f "$COMPOSE_FILE")
-    if [ -n "$COMPOSE_BUILD_FILE" ] && [ -f "$COMPOSE_BUILD_FILE" ]; then
+    if [ "${#RUNTIME_COMPOSE_FILES[@]}" -gt 0 ]; then
+        args=()
+        local compose_file
+        for compose_file in "${RUNTIME_COMPOSE_FILES[@]}"; do
+            args+=(-f "$compose_file")
+        done
+    elif [ -n "$COMPOSE_BUILD_FILE" ] && [ -f "$COMPOSE_BUILD_FILE" ]; then
         args+=(-f "$COMPOSE_BUILD_FILE")
     fi
-    "${COMPOSE[@]}" "${args[@]}" --project-directory "$DEPLOY_DIR" "$@"
+    args+=(--project-directory "$DEPLOY_DIR")
+    if [ -n "$RUNTIME_PROJECT_NAME" ]; then
+        args+=(--project-name "$RUNTIME_PROJECT_NAME")
+    fi
+    "${COMPOSE[@]}" "${args[@]}" "$@"
 }
 
 profile_compose() {
@@ -134,6 +154,7 @@ wait_for_automation_health() {
 
 start_core() {
     local services=()
+    local up_args=(up -d --no-build)
     for service in postgres redis watchtower xiass-api; do
         if service_exists "$service"; then
             services+=("$service")
@@ -153,10 +174,11 @@ start_core() {
         fi
     else
         log "沿用已准备好的 XIASS 主服务镜像。"
+        up_args+=(--pull never)
     fi
 
     log "启动 PostgreSQL、Redis、Watchtower 和 XIASS 主服务..."
-    compose up -d --no-build "${services[@]}"
+    compose "${up_args[@]}" "${services[@]}"
     wait_for_core_health || die "XIASS 主服务未在限定时间内通过健康检查。"
 }
 
@@ -211,7 +233,7 @@ start_browser_stack() {
             fi
         fi
 
-        if ! profile_compose up -d --no-build team-child-browser; then
+        if ! profile_compose up -d --no-deps --no-build --pull never --no-recreate team-child-browser; then
             warn "Team 浏览器组件启动失败；主服务保持运行，可稍后重试。"
             return 0
         fi

@@ -7,7 +7,8 @@ import (
 )
 
 type openAISSEDataAccumulator struct {
-	lines []string
+	lines     []string
+	eventType string
 }
 
 func (a *openAISSEDataAccumulator) AddLine(line string, fn func([]byte)) {
@@ -15,6 +16,10 @@ func (a *openAISSEDataAccumulator) AddLine(line string, fn func([]byte)) {
 		return
 	}
 	trimmedLine := strings.TrimRight(line, "\r\n")
+	if eventType, ok := extractOpenAISSEEventLine(trimmedLine); ok {
+		a.eventType = eventType
+		return
+	}
 	if data, ok := extractOpenAISSEDataLine(trimmedLine); ok {
 		a.lines = append(a.lines, data)
 		return
@@ -25,10 +30,17 @@ func (a *openAISSEDataAccumulator) AddLine(line string, fn func([]byte)) {
 }
 
 func (a *openAISSEDataAccumulator) Flush(fn func([]byte)) {
-	if fn == nil || len(a.lines) == 0 {
+	if fn == nil {
 		return
 	}
-	emitOpenAISSEDataPayloads(a.lines, fn)
+	eventType := a.eventType
+	a.eventType = ""
+	emitOpenAISSEDataPayloads(a.lines, func(data []byte) {
+		if eventType != "" && gjson.ValidBytes(data) {
+			data = []byte(openAICompatPayloadWithEventType(string(data), eventType))
+		}
+		fn(data)
+	})
 	a.lines = a.lines[:0]
 }
 

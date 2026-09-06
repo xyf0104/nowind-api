@@ -96,6 +96,8 @@ WHERE u.id = $1
   AND LOWER(BTRIM(u.email)) NOT LIKE '%%@wechat-connect.invalid'
   AND LOWER(BTRIM(u.email)) NOT LIKE '%%@dingtalk-connect.invalid'
   AND %s < $4
+  AND %s = $6
+  AND u.email = $7
 ON CONFLICT (user_id) DO UPDATE SET
     activity_at = EXCLUDED.activity_at,
     reminder_status = 'sending',
@@ -104,28 +106,33 @@ ON CONFLICT (user_id) DO UPDATE SET
     updated_at = EXCLUDED.updated_at
 WHERE user_inactivity_cleanups.reminder_sent_at IS NULL
   AND (user_inactivity_cleanups.reminder_claimed_at IS NULL OR user_inactivity_cleanups.reminder_claimed_at < $5)
-RETURNING user_id`, userInactivityActivitySQL, userInactivityActivitySQL)
+RETURNING user_id`, userInactivityActivitySQL, userInactivityActivitySQL, userInactivityActivitySQL)
 	var userID int64
-	err := r.db.QueryRowContext(ctx, query, candidate.UserID, now, deleteAfter, cutoff, now.Add(-service.InactiveUserCleanupClaimLease)).Scan(&userID)
+	err := r.db.QueryRowContext(ctx, query, candidate.UserID, now, deleteAfter, cutoff, now.Add(-service.InactiveUserCleanupClaimLease), candidate.LastActivityAt, candidate.Email).Scan(&userID)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-func (r *userInactivityCleanupRepository) MarkReminderSent(ctx context.Context, userID int64, now time.Time) error {
+func (r *userInactivityCleanupRepository) MarkReminderSent(ctx context.Context, candidate service.InactiveUserCandidate, claimedAt, sentAt, deleteAfter time.Time) error {
+	if sentAt.IsZero() || deleteAfter.Before(sentAt.Add(3*24*time.Hour)) {
+		return fmt.Errorf("confirmed delivery and full inactivity grace period are required")
+	}
 	_, err := r.db.ExecContext(ctx, `
 UPDATE user_inactivity_cleanups
-SET reminder_status = 'sent', reminder_sent_at = $2, reminder_claimed_at = NULL, updated_at = $2
-WHERE user_id = $1 AND reminder_status = 'sending'`, userID, now)
+SET reminder_status = 'sent', reminder_sent_at = $2, delete_after = $3, reminder_claimed_at = NULL, updated_at = NOW()
+WHERE user_id = $1 AND reminder_status = 'sending'
+  AND reminder_sent_at IS NULL AND activity_at = $4 AND reminder_claimed_at = $5`, candidate.UserID, sentAt, deleteAfter, candidate.LastActivityAt, claimedAt)
 	return err
 }
 
-func (r *userInactivityCleanupRepository) ReleaseReminderClaim(ctx context.Context, userID int64) error {
+func (r *userInactivityCleanupRepository) ReleaseReminderClaim(ctx context.Context, candidate service.InactiveUserCandidate, claimedAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 UPDATE user_inactivity_cleanups
 SET reminder_status = 'pending', reminder_claimed_at = NULL, updated_at = NOW()
-WHERE user_id = $1 AND reminder_status = 'sending'`, userID)
+WHERE user_id = $1 AND reminder_status = 'sending'
+  AND reminder_sent_at IS NULL AND activity_at = $2 AND reminder_claimed_at = $3`, candidate.UserID, candidate.LastActivityAt, claimedAt)
 	return err
 }
 
@@ -141,6 +148,8 @@ SELECT u.id, u.email, u.username, %s AS last_activity_at
 FROM user_inactivity_cleanups c
 JOIN users u ON u.id = c.user_id
 WHERE c.reminder_sent_at IS NOT NULL
+  AND c.reminder_status = 'sent'
+  AND c.reminder_sent_at <= ($1::timestamptz - INTERVAL '72 hours')
   AND c.delete_after <= $1
   AND u.deleted_at IS NULL
   AND u.role <> 'admin'

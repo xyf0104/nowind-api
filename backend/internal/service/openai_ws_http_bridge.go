@@ -126,7 +126,9 @@ func prepareOpenAIWSHTTPBridgeBody(account *Account, payload []byte) ([]byte, er
 	}
 	delete(body, "type")
 	delete(body, "generate")
-	delete(body, "previous_response_id")
+	if !hasOpenAIEncryptedCompaction(body) {
+		delete(body, "previous_response_id")
+	}
 	deleteOpenAIResponsesNoneReasoningEffortFromObject(account, body)
 	body["stream"] = true
 	return json.Marshal(body)
@@ -387,6 +389,10 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			return nil, ErrOpenAIWSCyberPolicyBlocked
 		}
 		if resp.StatusCode == http.StatusBadRequest && extractUpstreamErrorCode(respBody) == openAIWSFallbackReasonInvalidEncryptedContent {
+			if hasOpenAIEncryptedCompactionRaw(body) {
+				_ = writeClientMessage(openAIContextUnavailableFrame())
+				return nil, ErrOpenAIContextUnavailable
+			}
 			s.markOpenAIWSInvalidEncryptedContentLineageFromPayload(
 				c,
 				body,
@@ -561,6 +567,13 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 		var upstreamEventErr error
 		if eventType == "error" || eventType == "response.failed" {
+			if hasOpenAIEncryptedCompactionRaw(body) && isOpenAIInvalidEncryptedContentEvent(upstreamMessage) {
+				_ = writeClientMessage(openAIContextUnavailableFrame())
+				if isBillableOpenAIStreamingResult(&openaiStreamingResult{usage: &usage, imageCount: imageCounter.Count()}) {
+					return resultWithUsage(), ErrOpenAIContextUnavailable
+				}
+				return nil, ErrOpenAIContextUnavailable
+			}
 			errMessage := extractOpenAISSEErrorMessage(upstreamMessage)
 			if errMessage == "" {
 				errMessage = "upstream error event"

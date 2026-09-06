@@ -172,6 +172,7 @@ jobs:
           bash -n tools/test_xiass_update_origin.sh
           bash -n tools/test_xiass_update_browser_profile_migration.sh
           bash -n tools/test_xiass_runtime_start_team_update.sh
+          bash -n tools/test_xiass_update_pipeline.sh
 
       - name: Test install download integrity
         run: bash deploy/test-install-download-integrity.sh
@@ -198,8 +199,10 @@ jobs:
           bash tools/test_xiass_update_origin.sh
           bash tools/test_xiass_update_browser_profile_migration.sh
           bash tools/test_xiass_runtime_start_team_update.sh
+          bash tools/test_xiass_update_pipeline.sh
 
   build-runtime-support-images:
+    needs: [update-version, build-frontend, test-backend, test-helper, test-deploy-scripts]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

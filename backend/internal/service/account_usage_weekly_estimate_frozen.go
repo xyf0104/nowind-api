@@ -4,64 +4,63 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
 const (
-	openAIWeeklyFrozenEstimateStateVersion       = 14
+	// v15 stores raw completed endpoints and ordered terminal observations.
+	openAIWeeklyFrozenEstimateStateVersion       = 15
+	openAIWeeklyFrozenEstimatePreviousVersion    = 14
 	openAIWeeklyFrozenEstimateLegacyStateVersion = 13
+	openAIWeeklyEstimateModeLegacy               = "legacy_rule_b"
+	openAIWeeklyEstimateModeJoinAverage          = "join_average"
 )
 
-// openAIWeeklyFrozenEstimateState keeps the first trustworthy XIASS cost and
-// provider percentage seen after an account joins the current weekly window.
-// Later estimates use only the local cost accumulated after that baseline.
+// BaselineSource records evidence, not just the selected formula. A legacy
+// compatibility state must not be interpreted as proof of a zero-percent join.
 type openAIWeeklyFrozenEstimateState struct {
-	BaselinePercent int
-	BaselineCost    float64
-	PercentBucket   int
-	SnapshotCost    float64
-	EstimateUSD     float64
-	HasEstimate     bool
-	ResetAt         time.Time
-	Identity        string
-	ObservedAt      time.Time
+	Mode             string
+	BaselineSource   string
+	BaselinePercent  float64
+	BaselineCost     float64
+	PercentBucket    int
+	SnapshotPercent  float64
+	SnapshotCost     float64
+	CompletedPercent float64
+	CompletedCost    float64
+	EstimateUSD      float64
+	HasEstimate      bool
+	AwaitingInterval bool
+	ResetAt          time.Time
+	Identity         string
+	ObservedAt       time.Time
+	needsPersist     bool
 }
 
-// applyOpenAIWeeklyEstimate estimates the full weekly allowance from XIASS-only
-// usage observed after the account joined. An account first seen at 20% / $0
-// and later seen at 25% / $120 therefore estimates 120 / 5 * 100 = $2400.
-func (s *AccountUsageService) applyOpenAIWeeklyEstimate(
-	ctx context.Context,
-	account *Account,
-	progress *UsageProgress,
-	currentStats *usagestats.AccountStats,
-	now time.Time,
-) {
+// applyOpenAIWeeklyEstimate calculates and persists the selected two-mode
+// estimate. Prediction uses aligned XIASS cost; an accepted 100% observation
+// uses current account cost exactly, including zero.
+func (s *AccountUsageService) applyOpenAIWeeklyEstimate(ctx context.Context, account *Account, progress *UsageProgress, currentStats *usagestats.AccountStats, now time.Time) {
 	if s == nil || account == nil || progress == nil || progress.WindowStats == nil || currentStats == nil {
 		return
 	}
-
 	currentCost := currentStats.Cost
 	if !validOpenAIWeeklyEstimateValue(currentCost) || !validOpenAIWeeklyEstimateValue(progress.Utilization) {
 		progress.WeeklyEstimateUSD = nil
 		return
 	}
-
-	// A fully consumed official window has an exact local account total.
-	if progress.Utilization >= 100-openAIWeeklyEstimateEpsilon {
-		exact := currentCost
-		progress.WeeklyEstimateUSD = &exact
-		return
-	}
-
 	snapshotAt, snapshotOK := openAICodexSnapshotObservationAt(account, now)
 	if !snapshotOK {
 		s.setOpenAIWeeklyFrozenEstimate(account, progress, 0, currentCost, false, time.Time{}, ctx)
 		return
 	}
-
+	if progress.Utilization >= 100 {
+		s.setOpenAIWeeklyFrozenEstimate(account, progress, 0, currentCost, false, snapshotAt, ctx)
+		return
+	}
 	rangeReader, ok := s.usageLogRepo.(accountWindowStatsRangeReader)
 	if !ok {
 		s.setOpenAIWeeklyFrozenEstimate(account, progress, 0, currentCost, false, snapshotAt, ctx)
@@ -72,7 +71,6 @@ func (s *AccountUsageService) applyOpenAIWeeklyEstimate(
 		s.setOpenAIWeeklyFrozenEstimate(account, progress, 0, currentCost, false, snapshotAt, ctx)
 		return
 	}
-
 	boundedStats := s.cachedOpenAIWeeklyEstimateStats(account.ID, startAt, snapshotAt)
 	if boundedStats == nil {
 		stats, err := rangeReader.GetAccountWindowStatsRange(ctx, account.ID, startAt, snapshotAt)
@@ -85,8 +83,47 @@ func (s *AccountUsageService) applyOpenAIWeeklyEstimate(
 		s.setOpenAIWeeklyFrozenEstimate(account, progress, 0, currentCost, false, snapshotAt, ctx)
 		return
 	}
-
 	s.setOpenAIWeeklyFrozenEstimate(account, progress, boundedStats.Cost, currentCost, true, snapshotAt, ctx)
+}
+
+// applyOpenAIWeeklyEstimateReadOnly is for passive execution-node reads. It
+// reads shared usage but never writes account extra or advances saved state.
+func (s *AccountUsageService) applyOpenAIWeeklyEstimateReadOnly(ctx context.Context, account *Account, progress *UsageProgress, currentStats *usagestats.AccountStats, now time.Time) {
+	if s == nil || account == nil || progress == nil || progress.WindowStats == nil || currentStats == nil {
+		return
+	}
+	currentCost := currentStats.Cost
+	if !validOpenAIWeeklyEstimateValue(currentCost) || !validOpenAIWeeklyEstimateValue(progress.Utilization) {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+	snapshotAt, ok := openAICodexSnapshotObservationAt(account, now)
+	if !ok {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
+	if progress.Utilization >= 100 {
+		estimate, _ := calculateOpenAIWeeklyFrozenEstimate(account, progress, 0, currentCost, false, snapshotAt)
+		progress.WeeklyEstimateUSD = estimate
+		return
+	}
+	rangeReader, ok := s.usageLogRepo.(accountWindowStatsRangeReader)
+	if !ok {
+		return
+	}
+	startAt := codexWindowStatsStart(progress, 7*24*time.Hour, snapshotAt)
+	if !startAt.Before(snapshotAt) {
+		return
+	}
+	stats := s.cachedOpenAIWeeklyEstimateStats(account.ID, startAt, snapshotAt)
+	if stats == nil {
+		stats, _ = rangeReader.GetAccountWindowStatsRange(ctx, account.ID, startAt, snapshotAt)
+		if stats == nil || !validOpenAIWeeklyEstimateValue(stats.Cost) {
+			return
+		}
+	}
+	estimate, _ := calculateOpenAIWeeklyFrozenEstimate(account, progress, stats.Cost, currentCost, true, snapshotAt)
+	progress.WeeklyEstimateUSD = estimate
 }
 
 func (s *AccountUsageService) cachedOpenAIWeeklyEstimateStats(accountID int64, startAt, snapshotAt time.Time) *usagestats.AccountStats {
@@ -108,186 +145,315 @@ func (s *AccountUsageService) storeOpenAIWeeklyEstimateStats(accountID int64, st
 	if s == nil || s.cache == nil || stats == nil {
 		return
 	}
-	s.cache.weeklyEstimateStatsCache.Store(accountID, &weeklyEstimateStatsCache{
-		stats:      stats,
-		startAt:    startAt,
-		snapshotAt: snapshotAt,
-		timestamp:  time.Now(),
-	})
+	s.cache.weeklyEstimateStatsCache.Store(accountID, &weeklyEstimateStatsCache{stats: stats, startAt: startAt, snapshotAt: snapshotAt, timestamp: time.Now()})
 }
 
-func (s *AccountUsageService) setOpenAIWeeklyFrozenEstimate(
-	account *Account,
-	progress *UsageProgress,
-	snapshotCost, currentCost float64,
-	snapshotMatched bool,
-	observedAt time.Time,
-	ctx context.Context,
-) {
-	estimate, updates := calculateOpenAIWeeklyFrozenEstimate(
-		account,
-		progress,
-		snapshotCost,
-		currentCost,
-		snapshotMatched,
-		observedAt,
-	)
+func (s *AccountUsageService) setOpenAIWeeklyFrozenEstimate(account *Account, progress *UsageProgress, snapshotCost, currentCost float64, snapshotMatched bool, observedAt time.Time, ctx context.Context) {
+	calculationAccount := account
+	if snapshotMatched {
+		var err error
+		calculationAccount, err = s.accountWithVerifiedOpenAIWeeklyJoin(ctx, account, progress, snapshotCost, observedAt)
+		if err != nil {
+			progress.WeeklyEstimateUSD = nil
+			return
+		}
+	}
+	estimate, updates := calculateOpenAIWeeklyFrozenEstimate(calculationAccount, progress, snapshotCost, currentCost, snapshotMatched, observedAt)
+	if calculationAccount != account && len(updates) == 0 {
+		updates = map[string]any{openAIWeeklyEstimateBaselineKey: calculationAccount.Extra[openAIWeeklyEstimateBaselineKey]}
+	}
+	if !s.persistOpenAIWeeklyEstimate(ctx, account, updates) {
+		progress.WeeklyEstimateUSD = nil
+		return
+	}
 	progress.WeeklyEstimateUSD = estimate
-	s.persistOpenAIWeeklyEstimate(ctx, account, updates)
 }
 
-func calculateOpenAIWeeklyFrozenEstimate(
-	account *Account,
-	progress *UsageProgress,
-	snapshotCost, currentCost float64,
-	snapshotMatched bool,
-	observedAt time.Time,
-) (*float64, map[string]any) {
+func calculateOpenAIWeeklyFrozenEstimate(account *Account, progress *UsageProgress, snapshotCost, currentCost float64, snapshotMatched bool, observedAt time.Time) (*float64, map[string]any) {
 	if account == nil || progress == nil || progress.WindowStats == nil ||
 		!validOpenAIWeeklyEstimateValue(progress.Utilization) || !validOpenAIWeeklyEstimateValue(currentCost) {
 		return nil, nil
 	}
-
-	percent := math.Max(0, math.Min(100, progress.Utilization))
-	if percent >= 100-openAIWeeklyEstimateEpsilon {
-		exact := currentCost
-		return &exact, nil
-	}
-
 	identity := account.GetCredential("chatgpt_account_id")
+	if identity == "" {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	percent := math.Min(100, progress.Utilization)
 	resetAt := time.Time{}
 	if progress.ResetsAt != nil {
 		resetAt = progress.ResetsAt.UTC()
 	}
-	bucket := openAIWeeklyEstimatePercentBucket(percent)
 	state, stateOK := readOpenAIWeeklyFrozenEstimateState(account.Extra)
-	stateNeedsPersist := false
 	if !stateOK {
-		// Version 13 divided the cumulative XIASS cost by the provider's total
-		// percentage. Keep only its last aligned observation as a new baseline;
-		// never inherit that incompatible estimate.
 		state, stateOK = readOpenAIWeeklyFrozenEstimateLegacyState(account.Extra)
-		stateNeedsPersist = stateOK
 	}
-	if stateOK && !state.matches(identity, resetAt, time.Now().UTC()) {
-		stateOK = false
-		stateNeedsPersist = false
+	if raw, ok := account.Extra[openAIWeeklyEstimateBaselineKey].(map[string]any); ok &&
+		parseExtraInt(raw["version"]) > openAIWeeklyFrozenEstimateTwoRuleStateVersion {
+		return nil, nil
 	}
-
-	if stateOK && !observedAt.IsZero() && !state.ObservedAt.IsZero() && observedAt.Before(state.ObservedAt) {
-		return state.value(), openAIWeeklyFrozenEstimateMigrationUpdate(state, stateNeedsPersist)
-	}
-
-	if !snapshotMatched || !validOpenAIWeeklyEstimateValue(snapshotCost) ||
-		snapshotCost > currentCost+openAIWeeklyEstimateEpsilon {
-		if stateOK {
-			return state.value(), openAIWeeklyFrozenEstimateMigrationUpdate(state, stateNeedsPersist)
+	matches := stateOK && state.matches(identity, resetAt, now)
+	accepted := state
+	keep := func() (*float64, map[string]any) {
+		if matches {
+			return accepted.value(), nil
 		}
 		return nil, nil
 	}
-
-	if !stateOK {
-		state = newOpenAIWeeklyFrozenEstimateState(bucket, snapshotCost, resetAt, identity, observedAt)
-		return nil, openAIWeeklyFrozenEstimateStateUpdate(state)
+	save := func(next openAIWeeklyFrozenEstimateState) (*float64, map[string]any) {
+		return next.value(), openAIWeeklyFrozenEstimateUpdateWithEvidence(next, account.Extra)
 	}
 
-	// A provider percentage regression starts a fresh sampling baseline. This
-	// also handles a reset whose moving ETA remains close enough to the previous
-	// ETA to look like the same active upstream window.
-	if bucket < state.PercentBucket {
-		state = newOpenAIWeeklyFrozenEstimateState(bucket, snapshotCost, resetAt, identity, observedAt)
-		return nil, openAIWeeklyFrozenEstimateStateUpdate(state)
+	// Ordering precedes the 100% shortcut and scope changes. A later completion
+	// time is not proof of a new identity; callers must bind samples to credentials.
+	if observedAt.IsZero() || observedAt.After(now.Add(5*time.Second)) {
+		return keep()
 	}
-	if bucket == state.PercentBucket && snapshotCost <= state.SnapshotCost+openAIWeeklyEstimateEpsilon {
-		// Several aligned reads can land in the same displayed percentage. Keep
-		// its maximum cumulative XIASS cost and ignore a smaller stale read.
-		return state.value(), openAIWeeklyFrozenEstimateMigrationUpdate(state, stateNeedsPersist)
+	observedAt = observedAt.UTC()
+	if !resetAt.IsZero() && !now.Before(resetAt) {
+		return nil, nil
+	}
+	if stateOK && !state.ObservedAt.IsZero() {
+		if observedAt.Before(state.ObservedAt) {
+			return keep()
+		}
+		if observedAt.Equal(state.ObservedAt) && (!matches || percent != state.SnapshotPercent) {
+			return keep()
+		}
+	}
+	if percent >= 100 {
+		if stateOK && state.Identity != identity {
+			// An old identity's raw 100% cannot authorize an exact result for its
+			// replacement. The lifecycle owner must invalidate the old state.
+			return nil, nil
+		}
+		if matches && observedAt.Equal(state.ObservedAt) && currentCost < state.SnapshotCost {
+			return keep()
+		}
+		terminal := newOpenAIWeeklyFrozenEstimateState(100, currentCost, resetAt, identity, observedAt)
+		terminal.Mode, terminal.BaselineSource = openAIWeeklyEstimateModeUnknown, "terminal_observation"
+		terminal.EstimateUSD, terminal.HasEstimate, terminal.AwaitingInterval = currentCost, true, false
+		if matches && state.SnapshotPercent == 100 && state.SnapshotCost == currentCost &&
+			observedAt.Equal(state.ObservedAt) && !state.needsPersist {
+			return keep()
+		}
+		return save(terminal)
+	}
+	if !snapshotMatched || !validOpenAIWeeklyEstimateValue(snapshotCost) ||
+		snapshotCost > currentCost+openAIWeeklyEstimateEpsilon {
+		return keep()
+	}
+	if !matches {
+		next := newOpenAIWeeklyFrozenEstimateState(percent, snapshotCost, resetAt, identity, observedAt)
+		if stateOK && state.Identity == identity && !state.ResetAt.IsZero() && !resetAt.IsZero() &&
+			resetAt.After(state.ResetAt) && !sameOpenAIWeeklyEstimateWindow(state.ResetAt, resetAt, now) {
+			next.Mode, next.BaselineSource = openAIWeeklyEstimateModeLegacy, "weekly_window_reset"
+		}
+		if !stateOK && account.Extra[openAIWeeklyEstimateBaselineKey] != nil {
+			next.Mode, next.BaselineSource = openAIWeeklyEstimateModeUnknown, "unreadable_start_evidence"
+		}
+		return save(next)
+	}
+	if observedAt.Equal(state.ObservedAt) && snapshotCost <= state.SnapshotCost {
+		if snapshotCost == state.SnapshotCost && state.needsPersist {
+			return save(state)
+		}
+		return keep()
 	}
 
-	if bucket > state.PercentBucket && snapshotCost <= state.SnapshotCost+openAIWeeklyEstimateEpsilon {
-		// The provider percentage advanced without new XIASS cost, so the usage
-		// happened elsewhere. Rebase instead of mixing it into the local average.
-		state = newOpenAIWeeklyFrozenEstimateState(bucket, snapshotCost, resetAt, identity, observedAt)
-		return nil, openAIWeeklyFrozenEstimateStateUpdate(state)
+	if percent < state.SnapshotPercent || snapshotCost < state.SnapshotCost {
+		source := "cost_regression"
+		if percent < state.SnapshotPercent {
+			source = "percent_regression"
+		}
+		next := rebaseOpenAIWeeklyFrozenEstimate(state, percent, snapshotCost, resetAt, identity, observedAt, source)
+		return save(next)
+	}
+	// CompletedCost is the local cumulative cost at the current sampling
+	// boundary, not the most recent partial observation. This avoids labeling a
+	// delayed percentage update as external usage after local partial spending.
+	if percent > state.SnapshotPercent && snapshotCost <= state.CompletedCost {
+		next := rebaseOpenAIWeeklyFrozenEstimate(state, percent, snapshotCost, resetAt, identity, observedAt, "external_only_rebase")
+		return save(next)
 	}
 
-	changed := stateNeedsPersist || bucket != state.PercentBucket ||
-		snapshotCost > state.SnapshotCost+openAIWeeklyEstimateEpsilon
-	if !changed {
-		return state.value(), nil
+	state.ResetAt, state.ObservedAt = resetAt, observedAt
+	state.SnapshotPercent, state.SnapshotCost = percent, snapshotCost
+	state.PercentBucket = openAIWeeklyEstimatePercentBucket(percent)
+	if state.HasEstimate && percent == state.CompletedPercent && snapshotCost > state.CompletedCost {
+		// Track the aligned endpoint maximum for external-use detection, but
+		// both confirmed formulas keep the displayed result frozen here.
+		state.CompletedCost = snapshotCost
 	}
-
-	state.PercentBucket = bucket
-	state.SnapshotCost = math.Max(state.SnapshotCost, snapshotCost)
-	state.ResetAt = resetAt
-	state.ObservedAt = observedAt.UTC()
 	state.updateEstimate()
-	return state.value(), openAIWeeklyFrozenEstimateStateUpdate(state)
+	if !validOpenAIWeeklyEstimateValue(state.EstimateUSD) {
+		return keep()
+	}
+	return save(state)
 }
 
-func newOpenAIWeeklyFrozenEstimateState(bucket int, cost float64, resetAt time.Time, identity string, observedAt time.Time) openAIWeeklyFrozenEstimateState {
-	return openAIWeeklyFrozenEstimateState{
-		BaselinePercent: bucket,
-		BaselineCost:    cost,
-		PercentBucket:   bucket,
-		SnapshotCost:    cost,
-		ResetAt:         resetAt,
-		Identity:        identity,
-		ObservedAt:      observedAt.UTC(),
+// Keep the two-rule writer version explicit for integration and regression tests.
+const (
+	openAIWeeklyFrozenEstimateTwoRuleStateVersion = openAIWeeklyFrozenEstimateStateVersion
+	openAIWeeklyEstimateModeUnknown               = "pending_unknown_start"
+)
+
+func newOpenAIWeeklyFrozenEstimateState(percent, cost float64, resetAt time.Time, identity string, observedAt time.Time) openAIWeeklyFrozenEstimateState {
+	mode, source := openAIWeeklyEstimateModeJoinAverage, "first_aligned_observation"
+	if percent == 0 {
+		mode, source = openAIWeeklyEstimateModeLegacy, "observed_zero"
 	}
+	return openAIWeeklyFrozenEstimateState{
+		Mode: mode, BaselineSource: source, BaselinePercent: percent, BaselineCost: cost,
+		PercentBucket: openAIWeeklyEstimatePercentBucket(percent), SnapshotPercent: percent, SnapshotCost: cost,
+		CompletedPercent: percent, CompletedCost: cost, AwaitingInterval: true,
+		ResetAt: resetAt, Identity: identity, ObservedAt: observedAt.UTC(),
+	}
+}
+
+// newOpenAIWeeklyFrozenEstimateStateFromBaseline initializes a pending state
+// from an explicitly supplied, already verified baseline. The caller owns
+// identity/week/evidence verification; a source label is not proof of login.
+// This helper neither reads history nor mutates or persists an existing state.
+func newOpenAIWeeklyFrozenEstimateStateFromBaseline(percent, cost float64, resetAt time.Time, identity string, observedAt time.Time, baselineSource string) (openAIWeeklyFrozenEstimateState, bool) {
+	if !validOpenAIWeeklyEstimateValue(percent) || percent >= 100 || !validOpenAIWeeklyEstimateValue(cost) ||
+		strings.TrimSpace(identity) == "" || strings.TrimSpace(baselineSource) == "" ||
+		resetAt.IsZero() || observedAt.IsZero() || !observedAt.Before(resetAt) {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	state := newOpenAIWeeklyFrozenEstimateState(percent, cost, resetAt.UTC(), identity, observedAt.UTC())
+	state.BaselineSource = baselineSource
+	return state, state.valid()
+}
+
+func rebaseOpenAIWeeklyFrozenEstimate(previous openAIWeeklyFrozenEstimateState, percent, cost float64, resetAt time.Time, identity string, observedAt time.Time, source string) openAIWeeklyFrozenEstimateState {
+	next := newOpenAIWeeklyFrozenEstimateState(percent, cost, resetAt, identity, observedAt)
+	next.BaselineSource = source
+	if percent > 0 && previous.SnapshotPercent < 100 {
+		next.Mode = previous.Mode
+	}
+	if source == "external_only_rebase" {
+		// External consumption breaks Rule B's zero-start denominator.
+		next.Mode = openAIWeeklyEstimateModeJoinAverage
+	}
+	if previous.Mode == openAIWeeklyEstimateModeUnknown && percent > 0 && previous.SnapshotPercent < 100 {
+		next.Mode = openAIWeeklyEstimateModeUnknown
+	}
+	return next
 }
 
 func (state *openAIWeeklyFrozenEstimateState) updateEstimate() {
-	if state == nil {
+	if state == nil || state.Mode == openAIWeeklyEstimateModeUnknown || state.SnapshotPercent >= 100 {
 		return
 	}
-	deltaPercent := state.PercentBucket - state.BaselinePercent
-	deltaCost := state.SnapshotCost - state.BaselineCost
-	if deltaPercent <= 0 || deltaCost <= openAIWeeklyEstimateEpsilon {
-		state.EstimateUSD = 0
-		state.HasEstimate = false
-		return
+	if state.Mode == openAIWeeklyEstimateModeLegacy {
+		bucket := openAIWeeklyEstimatePercentBucket(state.SnapshotPercent)
+		if bucket <= 1 || bucket <= openAIWeeklyEstimatePercentBucket(state.CompletedPercent) ||
+			(!state.HasEstimate && state.SnapshotPercent < state.CompletedPercent+1) {
+			state.AwaitingInterval = true
+			return
+		}
+		state.EstimateUSD = state.SnapshotCost / (float64(bucket-1) / 100)
+	} else {
+		// Compare the raw endpoint to start+1, rather than rounding/flooring or
+		// testing a subtraction that can turn 0.4 -> 1.4 into 0.9999999999999999.
+		if state.SnapshotPercent < state.CompletedPercent+1 {
+			state.AwaitingInterval = true
+			return
+		}
+		deltaPercent := state.SnapshotPercent - state.BaselinePercent
+		deltaCost := state.SnapshotCost - state.BaselineCost
+		if deltaPercent <= 0 || deltaCost <= 0 {
+			state.AwaitingInterval = true
+			return
+		}
+		state.EstimateUSD = deltaCost / deltaPercent * 100
 	}
-	estimate := deltaCost / float64(deltaPercent) * 100
-	state.EstimateUSD = estimate
-	state.HasEstimate = validOpenAIWeeklyEstimateValue(estimate) && estimate > openAIWeeklyEstimateEpsilon
+	state.HasEstimate = validOpenAIWeeklyEstimateValue(state.EstimateUSD)
+	state.AwaitingInterval = !state.HasEstimate
+	if state.HasEstimate {
+		state.CompletedPercent, state.CompletedCost = state.SnapshotPercent, state.SnapshotCost
+	}
 }
 
 func openAIWeeklyEstimatePercentBucket(percent float64) int {
 	if !validOpenAIWeeklyEstimateValue(percent) {
 		return 0
 	}
-	return int(math.Floor(math.Max(0, math.Min(99, percent)) + openAIWeeklyEstimateEpsilon))
+	return int(math.Floor(math.Min(99, percent)))
 }
 
 func (state openAIWeeklyFrozenEstimateState) matches(identity string, resetAt, now time.Time) bool {
-	return state.BaselinePercent >= 0 && state.BaselinePercent < 100 &&
-		state.PercentBucket >= state.BaselinePercent && state.PercentBucket < 100 &&
-		validOpenAIWeeklyEstimateValue(state.BaselineCost) &&
-		validOpenAIWeeklyEstimateValue(state.SnapshotCost) &&
-		state.SnapshotCost+openAIWeeklyEstimateEpsilon >= state.BaselineCost &&
-		state.Identity == identity && sameOpenAIWeeklyEstimateWindow(state.ResetAt, resetAt, now) &&
-		(!state.HasEstimate || validOpenAIWeeklyEstimateValue(state.EstimateUSD))
+	return state.valid() && state.Identity == identity && sameOpenAIWeeklyEstimateWindow(state.ResetAt, resetAt, now)
+}
+
+func (state openAIWeeklyFrozenEstimateState) valid() bool {
+	if state.Mode != openAIWeeklyEstimateModeLegacy && state.Mode != openAIWeeklyEstimateModeJoinAverage &&
+		state.Mode != openAIWeeklyEstimateModeUnknown {
+		return false
+	}
+	for _, value := range []float64{state.BaselinePercent, state.BaselineCost, state.SnapshotPercent,
+		state.SnapshotCost, state.CompletedPercent, state.CompletedCost} {
+		if !validOpenAIWeeklyEstimateValue(value) {
+			return false
+		}
+	}
+	if state.BaselinePercent > state.SnapshotPercent || state.SnapshotPercent > 100 ||
+		state.PercentBucket != openAIWeeklyEstimatePercentBucket(state.SnapshotPercent) ||
+		state.SnapshotCost < state.BaselineCost || state.CompletedPercent < state.BaselinePercent ||
+		state.CompletedPercent > state.SnapshotPercent || state.CompletedCost < state.BaselineCost ||
+		state.CompletedCost > state.SnapshotCost {
+		return false
+	}
+	if state.SnapshotPercent == 100 {
+		return state.HasEstimate && validOpenAIWeeklyEstimateValue(state.EstimateUSD) &&
+			state.EstimateUSD == state.SnapshotCost
+	}
+	if state.Mode == openAIWeeklyEstimateModeUnknown && state.HasEstimate {
+		return false
+	}
+	if state.HasEstimate && (state.CompletedPercent < state.BaselinePercent+1 ||
+		(state.Mode == openAIWeeklyEstimateModeLegacy && openAIWeeklyEstimatePercentBucket(state.CompletedPercent) <= 1)) {
+		return false
+	}
+	return !state.HasEstimate || validOpenAIWeeklyEstimateValue(state.EstimateUSD)
 }
 
 func (state openAIWeeklyFrozenEstimateState) value() *float64 {
-	if !state.HasEstimate || !validOpenAIWeeklyEstimateValue(state.EstimateUSD) || state.EstimateUSD <= openAIWeeklyEstimateEpsilon {
+	if !state.HasEstimate || !validOpenAIWeeklyEstimateValue(state.EstimateUSD) ||
+		(state.SnapshotPercent < 100 && state.EstimateUSD <= 0) {
 		return nil
 	}
 	estimate := state.EstimateUSD
 	return &estimate
 }
 
+func (state openAIWeeklyFrozenEstimateState) valueForCost(currentCost float64) *float64 {
+	if state.SnapshotPercent == 100 && state.HasEstimate && validOpenAIWeeklyEstimateValue(currentCost) {
+		return &currentCost
+	}
+	return state.value()
+}
+
+func migrationUpdate(state openAIWeeklyFrozenEstimateState) map[string]any {
+	if !state.needsPersist {
+		return nil
+	}
+	return openAIWeeklyFrozenEstimateStateUpdate(state)
+}
+
 func openAIWeeklyFrozenEstimateStateUpdate(state openAIWeeklyFrozenEstimateState) map[string]any {
+	// The write boundary assigns revision from the original account, so staging
+	// a historical seed and then calculating cannot consume two revisions.
 	raw := map[string]any{
-		"version":             openAIWeeklyFrozenEstimateStateVersion,
-		"baseline_percent":    state.BaselinePercent,
-		"baseline_cost":       state.BaselineCost,
-		"percent_bucket":      state.PercentBucket,
-		"snapshot_cost":       state.SnapshotCost,
-		"has_weekly_estimate": state.HasEstimate,
-		"reset_at":            state.ResetAt.Format(time.RFC3339Nano),
-		"identity":            state.Identity,
+		"version": openAIWeeklyFrozenEstimateTwoRuleStateVersion,
+		"mode":    state.Mode, "baseline_source": state.BaselineSource,
+		"baseline_percent": state.BaselinePercent, "baseline_cost": state.BaselineCost,
+		"percent_bucket": state.PercentBucket, "snapshot_percent": state.SnapshotPercent, "snapshot_cost": state.SnapshotCost,
+		"completed_percent": state.CompletedPercent, "completed_cost": state.CompletedCost,
+		"awaiting_interval": state.AwaitingInterval, "has_weekly_estimate": state.HasEstimate,
+		"terminal": state.SnapshotPercent == 100,
+		"reset_at": state.ResetAt.Format(time.RFC3339Nano), "identity": state.Identity,
 	}
 	if !state.ObservedAt.IsZero() {
 		raw["observed_at"] = state.ObservedAt.Format(time.RFC3339Nano)
@@ -298,53 +464,115 @@ func openAIWeeklyFrozenEstimateStateUpdate(state openAIWeeklyFrozenEstimateState
 	return map[string]any{openAIWeeklyEstimateBaselineKey: raw}
 }
 
-func openAIWeeklyFrozenEstimateMigrationUpdate(state openAIWeeklyFrozenEstimateState, needed bool) map[string]any {
-	if !needed {
-		return nil
+func openAIWeeklyFrozenEstimateUpdateWithEvidence(state openAIWeeklyFrozenEstimateState, extra map[string]any) map[string]any {
+	updates := openAIWeeklyFrozenEstimateStateUpdate(state)
+	raw := updates[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	previous, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
+	if !ok {
+		return updates
 	}
-	return openAIWeeklyFrozenEstimateStateUpdate(state)
+	for _, key := range []string{"legacy_evidence", "previous_sampling_baseline", "join_evidence"} {
+		if evidence, exists := previous[key]; exists {
+			raw[key] = evidence
+		}
+	}
+	version := parseExtraInt(previous["version"])
+	if version != openAIWeeklyFrozenEstimateTwoRuleStateVersion {
+		// Keep the original raw record, including absent fields, without
+		// upgrading its old mode/source into verified login evidence.
+		raw["legacy_evidence"] = previous
+	} else {
+		baselinePercent, percentOK := parseOpenAIWeeklyEstimateNumber(previous, "baseline_percent")
+		baselineCost, costOK := parseOpenAIWeeklyEstimateNumber(previous, "baseline_cost")
+		identity, _ := previous["identity"].(string)
+		source, _ := previous["baseline_source"].(string)
+		if percentOK && costOK && baselinePercent == state.BaselinePercent && baselineCost == state.BaselineCost &&
+			identity == state.Identity && source == state.BaselineSource {
+			return updates
+		}
+		evidence := make(map[string]any)
+		for _, key := range []string{"mode", "baseline_source", "baseline_percent", "baseline_cost", "snapshot_percent", "snapshot_cost", "observed_at", "identity", "reset_at"} {
+			if value, exists := previous[key]; exists {
+				evidence[key] = value
+			}
+		}
+		raw["previous_sampling_baseline"] = evidence
+	}
+	return updates
 }
 
 func readOpenAIWeeklyFrozenEstimateState(extra map[string]any) (openAIWeeklyFrozenEstimateState, bool) {
-	if extra == nil {
-		return openAIWeeklyFrozenEstimateState{}, false
-	}
 	raw, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
-	if !ok || parseExtraInt(raw["version"]) != openAIWeeklyFrozenEstimateStateVersion {
+	if !ok {
 		return openAIWeeklyFrozenEstimateState{}, false
 	}
-
-	baselinePercentValue, baselinePercentOK := parseOpenAIWeeklyEstimateNumber(raw, "baseline_percent")
+	version := parseExtraInt(raw["version"])
+	if version != openAIWeeklyFrozenEstimateTwoRuleStateVersion && version != openAIWeeklyFrozenEstimatePreviousVersion {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	baselinePercent, baselineOK := parseOpenAIWeeklyEstimateNumber(raw, "baseline_percent")
 	baselineCost, baselineCostOK := parseOpenAIWeeklyEstimateNumber(raw, "baseline_cost")
+	snapshotCost, snapshotCostOK := parseOpenAIWeeklyEstimateNumber(raw, "snapshot_cost")
 	bucketValue, bucketOK := parseOpenAIWeeklyEstimateNumber(raw, "percent_bucket")
-	snapshotCost, costOK := parseOpenAIWeeklyEstimateNumber(raw, "snapshot_cost")
-	hasEstimate, hasEstimateOK := parseOpenAIWeeklyEstimateBool(raw, "has_weekly_estimate")
+	snapshotPercent, snapshotPercentOK := parseOpenAIWeeklyEstimateNumber(raw, "snapshot_percent")
+	if !baselineOK || !baselineCostOK || !snapshotCostOK || !bucketOK ||
+		!validOpenAIWeeklyEstimateValue(bucketValue) || bucketValue > 99 || math.Trunc(bucketValue) != bucketValue {
+		return openAIWeeklyFrozenEstimateState{}, false
+	}
+	if !snapshotPercentOK {
+		if version == openAIWeeklyFrozenEstimateTwoRuleStateVersion {
+			return openAIWeeklyFrozenEstimateState{}, false
+		}
+		snapshotPercent = bucketValue
+	}
 	resetText, resetOK := raw["reset_at"].(string)
 	identity, identityOK := raw["identity"].(string)
-	if !baselinePercentOK || !baselineCostOK || !bucketOK || !costOK || !hasEstimateOK || !resetOK || !identityOK ||
-		math.Trunc(baselinePercentValue) != baselinePercentValue || math.Trunc(bucketValue) != bucketValue {
+	if !resetOK || !identityOK || identity == "" {
 		return openAIWeeklyFrozenEstimateState{}, false
 	}
 	resetAt, err := parseTime(resetText)
 	if err != nil {
 		return openAIWeeklyFrozenEstimateState{}, false
 	}
-
+	mode, _ := raw["mode"].(string)
+	source, _ := raw["baseline_source"].(string)
 	state := openAIWeeklyFrozenEstimateState{
-		BaselinePercent: int(baselinePercentValue),
-		BaselineCost:    baselineCost,
-		PercentBucket:   int(bucketValue),
-		SnapshotCost:    snapshotCost,
-		HasEstimate:     hasEstimate,
-		ResetAt:         resetAt.UTC(),
-		Identity:        identity,
+		Mode: mode, BaselineSource: source, BaselinePercent: baselinePercent, BaselineCost: baselineCost,
+		PercentBucket: int(bucketValue), SnapshotPercent: snapshotPercent, SnapshotCost: snapshotCost,
+		ResetAt: resetAt.UTC(), Identity: identity,
 	}
 	if rawObservedAt, exists := raw["observed_at"]; exists && rawObservedAt != nil {
-		observedAt, observedErr := parseTime(fmt.Sprint(rawObservedAt))
-		if observedErr != nil {
+		observedAt, err := parseTime(fmt.Sprint(rawObservedAt))
+		if err != nil {
 			return openAIWeeklyFrozenEstimateState{}, false
 		}
 		state.ObservedAt = observedAt.UTC()
+	}
+	if version == openAIWeeklyFrozenEstimatePreviousVersion {
+		knownZero := mode == openAIWeeklyEstimateModeLegacy && source == "observed_zero" && baselinePercent == 0
+		knownJoin := false
+		switch source {
+		case "observed_mid_join", "first_observation_mid_join_candidate", "first_aligned_observation", "sampling_reset":
+			knownJoin = mode == openAIWeeklyEstimateModeJoinAverage && snapshotPercentOK
+		}
+		if !knownZero && !knownJoin {
+			state.Mode, state.BaselineSource = openAIWeeklyEstimateModeUnknown, "legacy_start_unclassified_v14"
+		}
+		// v14 completed endpoints could be floored. Retain the cumulative
+		// baseline, but require a new complete observable interval after upgrade.
+		state.CompletedPercent, state.CompletedCost = snapshotPercent, snapshotCost
+		state.AwaitingInterval, state.needsPersist = true, true
+		return state, state.valid()
+	}
+	var completedOK, completedCostOK, hasEstimateOK, awaitingOK bool
+	state.CompletedPercent, completedOK = parseOpenAIWeeklyEstimateNumber(raw, "completed_percent")
+	state.CompletedCost, completedCostOK = parseOpenAIWeeklyEstimateNumber(raw, "completed_cost")
+	state.HasEstimate, hasEstimateOK = parseOpenAIWeeklyEstimateBool(raw, "has_weekly_estimate")
+	state.AwaitingInterval, awaitingOK = parseOpenAIWeeklyEstimateBool(raw, "awaiting_interval")
+	terminal, terminalOK := parseOpenAIWeeklyEstimateBool(raw, "terminal")
+	if !completedOK || !completedCostOK || !hasEstimateOK || !awaitingOK || !terminalOK ||
+		terminal != (snapshotPercent == 100) || state.ObservedAt.IsZero() {
+		return openAIWeeklyFrozenEstimateState{}, false
 	}
 	if state.HasEstimate {
 		estimate, estimateOK := parseOpenAIWeeklyEstimateNumber(raw, "estimate_usd")
@@ -353,13 +581,10 @@ func readOpenAIWeeklyFrozenEstimateState(extra map[string]any) (openAIWeeklyFroz
 		}
 		state.EstimateUSD = estimate
 	}
-	return state, state.matches(state.Identity, state.ResetAt, time.Now().UTC())
+	return state, state.valid()
 }
 
 func readOpenAIWeeklyFrozenEstimateLegacyState(extra map[string]any) (openAIWeeklyFrozenEstimateState, bool) {
-	if extra == nil {
-		return openAIWeeklyFrozenEstimateState{}, false
-	}
 	raw, ok := extra[openAIWeeklyEstimateBaselineKey].(map[string]any)
 	if !ok || parseExtraInt(raw["version"]) != openAIWeeklyFrozenEstimateLegacyStateVersion {
 		return openAIWeeklyFrozenEstimateState{}, false
@@ -368,21 +593,26 @@ func readOpenAIWeeklyFrozenEstimateLegacyState(extra map[string]any) (openAIWeek
 	snapshotCost, costOK := parseOpenAIWeeklyEstimateNumber(raw, "snapshot_cost")
 	resetText, resetOK := raw["reset_at"].(string)
 	identity, identityOK := raw["identity"].(string)
-	if !bucketOK || !costOK || !resetOK || !identityOK || math.Trunc(bucketValue) != bucketValue {
+	if !bucketOK || !costOK || !resetOK || !identityOK || identity == "" ||
+		!validOpenAIWeeklyEstimateValue(bucketValue) || bucketValue > 99 || math.Trunc(bucketValue) != bucketValue {
 		return openAIWeeklyFrozenEstimateState{}, false
 	}
 	resetAt, err := parseTime(resetText)
 	if err != nil {
 		return openAIWeeklyFrozenEstimateState{}, false
 	}
-	bucket := int(bucketValue)
-	state := newOpenAIWeeklyFrozenEstimateState(bucket, snapshotCost, resetAt.UTC(), identity, time.Time{})
+	percent, percentOK := parseOpenAIWeeklyEstimateNumber(raw, "snapshot_percent")
+	if !percentOK {
+		percent = bucketValue
+	}
+	state := newOpenAIWeeklyFrozenEstimateState(percent, snapshotCost, resetAt.UTC(), identity, time.Time{})
+	state.Mode, state.BaselineSource, state.needsPersist = openAIWeeklyEstimateModeUnknown, "legacy_start_unclassified_v13", true
 	if rawObservedAt, exists := raw["observed_at"]; exists && rawObservedAt != nil {
-		observedAt, observedErr := parseTime(fmt.Sprint(rawObservedAt))
-		if observedErr != nil {
+		observedAt, err := parseTime(fmt.Sprint(rawObservedAt))
+		if err != nil {
 			return openAIWeeklyFrozenEstimateState{}, false
 		}
 		state.ObservedAt = observedAt.UTC()
 	}
-	return state, state.matches(state.Identity, state.ResetAt, time.Now().UTC())
+	return state, state.valid()
 }

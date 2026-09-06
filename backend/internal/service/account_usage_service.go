@@ -622,7 +622,7 @@ func (s *AccountUsageService) GetUsageBatch(ctx context.Context, accountIDs []in
 }
 
 // GetPassiveUsage 从 Account.Extra 中的被动采样数据构建 UsageInfo，不调用外部 API。
-// 仅适用于 Anthropic OAuth / SetupToken 账号。
+// Supports Anthropic OAuth/SetupToken and OpenAI OAuth without probing or writes.
 func (s *AccountUsageService) GetPassiveUsage(ctx context.Context, accountID int64) (*UsageInfo, error) {
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
@@ -633,8 +633,19 @@ func (s *AccountUsageService) GetPassiveUsage(ctx context.Context, accountID int
 }
 
 func (s *AccountUsageService) getPassiveUsageForAccount(ctx context.Context, account *Account) (*UsageInfo, error) {
+	if account != nil && account.IsOpenAIOAuth() {
+		now := time.Now()
+		info := &UsageInfo{Source: "passive"}
+		applyExtraToUsage(info, account.Extra, now)
+		if observedAt, ok := openAICodexSnapshotObservationAt(account, now); ok {
+			info.UpdatedAt = &observedAt
+		}
+		s.addOpenAIWindowStats(ctx, account, info, now)
+		applyPersistedOpenAIWeeklyEstimate(account, info.SevenDay, now)
+		return info, nil
+	}
 	if !supportsAnthropicPassiveUsage(account) {
-		return nil, fmt.Errorf("passive usage only supported for Anthropic OAuth/SetupToken accounts")
+		return nil, fmt.Errorf("passive usage only supported for Anthropic OAuth/SetupToken or OpenAI OAuth accounts")
 	}
 
 	// 复用 estimateSetupTokenUsage 构建 5h 窗口（OAuth 和 SetupToken 逻辑一致）
@@ -779,7 +790,10 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 					return nil, fmt.Errorf("force refresh openai codex quota failed: %w", err)
 				}
 			} else {
-				observedAt := time.Now().UTC().Truncate(time.Microsecond)
+				if quotaUsage.requestIdentity == nil {
+					return nil, missingOpenAIQuotaRequestIdentity()
+				}
+				observedAt := quotaUsage.requestIdentity.observedAt
 				updates := buildCodexSparkWindowExtraUpdates(quotaUsage, observedAt)
 				if len(updates) == 0 {
 					if force {
@@ -794,7 +808,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 				if force && !hasCodexWindowSnapshot(updates, "7d") {
 					return nil, fmt.Errorf("force refresh openai codex quota failed: upstream returned no 7d quota snapshot")
 				}
-				applied, err := s.persistOpenAICodexProbeSnapshot(account.ID, updates)
+				applied, err := s.persistOpenAICodexProbeSnapshot(account, updates, quotaUsage.requestIdentity)
 				if err != nil {
 					if force {
 						return nil, fmt.Errorf("force refresh openai codex quota failed: persist snapshot: %w", err)
@@ -825,7 +839,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 				if force && !hasCodexWindowSnapshot(updates, "7d") {
 					return nil, fmt.Errorf("force refresh openai codex quota failed: upstream returned no 7d quota snapshot")
 				}
-				applied, err := s.persistOpenAICodexProbeSnapshot(account.ID, updates)
+				applied, err := s.persistOpenAICodexProbeSnapshot(account, updates)
 				if err != nil {
 					if force {
 						return nil, fmt.Errorf("force refresh openai codex quota failed: persist snapshot: %w", err)
@@ -849,8 +863,17 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		}
 	}
 
+	if stats := s.addOpenAIWindowStats(ctx, account, usage, now); stats != nil {
+		s.applyOpenAIWeeklyEstimate(ctx, account, usage.SevenDay, stats, now)
+	}
+	return usage, nil
+}
+
+// Only database reads are shared with passive usage; probes, estimate sampling
+// and recoverable-error clearing remain exclusively on the active path.
+func (s *AccountUsageService) addOpenAIWindowStats(ctx context.Context, account *Account, usage *UsageInfo, now time.Time) *usagestats.AccountStats {
 	if s.usageLogRepo == nil {
-		return usage, nil
+		return nil
 	}
 
 	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now)); err == nil {
@@ -865,11 +888,43 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if usage.SevenDay != nil {
 		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
 			usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
-			s.applyOpenAIWeeklyEstimate(ctx, account, usage.SevenDay, stats, now)
+			return stats
 		}
 	}
+	return nil
+}
 
-	return usage, nil
+// Display only a matching persisted estimate. Do not calculate, migrate or
+// advance the estimator state while reading another execution node's account.
+func applyPersistedOpenAIWeeklyEstimate(account *Account, progress *UsageProgress, now time.Time) {
+	if account == nil || progress == nil || progress.WindowStats == nil ||
+		!validOpenAIWeeklyEstimateValue(progress.Utilization) || !validOpenAIWeeklyEstimateValue(progress.WindowStats.Cost) {
+		return
+	}
+	resetAt := time.Time{}
+	if progress.ResetsAt != nil {
+		resetAt = progress.ResetsAt.UTC()
+	}
+	observedAt, observedOK := openAICodexSnapshotObservationAt(account, now)
+	if !observedOK {
+		return
+	}
+	state, ok := readOpenAIWeeklyFrozenEstimateState(account.Extra)
+	if ok && (!state.matches(account.GetCredential("chatgpt_account_id"), resetAt, now) ||
+		(!state.ObservedAt.IsZero() && observedAt.Before(state.ObservedAt))) {
+		return
+	}
+	if progress.Utilization >= 100 {
+		exact := progress.WindowStats.Cost
+		progress.WeeklyEstimateUSD = &exact
+		return
+	}
+	if !ok ||
+		state.PercentBucket != openAIWeeklyEstimatePercentBucket(progress.Utilization) ||
+		state.SnapshotCost > progress.WindowStats.Cost+openAIWeeklyEstimateEpsilon {
+		return
+	}
+	progress.WeeklyEstimateUSD = state.value()
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {
@@ -1024,8 +1079,8 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	return nil, nil
 }
 
-func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) (bool, error) {
-	if s == nil || s.accountRepo == nil || accountID <= 0 {
+func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(account *Account, updates map[string]any, identity ...*openAIQuotaRequestIdentity) (bool, error) {
+	if s == nil || s.accountRepo == nil || account == nil || account.ID <= 0 {
 		return false, nil
 	}
 	if len(updates) == 0 {
@@ -1034,15 +1089,23 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 
 	updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer updateCancel()
-	return persistOrderedOpenAICodexSnapshot(updateCtx, s.accountRepo, accountID, updates)
+	if len(identity) > 0 {
+		return persistBoundOpenAIQuotaSnapshot(updateCtx, s.accountRepo, account.ID, identity[0], updates)
+	}
+	return persistOrderedOpenAICodexSnapshot(updateCtx, s.accountRepo, account, updates)
 }
 
-func persistOrderedOpenAICodexSnapshot(ctx context.Context, repo AccountRepository, accountID int64, updates map[string]any) (bool, error) {
-	orderedRepo, ok := repo.(OpenAICodexSnapshotRepository)
-	if !ok {
-		return false, fmt.Errorf("account repository does not support ordered openai codex snapshots")
+func persistOrderedOpenAICodexSnapshot(ctx context.Context, repo AccountRepository, account *Account, updates map[string]any) (bool, error) {
+	// Shadow queries must use their private QueryUsage identity and parent CAS.
+	// The global-header path cannot infer that identity from a shadow row alone.
+	if account != nil && account.IsShadow() {
+		return false, fmt.Errorf("spark shadow codex snapshot not persisted: quota query did not capture the parent request credentials/proxy; cached snapshot preserved")
 	}
-	return orderedRepo.UpdateOpenAICodexSnapshot(ctx, accountID, updates)
+	orderedRepo, ok := repo.(OpenAICodexBoundSnapshotRepository)
+	if !ok {
+		return false, fmt.Errorf("account repository does not support identity-bound ordered openai codex snapshots")
+	}
+	return orderedRepo.UpdateOpenAICodexSnapshotIfIdentityMatches(ctx, account, updates)
 }
 
 func hasCodexWindowSnapshot(updates map[string]any, window string) bool {
@@ -1740,15 +1803,31 @@ const (
 	openAIWeeklyEstimateMaxActiveResetDrift = 24 * time.Hour
 )
 
-func (s *AccountUsageService) persistOpenAIWeeklyEstimate(ctx context.Context, account *Account, baselineUpdates map[string]any) {
-	if s == nil || s.accountRepo == nil || account == nil || len(baselineUpdates) == 0 {
-		return
+func (s *AccountUsageService) persistOpenAIWeeklyEstimate(ctx context.Context, account *Account, baselineUpdates map[string]any) bool {
+	if len(baselineUpdates) == 0 {
+		return true
 	}
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, baselineUpdates); err != nil {
+	if s == nil || account == nil {
+		return false
+	}
+	repo, ok := s.accountRepo.(OpenAIWeeklyStateRepository)
+	if !ok {
+		return false
+	}
+	baselineUpdates, err := PrepareOpenAIWeeklyStateUpdate(account.Extra, baselineUpdates)
+	if err != nil {
+		return false
+	}
+	applied, err := repo.CompareAndSwapOpenAIWeeklyState(ctx, account, baselineUpdates)
+	if err != nil {
 		slog.Warn("persist_openai_weekly_estimate_baseline_failed", "account_id", account.ID, "error", err)
-		return
+		return false
+	}
+	if !applied {
+		return false
 	}
 	mergeAccountExtra(account, baselineUpdates)
+	return true
 }
 
 func openAICodexSnapshotObservationAt(account *Account, now time.Time) (time.Time, bool) {

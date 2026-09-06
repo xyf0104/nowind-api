@@ -230,6 +230,17 @@ func TestDuplicateAccountUsesReceivingExecutionNode(t *testing.T) {
 	}
 	require.NoError(t, repo.Create(ctx, source))
 
+	_, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+	require.Equal(t, "ACCOUNT_REMOTE_NODE_STATUS_UNAVAILABLE", infraerrors.Reason(err))
+	require.Len(t, repo.accounts, 1)
+
+	svc.settingService = executionNodeAdminAccessService("api2", true, "true")
+	svc.settingService.cfg.Gateway.ExecutionNode.DefaultProxyID = 83
+	_, err = svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+	require.Equal(t, "ACCOUNT_REMOTE_NODE_READ_ONLY", infraerrors.Reason(err))
+	require.Len(t, repo.accounts, 1)
+
+	svc.settingService.SetExecutionNodeHealthReader(executionNodeAdminAccessHealth{values: map[string]bool{"api": false}})
 	duplicate, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
 
 	require.NoError(t, err)

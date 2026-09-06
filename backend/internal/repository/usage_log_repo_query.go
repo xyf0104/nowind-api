@@ -398,7 +398,8 @@ func (r *usageLogRepository) loadAccounts(ctx context.Context, ids []int64) (map
 	if len(ids) == 0 {
 		return out, nil
 	}
-	models, err := r.client.Account.Query().Where(dbaccount.IDIn(ids...)).All(ctx)
+	// Deleted accounts retain historical usage and its owner attribution.
+	models, err := r.client.Account.Query().Where(dbaccount.IDIn(ids...)).All(mixins.SkipSoftDelete(ctx))
 	if err != nil {
 		return nil, err
 	}

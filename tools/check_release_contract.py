@@ -673,8 +673,14 @@ def check_update_bridge(errors: list[str]) -> None:
         (
             "deploy/xiass-runtime-export.sh",
             [
-                "pg_dump",
-                "redis-cli --rdb",
+                "--postgres-from-container",
+                'docker cp "$POSTGRES_FROM_CONTAINER" "$WORK_DIR/payload/postgres.sql.gz"',
+                'gzip -t "$WORK_DIR/payload/postgres.sql.gz"',
+                "redis_cli()",
+                "--rdb /tmp/xiass.rdb",
+                'container:$APP_CONTAINER',
+                '"$WORK_DIR/payload/redis.acl"',
+                "--runtime-context-from-container",
                 'docker cp "$APP_CONTAINER:/app/data/."',
                 'rm -rf "$WORK_DIR/payload/app-data/runtime-exports"',
                 "--publish-to-container",
@@ -698,26 +704,58 @@ def check_update_bridge(errors: list[str]) -> None:
     ]:
         require_all(relative, read(relative), required, errors)
 
+    require_all(
+        "backend/internal/service/runtime_export_service.go",
+        read("backend/internal/service/runtime_export_service.go"),
+        ["NewRuntimeExportService(dumper DBDumper, cfg *config.Config)", "s.dumper.Dump(ctx)",
+         "stream.Close()", '"--postgres-from-container"'],
+        errors,
+    )
+    require_all(
+        "backend/internal/repository/backup_pg_dumper.go",
+        read("backend/internal/repository/backup_pg_dumper.go"),
+        ["cfg: &cfg.Database", 'exec.CommandContext(ctx, "pg_dump", args...)'],
+        errors,
+    )
+
     update_script = read("deploy/xiass-update.sh")
     backup_script = read("deploy/xiass-backup.sh")
     main_body = update_script.partition("main() {")[2]
     ordered_markers = [
         "ensure_xiass_update_remote",
-        'git -C "$INSTALL_DIR" fetch --prune "$UPDATE_REMOTE" main',
-        'UPDATE_REF=$(git -C "$INSTALL_DIR" rev-parse "$UPDATE_REMOTE/main")',
+        "resolve_stable_release",
+        "snapshot_previous_compose",
         'xiass-backup.sh',
         "capture_previous_image",
-        "prefetch_target_app_image",
         "UPDATE_STARTED=true",
+        'git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"',
+        "restore_local_compose",
+        "prefetch_target_app_image",
+        "verify_target_image_id",
+        "if can_hot_swap_canonical_app; then",
     ]
     positions = [main_body.find(marker) for marker in ordered_markers]
     if any(position < 0 for position in positions) or positions != sorted(positions):
         errors.append(
-            "xiass-update.sh 必须先备份、记录旧镜像并预拉取，再开始容器切换"
+            "xiass-update.sh 必须在线保存配置与旧镜像、同步并准备目标镜像，再开始容器切换"
         )
+    prepare_body = update_script.partition("prefetch_target_app_image() {")[2].partition("\n}\n")[0]
+    prepare_markers = [
+        "compose config --quiet",
+        "compose build xiass-api",
+        "compose pull xiass-api",
+        "verify_prepared_app_image",
+        "TARGET_APP_IMAGE_PREFETCHED=true",
+    ]
+    prepare_positions = [prepare_body.find(marker) for marker in prepare_markers]
+    if any(position < 0 for position in prepare_positions) or prepare_positions != sorted(prepare_positions):
+        errors.append("xiass-update.sh 下载/构建及镜像版本校验必须先于允许容器切换")
+    if main_body.find("if ! verify_running_target; then") < 0 or not (
+        main_body.find("if ! verify_running_target; then") < main_body.find("UPDATE_SUCCEEDED=true")
+    ):
+        errors.append("xiass-update.sh 必须核实运行版本后才可报告更新成功")
     hot_swap_body = main_body.partition("if can_hot_swap_canonical_app; then")[2].partition("else")[0]
     hot_swap_markers = [
-        'git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"',
         "hot_swap_canonical_app",
         "start_runtime_stack true true",
     ]
@@ -726,8 +764,8 @@ def check_update_bridge(errors: list[str]) -> None:
         errors.append("xiass-update.sh 规范安装必须只热切换应用并保持数据库、缓存容器在线")
     legacy_body = main_body.partition('log "历史部署布局使用完整兼容切换')[2]
     legacy_markers = [
-        "compose down",
-        'git -C "$INSTALL_DIR" reset --hard "$UPDATE_REF"',
+        "stop_previous_runtime",
+        "stop_known_runtime_containers",
         'start_runtime_stack "$TARGET_APP_IMAGE_PREFETCHED"',
     ]
     legacy_positions = [legacy_body.find(marker) for marker in legacy_markers]
@@ -741,6 +779,11 @@ def check_update_bridge(errors: list[str]) -> None:
             'PREVIOUS_IMAGE_ID=""',
             'PREVIOUS_IMAGE_REF=""',
             "capture_previous_image()",
+            'fetch --no-tags "$UPDATE_REMOTE" "refs/tags/$UPDATE_TAG"',
+            "FETCH_HEAD^{commit}",
+            "verify_prepared_app_image()",
+            "--entrypoint /app/xiass-api",
+            "/api/v1/settings/public",
             "generate_runtime_token()",
             "append_env_default()",
             "ensure_team_child_runtime_config()",
@@ -750,8 +793,11 @@ def check_update_bridge(errors: list[str]) -> None:
             'git -C "$INSTALL_DIR" reset --hard "$PREVIOUS_REF"',
             'docker image tag "$PREVIOUS_IMAGE_ID" "$PREVIOUS_IMAGE_REF"',
             "UPDATE_STARTED=true",
-            "start_runtime_stack false",
+            "start_runtime_stack true",
             "snapshot_previous_compose()",
+            "restore_previous_config()",
+            "APP_REPLACEMENT_STARTED=false",
+            "compose up -d --no-deps --no-build --pull never --force-recreate xiass-api",
             "PREVIOUS_COMPOSE_FILES",
             "com.docker.compose.project.config_files",
             "docker inspect --type container",
@@ -778,8 +824,8 @@ def check_update_bridge(errors: list[str]) -> None:
     rollback_markers = [
         'git -C "$INSTALL_DIR" reset --hard "$PREVIOUS_REF"',
         'docker image tag "$PREVIOUS_IMAGE_ID" "$PREVIOUS_IMAGE_REF"',
-        "start_runtime_stack false",
-        "compose up -d >/dev/null",
+        "start_runtime_stack true",
+        "compose up -d --no-build --pull never >/dev/null",
     ]
     rollback_positions = [rollback_body.find(marker) for marker in rollback_markers]
     if any(position < 0 for position in rollback_positions) or rollback_positions != sorted(

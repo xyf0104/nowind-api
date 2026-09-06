@@ -1,5 +1,5 @@
 # =============================================================================
-# Docker Ignore File for Sub2API
+# Docker Ignore File for XIASS API
 # =============================================================================
 
 # Git
@@ -30,37 +30,69 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+release/
+artifacts/
+backups/
+historical/
+operations/
+infrastructure/
+supporting-tools/
+.cache/
+.gocache/
+backend/.gocache/
+backend/bin/
+backend/server
+backend/sub2api
+backend/main
+backend/internal/web/dist/
+**/*.tsbuildinfo
 
 # Node modules (will be installed in container)
 frontend/node_modules/
 node_modules/
+**/node_modules/
 
 # Go build cache (will be built in container)
 backend/vendor/
 
 # Test files
 *_test.go
+**/*_test.go
 **/*.test.js
+**/*.test.mjs
+**/*.test.ts
+**/*.spec.ts
+**/__tests__/
+deploy/tests/
 coverage/
+**/coverage/
 .nyc_output/
 
 # Environment files
 .env
 .env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # Local config
 config.yaml
 config.local.yaml
+**/config.yaml
+**/config.local.yaml
+backend/.installed
 
 # Logs
 *.log
+**/*.log
 logs/
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+**/*.tmp
 
 # Deploy files (not needed in image)
 deploy/install.sh
@@ -69,9 +101,14 @@ deploy/sub2api-sudoers
 deploy/data/
 deploy/postgres_data/
 deploy/redis_data/
+backend/data/
+deploy/ha/
+deploy/backups/
+deploy/backup/
 
 # GoReleaser
 .goreleaser.yaml
+.goreleaser.simple.yaml
 
 # GitHub
 .github/

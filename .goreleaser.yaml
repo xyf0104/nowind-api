@@ -15,6 +15,7 @@ builds:
     binary: sub2api
     flags:
       - -tags=embed
+      - -trimpath
     env:
       - CGO_ENABLED=0
     goos:
@@ -46,7 +47,43 @@ archives:
     files:
       - LICENSE*
       - README*
-      - deploy/**
+      # Ship runtime inputs only, never a developer's entire deploy directory.
+      - deploy/.env.example
+      - deploy/config.example.yaml
+      - deploy/*.md
+      - deploy/*.service
+      - deploy/docker-compose.yml
+      - deploy/docker-compose.local.yml
+      - deploy/docker-compose.standalone.yml
+      - deploy/docker-compose.dev.yml
+      - deploy/docker-compose.build.yml
+      - deploy/docker-compose.xiass.yml
+      - deploy/docker-compose.nowind.yml
+      - deploy/Caddyfile
+      - deploy/Caddyfile.multinode.example
+      - deploy/codex-instructions.md.tmpl
+      - deploy/frps-soft-router.example.toml
+      - deploy/Dockerfile
+      - deploy/Makefile
+      - deploy/build_image.sh
+      - deploy/docker-deploy.sh
+      - deploy/docker-entrypoint.sh
+      - deploy/enable-*.sh
+      - deploy/frps-soft-router-install.sh
+      - deploy/install.sh
+      - deploy/install-datamanagementd.sh
+      - deploy/xiass-*.sh
+      - deploy/nowind-*.sh
+      - deploy/team-child-automation/Dockerfile
+      - deploy/team-child-automation/package.json
+      - deploy/team-child-automation/server.mjs
+      - deploy/xiass-updater/Dockerfile
+      - deploy/xiass-updater/xiass-updater-entrypoint.sh
+      - deploy/openwrt/xiass-soft-router-agent/README.md
+      - deploy/openwrt/xiass-soft-router-agent/install.sh
+      - deploy/openwrt/xiass-soft-router-agent/uninstall.sh
+      - deploy/openwrt/xiass-soft-router-agent/migrate.sh
+      - deploy/openwrt/xiass-soft-router-agent/files/**/*
 
 checksum:
   name_template: 'checksums.txt'

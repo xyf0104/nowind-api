@@ -235,6 +235,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var streamEarlyErr error
+	pendingSSEEventType := ""
 	eventInProgress := false
 	eventStartsClientOutput := false
 	eventStartsTTFTOutput := false
@@ -254,6 +255,36 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		clientDisconnected = true
 		logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+	}
+	sendKeepaliveIfDue := func() {
+		if keepaliveInterval <= 0 || clientDisconnected || eventInProgress ||
+			time.Since(lastDownstreamWriteAt) < keepaliveInterval {
+			return
+		}
+		if stageFirstOutput {
+			// Keep staged attempt frames private; emit only a complete comment.
+			n, err := w.Write([]byte(":\n\n"))
+			recordOpenAIStreamKeepaliveBytes(c, n)
+			if err != nil {
+				clientDisconnected = true
+				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+				return
+			}
+			flusher.Flush()
+			lastDownstreamWriteAt = time.Now()
+			return
+		}
+		if _, err := writePendingString(":\n\n"); err != nil {
+			clientDisconnected = true
+			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+			return
+		}
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during keepalive flush, continuing to drain upstream for billing")
+		} else {
+			lastDownstreamWriteAt = time.Now()
+		}
 	}
 	completeGuardedEvent := func(queueDrained bool) {
 		completedProgressEvent := eventStartsClientOutput
@@ -286,6 +317,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		eventStartsClientOutput = false
 		eventStartsTTFTOutput = false
 		eventShouldFlush = false
+		// A timer tick may have landed mid-event. Do not defer a due heartbeat
+		// for another full interval after the complete frame boundary arrives.
+		sendKeepaliveIfDue()
 	}
 	sendErrorEvent := func(reason string) {
 		if errorEventSent || clientDisconnected {
@@ -427,8 +461,17 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if streamEarlyErr != nil {
 			return
 		}
+		if eventType, ok := extractOpenAISSEEventLine(line); ok {
+			pendingSSEEventType = eventType
+		}
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
+			if pendingSSEEventType != "" && gjson.Valid(data) {
+				if normalized := openAICompatPayloadWithEventType(data, pendingSSEEventType); normalized != data {
+					data = normalized
+					line = "data: " + data
+				}
+			}
 			dataBytes := []byte(data)
 			eventTypeRaw := gjson.GetBytes(dataBytes, "type").String()
 			eventType := strings.TrimSpace(eventTypeRaw)
@@ -623,6 +666,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			return
 		}
 
+		if line == "" {
+			pendingSSEEventType = ""
+		}
 		// A blank line dispatches a guarded event from the attempt-local stage.
 		if stageFirstOutput && line == "" {
 			if !clientDisconnected {
@@ -657,6 +703,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 						clientOutputStarted = true
 						lastDownstreamWriteAt = time.Now()
 					}
+				}
+				if line == "" {
+					sendKeepaliveIfDue()
 				}
 			}
 		}
@@ -755,6 +804,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
+			// A complete terminal frame is authoritative even if the HTTP body
+			// stays open. Keep accepting tail frames until idle, without turning
+			// an already delivered response into a new timeout failure.
+			if sawTerminalEvent && !eventInProgress {
+				_ = resp.Body.Close()
+				return finalizeStream()
+			}
 			if clientDisconnected {
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete after timeout")
 			}
@@ -781,40 +837,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			)
 
 		case <-keepaliveCh:
-			if clientDisconnected {
-				continue
-			}
-			if eventInProgress {
-				continue
-			}
-			if time.Since(lastDownstreamWriteAt) < keepaliveInterval {
-				continue
-			}
-			if stageFirstOutput {
-				// Bypass attempt-local buffered frames. The stable SSE headers may be
-				// committed here, but account headers remain private until semantic output.
-				n, err := w.Write([]byte(":\n\n"))
-				recordOpenAIStreamKeepaliveBytes(c, n)
-				if err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
-					continue
-				}
-				flusher.Flush()
-				lastDownstreamWriteAt = time.Now()
-				continue
-			}
-			if _, err := writePendingString(":\n\n"); err != nil {
-				clientDisconnected = true
-				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
-				continue
-			}
-			if err := flushBuffered(); err != nil {
-				clientDisconnected = true
-				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during keepalive flush, continuing to drain upstream for billing")
-			} else {
-				lastDownstreamWriteAt = time.Now()
-			}
+			sendKeepaliveIfDue()
 		}
 	}
 
@@ -1543,7 +1566,8 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 			data = normalized
 		}
 		eventType := gjson.GetBytes(data, "type").String()
-		if eventType == "response.done" || eventType == "response.completed" {
+		if eventType == "response.done" || eventType == "response.completed" ||
+			eventType == "response.incomplete" || eventType == "response.cancelled" || eventType == "response.canceled" {
 			if response := gjson.GetBytes(data, "response"); response.Exists() && response.Type == gjson.JSON && response.Raw != "" {
 				finalResponse = []byte(response.Raw)
 			}

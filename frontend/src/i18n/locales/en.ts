@@ -894,7 +894,7 @@ export default {
     requestCountUnit: 'requests',
     openBillingBreakdown: 'View user and model billing details',
     weeklyEstimate: 'Weekly estimate',
-    weeklyEstimateHint: 'The first weekly observation establishes a baseline and remains Collecting. After a valid interval, XIASS estimates (maximum account cost in the current percentage - baseline account cost) / (current integer percentage - baseline integer percentage) x 100. For example, joining at 20% / $0 gives about $2,000 at 21% / $20 and $2,400 at 25% / $120. The maximum cost within each percentage is used. If provider usage advances without additional XIASS account cost, the baseline is rebuilt. Reauthorizing the same ChatGPT identity preserves the record; identity or weekly-window changes restart sampling. At 100%, the exact current account cost is shown.',
+    weeklyEstimateHint: 'Accounts verified to start at 0%, or after a weekly reset, retain Rule B: aligned cumulative account cost / ((N - 1) / 100) on the first observation of a new N% bucket. N <= 1 remains Collecting; the estimate is frozen within the bucket. Mid-window joins use (aligned current cost - join cost) / (raw current percentage - raw join percentage) x 100, updating after each complete percentage point and retaining the previous result in between. Joining at 20% / $0 and reaching 25% / $120 gives $2,400. Unknown join points are never assumed to be zero; known external-only consumption is excluded. Reauthorizing the same ChatGPT identity preserves verified history. At 100%, actual account cost is shown.',
     weeklyEstimatePending: 'Collecting',
     oauthBillingDetails: 'Account billing details',
     currentUsageWindow: 'Current {window} window',

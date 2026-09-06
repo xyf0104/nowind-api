@@ -239,6 +239,58 @@ func TestExecutionNodeDeadOwnerFailsClosedWhenTakeoverDisabled(t *testing.T) {
 	require.Same(t, account, policy.routeAccountForExecution(account))
 }
 
+func TestExecutionNodeTakeoverRequiresKnownOfflineOwner(t *testing.T) {
+	policy := executionNodeTestPolicy(map[string]float64{"api": 9, "api2": 1})
+	policy.localNodeID, policy.emergencyLocalEgress = "api2", true
+	policy.localProxy = &Proxy{ID: 83, Status: StatusActive}
+	delete(policy.healthy, "api")
+	account := executionNodeTestAccount(75, "api", 0)
+	require.False(t, policy.canTakeOver(account), "missing health evidence is not confirmation of an offline owner")
+	require.False(t, executionNodeCandidateAllowed(policy, account))
+	require.Same(t, account, policy.routeAccountForExecution(account))
+}
+
+func TestExecutionNodeTakeoverOrdersHealthyOwnersBeforeEveryOfflinePriority(t *testing.T) {
+	policy := executionNodeTestPolicy(map[string]float64{"api": 9, "api2": 1})
+	policy.localNodeID, policy.emergencyLocalEgress = "api2", true
+	policy.localProxy = &Proxy{ID: 83, Status: StatusActive}
+	policy.healthy["api"] = false
+	remote := executionNodeTestAccount(76, "api", 0)
+	local := executionNodeTestAccount(77, "api2", 10)
+	lowerLocal := executionNodeTestAccount(78, "api2", 20)
+	lowerRemote := executionNodeTestAccount(79, "api", 30)
+	items := []*Account{remote, local, lowerLocal, lowerRemote}
+	for i := 0; i < 100; i++ {
+		anchor := fmt.Sprintf("takeover-%d", i)
+		ordered := orderExecutionNodeCandidatesWithinPriorities(items,
+			func(a *Account) *Account { return a }, func(a *Account) int { return a.Priority }, policy, anchor)
+		require.Equal(t, []*Account{local, lowerLocal, remote, lowerRemote}, ordered)
+		partitions := partitionExecutionNodeCandidates(items, func(a *Account) *Account { return a }, policy, anchor)
+		require.Equal(t, [][]*Account{{local, lowerLocal}, {remote, lowerRemote}}, partitions)
+		require.Equal(t, []string{"api2", "api"}, weightedExecutionNodePermutation([]string{"api", "api2"}, policy, anchor))
+	}
+	require.Equal(t, []*Account{remote, local, lowerLocal, lowerRemote}, items, "ordering must not mutate the input snapshot")
+}
+
+func TestExecutionNodeTakeoverHealthyNineToOnePlacementIsUnchanged(t *testing.T) {
+	policy := executionNodeTestPolicy(map[string]float64{"api": 9, "api2": 1})
+	policy.localNodeID = "api2"
+	policy.localProxy = &Proxy{ID: 83, Status: StatusActive}
+	const samples = 20000
+	primaryCount := 0
+	for i := 0; i < samples; i++ {
+		anchor := fmt.Sprintf("healthy-nine-to-one-%d", i)
+		ordinary := weightedExecutionNodePermutation([]string{"api", "api2"}, policy, anchor)
+		emergency := policy
+		emergency.emergencyLocalEgress = true
+		require.Equal(t, ordinary, weightedExecutionNodePermutation([]string{"api", "api2"}, emergency, anchor), "healthy placement must match exactly, not just statistically")
+		if ordinary[0] == "api" {
+			primaryCount++
+		}
+	}
+	require.InDelta(t, 0.9, float64(primaryCount)/samples, 0.02)
+}
+
 func TestExecutionNodeWeightedPlacementDistribution(t *testing.T) {
 	accounts := []*Account{
 		executionNodeTestAccount(1, "api", 1),

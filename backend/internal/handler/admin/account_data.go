@@ -406,6 +406,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	// 收集需要异步设置隐私的 Antigravity OAuth 账号
 	var privacyAccounts []*service.Account
 
+	ctx = service.WithOpenAIWeeklyJoinCaptureBudget(ctx, 5*time.Second)
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
 		// Team-child login metadata is bound to a successful state-matched XIASS

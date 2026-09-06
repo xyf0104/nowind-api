@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -63,6 +64,7 @@ type dashboardSnapshotV2CacheKey struct {
 	BillingType           *int8  `json:"billing_type"`
 	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
 	ExecutionNodeID       string `json:"execution_node_id,omitempty"`
+	ExecutionNodeLegacyID string `json:"execution_node_legacy_id,omitempty"`
 	IncludeStats          bool   `json:"include_stats"`
 	IncludeTrend          bool   `json:"include_trend"`
 	IncludeModels         bool   `json:"include_models"`
@@ -110,6 +112,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		BillingType:           filters.BillingType,
 		UpstreamModelMismatch: filters.UpstreamModelMismatch,
 		ExecutionNodeID:       filters.ExecutionNodeID,
+		ExecutionNodeLegacyID: middleware.ExecutionNodeLegacyID(c.Request.Context()),
 		IncludeStats:          includeStats,
 		IncludeTrend:          includeTrend,
 		IncludeModels:         includeModels,

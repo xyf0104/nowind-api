@@ -39,6 +39,14 @@ func openAIWSCyberPolicyClientErrorFrame() []byte {
 	return payload
 }
 
+func writeOpenAIWSContextUnavailable(ctx context.Context, conn *coderws.Conn) error {
+	writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = conn.Write(writeCtx, coderws.MessageText, openAIContextUnavailableFrame())
+	return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation,
+		"context_unavailable: restore full conversation history", ErrOpenAIContextUnavailable)
+}
+
 func (s *OpenAIGatewayService) openAIWSIngressInterTurnIdleTimeout() time.Duration {
 	if s == nil || s.cfg == nil || s.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds <= 0 {
 		return 0
@@ -85,6 +93,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 		return err
 	}
+	captureOpenAIRequestOwnership(c, firstClientMessage)
 
 	// 预取一次 OpenAI Fast Policy settings，绑定到 ctx，让该 WS session
 	// 内所有帧的 evaluateOpenAIFastPolicy 调用复用同一份快照，避免每帧
@@ -474,7 +483,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
-	stateStore := s.getOpenAIWSStateStore()
+	stateStore := s.ownedOpenAIWSStateStore(c, account)
 	groupID := getOpenAIGroupIDFromContext(c)
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	sessionHash := ""
@@ -543,6 +552,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			// Keep payload and replay histories aligned. Rewritten items receive new
 			// immutable bodies; all untouched replay bodies remain shared.
 			if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, account.ID, sessionHash); len(invalidDigests) > 0 {
+				if openAIRawPayloadHasInvalidEncryptedCompaction(currentBridgePayload.payloadRaw, invalidDigests) ||
+					openAIReplayHasInvalidEncryptedCompaction(bridgeReplayInput, invalidDigests) ||
+					openAIReplayHasInvalidEncryptedCompaction(bridgeAccountFailoverInput, invalidDigests) {
+					return writeOpenAIWSContextUnavailable(ctx, clientConn)
+				}
 				strippedPayload, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
 					currentBridgePayload.payloadRaw,
 					invalidDigests,
@@ -728,6 +742,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
 	baseAcquireReq := openAIWSAcquireRequest{
+		Owner:   openAIWSOwnershipForRequest(c, account),
 		Account: account,
 		WSURL:   wsURL,
 		Headers: wsHeaders,
@@ -798,11 +813,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	agentTaskRecoveryTried := false
+	continuationResponseID := firstPayload.previousResponseID
 	var acquireTurnLease func(int, string, bool) (*openAIWSConnLease, error)
 	acquireTurnLease = func(turn int, preferred string, forcePreferredConn bool) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
+		if stateStore != nil && continuationResponseID != "" {
+			connID, ok := stateStore.GetResponseConn(continuationResponseID)
+			req.Continuation = ok && connID != "" && connID == req.PreferredConnID
+		}
 		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文。
 		req.ForceNewConn = dedicatedMode
 		freezeOpenAIWSUpstreamProxy(c, account, req.ProxyURL)
@@ -864,6 +884,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		connID := strings.TrimSpace(lease.ConnID())
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
+			s.noteOpenAICodexTurnStateProvenance(c, account, handshakeTurnState)
 			turnState = handshakeTurnState
 			if stateStore != nil && sessionHash != "" {
 				stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
@@ -984,6 +1005,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				}
 				return nil, ErrOpenAIWSCyberPolicyBlocked
+			}
+			if (eventType == "error" || eventType == "response.failed") && hasOpenAIEncryptedCompactionRaw(payload) &&
+				isOpenAIInvalidEncryptedContentEvent(upstreamMessage) {
+				lease.MarkBroken()
+				return nil, writeOpenAIWSContextUnavailable(ctx, clientConn)
 			}
 			if eventType == "error" {
 				canonicalModel := canonicalOpenAIAccountSchedulingModel(account, originalModel)
@@ -1377,6 +1403,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		skipBeforeTurn = false
 		if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, account.ID, sessionHash); len(invalidDigests) > 0 {
+			if openAIRawPayloadHasInvalidEncryptedCompaction(currentPayload, invalidDigests) ||
+				openAIReplayHasInvalidEncryptedCompaction(lastTurnReplayInput, invalidDigests) {
+				return writeOpenAIWSContextUnavailable(ctx, clientConn)
+			}
 			strippedPayload, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
 				currentPayload,
 				invalidDigests,
@@ -1834,6 +1864,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		currentPayload = nextPayload.payloadRaw
+		continuationResponseID = nextPayload.previousResponseID
 		currentOriginalModel = nextPayload.originalModel
 		currentImageBillingModel = nextPayload.imageBillingModel
 		currentImageSizeTier = nextPayload.imageSizeTier

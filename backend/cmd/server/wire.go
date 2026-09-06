@@ -94,6 +94,7 @@ func provideCleanup(
 	proxyExpiry *service.ProxyExpiryService,
 	subscriptionExpiry *service.SubscriptionExpiryService,
 	usageCleanup *service.UsageCleanupService,
+	inactiveUserCleanup *service.InactiveUserCleanupService,
 	idempotencyCleanup *service.IdempotencyCleanupService,
 	batchImageCleanup *service.BatchImageCleanupService,
 	pixlabSMS *service.PixlabSMSService,
@@ -217,6 +218,12 @@ func provideCleanup(
 			{"UsageCleanupService", func() error {
 				if usageCleanup != nil {
 					usageCleanup.Stop()
+				}
+				return nil
+			}},
+			{"InactiveUserCleanupService", func() error {
+				if inactiveUserCleanup != nil {
+					inactiveUserCleanup.Stop()
 				}
 				return nil
 			}},

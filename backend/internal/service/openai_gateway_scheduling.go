@@ -845,19 +845,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if len(eligible) == 0 {
 		return nil, compactBlocked
 	}
-	minPriority := eligible[0].Priority
-	for _, account := range eligible[1:] {
-		if account.Priority < minPriority {
-			minPriority = account.Priority
-		}
-	}
-	highestPriority := eligible[:0]
-	for _, account := range eligible {
-		if account.Priority == minPriority {
-			highestPriority = append(highestPriority, account)
-		}
-	}
-	eligible = highestPriority
+	eligible = partitionOpenAIAccountsByPriority(eligible, executionNodePolicy)[0]
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -964,6 +952,36 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				})
 			}
 		}
+		policy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
+		if policy.hasOfflineTakeoverOwner() && (stickyAccountID <= 0 || stickyAccountID != account.ID) {
+			accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform)
+			if listErr != nil {
+				return nil, listErr
+			}
+			excluded := cloneExcludedAccountIDs(excludedIDs)
+			if excluded == nil {
+				excluded = make(map[int64]struct{})
+			}
+			excluded[account.ID] = struct{}{}
+			for {
+				next, _ := s.selectBestAccount(ctx, groupID, platform, accounts, sessionHash, requestedModel, excluded, requireCompact, requiredCapability, preferLowUpstreamRate)
+				if next == nil {
+					break
+				}
+				excluded[next.ID] = struct{}{}
+				result, acquireErr := s.tryAcquireAccountSlot(ctx, next.ID, next.Concurrency)
+				if acquireErr == nil && result != nil && result.Acquired {
+					selection, selectErr := s.newAcquiredSelectionResult(ctx, next, result.ReleaseFunc)
+					if selectErr != nil {
+						return nil, selectErr
+					}
+					if sessionHash != "" && !gatewayProfitControlGateActive(ctx) {
+						_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, next.ID, s.openAIWSSessionStickyTTL())
+					}
+					return selection, nil
+				}
+			}
+		}
 		return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
 			AccountID:      account.ID,
 			MaxConcurrency: account.Concurrency,
@@ -1058,6 +1076,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 	executionNodePolicy := resolveExecutionNodeRoutingPolicy(ctx, s.cfg, s.settingService)
 	baseCandidateCount := 0
+	hasTakeoverCandidates := false
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1084,6 +1103,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 		baseCandidateCount++
 		candidates = append(candidates, acc)
+		hasTakeoverCandidates = hasTakeoverCandidates || executionNodePolicy.nodeRequiresTakeover(executionNodePolicy.nodeID(acc))
 	}
 
 	if len(candidates) == 0 {
@@ -1114,7 +1134,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
-			if loadInfo.LoadRate < 100 {
+			if loadInfo.LoadRate < 100 || (hasTakeoverCandidates && !executionNodePolicy.nodeRequiresTakeover(executionNodePolicy.nodeID(acc))) {
 				available = append(available, accountWithLoad{
 					account:  acc,
 					loadInfo: loadInfo,

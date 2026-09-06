@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -76,6 +78,65 @@ type OpenAIWSStateStore interface {
 	MarkSessionInvalidEncryptedContent(groupID, accountID int64, sessionHash string, digests []string, ttl time.Duration)
 	GetSessionInvalidEncryptedContentDigests(groupID, accountID int64, sessionHash string) map[string]struct{}
 	HasAnySessionInvalidEncryptedContent() bool
+}
+
+// Keep account routing (including existing Redis response pins) unchanged while
+// partitioning connection-local state before it reaches the backing store.
+type ownedOpenAIWSStateStore struct {
+	OpenAIWSStateStore
+	owner openAIWSOwnership
+}
+
+func (s *OpenAIGatewayService) ownedOpenAIWSStateStore(c *gin.Context, account *Account) OpenAIWSStateStore {
+	store := s.getOpenAIWSStateStore()
+	if store == nil {
+		return nil
+	}
+	return &ownedOpenAIWSStateStore{store, openAIWSOwnershipForRequest(c, account)}
+}
+
+func (s *ownedOpenAIWSStateStore) BindResponseConn(responseID, connID string, ttl time.Duration) {
+	s.OpenAIWSStateStore.BindResponseConn(s.owner.responseKey(responseID), connID, ttl)
+}
+
+func (s *ownedOpenAIWSStateStore) GetResponseConn(responseID string) (string, bool) {
+	return s.OpenAIWSStateStore.GetResponseConn(s.owner.responseKey(responseID))
+}
+
+func (s *ownedOpenAIWSStateStore) DeleteResponseConn(responseID string) {
+	s.OpenAIWSStateStore.DeleteResponseConn(s.owner.responseKey(responseID))
+}
+
+func (s *ownedOpenAIWSStateStore) BindSessionTurnState(groupID int64, _ string, state string, ttl time.Duration) {
+	s.OpenAIWSStateStore.BindSessionTurnState(groupID, s.owner.sessionKey(), state, ttl)
+}
+
+func (s *ownedOpenAIWSStateStore) GetSessionTurnState(groupID int64, _ string) (string, bool) {
+	return s.OpenAIWSStateStore.GetSessionTurnState(groupID, s.owner.sessionKey())
+}
+
+func (s *ownedOpenAIWSStateStore) DeleteSessionTurnState(groupID int64, _ string) {
+	s.OpenAIWSStateStore.DeleteSessionTurnState(groupID, s.owner.sessionKey())
+}
+
+func (s *ownedOpenAIWSStateStore) BindSessionConn(groupID int64, _ string, connID string, ttl time.Duration) {
+	s.OpenAIWSStateStore.BindSessionConn(groupID, s.owner.sessionKey(), connID, ttl)
+}
+
+func (s *ownedOpenAIWSStateStore) GetSessionConn(groupID int64, _ string) (string, bool) {
+	return s.OpenAIWSStateStore.GetSessionConn(groupID, s.owner.sessionKey())
+}
+
+func (s *ownedOpenAIWSStateStore) DeleteSessionConn(groupID int64, _ string) {
+	s.OpenAIWSStateStore.DeleteSessionConn(groupID, s.owner.sessionKey())
+}
+
+func (s *ownedOpenAIWSStateStore) MarkSessionInvalidEncryptedContent(groupID, accountID int64, _ string, digests []string, ttl time.Duration) {
+	s.OpenAIWSStateStore.MarkSessionInvalidEncryptedContent(groupID, accountID, s.owner.sessionKey(), digests, ttl)
+}
+
+func (s *ownedOpenAIWSStateStore) GetSessionInvalidEncryptedContentDigests(groupID, accountID int64, _ string) map[string]struct{} {
+	return s.OpenAIWSStateStore.GetSessionInvalidEncryptedContentDigests(groupID, accountID, s.owner.sessionKey())
 }
 
 type defaultOpenAIWSStateStore struct {

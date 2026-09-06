@@ -40,14 +40,14 @@ type InactiveUserCleanupRepository interface {
 	ListInactiveUserCandidates(ctx context.Context, cutoff time.Time, limit int) ([]InactiveUserCandidate, error)
 	CancelReactivated(ctx context.Context, cutoff time.Time) (int64, error)
 	ClaimReminder(ctx context.Context, candidate InactiveUserCandidate, now, deleteAfter time.Time) (bool, error)
-	MarkReminderSent(ctx context.Context, userID int64, now time.Time) error
-	ReleaseReminderClaim(ctx context.Context, userID int64) error
+	MarkReminderSent(ctx context.Context, candidate InactiveUserCandidate, claimedAt, sentAt, deleteAfter time.Time) error
+	ReleaseReminderClaim(ctx context.Context, candidate InactiveUserCandidate, claimedAt time.Time) error
 	ListDueInactiveUsers(ctx context.Context, now time.Time, limit int) ([]InactiveUserCandidate, error)
 	DeleteState(ctx context.Context, userID int64) error
 }
 
 type inactivityNotificationSender interface {
-	Send(ctx context.Context, input NotificationEmailSendInput) error
+	SendWithReceipt(ctx context.Context, input NotificationEmailSendInput) (time.Time, error)
 }
 
 // InactiveUserDeleter is the narrow deletion contract used by the inactivity
@@ -186,7 +186,7 @@ func (s *InactiveUserCleanupService) sendReminders(ctx context.Context, now, cut
 		// Include the activity snapshot in the source identity. If a user later
 		// becomes active and goes idle again, that new cycle gets a new key.
 		sourceID := fmt.Sprintf("%d:%d", candidate.UserID, candidate.LastActivityAt.UnixNano())
-		err = s.notification.Send(ctx, NotificationEmailSendInput{
+		sentAt, sendErr := s.notification.SendWithReceipt(ctx, NotificationEmailSendInput{
 			Event:          NotificationEmailEventUserInactivityWarning,
 			Locale:         "",
 			RecipientEmail: candidate.Email,
@@ -201,12 +201,18 @@ func (s *InactiveUserCleanupService) sendReminders(ctx context.Context, now, cut
 				"login_url":      loginURLForNotification(s.notification),
 			},
 		})
-		if err != nil {
-			_ = s.cleanupRepo.ReleaseReminderClaim(ctx, candidate.UserID)
-			return fmt.Errorf("send inactivity reminder for user %d: %w", candidate.UserID, err)
+		// Finalize an accepted message even if SMTP outlived the scan timeout or
+		// the secondary delivery receipt failed to persist. Never infer a send
+		// from nil alone: suppressed/in-flight messages do not start the grace.
+		finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if sentAt.IsZero() {
+			err = s.cleanupRepo.ReleaseReminderClaim(finalizeCtx, candidate, now)
+		} else {
+			err = s.cleanupRepo.MarkReminderSent(finalizeCtx, candidate, now, sentAt, sentAt.Add(s.gracePeriod))
 		}
-		if err := s.cleanupRepo.MarkReminderSent(ctx, candidate.UserID, now); err != nil {
-			return fmt.Errorf("mark inactivity reminder sent for user %d: %w", candidate.UserID, err)
+		cancel()
+		if err != nil || sendErr != nil {
+			return fmt.Errorf("finalize inactivity reminder for user %d: %w", candidate.UserID, errors.Join(sendErr, err))
 		}
 	}
 	return nil

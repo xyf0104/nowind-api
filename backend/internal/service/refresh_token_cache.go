@@ -10,6 +10,29 @@ import (
 // This is used to abstract away the underlying cache implementation (e.g., redis.Nil).
 var ErrRefreshTokenNotFound = errors.New("refresh token not found")
 
+// RefreshTokenIssuance is a single-use, DB-issued admission ticket. It is internal
+// metadata, never a client credential. Acquire it BEFORE generating randomness or
+// access/refresh credentials, then pass it unchanged to StoreRefreshToken.
+type RefreshTokenIssuance struct {
+	ID               string
+	UserID           int64
+	UserGeneration   int64
+	GlobalGeneration int64
+}
+
+// RefreshTokenIssuancePreparer is optional and separate from RefreshTokenCache.
+// Persistent stores require preparation; existing Redis implementations do not.
+// A missing/stale ticket must not trigger automatic preparation inside Store.
+type RefreshTokenIssuancePreparer interface {
+	PrepareRefreshTokenIssuance(ctx context.Context, userID int64) (*RefreshTokenIssuance, error)
+}
+
+// RefreshTokenIssuancePolicy prevents a JWT-only fallback when a transitional
+// store rejects an operation because the cluster changed its authority.
+type RefreshTokenIssuancePolicy interface {
+	RequiresRefreshTokenIssuanceAdmission() bool
+}
+
 // RefreshTokenData 存储在Redis中的Refresh Token数据
 type RefreshTokenData struct {
 	UserID          int64     `json:"user_id"`
@@ -19,6 +42,8 @@ type RefreshTokenData struct {
 	CreatedAt       time.Time `json:"created_at"`
 	ExpiresAt       time.Time `json:"expires_at"`
 	FamilyExpiresAt time.Time `json:"family_expires_at,omitempty"` // 整个登录会话家族的绝对过期时间
+
+	Issuance *RefreshTokenIssuance `json:"-"` // Internal admission only; never serialized or returned by Get/Consume.
 }
 
 // RefreshTokenCache 管理Refresh Token的Redis缓存

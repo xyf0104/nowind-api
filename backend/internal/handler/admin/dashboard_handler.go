@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -707,7 +708,7 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 		return
 	} else {
 		dim.ExecutionNodeID = nodeID
-		dim.ExecutionNodeLegacyID = "api"
+		dim.ExecutionNodeLegacyID = middleware.ExecutionNodeLegacyID(c.Request.Context())
 	}
 	if v := strings.TrimSpace(c.Query("request_type")); v != "" {
 		parsed, err := service.ParseUsageRequestType(v)

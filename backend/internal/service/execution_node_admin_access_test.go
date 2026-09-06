@@ -123,3 +123,28 @@ func TestExecutionNodeAdminWriteAccessFailsClosedWhenHeartbeatUnknown(t *testing
 	require.False(t, allowed)
 	require.Equal(t, "secondary_read_only", mode)
 }
+
+type executionNodeAdminAccessSettingsError struct {
+	SettingRepository
+	err error
+}
+
+func (r executionNodeAdminAccessSettingsError) GetValue(context.Context, string) (string, error) {
+	return "", r.err
+}
+
+func TestExecutionNodeAdminWriteAccessDoesNotTreatPolicyReadErrorAsPermission(t *testing.T) {
+	svc := executionNodeAdminAccessService("api2", false, "false")
+	svc.settingRepo = executionNodeAdminAccessSettingsError{SettingRepository: svc.settingRepo, err: errors.New("database read unavailable")}
+	allowed, mode := svc.ExecutionNodeAdminWriteAccess(context.Background())
+	require.False(t, allowed, "the local deployment default true cannot override an unreadable shared choice")
+	require.Equal(t, "secondary_read_only", mode)
+}
+
+func TestExecutionNodeAdminWriteAccessRetainsExplicitLegacyConfigFallback(t *testing.T) {
+	svc := executionNodeAdminAccessService("api2", false, "true")
+	svc.settingRepo = executionNodeAdminAccessSettingsError{SettingRepository: svc.settingRepo, err: ErrSettingNotFound}
+	allowed, mode := svc.ExecutionNodeAdminWriteAccess(context.Background())
+	require.True(t, allowed, "only a missing setting may retain the explicit deployment choice")
+	require.Equal(t, "emergency_takeover", mode)
+}

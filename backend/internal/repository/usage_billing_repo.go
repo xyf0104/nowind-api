@@ -34,6 +34,12 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		// lib/pq sends BEGIN READ WRITE; a promoting standby rejects it with
+		// 0A000. Scope recovery to BEGIN, not arbitrary unsupported statements.
+		var state interface{ SQLState() string }
+		if errors.As(err, &state) && state.SQLState() == "0A000" {
+			return nil, errors.Join(service.ErrUsageBillingPrimaryUnavailable, err)
+		}
 		return nil, err
 	}
 	defer func() {

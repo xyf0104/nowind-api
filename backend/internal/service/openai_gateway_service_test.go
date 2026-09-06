@@ -59,7 +59,7 @@ func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, u
 	return nil
 }
 
-func (r *snapshotUpdateAccountRepo) UpdateOpenAICodexSnapshot(_ context.Context, _ int64, updates map[string]any) (bool, error) {
+func (r *snapshotUpdateAccountRepo) UpdateOpenAICodexSnapshotIfIdentityMatches(_ context.Context, _ *Account, updates map[string]any) (bool, error) {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
 		for k, v := range updates {
@@ -2964,7 +2964,7 @@ func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 	headers.Set("x-codex-primary-reset-after-seconds", "600")
 	headers.Set("x-codex-secondary-reset-after-seconds", "86400")
 
-	svc.UpdateCodexUsageSnapshotFromHeaders(context.Background(), 123, headers)
+	svc.UpdateCodexUsageSnapshotFromHeaders(context.Background(), &Account{ID: 123, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, headers)
 
 	select {
 	case updates := <-repo.updateExtraCalls:

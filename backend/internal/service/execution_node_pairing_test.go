@@ -321,7 +321,24 @@ func TestAuthoritativePairingPublishesTargetURLAndFixedEgressMapping(t *testing.
 	var proxyIDs map[string]int64
 	require.NoError(t, json.Unmarshal([]byte(sourceRepo.values[SettingKeyExecutionNodeProxyIDs]), &proxyIDs))
 	require.Equal(t, map[string]int64{"primary-us": 84, "edge-jp": 100}, proxyIDs)
-	require.Equal(t, "true", sourceRepo.values[executionNodeEmergencyEgressSettingKey("edge-jp")])
+	require.NotContains(t, sourceRepo.values, executionNodeEmergencyEgressSettingKey("edge-jp"), "pairing cannot enable offline takeover")
+}
+
+func TestExecutionNodePairingDoesNotWriteTakeoverPermissions(t *testing.T) {
+	source, repo := newExecutionNodePairingService("primary", "db", "redis")
+	source.cfg.Gateway.ExecutionNode.DefaultProxyID = 84
+	source.cfg.Gateway.ExecutionNode.EmergencyLocalEgress = true
+	for _, value := range []string{"true", "false"} {
+		for _, node := range []string{"primary", "secondary"} {
+			repo.values[executionNodeEmergencyEgressSettingKey(node)] = value
+		}
+		updates, err := source.executionNodePairingRoutingSettings(context.Background(), "secondary", 100)
+		require.NoError(t, err)
+		for _, node := range []string{"primary", "secondary"} {
+			require.NotContains(t, updates, executionNodeEmergencyEgressSettingKey(node))
+			require.Equal(t, value, repo.values[executionNodeEmergencyEgressSettingKey(node)])
+		}
+	}
 }
 
 func TestExecutionNodePairingRoutingPreservesExplicitZeroWeight(t *testing.T) {
@@ -378,6 +395,7 @@ func TestAuthoritativePairingReturnsEncryptedJoinBundleToTargetApplier(t *testin
 	require.Equal(t, "postgres", recorder.join.DatabaseHost)
 	require.Equal(t, "db-secret", recorder.join.DatabasePass)
 	require.Equal(t, "redis-secret", recorder.join.RedisPassword)
+	require.Equal(t, "redis", recorder.join.JWTRefreshTokenStore)
 	require.NotEmpty(t, recorder.join.TunnelProof)
 
 	stored, err := sourceRepo.GetValue(context.Background(), executionNodePairingPeerKey("api"))
@@ -387,6 +405,81 @@ func TestAuthoritativePairingReturnsEncryptedJoinBundleToTargetApplier(t *testin
 	require.NoError(t, json.Unmarshal([]byte(stored), &peer))
 	require.False(t, peer.Ready)
 	require.Equal(t, pairingTokenHash(recorder.join.TunnelProof), peer.TunnelProofHash)
+}
+
+func TestAuthoritativePairingPreservesPostgresRefreshAuthority(t *testing.T) {
+	source, repo := newExecutionNodePairingService("api", "source-db", "source-redis")
+	source.cfg.Database = config.DatabaseConfig{Host: "postgres", Port: 5432}
+	source.cfg.Redis = config.RedisConfig{Host: "redis", Port: 6379}
+	source.cfg.Totp.EncryptionKeyConfigured = true
+	source.cfg.JWT.RefreshTokenStore = "postgres"
+	target, _ := newExecutionNodePairingService("api2", "target-db", "target-redis")
+	recorder := &executionNodeJoinApplierRecorder{}
+	target.SetExecutionNodeJoinApplier(recorder)
+	invite, err := source.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	server := httptest.NewServer(setupExecutionNodePairingHTTPRouter(source))
+	defer server.Close()
+	status, err := target.PairExecutionNodeWithTarget(context.Background(), server.URL, invite.Token, "api2", "http://127.0.0.1:18082")
+	require.NoError(t, err)
+	require.True(t, status.Paired)
+	require.False(t, status.ProductionReady, "the host must still validate the actual shared runtime")
+	require.Equal(t, "postgres", recorder.join.JWTRefreshTokenStore)
+	stored := repo.values[executionNodePairingPeerKey("api")]
+	require.NotContains(t, stored, source.cfg.JWT.Secret)
+	require.NotContains(t, stored, source.cfg.Totp.EncryptionKey)
+}
+
+func TestAuthoritativePairingRejectsOldTargetBeforeConsumingInvite(t *testing.T) {
+	source, repo := newExecutionNodePairingService("api", "source-db", "source-redis")
+	source.cfg.Database = config.DatabaseConfig{Host: "postgres", Port: 5432}
+	source.cfg.Redis = config.RedisConfig{Host: "redis", Port: 6379}
+	source.cfg.Totp.EncryptionKeyConfigured = true
+	source.cfg.JWT.RefreshTokenStore = "postgres"
+	proxies := &executionNodePairingProxyRepo{proxies: map[int64]Proxy{}, nextID: 10}
+	source.SetProxyRepository(proxies)
+	invite, err := source.GenerateExecutionNodePairingInvite(context.Background())
+	require.NoError(t, err)
+	before := repo.values[SettingKeyExecutionNodePairingInvite]
+	_, err = source.AcceptExecutionNodePairingHandshake(context.Background(), invite.Token, &ExecutionNodePairingHandshakeRequest{
+		NodeID: "api2", ProtocolVersion: executionNodePairingProtocolVersion, PeerURL: "http://127.0.0.1:18082",
+	})
+	require.Equal(t, "EXECUTION_NODE_PAIRING_VERSION_MISMATCH", infraerrors.Reason(err))
+	require.Equal(t, before, repo.values[SettingKeyExecutionNodePairingInvite])
+	require.NotContains(t, repo.values, executionNodePairingPeerKey("api"))
+	require.Empty(t, proxies.proxies)
+}
+
+func TestExecutionNodeJoinBundleRefreshAuthorityCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version int
+		store   string
+		want    string
+	}{
+		{"old source", 1, "", "redis"},
+		{"explicit Redis", 1, "redis", "redis"},
+		{"persistent source", 2, "postgres", "postgres"},
+		{"v1 cannot select persistent", 1, "postgres", ""},
+		{"v2 requires explicit persistent", 2, "", ""},
+		{"v2 cannot downgrade", 2, "redis", ""},
+		{"unknown storage", 2, "unsafe", ""},
+		{"unknown version", 3, "postgres", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := executionNodeJoinBundle{Version: tc.version, SourceNodeID: "api", TargetNodeID: "api2",
+				TunnelProof: strings.Repeat("a", 64), JWTRefreshTokenStore: tc.store}
+			wire, err := encryptExecutionNodeJoinBundle("invite", "api2", bundle)
+			require.NoError(t, err)
+			got, err := decryptExecutionNodeJoinBundle("invite", "api2", wire)
+			if tc.want == "" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got.JWTRefreshTokenStore)
+		})
+	}
 }
 
 func setupExecutionNodePairingHTTPRouter(svc *SettingService) http.Handler {

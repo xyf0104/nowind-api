@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -23,7 +24,10 @@ func (s *SettingService) ExecutionNodeAdminWriteAccess(ctx context.Context) (boo
 	if primaryNodeID == "" {
 		primaryNodeID = "api"
 	}
-	if localNodeID == "" || localNodeID == primaryNodeID {
+	if !validExecutionNodeID(localNodeID) || !validExecutionNodeID(primaryNodeID) {
+		return false, "secondary_read_only"
+	}
+	if localNodeID == primaryNodeID {
 		return true, "primary"
 	}
 
@@ -42,21 +46,28 @@ func (s *SettingService) ExecutionNodeAdminWriteAccess(ctx context.Context) (boo
 		return false, "secondary_read_only"
 	}
 
-	takeover := s.cfg.Gateway.ExecutionNode.EmergencyLocalEgress
-	if key := executionNodeEmergencyEgressSettingKey(localNodeID); key != "" {
-		raw, readErr := s.settingRepo.GetValue(ctx, key)
-		if readErr == nil {
-			parsed, parseErr := decodeExecutionNodeEmergencyEgress(raw, takeover)
-			if parseErr != nil {
-				return false, "secondary_read_only"
-			}
-			takeover = parsed
-		}
-	}
-	if takeover {
+	takeover, err := s.executionNodeTakeoverPermission(ctx)
+	if err == nil && takeover {
 		return true, "emergency_takeover"
 	}
 	return false, "secondary_read_only"
+}
+
+// Administrative takeover needs a current permission read, not the scheduler's
+// availability-oriented last-known policy fallback.
+func (s *SettingService) executionNodeTakeoverPermission(ctx context.Context) (bool, error) {
+	if s == nil || s.cfg == nil || s.settingRepo == nil {
+		return false, errors.New("execution-node takeover policy is unavailable")
+	}
+	key := executionNodeEmergencyEgressSettingKey(s.cfg.Gateway.ExecutionNode.ID)
+	if key == "" {
+		return false, errors.New("execution-node identity is unavailable")
+	}
+	raw, err := s.settingRepo.GetValue(ctx, key)
+	if err != nil && !errors.Is(err, ErrSettingNotFound) {
+		return false, err
+	}
+	return decodeExecutionNodeEmergencyEgress(raw, s.cfg.Gateway.ExecutionNode.EmergencyLocalEgress)
 }
 
 func (s *SettingService) CanWriteSharedAdminState(ctx context.Context) bool {

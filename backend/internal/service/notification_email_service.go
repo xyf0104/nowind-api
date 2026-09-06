@@ -380,22 +380,30 @@ func (s *NotificationEmailService) PreviewTemplate(ctx context.Context, input No
 }
 
 func (s *NotificationEmailService) Send(ctx context.Context, input NotificationEmailSendInput) error {
+	_, err := s.SendWithReceipt(ctx, input)
+	return err
+}
+
+// SendWithReceipt returns the SMTP acceptance time, including a durable prior
+// delivery on retry. A nil error with a zero timestamp means no confirmed send.
+// A nonzero timestamp can accompany a persistence error after SMTP succeeded.
+func (s *NotificationEmailService) SendWithReceipt(ctx context.Context, input NotificationEmailSendInput) (time.Time, error) {
 	info, normalizedEvent, err := s.eventInfo(input.Event)
 	if err != nil {
-		return notificationEmailTemplateErr(err)
+		return time.Time{}, notificationEmailTemplateErr(err)
 	}
 	recipient := strings.TrimSpace(input.RecipientEmail)
 	if recipient == "" {
-		return nil
+		return time.Time{}, nil
 	}
 	if info.Optional {
 		unsubscribed, err := s.IsUnsubscribed(ctx, recipient, normalizedEvent)
 		if err != nil {
-			return err
+			return time.Time{}, err
 		}
 		if unsubscribed {
 			slog.Info("notification email suppressed by unsubscribe preference", "event", normalizedEvent, "recipient_hash", notificationEmailHash(recipient))
-			return nil
+			return time.Time{}, nil
 		}
 	}
 
@@ -405,37 +413,42 @@ func (s *NotificationEmailService) Send(ctx context.Context, input NotificationE
 	}
 	tmpl, err := s.GetTemplate(ctx, normalizedEvent, locale)
 	if err != nil {
-		return notificationEmailTemplateErr(err)
+		return time.Time{}, notificationEmailTemplateErr(err)
 	}
 	variables := s.runtimeVariables(ctx, normalizedEvent, locale, input)
 	rendered, err := renderNotificationEmail(normalizedEvent, tmpl.Subject, tmpl.HTML, variables, input.RawHTMLVariables)
 	if err != nil {
-		return notificationEmailTemplateErr(err)
+		return time.Time{}, notificationEmailTemplateErr(err)
 	}
 
 	deliveryKey := notificationEmailDeliveryKey(normalizedEvent, input.SourceType, input.SourceID, recipient, input.ReminderKey)
 	if deliveryKey != "" {
-		sent, err := s.deliveryExists(ctx, deliveryKey, legacyNotificationEmailDeliveryKey(normalizedEvent, input.SourceType, input.SourceID, recipient, input.ReminderKey))
+		sentAt, exists, err := s.deliveryReceipt(ctx, deliveryKey, legacyNotificationEmailDeliveryKey(normalizedEvent, input.SourceType, input.SourceID, recipient, input.ReminderKey))
 		if err != nil {
-			return err
+			return time.Time{}, err
 		}
-		if sent {
-			return nil
+		if exists {
+			return sentAt, nil
 		}
 	}
 
 	if s.emailService == nil {
-		return notificationEmailConfigErr(errors.New("email service is not configured"))
+		return time.Time{}, notificationEmailConfigErr(errors.New("email service is not configured"))
 	}
 	if err := s.emailService.SendEmail(ctx, recipient, rendered.Subject, rendered.HTML); err != nil {
-		return notificationEmailDeliveryErr(err)
+		return time.Time{}, notificationEmailDeliveryErr(err)
 	}
+	sentAt := time.Now().UTC()
 	if deliveryKey != "" {
-		if err := s.settingRepo.Set(ctx, deliveryKey, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return err
+		// SMTP does not share the request's cancellation. Preserve its receipt
+		// even when the caller's scan timed out while the server was accepting it.
+		receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.settingRepo.Set(receiptCtx, deliveryKey, sentAt.Format(time.RFC3339Nano)); err != nil {
+			return sentAt, err
 		}
 	}
-	return nil
+	return sentAt, nil
 }
 
 // CheckDelivery verifies that a notification sender has a usable SMTP
@@ -707,20 +720,26 @@ func (s *NotificationEmailService) unsubscribeSecret(ctx context.Context) (strin
 	return secret, nil
 }
 
-func (s *NotificationEmailService) deliveryExists(ctx context.Context, keys ...string) (bool, error) {
+func (s *NotificationEmailService) deliveryReceipt(ctx context.Context, keys ...string) (time.Time, bool, error) {
 	for _, key := range keys {
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		_, err := s.settingRepo.GetValue(ctx, key)
+		value, err := s.settingRepo.GetValue(ctx, key)
 		if err == nil {
-			return true, nil
+			// Legacy/non-receipt markers still suppress duplicate email, but may
+			// never authorize a destructive workflow as a confirmed delivery.
+			sentAt, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+			if parseErr != nil {
+				return time.Time{}, true, nil
+			}
+			return sentAt.UTC(), true, nil
 		}
 		if !errors.Is(err, ErrSettingNotFound) {
-			return false, err
+			return time.Time{}, false, err
 		}
 	}
-	return false, nil
+	return time.Time{}, false, nil
 }
 
 func validateNotificationEmailTemplate(event, subject, htmlBody string) error {

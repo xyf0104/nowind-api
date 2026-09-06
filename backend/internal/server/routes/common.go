@@ -50,6 +50,7 @@ func RegisterCommonRoutes(r *gin.Engine, db *sql.DB, redisClient *redis.Client, 
 	if cfg != nil && cfg.Gateway.ExecutionNode.Enabled {
 		nodeID = strings.TrimSpace(cfg.Gateway.ExecutionNode.ID)
 	}
+	checkPrimary := cfg != nil && cfg.Gateway.ExecutionNode.Enabled
 	registerReadinessRoute(r, []readinessProbe{
 		{
 			name: "postgres",
@@ -57,7 +58,10 @@ func RegisterCommonRoutes(r *gin.Engine, db *sql.DB, redisClient *redis.Client, 
 				if db == nil {
 					return errors.New("database is not configured")
 				}
-				return db.PingContext(ctx)
+				if !checkPrimary {
+					return db.PingContext(ctx)
+				}
+				return checkWritablePostgres(ctx, db)
 			},
 		},
 		{
@@ -66,7 +70,10 @@ func RegisterCommonRoutes(r *gin.Engine, db *sql.DB, redisClient *redis.Client, 
 				if redisClient == nil {
 					return errors.New("redis is not configured")
 				}
-				return redisClient.Ping(ctx).Err()
+				if !checkPrimary {
+					return redisClient.Ping(ctx).Err()
+				}
+				return checkWritableRedis(ctx, redisClient)
 			},
 		},
 		{
@@ -93,6 +100,33 @@ func RegisterCommonRoutes(r *gin.Engine, db *sql.DB, redisClient *redis.Client, 
 			},
 		})
 	})
+}
+
+// A reachable replica cannot serve billing or session writes. These probes
+// reject standby connections; they do not replace external primary fencing.
+func checkWritablePostgres(ctx context.Context, db *sql.DB) error {
+	var writable bool
+	err := db.QueryRowContext(ctx, `
+		SELECT NOT pg_is_in_recovery() AND current_setting('transaction_read_only') = 'off'
+	`).Scan(&writable)
+	if err != nil {
+		return err
+	}
+	if !writable {
+		return errors.New("database is read-only")
+	}
+	return nil
+}
+
+func checkWritableRedis(ctx context.Context, client *redis.Client) error {
+	role, err := client.Do(ctx, "ROLE").Slice()
+	if err != nil {
+		return err
+	}
+	if len(role) == 0 || role[0] != "master" {
+		return errors.New("redis is not a writable primary")
+	}
+	return nil
 }
 
 func checkExecutionNodeReadiness(ctx context.Context, db *sql.DB, redisClient *redis.Client, cfg *config.Config) error {

@@ -13,21 +13,38 @@ manifest (`models[].slug`) so newly enabled, account-specific models such as
 `gpt-6-astra` can be selected; the helper also supplies this model when the
 configured XIASS deployment is an older catalog that has not listed it yet.
 Ordinary compatible APIs remain authoritative for their own `data[].id` list.
-After a configuration is applied, the helper writes a sanitized local model
-catalog containing only model metadata and IDs, then points Codex at it with
-`model_catalog_json`. API keys, tokens, provider URLs, and account data are
-never written to that catalog. Providers without a model catalog can still use
-manually entered model names. The catalog remains on the local machine and is
-included in the configuration backup.
+The picker exchanges IDs only. The helper separately keeps the validated full
+manifest, including model instructions, reasoning levels and future capability
+fields, in a bounded five-minute memory cache scoped to the Base URL and key.
+Applying a configuration writes these descriptors to a local `model_catalog_json`;
+templates never travel through the browser callback. Connection credentials,
+provider URLs and account data are rejected from descriptors, and the current
+API key is checked before any catalog is written.
+
+For ID-only or incomplete descriptors, the helper can fill missing metadata from
+an exact-name match in the selected Codex home's regular, bounded
+`models_cache.json`, provided it contains validated native model messages. The
+cache is read-only and does not add models to the provider's picker. Downloaded
+fields take precedence. Unknown custom IDs receive explicitly labeled fallback
+metadata. If a known native model still lacks a complete descriptor, the helper
+omits the local catalog override and reports this in the result, leaving Codex
+to resolve its own native catalog. Custom-only picker entries may then be
+unavailable until complete metadata is obtained. Local catalogs remain covered
+by the existing configuration backup and rollback flow.
 
 The existing helper compatibility behavior is retained: `web_search = "live"`
 is written for every managed provider configuration, known GPT/Codex models
-keep their image input and built-in search capabilities, and the built-in
-`gpt-image-2` model keeps its image capability metadata. Custom API providers
+keep their declared image input and built-in search capabilities. Astra, Sol,
+Terra and Luna use full Responses (`use_responses_lite = false`) for compatible
+provider web tools without replacing their instructions. Catalog entries remain
+API-enabled for the selected provider, even when native first-party API
+eligibility differs (such as OAuth-only Spark). Custom API providers
 are not given XIASS-only models unless that model is actually returned by the
 configured API.
 
-The helper configures only the default session model. It deliberately omits
+Explicit context and compaction settings remain independent of catalog metadata;
+the helper does not select reasoning effort and preserves existing reasoning
+settings. It configures only the default session model. It deliberately omits
 `review_model`, including when an older website or config sends that field, so
 Codex keeps its official default review behavior.
 
@@ -55,9 +72,9 @@ Before applying a configuration, the helper:
    Provider metadata in normal and archived rollouts plus compatible
    `threads.model_provider` columns is synchronized to the active provider so
    every conversation remains visible after switching providers.
-8. Writes and verifies a local Codex model catalog for the models returned by
-the selected API, with a local compatibility entry for XIASS `gpt-6-astra`.
-The catalog is backed up and rolled back together with `config.toml`, and it
+8. Writes and verifies a local Codex model catalog when complete descriptors
+are available, with the native-resolution fallback described above. The
+catalog is backed up and rolled back together with `config.toml`, and it
 never contains the API key.
 9. When the configured default model changes, compatible `threads.model`
 columns are synchronized so existing regular conversations can use newly

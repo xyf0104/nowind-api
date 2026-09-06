@@ -15,6 +15,7 @@ func TestXIASSModelCatalogAddsGPT6WithoutCredentials(t *testing.T) {
 		"https://xiass.example/v1",
 		"gpt-6-astra",
 		[]string{"gpt-5.6-sol", "gpt-5.6-luna"},
+		syntheticNativeDescriptors(t),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +59,7 @@ func TestGenericModelCatalogKeepsReturnedGPT6(t *testing.T) {
 		"https://relay.example.com/v1",
 		"gpt-6-astra",
 		[]string{"gpt-6-astra", "relay-fast"},
+		syntheticNativeDescriptors(t),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +93,7 @@ func TestGeneratedModelCatalogLoadsInInstalledCodex(t *testing.T) {
 		defaultXIASSAPIURL+"/v1",
 		"gpt-6-astra",
 		[]string{"gpt-5.6-sol", "gpt-6-astra"},
+		syntheticNativeDescriptors(t),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -100,10 +103,12 @@ func TestGeneratedModelCatalogLoadsInInstalledCodex(t *testing.T) {
 	}
 	configValue := `model_catalog_json="` + escapeTOML(catalogPath) + `"`
 	command := exec.Command(binary, "debug", "-c", configValue, "models")
-	command.Env = append(os.Environ(), "CODEX_HOME="+home)
-	output, err := command.CombinedOutput()
+	command.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "CODEX_HOME=" + home, "TMPDIR=" + home,
+		"HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1"}
+	// Startup warnings belong to stderr, not the JSON parser input.
+	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("installed Codex rejected generated catalog: %v\n%s", err, output)
+		t.Fatal("installed Codex rejected generated catalog; output withheld")
 	}
 	var parsed modelCatalogFile
 	if err := json.Unmarshal(output, &parsed); err != nil {

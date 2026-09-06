@@ -1,12 +1,41 @@
 package handler
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestDeriveOpenAIForwardAttemptBody_CompactionStopsCrossModeReplay(t *testing.T) {
+	for _, kind := range []string{"compaction", "compaction_summary"} {
+		for _, suffix := range []string{"", `,{"type":"message","role":"user","content":"continue"}`} {
+			t.Run(fmt.Sprintf("%s/current_user=%v", kind, suffix != ""), func(t *testing.T) {
+				canonical := []byte(fmt.Sprintf(`{"model":"gpt-6-astra","previous_response_id":"resp_pinned","input":[{"type":%q,"encrypted_content":"opaque-history"}%s]}`, kind, suffix))
+				original := append([]byte(nil), canonical...)
+				h := &OpenAIGatewayHandler{}
+				state := &openAIPassthroughFailoverState{}
+				outgoing := 0
+				for _, account := range []*service.Account{newOpenAIPassthroughAccount(771, true), newOpenAIPassthroughAccount(772, false)} {
+					body, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, account, state)
+					if account.ID == 771 {
+						require.NoError(t, err)
+						require.Equal(t, canonical, body)
+						outgoing++
+					} else {
+						require.ErrorIs(t, err, service.ErrOpenAIContextUnavailable)
+						require.Nil(t, body, "handler must not receive a shortened second attempt")
+					}
+				}
+				require.Equal(t, 1, outgoing)
+				require.Equal(t, original, canonical)
+				require.Equal(t, "resp_pinned", gjson.GetBytes(canonical, "previous_response_id").String())
+			})
+		}
+	}
+}
 
 // kiroReasoningCanonicalBody mirrors a native OpenAI Responses request whose input
 // carries a provider-specific encrypted reasoning item (Kiro shape: encrypted_content
@@ -56,7 +85,8 @@ func TestDeriveOpenAIForwardAttemptBody_CrossModeStripsKiroReasoning(t *testing.
 	state := &openAIPassthroughFailoverState{}
 
 	// Attempt 1 — passthrough (Kiro): original reasoning item must survive intact.
-	firstBody := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
+	firstBody, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
+	require.NoError(t, err)
 	require.Equal(t, 1, reasoningItemCount(t, firstBody), "first passthrough attempt must keep the reasoning item")
 	require.Equal(t, "ENC_BLOB", gjson.GetBytes(firstBody, "input.1.encrypted_content").String())
 	require.Equal(t, "rs_kiro_abc123", gjson.GetBytes(firstBody, "input.1.id").String())
@@ -64,7 +94,8 @@ func TestDeriveOpenAIForwardAttemptBody_CrossModeStripsKiroReasoning(t *testing.
 
 	// Attempt 2 — failover switches to non-passthrough (Bedrock): the whole
 	// provider-specific encrypted reasoning item (id/summary/encrypted_content) is dropped.
-	secondBody := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrock, state)
+	secondBody, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrock, state)
+	require.NoError(t, err)
 	require.Equal(t, 0, reasoningItemCount(t, secondBody), "cross-mode attempt must drop the reasoning item entirely")
 	require.False(t, gjson.GetBytes(secondBody, "input.#(encrypted_content)").Exists(), "no encrypted_content may remain")
 	require.NotContains(t, string(secondBody), "rs_kiro_abc123", "coupled reasoning id must be gone")
@@ -89,8 +120,10 @@ func TestDeriveOpenAIForwardAttemptBody_SameModePreservesReasoning(t *testing.T)
 
 	t.Run("non_passthrough_to_non_passthrough", func(t *testing.T) {
 		state := &openAIPassthroughFailoverState{}
-		first := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(10, false), state)
-		second := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(11, false), state)
+		first, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(10, false), state)
+		require.NoError(t, err)
+		second, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(11, false), state)
+		require.NoError(t, err)
 		require.Equal(t, 1, reasoningItemCount(t, first))
 		require.Equal(t, 1, reasoningItemCount(t, second), "Bedrock-family failover must preserve reasoning")
 		require.JSONEq(t, kiroReasoningCanonicalBody, string(second))
@@ -98,24 +131,30 @@ func TestDeriveOpenAIForwardAttemptBody_SameModePreservesReasoning(t *testing.T)
 
 	t.Run("passthrough_to_passthrough", func(t *testing.T) {
 		state := &openAIPassthroughFailoverState{}
-		first := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(20, true), state)
-		second := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(21, true), state)
+		first, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(20, true), state)
+		require.NoError(t, err)
+		second, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(21, true), state)
+		require.NoError(t, err)
 		require.Equal(t, 1, reasoningItemCount(t, first))
 		require.Equal(t, 1, reasoningItemCount(t, second), "Kiro-family failover must preserve reasoning")
 	})
 
 	t.Run("non_passthrough_to_passthrough", func(t *testing.T) {
 		state := &openAIPassthroughFailoverState{}
-		_ = h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(30, false), state)
-		second := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(31, true), state)
+		_, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(30, false), state)
+		require.NoError(t, err)
+		second, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, newOpenAIPassthroughAccount(31, true), state)
+		require.NoError(t, err)
 		require.Equal(t, 1, reasoningItemCount(t, second), "switching into passthrough must preserve reasoning")
 	})
 
 	t.Run("same_account_pool_retry", func(t *testing.T) {
 		state := &openAIPassthroughFailoverState{}
 		kiro := newOpenAIPassthroughAccount(40, true)
-		_ = h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
-		retry := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
+		_, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
+		require.NoError(t, err)
+		retry, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
+		require.NoError(t, err)
 		require.Equal(t, 1, reasoningItemCount(t, retry), "same-account retry must preserve reasoning")
 	})
 }
@@ -133,10 +172,14 @@ func TestDeriveOpenAIForwardAttemptBody_SanitizationSticksAcrossBedrockRetries(t
 	bedrockA := newOpenAIPassthroughAccount(51, false)
 	bedrockB := newOpenAIPassthroughAccount(52, false)
 
-	first := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
-	second := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrockA, state)
-	retry := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrockA, state)
-	nextAccount := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrockB, state)
+	first, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, kiro, state)
+	require.NoError(t, err)
+	second, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrockA, state)
+	require.NoError(t, err)
+	retry, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrockA, state)
+	require.NoError(t, err)
+	nextAccount, err := h.deriveOpenAIForwardAttemptBody(nil, canonical, bedrockB, state)
+	require.NoError(t, err)
 
 	require.Equal(t, 1, reasoningItemCount(t, first))
 	require.Equal(t, 0, reasoningItemCount(t, second))

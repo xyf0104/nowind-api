@@ -131,10 +131,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	canonicalImageIntentBody []byte,
 	reqModel string,
 	attemptImageIntentInvalidated bool,
-	reasoningEffort *string,
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	captureOpenAIRequestOwnership(c, body)
 	upstreamPassthroughModel := ""
 	if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
@@ -368,6 +368,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			}
 			continue
 		}
+		if retryBody, changed, retryErr := normalizeOpenAIOAuthEmptyPreviousResponseIDRetryBody(account, resp.StatusCode, body, probeBody); retryErr != nil {
+			return nil, retryErr
+		} else if changed {
+			body = retryBody
+			continue
+		}
+		if resp.StatusCode == http.StatusBadRequest && extractUpstreamErrorCode(probeBody) == openAIWSFallbackReasonInvalidEncryptedContent && hasOpenAIEncryptedCompactionRaw(body) {
+			WriteOpenAIContextUnavailableResponse(c)
+			return nil, ErrOpenAIContextUnavailable
+		}
 
 		// 透传模式默认保持原样代理；容量错误以及 API-key 上游的瞬时
 		// 5xx 应先触发多账号 failover，且此时尚未写入下游响应。
@@ -387,6 +397,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	serviceTier := extractOpenAIServiceTierFromBody(body)
+	wireModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, wireModel, reqModel)
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, wireModel)
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int
@@ -418,7 +431,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 	if !account.IsShadow() {
 		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+			s.updateCodexUsageSnapshot(ctx, account, snapshot)
 		}
 	}
 
@@ -1673,7 +1686,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return
 		}
 		c.Writer.Header().Set(openAIWSTurnStateHeader, stagedTurnState)
-		s.noteOpenAICodexTurnStateProvenance(c, account)
+		s.noteOpenAICodexTurnStateProvenance(c, account, stagedTurnState)
 	}
 
 	// SSE headers

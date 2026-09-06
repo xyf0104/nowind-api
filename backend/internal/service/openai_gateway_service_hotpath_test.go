@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -139,9 +138,7 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
-	// 合成路径默认 instructions 现按模型填入真实 Codex base prompt（此处 inbound model=gpt-5）。
-	encodedInstr, _ := json.Marshal(defaultCodexSynthInstructions("gpt-5"))
-	expectedBody := fmt.Sprintf(`{"model":"gpt-5","stream":false,"reasoning":{"effort":"none"},"instructions":%s,"input":[{"type":"message","content":[{"type":"input_text","text":"hi","nonce":9007199254740993}]}]}`, string(encodedInstr))
+	expectedBody := `{"model":"gpt-5","stream":false,"reasoning":{"effort":"none"},"input":[{"type":"message","content":[{"type":"input_text","text":"hi","nonce":9007199254740993}]}]}`
 	require.JSONEq(t, expectedBody, string(upstream.lastBody))
 	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.lastBody, "input.0.content.0.nonce").Raw)
 }
@@ -594,7 +591,7 @@ func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryDoesNotDecodeBeforeError(
 	require.Equal(t, "summary_text", gjson.GetBytes(upstream.bodies[1], "input.0.summary.0.type").String())
 }
 
-func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryDropsCompaction(t *testing.T) {
+func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryRefusesCompactionLoss(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
 		responses: []*http.Response{
@@ -632,12 +629,11 @@ func TestOpenAIGatewayService_Forward_HTTPRetryRecoveryDropsCompaction(t *testin
 
 	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":[{"id":"cmp_stale","type":"compaction","encrypted_content":"gAAA"},{"type":"message","content":[{"type":"input_text","text":"hi"}]}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
+	require.ErrorIs(t, err, ErrOpenAIContextUnavailable)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 1)
 	require.Equal(t, "compaction", gjson.GetBytes(upstream.bodies[0], "input.0.type").String())
-	require.Equal(t, "message", gjson.GetBytes(upstream.bodies[1], "input.0.type").String())
-	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.1").Exists())
+	require.Equal(t, OpenAIContextUnavailableCode, gjson.Get(rec.Body.String(), "error.code").String())
 }
 
 func TestOpenAIGatewayService_Forward_CodexSparkRejectsEscapedInputImage(t *testing.T) {
@@ -720,7 +716,7 @@ func TestOpenAIGatewayService_Forward_CodexBridgeInjectionSetsImageBilling(t *te
 	require.Equal(t, "gpt-image-2", result.BillingModel)
 }
 
-func TestOpenAIGatewayService_Forward_HTTPDeletesPreviousResponseIDWhenPresent(t *testing.T) {
+func TestOpenAIGatewayService_Forward_APIKeyHTTPPreservesPreviousResponseIDWhenPresent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -738,6 +734,7 @@ func TestOpenAIGatewayService_Forward_HTTPDeletesPreviousResponseIDWhenPresent(t
 	}
 
 	for _, body := range [][]byte{
+		[]byte(`{"model":"gpt-5","stream":false,"previous_response_id":"resp_previous","input":"hi"}`),
 		[]byte(`{"model":"gpt-5","stream":false,"previous_response_id":"","input":"hi"}`),
 		[]byte(`{"model":"gpt-5","stream":false,"previous_response_id":null,"input":"hi"}`),
 	} {
@@ -757,7 +754,8 @@ func TestOpenAIGatewayService_Forward_HTTPDeletesPreviousResponseIDWhenPresent(t
 		result, err := svc.Forward(context.Background(), c, account, body)
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
+		require.True(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
+		require.Equal(t, gjson.GetBytes(body, "previous_response_id").Raw, gjson.GetBytes(upstream.lastBody, "previous_response_id").Raw)
 	}
 }
 
@@ -928,17 +926,17 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "max",
 		},
 		{
-			name:      "旧模型仍将 max 归一化为 xhigh",
+			name:      "旧模型仍保留显式 max 日志",
 			body:      []byte(`{"reasoning_effort":"max"}`),
 			model:     "gpt-5.5",
 			wantNil:   false,
-			wantValue: "xhigh",
+			wantValue: "max",
 		},
 		{
-			name:    "minimal 归一化为空",
-			body:    []byte(`{"reasoning":{"effort":"minimal"}}`),
-			model:   "gpt-5-high",
-			wantNil: true,
+			name:      "保留显式 minimal 日志",
+			body:      []byte(`{"reasoning":{"effort":"minimal"}}`),
+			model:     "gpt-5-high",
+			wantValue: "minimal",
 		},
 		{
 			name:      "缺失字段时从模型后缀推导",

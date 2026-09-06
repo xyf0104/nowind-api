@@ -1,32 +1,19 @@
 package service
 
 import (
+	"maps"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// A turn-state blob is minted for one upstream account identity. Replaying a
-// known blob on a different account after failover creates a state combination
-// that a direct Codex client cannot produce, so provenance is tracked per API
-// key and original client session.
+// Process-local, expiring snapshots indexed by the exact opaque state's digest.
+// This is not a distributed ownership ledger. Unknown/expired values keep the
+// existing pass-through policy; a later response cannot relabel a known value.
 type openAICodexTurnStateOrigin struct {
-	accountID int64
-	expiresAt time.Time
-}
-
-func openAICodexTurnStateSeed(c *gin.Context) string {
-	if c == nil || c.Request == nil {
-		return ""
-	}
-	sessionID := extractClientSessionID(c.Request.Header)
-	if sessionID == "" {
-		return ""
-	}
-	return strconv.FormatInt(getAPIKeyIDFromContext(c), 10) + "\x00" + sessionID
+	owners map[openAIWSOwnership]time.Time
 }
 
 // relayOpenAICodexTurnState publishes the state from the selected upstream
@@ -42,7 +29,7 @@ func (s *OpenAIGatewayService) relayOpenAICodexTurnState(c *gin.Context, account
 		return
 	}
 	c.Writer.Header().Set(canonical, state)
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	s.noteOpenAICodexTurnStateProvenance(c, account, state)
 }
 
 func stageOpenAICodexTurnState(dst *http.Header, upstream http.Header) {
@@ -67,7 +54,7 @@ func (s *OpenAIGatewayService) noteStagedOpenAICodexTurnStateCommitted(c *gin.Co
 	if staged == nil || strings.TrimSpace(staged.Get(openAIWSTurnStateHeader)) == "" {
 		return
 	}
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	s.noteOpenAICodexTurnStateProvenance(c, account, extractOpenAICodexTurnState(staged))
 }
 
 func extractOpenAICodexTurnState(upstream http.Header) string {
@@ -91,48 +78,74 @@ func openAIHeaderValueEqualFold(headers http.Header, name string) string {
 	return ""
 }
 
-func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account) {
+func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account, state string) {
 	if s == nil || account == nil || account.ID <= 0 {
 		return
 	}
-	seed := openAICodexTurnStateSeed(c)
-	if seed == "" {
+	state = strings.TrimSpace(state)
+	if state == "" || c == nil {
 		return
 	}
-	s.openaiCodexTurnStateOrigins.Store(seed, openAICodexTurnStateOrigin{
-		accountID: account.ID,
-		expiresAt: time.Now().Add(s.openAIWSSessionStickyTTL()),
-	})
+	key := openAIOwnershipDigest("turn-state-v1", state)
+	owner := openAIWSOwnershipForRequest(c, account)
+	now := time.Now()
+	for {
+		fresh := &openAICodexTurnStateOrigin{owners: map[openAIWSOwnership]time.Time{owner: now.Add(s.openAIWSSessionStickyTTL())}}
+		raw, loaded := s.openaiCodexTurnStateOrigins.LoadOrStore(key, fresh)
+		if !loaded {
+			break
+		}
+		previous, ok := raw.(*openAICodexTurnStateOrigin)
+		if !ok {
+			s.openaiCodexTurnStateOrigins.Delete(key)
+			continue
+		}
+		next := &openAICodexTurnStateOrigin{owners: maps.Clone(previous.owners)}
+		for scope, expiresAt := range next.owners {
+			if !now.Before(expiresAt) {
+				delete(next.owners, scope)
+			}
+		}
+		// An upstream may legitimately return the same opaque value to multiple
+		// owners. Record explicit grants without allowing unbounded per-value maps.
+		if _, exists := next.owners[owner]; exists || len(next.owners) < 256 {
+			next.owners[owner] = fresh.owners[owner]
+		}
+		if s.openaiCodexTurnStateOrigins.CompareAndSwap(key, previous, next) {
+			break
+		}
+	}
 	s.sweepOpenAICodexTurnStateOrigins()
 }
 
 // guardOpenAICodexTurnStateEcho strips a client-returned turn state only when
-// it is known to have been minted by another account. Unknown and same-account
-// values remain untouched.
+// it is known but has no grant for this exact client/conversation/upstream.
+// Unknown values remain untouched for externally established sessions.
 func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, account *Account, h http.Header) {
 	if s == nil || h == nil || account == nil || openAIHeaderValueEqualFold(h, openAIWSTurnStateHeader) == "" {
 		return
 	}
-	seed := openAICodexTurnStateSeed(c)
-	if seed == "" {
-		return
-	}
-	raw, ok := s.openaiCodexTurnStateOrigins.Load(seed)
+	key := openAIOwnershipDigest("turn-state-v1", openAIHeaderValueEqualFold(h, openAIWSTurnStateHeader))
+	raw, ok := s.openaiCodexTurnStateOrigins.Load(key)
 	if !ok {
 		return
 	}
-	origin, ok := raw.(openAICodexTurnStateOrigin)
+	origin, ok := raw.(*openAICodexTurnStateOrigin)
 	if !ok {
-		s.openaiCodexTurnStateOrigins.Delete(seed)
+		s.openaiCodexTurnStateOrigins.Delete(key)
 		return
 	}
-	if !origin.expiresAt.IsZero() && time.Now().After(origin.expiresAt) {
-		s.openaiCodexTurnStateOrigins.Delete(seed)
+	now := time.Now()
+	if expiresAt := origin.owners[openAIWSOwnershipForRequest(c, account)]; now.Before(expiresAt) {
 		return
 	}
-	if origin.accountID != account.ID {
-		deleteOpenAIHeaderEqualFold(h, openAIWSTurnStateHeader)
+	for _, expiresAt := range origin.owners {
+		if now.Before(expiresAt) {
+			deleteOpenAIHeaderEqualFold(h, openAIWSTurnStateHeader)
+			return
+		}
 	}
+	s.openaiCodexTurnStateOrigins.CompareAndDelete(key, origin)
 }
 
 func (s *OpenAIGatewayService) sweepOpenAICodexTurnStateOrigins() {
@@ -140,9 +153,18 @@ func (s *OpenAIGatewayService) sweepOpenAICodexTurnStateOrigins() {
 		return
 	}
 	now := time.Now()
+	retained := 0
 	s.openaiCodexTurnStateOrigins.Range(func(key, value any) bool {
-		origin, ok := value.(openAICodexTurnStateOrigin)
-		if !ok || (!origin.expiresAt.IsZero() && now.After(origin.expiresAt)) {
+		origin, ok := value.(*openAICodexTurnStateOrigin)
+		if ok {
+			for _, expiresAt := range origin.owners {
+				if now.Before(expiresAt) && retained < openAIWSStateStoreMaxEntriesPerMap {
+					retained++
+					return true
+				}
+			}
+			s.openaiCodexTurnStateOrigins.CompareAndDelete(key, origin)
+		} else {
 			s.openaiCodexTurnStateOrigins.Delete(key)
 		}
 		return true
