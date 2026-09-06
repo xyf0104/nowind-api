@@ -8,10 +8,12 @@ RUNTIME_SCRIPT="$ROOT/xiass-cluster-runtime.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 run_fixture() {
-    local flow="$1" scenario="$2" fixture="$3"
-    local script="$RUNTIME_SCRIPT" fixture_switches=0
-    local INSTALL_DIR="$fixture/install" BACKUP_DIR="$fixture/backups"
-    local deploy="$INSTALL_DIR/deploy" expected_files=() expected_project=paired-existing
+    # Each fixture has its own process. Keep mock state alive for EXIT rollback:
+    # Bash 5 unwinds function-local variables before running that trap.
+    flow="$1" scenario="$2" fixture="$3"
+    script="$RUNTIME_SCRIPT" fixture_switches=0
+    INSTALL_DIR="$fixture/install" BACKUP_DIR="$fixture/backups"
+    deploy="$INSTALL_DIR/deploy" expected_files=() expected_project=paired-existing
     mkdir -p "$deploy/data" "$deploy/postgres_data" "$deploy/redis_data" "$fixture/external"
     printf 'services: {xiass-api: {image: fixture/app}}\n' > "$deploy/docker-compose.local.yml"
     cp "$deploy/docker-compose.local.yml" "$deploy/docker-compose.yml"
@@ -37,7 +39,7 @@ ENV
         sed 's/JWT_REFRESH_TOKEN_STORE=.*/JWT_REFRESH_TOKEN_STORE=redis/' "$deploy/.env" > "$fixture/env-adjusted"
         mv "$fixture/env-adjusted" "$deploy/.env"
     fi
-    local compose_labels="docker-compose.local.yml,docker-compose.build.yml,node runtime.yml,$fixture/external/proxy.yml"
+    compose_labels="docker-compose.local.yml,docker-compose.build.yml,node runtime.yml,$fixture/external/proxy.yml"
     expected_files=("$deploy/docker-compose.local.yml" "$deploy/docker-compose.build.yml" "$deploy/node runtime.yml" "$fixture/external/proxy.yml")
     case "$scenario" in
         missing-base) rm "$deploy/docker-compose.local.yml" ;;
@@ -56,19 +58,19 @@ ENV
     cp "$deploy/.env" "$fixture/env.before"
     for dir in data postgres_data redis_data; do printf 'original-state\n' > "$deploy/$dir/sentinel"; done
     : > "$fixture/calls"
-    local expected_args=() file
+    expected_args=()
     for file in "${expected_files[@]}"; do expected_args+=(-f "$file"); done
     [ -z "$expected_project" ] || expected_args+=(--project-name "$expected_project")
     expected_args+=(--project-directory "$deploy" up -d --no-deps --no-build --force-recreate xiass-api)
     printf '%s\n' "${expected_args[@]}" > "$fixture/compose.expected"
 
-    local RUNTIME_NODE_ID=primary RUNTIME_TUNNEL_TOKEN='runtime-$#=literal'
-    local RUNTIME_DEFAULT_PROXY_ID=9 RUNTIME_LEGACY_NODE_ID=primary RUNTIME_LEGACY_PROXY_ID=9
-    local JOIN_SOURCE_URL=https://source.example.invalid JOIN_TARGET_NODE_ID=worker JOIN_TUNNEL_PROOF=fixture-proof JOIN_BUNDLE_B64
+    RUNTIME_NODE_ID=primary RUNTIME_TUNNEL_TOKEN='runtime-$#=literal'
+    RUNTIME_DEFAULT_PROXY_ID=9 RUNTIME_LEGACY_NODE_ID=primary RUNTIME_LEGACY_PROXY_ID=9
+    JOIN_SOURCE_URL=https://source.example.invalid JOIN_TARGET_NODE_ID=worker JOIN_TUNNEL_PROOF=fixture-proof
     if [ "$flow" = join ]; then
         script="$JOIN_SCRIPT"
         jq -n '{version:1,target_node_id:"worker",source_node_id:"primary",tunnel_proof:"fixture-proof",target_proxy_id:17,legacy_node_id:"primary",legacy_proxy_id:9,database_user:"source-user",database_pass:"source-pg-$#=literal",database_name:"source-db",database_sslmode:"disable",redis_username:"source-redis",redis_password:"source-redis-$#=literal",redis_db:3,redis_enable_tls:false,jwt_secret:"source-jwt-$#=literal",totp_key:"source-totp-$#=literal"}' > "$fixture/source.json"
-        local store=""
+        store=""
         case "$scenario" in
             source-redis) store='"redis"' ;;
             source-postgres) store='"postgres"' ;;
